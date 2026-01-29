@@ -1,0 +1,11 @@
+@LIT_SITE_CFG_IN_HEADER@
+import sys
+config.llvm_tools_dir = "@LLVM_TOOLS_DIR@"
+config.llvm_shlib_ext = "@SHLIBEXT@"
+config.pto_obj_root = "@CMAKE_BINARY_DIR@"
+config.pto_tools_dir = "@CMAKE_BINARY_DIR@/bin"
+config.lit_tools_dir = "@LLVM_LIT_TOOLS_DIR@"
+import lit.llvm
+lit.llvm.initialize(lit_config, config)
+lit.llvm.llvm_config.with_system_environment(['HOME', 'INCLUDE', 'LIB', 'TMP', 'TEMP'])
+lit_config.load_config(config, "@CMAKE_CURRENT_SOURCE_DIR@/lit.cfg.py")
