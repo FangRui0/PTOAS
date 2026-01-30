@@ -5,16 +5,16 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-#include "pto/Transforms/Passes.h"
+#include "PTO/Transforms/Passes.h"
 #include "PTO/IR/PTO.h"
-#include "pto/Transforms/SyncCommon.h"
-#include "pto/Transforms/MemoryDependentAnalyzer.h"
-#include "pto/Transforms/PTOIRTranslator.h"
-#include "pto/Transforms/BlockSyncAnalysis.h"
-#include "pto/Transforms/MoveSyncState.h"
-#include "pto/Transforms/RemoveRedundantSync.h"
-#include "pto/Transforms/SyncEventIdAllocation.h"
-#include "pto/Transforms/SyncCodegen.h"
+#include "PTO/Transforms/SyncCommon.h"
+#include "PTO/Transforms/MemoryDependentAnalyzer.h"
+#include "PTO/Transforms/PTOIRTranslator.h"
+#include "PTO/Transforms/BlockSyncAnalysis.h"
+#include "PTO/Transforms/MoveSyncState.h"
+#include "PTO/Transforms/RemoveRedundantSync.h"
+#include "PTO/Transforms/SyncEventIdAllocation.h"
+#include "PTO/Transforms/SyncCodegen.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h" // [FIX] 确保 FuncOp 定义可见
 
@@ -29,7 +29,7 @@ namespace pto {
   namespace func = ::mlir::func; 
  
   #define GEN_PASS_DEF_PTOINSERTSYNC 
-  #include "pto/Transforms/Passes.h.inc"
+  #include "PTO/Transforms/Passes.h.inc"
 } // namespace pto
 } // namespace mlir
  

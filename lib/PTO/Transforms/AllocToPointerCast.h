@@ -7,7 +7,7 @@
 #ifndef LLVM_PROJECT_ALLOCTOPOINTERCAST_H
 #define LLVM_PROJECT_ALLOCTOPOINTERCAST_H
 #include "PTO/IR/PTO.h"
-#include "pto/Transforms/Passes.h"
+#include "PTO/Transforms/Passes.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "llvm/ADT/SmallSet.h"
 

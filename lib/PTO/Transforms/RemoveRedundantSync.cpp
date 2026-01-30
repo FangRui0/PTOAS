@@ -1,4 +1,4 @@
-#include "pto/Transforms/RemoveRedundantSync.h"
+#include "PTO/Transforms/RemoveRedundantSync.h"
 #include "llvm/ADT/STLExtras.h"
 #include <algorithm>
 #include <vector>

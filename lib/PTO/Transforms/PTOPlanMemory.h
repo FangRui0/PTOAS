@@ -10,7 +10,7 @@
 
 #include "PTO/IR/PTO.h"
 #include "OptMemPlanForPipeline.h"
-#include "pto/Transforms/Passes.h"
+#include "PTO/Transforms/Passes.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Analysis/Liveness.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"

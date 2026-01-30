@@ -1,7 +1,7 @@
 #ifndef MLIR_DIALECT_PTO_TRANSFORMS_INJECTSYNC_REMOVEREDUNDANTSYNC_H
 #define MLIR_DIALECT_PTO_TRANSFORMS_INJECTSYNC_REMOVEREDUNDANTSYNC_H
  
-#include "pto/Transforms/SyncCommon.h"
+#include "PTO/Transforms/SyncCommon.h"
  
 namespace mlir {
 namespace pto {

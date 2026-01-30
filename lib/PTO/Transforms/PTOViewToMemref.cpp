@@ -8,7 +8,7 @@
  */
 
 #include "PTO/IR/PTO.h"
-#include "pto/Transforms/Passes.h"
+#include "PTO/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"

@@ -7,13 +7,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "AllocToPointerCast.h"
-#include "pto/Transforms/Passes.h"
+#include "PTO/Transforms/Passes.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 namespace mlir {
 #define GEN_PASS_DEF_ALLOCTOPOINTERCAST
-#include "pto/Transforms/Passes.h.inc"
+#include "PTO/Transforms/Passes.h.inc"
 
 } // namespace mlir
 

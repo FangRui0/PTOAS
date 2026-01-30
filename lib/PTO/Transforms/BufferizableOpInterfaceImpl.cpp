@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "pto/Transforms/BufferizableOpInterfaceImpl.h"
+#include "PTO/Transforms/BufferizableOpInterfaceImpl.h"
 #include "PTO/IR/PTO.h"
 #include "mlir/Dialect/Bufferization/IR/BufferizableOpInterface.h"
 #include "mlir/Dialect/Bufferization/IR/DstBufferizableOpInterfaceImpl.h"

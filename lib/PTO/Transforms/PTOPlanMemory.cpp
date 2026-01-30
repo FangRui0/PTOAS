@@ -22,7 +22,7 @@
 namespace mlir {
 namespace pto {
 #define GEN_PASS_DEF_PLANMEMORY
-#include "pto/Transforms/Passes.h.inc"
+#include "PTO/Transforms/Passes.h.inc"
 } // namespace pto
 } // namespace mlir
 

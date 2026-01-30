@@ -1,5 +1,5 @@
 #include "PTO/IR/PTO.h"
-#include "pto/Transforms/Passes.h"
+#include "PTO/Transforms/Passes.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h" 
 #include "mlir/Dialect/MemRef/IR/MemRef.h" 
 #include "mlir/IR/PatternMatch.h"

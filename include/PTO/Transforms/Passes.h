@@ -28,7 +28,7 @@ namespace mlir {
 namespace pto {
 
 #define GEN_PASS_DECL
-#include "pto/Transforms/Passes.h.inc"
+#include "PTO/Transforms/Passes.h.inc"
 
 std::unique_ptr<Pass> createPTOHighDimLoweringPass();
 std::unique_ptr<Pass> createPTOVFloopGatherPass();
@@ -67,6 +67,6 @@ void registerPTOPasses();
 
 #undef GEN_PASS_DECL
 #define GEN_PASS_REGISTRATION
-#include "pto/Transforms/Passes.h.inc"
+#include "PTO/Transforms/Passes.h.inc"
 
 #endif // MLIR_DIALECT_PTO_TRANSFORMS_PASSES_H

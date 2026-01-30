@@ -1,8 +1,8 @@
 #ifndef MLIR_DIALECT_PTO_TRANSFORMS_BLOCKSYNCANALYSIS_H
 #define MLIR_DIALECT_PTO_TRANSFORMS_BLOCKSYNCANALYSIS_H
  
-#include "pto/Transforms/SyncCommon.h"
-#include "pto/Transforms/MemoryDependentAnalyzer.h"
+#include "PTO/Transforms/SyncCommon.h"
+#include "PTO/Transforms/MemoryDependentAnalyzer.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
  
 namespace mlir {

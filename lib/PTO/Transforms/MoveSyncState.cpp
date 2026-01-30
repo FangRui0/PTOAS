@@ -1,4 +1,4 @@
-#include "pto/Transforms/MoveSyncState.h"
+#include "PTO/Transforms/MoveSyncState.h"
 #include "llvm/ADT/STLExtras.h" // For llvm::reverse
  
 #define DEBUG_TYPE "pto-inject-sync"

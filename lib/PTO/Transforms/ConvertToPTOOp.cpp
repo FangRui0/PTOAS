@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "PTO/IR/PTO.h"
-#include "pto/Transforms/Passes.h"
+#include "PTO/Transforms/Passes.h"
 #include "Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -24,7 +24,7 @@
 
 namespace mlir {
 #define GEN_PASS_DEF_CONVERTTOPTOOP
-#include "pto/Transforms/Passes.h.inc"
+#include "PTO/Transforms/Passes.h.inc"
 } // namespace mlir
 
 using namespace mlir;

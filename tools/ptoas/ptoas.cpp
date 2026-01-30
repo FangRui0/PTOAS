@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "PTO/IR/PTO.h"
-#include "pto/Transforms/Passes.h"
-#include "pto/Transforms/BufferizableOpInterfaceImpl.h"
+#include "PTO/Transforms/Passes.h"
+#include "PTO/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/InitAllDialects.h"

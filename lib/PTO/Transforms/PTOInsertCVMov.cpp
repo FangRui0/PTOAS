@@ -1,5 +1,5 @@
 #include "PTO/IR/PTO.h"
-#include "pto/Transforms/Passes.h"
+#include "PTO/Transforms/Passes.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseMap.h"

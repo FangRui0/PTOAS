@@ -1,5 +1,5 @@
-#include "pto/Transforms/BlockSyncAnalysis.h"
-#include "pto/Transforms/SyncCommon.h"
+#include "PTO/Transforms/BlockSyncAnalysis.h"
+#include "PTO/Transforms/SyncCommon.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/Support/Casting.h"

@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "PTO/IR/PTO.h"
-#include "pto/Transforms/Passes.h"
+#include "PTO/Transforms/Passes.h"
 
 #include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
 #include "mlir/Analysis/DataFlow/IntegerRangeAnalysis.h"
@@ -43,7 +43,7 @@
 #include <utility>
 namespace mlir {
 #define GEN_PASS_DEF_EMITPTOMANUAL
-#include "pto/Transforms/Passes.h.inc"
+#include "PTO/Transforms/Passes.h.inc"
 } // namespace mlir
 
 using namespace mlir;
