@@ -57,7 +57,7 @@ add_public_tablegen_target(PTOPythonGen)
 add_dependencies(_pto PTOPythonGen)
 
 # ---- 3) Copy generated python + handwritten pto.py into build/python ----
-set(PTO_PY_SRC "${CMAKE_SOURCE_DIR}/python/mlir/dialects/pto.py")
+set(PTO_PY_SRC "${CMAKE_SOURCE_DIR}/python/pto/dialects/pto.py")
 
 add_custom_command(TARGET _pto POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/python/mlir/dialects"
