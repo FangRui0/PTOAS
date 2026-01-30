@@ -5,7 +5,7 @@ module {
   func.func @test_basic_pipeline(%arg0: memref<16x16x16xf16, #pto.address_space<gm>>,
                                  %arg1: memref<16x16x16xf16, #pto.address_space<gm>>) {
     %ub = memref.alloc() : memref<16x16x16xf16, #pto.address_space<ub>>
-
+    
     // CHECK: pto.load_dps
     // CHECK-NEXT: pto.set_flag[<PIPE_MTE2>, <PIPE_V>, <EVENT_ID0>]
     pto.load_dps ins(%arg0 : memref<16x16x16xf16, #pto.address_space<gm>>)
@@ -21,7 +21,7 @@ module {
     // CHECK-NEXT: pto.store_dps
     pto.store_dps ins(%ub : memref<16x16x16xf16, #pto.address_space<ub>>)
                   outs(%arg1 : memref<16x16x16xf16, #pto.address_space<gm>>)
-
+    
     // CHECK: pto.barrier <PIPE_ALL>
     return
   }

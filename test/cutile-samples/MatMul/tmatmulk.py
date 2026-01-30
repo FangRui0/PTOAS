@@ -78,7 +78,7 @@ def build(
                 pto.PadValueAttr.get(pto.PadValue.Null, ctx),
                 ctx,
             )
-
+            
             cfg_mat_bias = pto.TileBufConfigAttr.get(
                 pto.BLayoutAttr.get(pto.BLayout.RowMajor, ctx),
                 pto.SLayoutAttr.get(pto.SLayout.NoneBox, ctx),
@@ -118,7 +118,7 @@ def build(
             # BIAS tile：一般不需要分形（这里给 0；你也可给一个专用 size）
             cfg_bias = pto.TileBufConfigAttr.get(
                 pto.BLayoutAttr.get(pto.BLayout.RowMajor, ctx),
-                pto.SLayoutAttr.get(pto.SLayout.NoneBox, ctx),
+                pto.SLayoutAttr.get(pto.SLayout.NoneBox, ctx), 
                 512,
                 pto.PadValueAttr.get(pto.PadValue.Null, ctx),
                 ctx,
@@ -162,7 +162,7 @@ def build(
 
                 cBASEK = _idx_const(ctx, BASEK)
                 cIter = _idx_const(ctx, iters)
-
+                
                 cTileM = _idx_const(ctx, M)
                 cTileN = _idx_const(ctx, N)
 
@@ -281,3 +281,4 @@ def build(
 if __name__ == "__main__":
     m = build()
     print(m)
+

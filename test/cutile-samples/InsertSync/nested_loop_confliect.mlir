@@ -4,7 +4,7 @@ module attributes {"pto.device-spec" = "Ascend910B1"} {
     %c1 = arith.constant 1 : index
     %c10 = arith.constant 10 : index
     %c32 = arith.constant 32 : index
-
+    
     // [Fix] 使用 2D 形状 (32x32 = 1024 elements)
     // 这样 strides 和 offsets 都是 2 个元素，避免越界
     %0 = pto.make_tensor_view %arg0, shape = [%c32, %c32] strides = [%c32, %c1] : !pto.tensor_view<2xf32>
@@ -15,7 +15,7 @@ module attributes {"pto.device-spec" = "Ascend910B1"} {
 
     // Outer Loop
     scf.for %i = %c0 to %c10 step %c1 {
-
+      
       // [Fix] Offsets 也是 2D [%c0, %c0]
       %src_view = pto.subview %0, offsets = [%c0, %c0], sizes = [32, 32] : !pto.tensor_view<2xf32> -> !pto.tile_view<32x32xf32>
 
@@ -25,7 +25,7 @@ module attributes {"pto.device-spec" = "Ascend910B1"} {
 
       // Inner Loop
       scf.for %j = %c0 to %c10 step %c1 {
-
+        
         // [Fix] Offsets 也是 2D
         %dst_view = pto.subview %1, offsets = [%c0, %c0], sizes = [32, 32] : !pto.tensor_view<2xf32> -> !pto.tile_view<32x32xf32>
 

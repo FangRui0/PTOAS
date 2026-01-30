@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "pto/IR/PTO.h"
+#include "PTO/IR/PTO.h"
 #include "pto/Transforms/Passes.h"
 #include "pto/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/IR/MLIRContext.h"
@@ -22,11 +22,10 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Target/Cpp/CppEmitter.h"
-#include "mlir/Transforms/Passes.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/FileSystem.h" // [Fix] Required for OF_None
-#include "mlir/Dialect/Bufferization/Transforms/Passes.h"
+#include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/EmitC/IR/EmitC.h"
 #include "llvm/Support/CommandLine.h"
@@ -56,10 +55,10 @@ using namespace pto;
 // }
 
 static void bufferizationPipeline(OpPassManager &pm) {
-  bufferization::OneShotBufferizePassOptions oneShotOptions;
+  bufferization::OneShotBufferizationOptions oneShotOptions;
   oneShotOptions.bufferizeFunctionBoundaries = true;
-  oneShotOptions.functionBoundaryTypeConversion =
-      bufferization::LayoutMapOption::IdentityLayoutMap;
+  oneShotOptions.setFunctionBoundaryTypeConversion(
+      bufferization::LayoutMapOption::IdentityLayoutMap);
   oneShotOptions.allowReturnAllocsFromLoops = true;
   oneShotOptions.allowUnknownOps = true;
   pm.addPass(bufferization::createOneShotBufferizePass(oneShotOptions));
@@ -93,10 +92,24 @@ static llvm::cl::opt<bool> enableInsertSync("enable-insert-sync",
 
 int main(int argc, char **argv) {
   DialectRegistry registry;
-  mlir::registerAllDialects(registry);
-  registry.insert<mlir::pto::PTODialect, emitc::EmitCDialect,
-                  mlir::LLVM::LLVMDialect>();
+  registry.insert<mlir::func::FuncDialect>();
+  registry.insert<mlir::tensor::TensorDialect>();
+  registry.insert<mlir::arith::ArithDialect>();
+  registry.insert<mlir::memref::MemRefDialect>();
+  registry.insert<mlir::affine::AffineDialect>();
+  registry.insert<mlir::cf::ControlFlowDialect>();
+  registry.insert<mlir::bufferization::BufferizationDialect>();
+  registry.insert<mlir::scf::SCFDialect>();
+
+  registry.insert<mlir::pto::PTODialect>();
+  //mlir::registerAllDialects(registry);
+  arith::registerBufferizableOpInterfaceExternalModels(registry);
+  tensor::registerBufferizableOpInterfaceExternalModels(registry);
+  //func::registerBufferizableOpInterfaceExternalModels(registry);
   pto::registerBufferizableOpInterfaceExternalModels(registry);
+
+  registry.insert<emitc::EmitCDialect>();
+  registry.insert<mlir::LLVM::LLVMDialect>();
 
   // Parse command line options
   llvm::cl::ParseCommandLineOptions(argc, argv, "PTO Assembler (ptoas)\n");
@@ -105,12 +118,12 @@ int main(int argc, char **argv) {
   // Use inputFilename from cl options
   auto fileOrErr = llvm::MemoryBuffer::getFileOrSTDIN(inputFilename);
   if (!fileOrErr) {
-    llvm::errs() << "Error: Could not open input file: "
+    llvm::errs() << "Error: Could not open input file: " 
                  << fileOrErr.getError().message() << "\n";
     return 1;
   }
   sourceMgr.AddNewSourceBuffer(std::move(*fileOrErr), llvm::SMLoc());
-
+  
   MLIRContext context(registry);
   context.getOrLoadDialect<emitc::EmitCDialect>();
   context.getOrLoadDialect<mlir::pto::PTODialect>();
@@ -119,7 +132,7 @@ int main(int argc, char **argv) {
   context.getOrLoadDialect<memref::MemRefDialect>();
   context.getOrLoadDialect<affine::AffineDialect>();
   context.getOrLoadDialect<mlir::LLVM::LLVMDialect>();
-
+  
   OwningOpRef<ModuleOp> module = parseSourceFile<ModuleOp>(sourceMgr, &context);
   if (!module) {
     llvm::errs() << "Error: Failed to parse MLIR.\n";
@@ -136,15 +149,15 @@ int main(int argc, char **argv) {
 
   // Main PassManager
   PassManager pm(&context);
-
+  
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertCVMovPass());
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOConvertToDPSPass());
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertLoadStoreForMixCVPass());
-
+  
   pm.addPass(pto::createPTOViewToMemrefPass());
   // bufferizationPipeline(pm);
   pm.addPass(createInferPTOMemScopePass());
-
+  
   PlanMemoryOptions planMemoryOption;
   planMemoryOption.memMode = MemPlanMode::GLOBAL_WORKSPACE_PLAN;
   planMemoryOption.enableGlobalReuse = false;
@@ -159,12 +172,12 @@ int main(int argc, char **argv) {
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTORemoveRedundantBarrierPass());
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOHighDimLoweringPass());
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVFloopGatherPass());
-
-  pm.addPass(mlir::createCSEPass());
+  
+  pm.addPass(createCSEPass());
   pm.addPass(pto::createEmitPTOManualPass());
   pm.addPass(mlir::createCanonicalizerPass());
   pm.addPass(mlir::createCSEPass());
-
+  
   if (failed(pm.run(*module))) {
     llvm::errs() << "Error: Pass execution failed.\n";
     return 1;

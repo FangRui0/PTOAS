@@ -1,1 +1,1 @@
-add_subdirectory(pto)
+add_subdirectory(PTO)

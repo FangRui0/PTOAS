@@ -54,7 +54,7 @@ module {
                               outs(%mm_ub2_init : tensor<32x32xf32>)
                               -> tensor<32x32xf32>
 
-    // 6) VADD
+    // 6) VADD 
     %out_ub_init = tensor.empty() : tensor<32x32xf32>
     %tile_out_ub = pto.addf ins(%tile_mm_ub2, %tile_d_ub : tensor<32x32xf32>, tensor<32x32xf32>)
                          outs(%out_ub_init : tensor<32x32xf32>)

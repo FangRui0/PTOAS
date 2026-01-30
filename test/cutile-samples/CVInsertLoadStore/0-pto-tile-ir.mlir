@@ -18,15 +18,15 @@ module {
     %n0 = arith.muli %c0, %c32 : index
 
     // 2. Subviews
-    %a_tile_view = pto.subview %a, offsets = [%m0,%n0], sizes = [32,32]
+    %a_tile_view = pto.subview %a, offsets = [%m0,%n0], sizes = [32,32] 
                   : !pto.tensor_view<2xf32> -> !pto.tile_view<32x32xf32>
-    %b_tile_view = pto.subview %b, offsets = [%m0,%n0], sizes = [32,32]
+    %b_tile_view = pto.subview %b, offsets = [%m0,%n0], sizes = [32,32] 
                   : !pto.tensor_view<2xf32> -> !pto.tile_view<32x32xf32>
     %c_tile_view = pto.subview %c, offsets = [%m0,%n0], sizes = [32,32]
                   : !pto.tensor_view<2xf32> -> !pto.tile_view<32x32xf32>
 
     // ==========================================
-    // 3. Load
+    // 3. Load 
     // ==========================================
     // [MTE2]
     %tile_a = pto.load %a_tile_view : !pto.tile_view<32x32xf32> -> !pto.tile<32x32xf32>

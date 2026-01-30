@@ -34,7 +34,7 @@ def build():
                 c32 = arith.ConstantOp(IndexType.get(ctx), 32).result
 
                 arg0, arg1 = entry.arguments
-
+                
                 tv0 = pto.MakeTensorViewOp(tv2_f32, arg0, [c32, c32], [c32, c1]).result
                 tv1 = pto.MakeTensorViewOp(tv2_f32, arg1, [c32, c32], [c32, c1]).result
 

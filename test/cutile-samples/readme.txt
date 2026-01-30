@@ -1,9 +1,9 @@
 ## python接口使用指导
 
 ``` bash
-export PYTHONPATH=$PYTHONPATH:<llvm-root>/build/tools/mlir/python_packages/mlir_core
+export PYTHONPATH=$PYTHONPATH:<llvm-root>/build/tools/mlir/python_packages/mlir_core 
 ```
-
+ 
 使用python的接口生成PTO IR的mlir函数：
 
 ``` bash

@@ -60,3 +60,4 @@ module attributes {"pto.device-spec" = "Ascend910B1"} {
     return
   }
 }
+
