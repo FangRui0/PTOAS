@@ -93,7 +93,7 @@ process_one_dir() {
   dir="${BASE_DIR}/${A}"
   out_subdir="${out_dir}/${A}"
   mkdir -p "${out_subdir}"
-  mlir="${out_subdir}/$(lcfirst "$A")-pto-ir.mlir"
+  mlir="${out_subdir}/$(lcfirst "$A")-pto-ir.pto"
   cpp="${out_subdir}/$(lcfirst "$A")-pto.cpp"
 
   ptoas="$(resolve_ptoas_bin)"
