@@ -1,20 +1,22 @@
 ARG ARCH=x86_64
+# ARCH options: x86_64, aarch64
 
 FROM quay.io/pypa/manylinux_2_34_${ARCH}
+ARG ARCH
+# need to re-declare ARG after FROM
 
 # NOTE: change $PY_VER for different Python versions (3.8 - 3.14 available)
-ARG PY_VER=cp312-cp312
+ARG PY_VER=cp311-cp311
 ARG LLVM_TAG=llvmorg-19.1.7
 
 ## -- usually no need to change below --
 
 ENV PY_PATH="/opt/python/${PY_VER}"
 ENV PATH="${PY_PATH}/bin:${PATH}"
-ENV ARCH=${ARCH}
 
 # dependency
-RUN dnf install -y ninja-build cmake git ccache gcc-c++ lld && dnf clean all
-RUN pip install --no-cache-dir numpy pybind11 nanobind
+RUN dnf install -y ninja-build cmake git ccache gcc-c++ lld zip && dnf clean all
+RUN pip install --no-cache-dir numpy pybind11 nanobind setuptools wheel auditwheel
 
 # setting build directories
 ENV WORKSPACE_DIR=/llvm-workspace
@@ -72,7 +74,6 @@ RUN cp $PTO_INSTALL_DIR/mlir/dialects/*.py $PY_PACKAGE_DIR/mlir/dialects/
 COPY ./setup.py $PY_PACKAGE_DIR/
 
 WORKDIR $PY_PACKAGE_DIR
-RUN pip install --no-cache-dir setuptools wheel auditwheel
 RUN python setup.py bdist_wheel
 
 # fix missing so
