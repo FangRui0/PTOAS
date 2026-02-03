@@ -5908,6 +5908,14 @@ void TMovOp::getEffects(SmallVectorImpl<SideEffects::EffectInstance<MemoryEffect
   addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
 }
 
+// === ReluOp_DPS ===
+// Read: src, Write: dst
+void ReluOp_DPS::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  addEffect(effects, &getSrcMutable(), MemoryEffects::Read::get());
+  addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
+}
+
 // === TMatmulOp ===
 // Read: lhs, rhs, (bias), Write: dst
 void TMatmulOp::getEffects(SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {

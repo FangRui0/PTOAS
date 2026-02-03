@@ -2766,7 +2766,10 @@ def PTO_RecipOp_DPS : PTO_DpsOp<"recip_dps", []> {
 // PTOOps.td  (add TRELU DPS/tilebuf op)
 //===----------------------------------------------------------------------===//
 
-def PTO_ReluOp_DPS : PTO_DpsOp<"relu_dps", []> {
+def PTO_ReluOp_DPS : PTO_DpsOp<"relu_dps", [
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
   let summary = "TRELU: elementwise ReLU (tilebuf, DPS)";
 
   let arguments = (ins
@@ -2782,6 +2785,11 @@ def PTO_ReluOp_DPS : PTO_DpsOp<"relu_dps", []> {
     `ins` `(` $src `:` qualified(type($src)) `)`
     `outs` `(` $dst `:` qualified(type($dst) ) `)`
     attr-dict
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
 }
 //===----------------------------------------------------------------------===//
