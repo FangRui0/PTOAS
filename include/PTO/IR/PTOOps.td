@@ -65,7 +65,8 @@ def MakeTensorViewOp : PTO_Op<"make_tensor_view", [AttrSizedOperandSegments]> {
   let arguments = (ins
     AnyType:$ptr,
     Variadic<Index>:$shape,
-    Variadic<Index>:$strides
+    Variadic<Index>:$strides,
+    OptionalAttr<PTO_LayoutAttr>:$layout
   );
 
   let results = (outs AnyType:$result);

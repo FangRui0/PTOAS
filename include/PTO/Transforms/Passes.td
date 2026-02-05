@@ -58,6 +58,17 @@ def ConvertToPTOOp : Pass<"convert-to-pto-op"> {
   ];
 }
 
+def InferPTOLayout : Pass<"pto-infer-layout", "func::FuncOp"> {
+  let summary = "Infer GlobalTensor layout (ND/DN/NZ) for make_tensor_view";
+  let description = [{
+    For each pto.make_tensor_view with fully static shape/stride, compute layout
+    (ND/DN/NZ) per design rules and attach the optional `layout` attribute.
+    Dynamic stride/shape are left unset.
+  }];
+  let constructor = "mlir::pto::createInferPTOLayoutPass()";
+  let dependentDialects = ["pto::PTODialect", "arith::ArithDialect"];
+}
+
 
 def InferPTOMemScope : Pass<"pto-infer-mem-scope"> {
   let summary = "Infer memory scope for PTO Ops";

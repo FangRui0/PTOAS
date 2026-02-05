@@ -116,6 +116,30 @@ def PTO_PipeAttr : PTO_Attr<"Pipe", "pipe"> {
 }
 
 //===----------------------------------------------------------------------===//
+// Layout (GlobalTensor layout inference)
+//===----------------------------------------------------------------------===//
+
+def PTO_Layout_ND : I32EnumAttrCase<"ND", 0, "nd">;
+def PTO_Layout_DN : I32EnumAttrCase<"DN", 1, "dn">;
+def PTO_Layout_NZ : I32EnumAttrCase<"NZ", 2, "nz">;
+
+def PTO_LayoutEnum : PTO_I32Enum<
+  "Layout", "Global tensor layout (row/col/fractal)", [
+    PTO_Layout_ND,
+    PTO_Layout_DN,
+    PTO_Layout_NZ
+  ]>;
+
+def PTO_LayoutAttr : PTO_Attr<"Layout", "layout"> {
+  let parameters = (ins EnumParameter<PTO_LayoutEnum>:$layout);
+  let assemblyFormat = "`<` params `>`";
+  let description = [{
+    Layout inferred from shape/stride for GlobalTensor:
+      ND (row-major), DN (col-major), NZ (fractal).
+  }];
+}
+
+//===----------------------------------------------------------------------===//
 // Function and Module Core Type
 //===----------------------------------------------------------------------===//
 
