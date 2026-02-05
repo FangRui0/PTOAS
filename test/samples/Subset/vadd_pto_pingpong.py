@@ -19,9 +19,13 @@ def build_pingpong():
             # 就像 pto.TensorViewType.get(...) 一样简单
             gm_type = pto.get_gm_type([32, 32], f32, ctx)
             
-            # 自动应用 <ub> 空间和连续 Layout
-            # 写法回归到最原始的简单形式
-            ws_type = pto.TileBufType.get([32, 64], f32, context=ctx)
+            # TileBufType 需要 memory_space, valid_shape, config
+            vec = pto.AddressSpaceAttr.get(pto.AddressSpace.VEC, ctx)
+            bl = pto.BLayoutAttr.get(pto.BLayout.RowMajor, ctx)
+            sl = pto.SLayoutAttr.get(pto.SLayout.NoneBox, ctx)
+            pd = pto.PadValueAttr.get(pto.PadValue.Null, ctx)
+            cfg = pto.TileBufConfigAttr.get(bl, sl, 512, pd, ctx)
+            ws_type = pto.TileBufType.get([32, 64], f32, vec, [32, 64], cfg, ctx)
 
             # ======================================================
             # 2. 逻辑主体
