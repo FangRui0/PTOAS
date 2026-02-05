@@ -53,6 +53,13 @@ __all__ = [
     "get_gm_type", "TileBufConfigAttr",
     # High-level sync helpers
     "record_event", "wait_event", "barrier"
+
+    # Aliases for SyncOpType enums (for terse calls)
+    ,"TLOAD","TSTORE_ACC","TSTORE_VEC","TMOV_M2L","TMOV_M2S",
+    "TMOV_M2B","TMOV_M2V","TMOV_V2M","TMATMUL","TVEC","TVECWAIT_EVENT"
+    # Aliases for EVENT enums
+    ,"EVENT_ID0","EVENT_ID1","EVENT_ID2","EVENT_ID3",
+    "EVENT_ID4","EVENT_ID5","EVENT_ID6","EVENT_ID7"
 ]
 
 # -----------------------------------------------------------------------------
@@ -108,3 +115,27 @@ def barrier(op, *, loc=None, ip=None):
         return _pto_ops_gen.barrier_sync(op_attr, loc=loc, ip=ip)
     # Otherwise fall back to low-level barrier expecting PipeAttr
     return _pto_ops_gen.barrier(op, loc=loc, ip=ip)
+
+# -----------------------------------------------------------------------------
+# Export enum aliases for terse calls: pto.record_event(TLOAD, TLOAD, EVENT_ID0)
+# -----------------------------------------------------------------------------
+TLOAD = SyncOpType.TLOAD
+TSTORE_ACC = SyncOpType.TSTORE_ACC
+TSTORE_VEC = SyncOpType.TSTORE_VEC
+TMOV_M2L = SyncOpType.TMOV_M2L
+TMOV_M2S = SyncOpType.TMOV_M2S
+TMOV_M2B = SyncOpType.TMOV_M2B
+TMOV_M2V = SyncOpType.TMOV_M2V
+TMOV_V2M = SyncOpType.TMOV_V2M
+TMATMUL = SyncOpType.TMATMUL
+TVEC = SyncOpType.TVEC
+TVECWAIT_EVENT = SyncOpType.TVECWAIT_EVENT
+
+EVENT_ID0 = EVENT.EVENT_ID0
+EVENT_ID1 = EVENT.EVENT_ID1
+EVENT_ID2 = EVENT.EVENT_ID2
+EVENT_ID3 = EVENT.EVENT_ID3
+EVENT_ID4 = EVENT.EVENT_ID4
+EVENT_ID5 = EVENT.EVENT_ID5
+EVENT_ID6 = EVENT.EVENT_ID6
+EVENT_ID7 = EVENT.EVENT_ID7
