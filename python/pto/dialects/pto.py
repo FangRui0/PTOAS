@@ -65,9 +65,11 @@ def _ensure_sync_attr(val, ctx):
         return SyncOpTypeAttr.get(val, ctx)
     if isinstance(val, str):
         name = val.upper()
-        if name not in SyncOpType.__members__:
+        try:
+            enum_val = getattr(SyncOpType, name)
+        except AttributeError:
             raise ValueError(f"Unknown SyncOpType name: {val}")
-        return SyncOpTypeAttr.get(SyncOpType[name], ctx)
+        return SyncOpTypeAttr.get(enum_val, ctx)
     return val
 
 def _ensure_event_attr(val, ctx):
@@ -75,9 +77,11 @@ def _ensure_event_attr(val, ctx):
         return EventAttr.get(val, ctx)
     if isinstance(val, str):
         name = val.upper()
-        if name not in EVENT.__members__:
+        try:
+            enum_val = getattr(EVENT, name)
+        except AttributeError:
             raise ValueError(f"Unknown EVENT name: {val}")
-        return EventAttr.get(EVENT[name], ctx)
+        return EventAttr.get(enum_val, ctx)
     return val
 
 def record_event(src_op, dst_op, event_id, *, loc=None, ip=None):

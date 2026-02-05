@@ -14,42 +14,43 @@ def main():
         entry = f.add_entry_block()
         with InsertionPoint(entry):
             # Unrolled coverage for each SyncOpType (record + wait)
-            pto.record_event(pto.SyncOpType.TLOAD,       pto.SyncOpType.TLOAD,       pto.EVENT.EVENT_ID0)
-            pto.wait_event  (pto.SyncOpType.TLOAD,       pto.SyncOpType.TLOAD,       pto.EVENT.EVENT_ID0)
+            # Use string names to exercise helper auto-conversion.
+            pto.record_event("TLOAD",       "TLOAD",       "EVENT_ID0")
+            pto.wait_event  ("TLOAD",       "TLOAD",       "EVENT_ID0")
 
-            pto.record_event(pto.SyncOpType.TSTORE_ACC,  pto.SyncOpType.TSTORE_ACC,  pto.EVENT.EVENT_ID1)
-            pto.wait_event  (pto.SyncOpType.TSTORE_ACC,  pto.SyncOpType.TSTORE_ACC,  pto.EVENT.EVENT_ID1)
+            pto.record_event("TSTORE_ACC",  "TSTORE_ACC",  "EVENT_ID1")
+            pto.wait_event  ("TSTORE_ACC",  "TSTORE_ACC",  "EVENT_ID1")
 
-            pto.record_event(pto.SyncOpType.TSTORE_VEC,  pto.SyncOpType.TSTORE_VEC,  pto.EVENT.EVENT_ID2)
-            pto.wait_event  (pto.SyncOpType.TSTORE_VEC,  pto.SyncOpType.TSTORE_VEC,  pto.EVENT.EVENT_ID2)
+            pto.record_event("TSTORE_VEC",  "TSTORE_VEC",  "EVENT_ID2")
+            pto.wait_event  ("TSTORE_VEC",  "TSTORE_VEC",  "EVENT_ID2")
 
-            pto.record_event(pto.SyncOpType.TMOV_M2L,    pto.SyncOpType.TMOV_M2L,    pto.EVENT.EVENT_ID3)
-            pto.wait_event  (pto.SyncOpType.TMOV_M2L,    pto.SyncOpType.TMOV_M2L,    pto.EVENT.EVENT_ID3)
+            pto.record_event("TMOV_M2L",    "TMOV_M2L",    "EVENT_ID3")
+            pto.wait_event  ("TMOV_M2L",    "TMOV_M2L",    "EVENT_ID3")
 
-            pto.record_event(pto.SyncOpType.TMOV_M2S,    pto.SyncOpType.TMOV_M2S,    pto.EVENT.EVENT_ID4)
-            pto.wait_event  (pto.SyncOpType.TMOV_M2S,    pto.SyncOpType.TMOV_M2S,    pto.EVENT.EVENT_ID4)
+            pto.record_event("TMOV_M2S",    "TMOV_M2S",    "EVENT_ID4")
+            pto.wait_event  ("TMOV_M2S",    "TMOV_M2S",    "EVENT_ID4")
 
-            pto.record_event(pto.SyncOpType.TMOV_M2B,    pto.SyncOpType.TMOV_M2B,    pto.EVENT.EVENT_ID5)
-            pto.wait_event  (pto.SyncOpType.TMOV_M2B,    pto.SyncOpType.TMOV_M2B,    pto.EVENT.EVENT_ID5)
+            pto.record_event("TMOV_M2B",    "TMOV_M2B",    "EVENT_ID5")
+            pto.wait_event  ("TMOV_M2B",    "TMOV_M2B",    "EVENT_ID5")
 
-            pto.record_event(pto.SyncOpType.TMOV_M2V,    pto.SyncOpType.TMOV_M2V,    pto.EVENT.EVENT_ID6)
-            pto.wait_event  (pto.SyncOpType.TMOV_M2V,    pto.SyncOpType.TMOV_M2V,    pto.EVENT.EVENT_ID6)
+            pto.record_event("TMOV_M2V",    "TMOV_M2V",    "EVENT_ID6")
+            pto.wait_event  ("TMOV_M2V",    "TMOV_M2V",    "EVENT_ID6")
 
-            pto.record_event(pto.SyncOpType.TMOV_V2M,    pto.SyncOpType.TMOV_V2M,    pto.EVENT.EVENT_ID7)
-            pto.wait_event  (pto.SyncOpType.TMOV_V2M,    pto.SyncOpType.TMOV_V2M,    pto.EVENT.EVENT_ID7)
+            pto.record_event("TMOV_V2M",    "TMOV_V2M",    "EVENT_ID7")
+            pto.wait_event  ("TMOV_V2M",    "TMOV_V2M",    "EVENT_ID7")
 
-            pto.record_event(pto.SyncOpType.TMATMUL,     pto.SyncOpType.TMATMUL,     pto.EVENT.EVENT_ID0)
-            pto.wait_event  (pto.SyncOpType.TMATMUL,     pto.SyncOpType.TMATMUL,     pto.EVENT.EVENT_ID0)
+            pto.record_event("TMATMUL",     "TMATMUL",     "EVENT_ID0")
+            pto.wait_event  ("TMATMUL",     "TMATMUL",     "EVENT_ID0")
 
-            pto.record_event(pto.SyncOpType.TVEC,        pto.SyncOpType.TVEC,        pto.EVENT.EVENT_ID1)
-            pto.wait_event  (pto.SyncOpType.TVEC,        pto.SyncOpType.TVEC,        pto.EVENT.EVENT_ID1)
+            pto.record_event("TVEC",        "TVEC",        "EVENT_ID1")
+            pto.wait_event  ("TVEC",        "TVEC",        "EVENT_ID1")
 
-            pto.record_event(pto.SyncOpType.TVECWAIT_EVENT, pto.SyncOpType.TVECWAIT_EVENT, pto.EVENT.EVENT_ID2)
-            pto.wait_event  (pto.SyncOpType.TVECWAIT_EVENT, pto.SyncOpType.TVECWAIT_EVENT, pto.EVENT.EVENT_ID2)
+            pto.record_event("TVECWAIT_EVENT", "TVECWAIT_EVENT", "EVENT_ID2")
+            pto.wait_event  ("TVECWAIT_EVENT", "TVECWAIT_EVENT", "EVENT_ID2")
 
             # Barrier coverage for TMATMUL and TVEC
-            pto.barrier(pto.SyncOpType.TMATMUL)
-            pto.barrier(pto.SyncOpType.TVEC)
+            pto.barrier("TMATMUL")
+            pto.barrier("TVEC")
             func.ReturnOp([])
         print(module)
 
