@@ -1740,9 +1740,11 @@ struct PTOSetValToSETVAL : public OpConversionPattern<pto::SetValDpsOp> {
     // ---- offset: SSA index operand ----
     Value offset = peelUnrealized(adaptor.getOffset());
 
-    // intrinsic: SETVAL(dst, offset, val)
+    // NOTE: EmitC has no direct member-call op today. We emit a marker call
+    // and post-process ptoas output to rewrite it into:
+    //   dst.SetValue(offset, val);
     rewriter.create<emitc::CallOpaqueOp>(
-        op.getLoc(), TypeRange{}, "SETVAL",
+        op.getLoc(), TypeRange{}, "PTOAS__TILE_SET_VALUE",
         ArrayAttr{}, ArrayAttr{}, ValueRange{dst, offset, val});
 
     rewriter.eraseOp(op);
@@ -1759,11 +1761,16 @@ struct PTOGetValToGETVAL : public OpConversionPattern<pto::GetValDpsOp> {
     // ---- offset: SSA index operand ----
     Value offset = peelUnrealized(adaptor.getOffset());
 
-    // intrinsic: dst = GETVAL(src, offset)
+    // NOTE: EmitC has no direct member-call op today. We emit a marker call
+    // and post-process ptoas output to rewrite it into:
+    //   auto x = src.GetValue(offset);
+    Type dstTy = getTypeConverter()->convertType(op.getDst().getType());
+    if (!dstTy)
+      return failure();
     auto call = rewriter.create<emitc::CallOpaqueOp>(
         op.getLoc(),
-        TypeRange{op.getDst().getType()},   
-        "GETVAL",
+        TypeRange{dstTy},
+        "PTOAS__TILE_GET_VALUE",
         ArrayAttr{}, ArrayAttr{},
         ValueRange{src, offset});
 

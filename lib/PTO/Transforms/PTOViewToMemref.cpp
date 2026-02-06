@@ -1445,6 +1445,62 @@ struct PTOViewToMemrefPass
             dst);
       }
 
+      // --- TSetValOp [Dst, Offset, Val] ---
+      // Lower tile-world scalar write to memref-world SETVAL DPS op.
+      SmallVector<mlir::pto::TSetValOp, 8> tsetvalops;
+      func.walk([&](mlir::pto::TSetValOp op) { tsetvalops.push_back(op); });
+
+      for (auto op : tsetvalops) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+
+        Value dst = op.getDst();
+        Value offset = op.getOffset();
+        Value val = op.getVal();
+
+        auto dstTy = dyn_cast<MemRefType>(dst.getType());
+        if (!dstTy) {
+          op.emitError("dst is not memref yet");
+          signalPassFailure();
+          return;
+        }
+
+        rewriter.replaceOpWithNewOp<pto::SetValDpsOp>(
+            op,
+            TypeRange{},
+            dst,
+            offset,
+            val);
+      }
+
+      // --- TGetValOp [Src, Offset] -> Scalar ---
+      // Lower tile-world scalar read to memref-world GETVAL DPS op.
+      SmallVector<mlir::pto::TGetValOp, 8> tgetvalops;
+      func.walk([&](mlir::pto::TGetValOp op) { tgetvalops.push_back(op); });
+
+      for (auto op : tgetvalops) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+
+        Value src = op.getSrc();
+        Value offset = op.getOffset();
+        Type dstType = op.getDst().getType();
+
+        auto srcTy = dyn_cast<MemRefType>(src.getType());
+        if (!srcTy) {
+          op.emitError("src is not memref yet");
+          signalPassFailure();
+          return;
+        }
+
+        auto newOp = rewriter.create<pto::GetValDpsOp>(
+            op.getLoc(),
+            dstType,
+            src,
+            offset);
+        rewriter.replaceOp(op, newOp.getDst());
+      }
+
       SmallVector<mlir::pto::TGatherOp, 8> gatherops;
       func.walk([&](mlir::pto::TGatherOp op) { gatherops.push_back(op); });
 
