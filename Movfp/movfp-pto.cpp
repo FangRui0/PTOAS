@@ -1,0 +1,66 @@
+#include "pto/pto-inst.hpp"
+using namespace pto;
+__global__ AICORE void vec_movfp_kernel_2d(__gm__ float* v1, __gm__ float* v2, __gm__ float* v3) {
+  unsigned v4 = 1;
+  unsigned v5 = 0;
+  int32_t v6 = 32;
+  int32_t v7 = 1;
+  int64_t v8 = 0;
+  int64_t v9 = 4096;
+  using T = float;
+  unsigned v10 = (unsigned) v6;
+  unsigned v11 = v5 * v10;
+  unsigned v12 = v5 + v11;
+  unsigned v13 = (unsigned) v7;
+  unsigned v14 = v5 * v13;
+  unsigned v15 = v12 + v14;
+  __gm__ float* v16 = v1 + v15;
+  using GTShape_5225079968 = pto::Shape<1, 1, 1, 32, 32>;
+  using GTStride_5225079968 = pto::Stride<1024, 1024, 1024, 32, 1>;
+  constexpr pto::Layout GT_5225079968_layout = pto::Layout::ND;
+  GTShape_5225079968 v17 = GTShape_5225079968();
+  GTStride_5225079968 v18 = GTStride_5225079968();
+  using GT_5225079968 = GlobalTensor<float, GTShape_5225079968, GTStride_5225079968, GT_5225079968_layout>;
+  GT_5225079968 v19 = GT_5225079968(v16, v17, v18);
+  unsigned v20 = (unsigned) v6;
+  unsigned v21 = v5 * v20;
+  unsigned v22 = v5 + v21;
+  unsigned v23 = (unsigned) v7;
+  unsigned v24 = v5 * v23;
+  unsigned v25 = v22 + v24;
+  __gm__ float* v26 = v2 + v25;
+  using GTShape_5225080624 = pto::Shape<1, 1, 1, 32, 32>;
+  using GTStride_5225080624 = pto::Stride<1024, 1024, 1024, 32, 1>;
+  constexpr pto::Layout GT_5225080624_layout = pto::Layout::ND;
+  GTShape_5225080624 v27 = GTShape_5225080624();
+  GTStride_5225080624 v28 = GTStride_5225080624();
+  using GT_5225080624 = GlobalTensor<float, GTShape_5225080624, GTStride_5225080624, GT_5225080624_layout>;
+  GT_5225080624 v29 = GT_5225080624(v26, v27, v28);
+  unsigned v30 = (unsigned) v6;
+  unsigned v31 = v5 * v30;
+  unsigned v32 = v5 + v31;
+  unsigned v33 = (unsigned) v7;
+  unsigned v34 = v5 * v33;
+  unsigned v35 = v32 + v34;
+  __gm__ float* v36 = v3 + v35;
+  using GTShape_5225080976 = pto::Shape<1, 1, 1, 32, 32>;
+  using GTStride_5225080976 = pto::Stride<1024, 1024, 1024, 32, 1>;
+  constexpr pto::Layout GT_5225080976_layout = pto::Layout::ND;
+  GTShape_5225080976 v37 = GTShape_5225080976();
+  GTStride_5225080976 v38 = GTStride_5225080976();
+  using GT_5225080976 = GlobalTensor<float, GTShape_5225080976, GTStride_5225080976, GT_5225080976_layout>;
+  GT_5225080976 v39 = GT_5225080976(v36, v37, v38);
+  Tile<TileType::Vec, float, 32, 32, BLayout::RowMajor, 32, 32, SLayout::NoneBox, 512, PadValue::Null> v40;
+  TASSIGN(v40, v8);
+  Tile<TileType::Scaling, float, 32, 32, BLayout::RowMajor, 32, 32, SLayout::NoneBox, 512, PadValue::Null> v41;
+  TASSIGN(v41, v8);
+  Tile<TileType::Vec, float, 32, 32, BLayout::RowMajor, 32, 32, SLayout::NoneBox, 512, PadValue::Null> v42;
+  TASSIGN(v42, v9);
+  TLOAD(v40, v19);
+  TLOAD(v41, v29);
+  TMOV_FP<Tile<TileType::Vec, float, 32, 32, BLayout::RowMajor, 32, 32, SLayout::NoneBox, 512, PadValue::Null>, Tile<TileType::Vec, float, 32, 32, BLayout::RowMajor, 32, 32, SLayout::NoneBox, 512, PadValue::Null>, Tile<TileType::Scaling, float, 32, 32, BLayout::RowMajor, 32, 32, SLayout::NoneBox, 512, PadValue::Null>>(v42, v40, v41);
+  TSTORE(v39, v42);
+  return;
+}
+
+
