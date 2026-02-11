@@ -59,6 +59,31 @@ class PTO_Op<string mnemonic, list<Trait> traits = []>
 // Pointer/View Ops (for your front-end IR)
 //===----------------------------------------------------------------------===//
 
+def AddPtrOp : PTO_Op<"addptr", [
+    Pure,
+    AllTypesMatch<["ptr", "result"]>,
+    DeclareOpInterfaceMethods<InferTypeOpInterface>
+  ]> {
+  let summary = "Add an element offset to a !pto.ptr";
+  let description = [{
+    Computes a new pointer by adding an element offset to the base pointer.
+    The offset is in elements (not bytes).
+  }];
+
+  let arguments = (ins
+    PtrType:$ptr,
+    Index:$offset
+  );
+
+  let results = (outs PtrType:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $ptr `,` $offset attr-dict `:` type($ptr) `->` type($result)
+  }];
+}
+
 def MakeTensorViewOp : PTO_Op<"make_tensor_view", [AttrSizedOperandSegments]> {
   let summary = "Wrap a pointer as a tensor_view descriptor (no allocation, no copy).";
 
@@ -339,6 +364,19 @@ def TStoreOp: PTO_TOp<"tstore", [
 
   let extraClassDeclaration = [{
     ::mlir::pto::PIPE getPipe() {
+      // pto-isa lowers TSTORE differently depending on the source tile domain:
+      //   - ACC (L0C) -> GM uses the FIX pipe (copy_matrix_cc_to_gm).
+      //   - VEC/UB and MAT -> GM use the MTE3 pipe.
+      //
+      // Sync insertion must use the correct pipe, otherwise the generated
+      // set_flag/wait_flag pairs won't order the actual hardware instructions.
+      if (auto tb = ::mlir::dyn_cast<::mlir::pto::TileBufType>(getSrc().getType())) {
+        if (auto as = ::mlir::dyn_cast_or_null<::mlir::pto::AddressSpaceAttr>(
+                tb.getMemorySpace())) {
+          if (as.getAddressSpace() == ::mlir::pto::AddressSpace::ACC)
+            return ::mlir::pto::PIPE::PIPE_FIX;
+        }
+      }
       return ::mlir::pto::PIPE::PIPE_MTE3;
     }
   }];
@@ -1078,8 +1116,9 @@ def TransDpsOp : PTO_DpsOp<"trans_dps", [
   }];
 
   let extraClassDeclaration = [{
-    // TEXTRACT is an L1->L0 move (MTE1), not a vector compute op.
-    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_MTE1; }
+    // TTRANS is a vector compute op (V pipe). The inserted sync pass relies on
+    // this pipe classification to build correct event dependencies.
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
 }
@@ -1113,7 +1152,24 @@ def StoreDpsOp : PTO_DpsOp<"store_dps", [
   }];
   
   let extraClassDeclaration = [{
-    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_MTE3; }
+    ::mlir::pto::PIPE getPipe() {
+      // ACC (L0C) -> GM stores are implemented via FIX-pipe instructions in
+      // pto-isa; other domains use MTE3.
+      if (auto tb = ::mlir::dyn_cast<::mlir::pto::TileBufType>(getSrc().getType())) {
+        if (auto as = ::mlir::dyn_cast_or_null<::mlir::pto::AddressSpaceAttr>(
+                tb.getMemorySpace())) {
+          if (as.getAddressSpace() == ::mlir::pto::AddressSpace::ACC)
+            return ::mlir::pto::PIPE::PIPE_FIX;
+        }
+      } else if (auto mr = ::mlir::dyn_cast<::mlir::MemRefType>(getSrc().getType())) {
+        if (auto as = ::mlir::dyn_cast_or_null<::mlir::pto::AddressSpaceAttr>(
+                mr.getMemorySpace())) {
+          if (as.getAddressSpace() == ::mlir::pto::AddressSpace::ACC)
+            return ::mlir::pto::PIPE::PIPE_FIX;
+        }
+      }
+      return ::mlir::pto::PIPE::PIPE_MTE3;
+    }
     ::mlir::MutableOperandRange getDpsInitsMutable() {
         return getDstMutable();
     }
@@ -2978,7 +3034,9 @@ def PTO_MovFPOp_DPS : PTO_DpsOp<"mov.fp_dps", [
   }];
 
   let extraClassDeclaration = [{
-    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    // TMOV_FP is an ACC->MAT move (Cc->Cb) with vector quant parameters in
+    // SCALING (fbuf). Treat it as a data-movement op for sync insertion.
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_MTE1; }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
 }
@@ -5093,7 +5151,9 @@ def PTO_TMovFPOp : PTO_TOp<"tmov.fp", [
   }];
 
   let extraClassDeclaration = [{
-    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    // TMOV_FP is an ACC->MAT move (Cc->Cb) with vector quant parameters in
+    // SCALING (fbuf). Treat it as a data-movement op for sync insertion.
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_MTE1; }
   }];
 }
 
