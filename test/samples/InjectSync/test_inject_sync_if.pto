@@ -10,7 +10,7 @@ module {
   // CHECK: } else {
   // CHECK: pto.set_flag[<PIPE_V>, <PIPE_MTE3>, <EVENT_ID0>]
   // CHECK: pto.wait_flag[<PIPE_V>, <PIPE_MTE3>, <EVENT_ID0>]
-  // CHECK: pto.store_dps
+  // CHECK: pto.tstore
   // CHECK: pto.barrier <PIPE_ALL>
   func.func @test_if_sync(%arg0: memref<16x16x16xf16, #pto.address_space<gm>>,
                           %arg1: memref<16x16x16xf16, #pto.address_space<gm>>,
@@ -24,7 +24,7 @@ module {
                                    memref<16x16x16xf16, #pto.address_space<vec>>)
                    outs(%ub1 : memref<16x16x16xf16, #pto.address_space<vec>>)
     }
-    pto.store_dps ins(%ub1 : memref<16x16x16xf16, #pto.address_space<vec>>)
+    pto.tstore ins(%ub1 : memref<16x16x16xf16, #pto.address_space<vec>>)
                   outs(%arg1 : memref<16x16x16xf16, #pto.address_space<gm>>)
     return
   }
