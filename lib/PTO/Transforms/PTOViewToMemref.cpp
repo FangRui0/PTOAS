@@ -1943,7 +1943,7 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::NegOp_DPS>(
+        rewriter.replaceOpWithNewOp<pto::TNegOp>(
             op,
             TypeRange{},
             src,
@@ -1968,7 +1968,7 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::NotOp_DPS>(
+        rewriter.replaceOpWithNewOp<pto::TNotOp>(
             op,
             TypeRange{},
             src,
@@ -1995,7 +1995,7 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::OrOp_DPS>(
+        rewriter.replaceOpWithNewOp<pto::TOrOp>(
             op,
             src0,
             src1,
@@ -2022,7 +2022,7 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::OrsOp_DPS>(
+        rewriter.replaceOpWithNewOp<pto::TOrsOp>(
             op,
             TypeRange{},
             src,
@@ -2050,7 +2050,7 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::PartAddOp_DPS>(
+        rewriter.replaceOpWithNewOp<pto::TPartAddOp>(
             op,
             src0,
             src1,
