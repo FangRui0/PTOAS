@@ -2,7 +2,7 @@
 
 ## 1. 项目简介 (Introduction)
 
-**PTOAS** (`ptoas`) 是一个基于 **LLVM/MLIR (release/19.x)***(Commit e21dc4bd5474d04b8e62d7331362edcc5648d7e5)* 框架构建的专用编译器工具链，专为 **PTO Bytecode** (Programming Tiling Operator Bytecode) 设计。
+**PTOAS** (`ptoas`) 是一个基于 **LLVM/MLIR (llvmorg-19.1.7)***(Commit cd708029e0b2869e80abe31ddb175f7c35361f90)* 框架构建的专用编译器工具链，专为 **PTO Bytecode** (Programming Tiling Operator Bytecode) 设计。
 
 项目仓库：[https://github.com/zhangstevenunity/PTOAS](https://github.com/zhangstevenunity/PTOAS)
 
@@ -38,7 +38,7 @@ pto-project/
 
 ## 3. 构建指南 (Build Instructions)
 
-⚠️ **重要提示**：本项目严格依赖 **LLVM release/19.x** 分支。
+⚠️ **重要提示**：本项目严格依赖 **LLVM llvmorg-19.1.7** 版本。
 
 ### 3.0 环境变量配置 (Configuration)
 
@@ -79,7 +79,7 @@ pip3 install pybind11 numpy
 
 ### 3.2 第一步：构建 LLVM/MLIR (Dependency)
 
-我们需要下载 LLVM 源码，切换到 `release/19.x` 分支，并以**动态库 (Shared Libs)** 模式编译，以确保 Python Binding 的正确链接。
+我们需要下载 LLVM 源码，切换到 `llvmorg-19.1.7` 标签，并以**动态库 (Shared Libs)** 模式编译，以确保 Python Binding 的正确链接。
 
 ```bash
 # 1. 下载 LLVM 源码
@@ -87,8 +87,8 @@ cd $WORKSPACE_DIR
 git clone https://github.com/llvm/llvm-project.git
 cd $LLVM_SOURCE_DIR
 
-# 2. [关键] 切换到 release/19.x 分支
-git checkout release/19.x
+# 2. [关键] 切换到 llvmorg-19.1.7
+git checkout llvmorg-19.1.7
 
 # 3. 配置 CMake (构建动态库并启用 Python 绑定)
 cmake -G Ninja -S llvm -B $LLVM_BUILD_DIR \

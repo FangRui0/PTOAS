@@ -69,7 +69,7 @@ jobs:
   build-and-test:
     runs-on: ubuntu-22.04
     env:
-      LLVM_COMMIT: e21dc4bd5474d04b8e62d7331362edcc5648d7e5
+      LLVM_COMMIT: cd708029e0b2869e80abe31ddb175f7c35361f90
       LLVM_DIR: ${{ github.workspace }}/llvm-project/llvm/build-shared
       PTO_INSTALL_DIR: ${{ github.workspace }}/install
       MLIR_PYTHONPATH: ${{ github.workspace }}/llvm-project/llvm/build-shared/tools/mlir/python_packages/mlir_core
@@ -133,7 +133,7 @@ jobs:
             git remote add origin https://github.com/llvm/llvm-project.git
           fi
 
-          git fetch --depth 1 origin tag llvmorg-19.1.6
+          git fetch --depth 1 origin tag llvmorg-19.1.7
           git checkout "${LLVM_COMMIT}"
 
       - name: Build LLVM/MLIR (only if cache miss)
