@@ -45,9 +45,8 @@ on:
       pto_isa_commit:
         description: "pto-isa ref (commit/tag/branch; empty = default branch)"
         type: string
-        # NOTE: Remote NPU validation depends on upstream pto-isa. Pin a known-good
-        # commit by default to keep scheduled runs deterministic.
-        default: 082b94a3d2eaa17d63d1e5b0d74714a00594ace0
+        # NOTE: Leave empty to use the latest default-branch pto-isa.
+        default: ""
       remote_host:
         description: "SSH host/IP for the NPU machine"
         type: string
@@ -237,8 +236,6 @@ jobs:
       # Update this list as we fix the underlying issues.
       DEFAULT_SKIP_CASES: >-
         mix_kernel,vadd_validshape,vadd_validshape_dynamic
-      # Keep nightly runs deterministic by pinning pto-isa unless overridden.
-      DEFAULT_PTO_ISA_COMMIT: 082b94a3d2eaa17d63d1e5b0d74714a00594ace0
     steps:
       - name: Resolve validation parameters
         shell: bash
@@ -262,9 +259,6 @@ jobs:
           if [[ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]]; then
             if [[ -z "${SKIP_CASES}" ]]; then
               SKIP_CASES="${DEFAULT_SKIP_CASES}"
-            fi
-            if [[ -z "${PTO_ISA_COMMIT}" ]]; then
-              PTO_ISA_COMMIT="${DEFAULT_PTO_ISA_COMMIT}"
             fi
           fi
 

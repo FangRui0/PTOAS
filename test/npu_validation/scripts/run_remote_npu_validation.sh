@@ -153,10 +153,14 @@ if [[ ! -d "${PTO_ISA_ROOT}/.git" ]]; then
   log "Cloning pto-isa into ${PTO_ISA_ROOT} ..."
   git clone "${PTO_ISA_REPO}" "${PTO_ISA_ROOT}"
 fi
+log "Fetching pto-isa updates ..."
+git -C "${PTO_ISA_ROOT}" fetch --all --prune
 if [[ -n "${PTO_ISA_COMMIT}" ]]; then
   log "Checking out pto-isa ${PTO_ISA_COMMIT} ..."
-  git -C "${PTO_ISA_ROOT}" fetch --all --prune
-  git -C "${PTO_ISA_ROOT}" checkout "${PTO_ISA_COMMIT}"
+  git -C "${PTO_ISA_ROOT}" checkout -f "${PTO_ISA_COMMIT}"
+else
+  log "Checking out pto-isa origin/HEAD (remote default branch) ..."
+  git -C "${PTO_ISA_ROOT}" checkout -f origin/HEAD
 fi
 
 status=0
