@@ -150,7 +150,7 @@ process_one_dir() {
   fi
   local expected_vec_barrier="pipe_barrier(PIPE_V)"
   local skip_vec_barrier=0
-  if [[ "${target_arch,,}" == "a5" ]]; then
+  if [[ "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" == "a5" ]]; then
     skip_vec_barrier=1
   fi
 
