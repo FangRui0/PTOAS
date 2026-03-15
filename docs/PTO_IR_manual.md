@@ -130,12 +130,8 @@ Here, `?` denotes a dynamic symbol resolved at runtime.
 
 **Syntax:**
 ```mlir
-// canonical form used in current tests
 !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
 !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-
-// legacy form still seen in old samples
-!pto.tile_buf<loc=mat, dtype=f32, rows=32, cols=32, blayout=col_major, valid=32x32, slayout=row_major, fractal=512, pad=0>
 ```
 
 ---
@@ -273,7 +269,7 @@ result = ptr + offset   // offset is in elements, not bytes
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier; result type must match the input pointer type
+- result type must match the input pointer type
 - The operation is pure (no side effects)
 
 **Hardware Mapping:**
@@ -393,7 +389,6 @@ This op captures both static and dynamic shapes. It represents a logical slice w
 
 **Constraints & Verification:**
 
-- No custom verifier beyond type consistency
 - `offsets`/`sizes` counts must match the rank of `source`
 
 **Notes:**
@@ -474,8 +469,22 @@ result = source[offsets] with static sizes
 
 **Constraints & Verification:**
 
-- No custom verifier beyond type consistency
-- Result shape is defined by `sizes` and must be rank-2
+- The verifier derives boxed-vs-non-boxed behavior from `source`'s tile config (`blayout`, `slayout`, `fractal`) and element type.
+- For non-boxed layouts (`slayout=none_box`), no additional subset-specific structural checks are enforced.
+- For boxed layouts (`slayout != none_box`):
+  - The tile layout must be one of the subset layouts supported by the current implementation; otherwise verification fails.
+  - `sizes` must be present, must have length 2, and both subset sizes must be positive.
+  - The subset sizes must be multiples of the inferred inner boxed shape.
+  - `offsets` must have length 2.
+  - If an offset is compile-time constant, it must be non-negative and must be a multiple of the inferred inner boxed shape in that dimension.
+  - The source tile shape must be statically known.
+  - For boxed row-major tiles, the subset must keep the full source column extent, and the column offset must be the constant `0`.
+  - For boxed col-major tiles, the subset must keep the full source row extent, and the row offset must be the constant `0`.
+- The inferred result type uses:
+  - `shape = sizes`
+  - the same element type and address space as `source`
+  - the same tile config as `source`
+  - a `valid_shape` derived from the parent `valid_shape` and constant offsets when possible, otherwise dynamic in that dimension
 
 **Hardware Mapping:**
 
@@ -613,10 +622,14 @@ For each element (i, j) in the tile valid region:
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - `src` is `!pto.partition_tensor_view`, `dst` is `!pto.tile_buf`
-  - `dst` is rank-2 and valid shape is rank-2
-  - The product of `sizes` in `partition_view` equals `dst.v_row * dst.v_col` (when statically known)
+- **Implementation checks (A2A3)**
+  - Tile element type must be one of: `int8_t`, `uint8_t`, `int16_t`, `uint16_t`, `int32_t`, `uint32_t`, `int64_t`, `uint64_t`, `half`, `bfloat16_t`, `float`.
+  - The destination tile must use `loc=vec` or `loc=mat`.
+  - The destination tile element type and source partition element type must have the same bitwidth.
+  - Runtime: all source partition extents and the destination valid region must be positive.
+- **Implementation checks (A5)**
+  - The destination tile element size must be `1`, `2`, `4`, or `8` bytes, and must match the source partition element size.
+  - For `int64_t/uint64_t`, the destination tile `pad` must be `null` or `zero`.
 
 **Hardware Mapping:**
 
@@ -653,10 +666,25 @@ For each element (i, j) in the tile valid region:
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - `src` is `!pto.tile_buf`, `dst` is `!pto.partition_tensor_view`
-  - `src` is rank-2 and valid shape is rank-2
-  - The product of `dst` partition sizes equals `src.v_row * src.v_col` (when statically known)
+- **Implementation checks (A2A3)**
+  - The source tile must use one of `loc=vec`, `loc=mat`, or `loc=acc`.
+  - Runtime: all destination partition extents and the source valid region must be positive.
+  - For `loc=vec` / `loc=mat`:
+    - Tile element type must be one of: `int8_t`, `uint8_t`, `int16_t`, `uint16_t`, `int32_t`, `uint32_t`, `int64_t`, `uint64_t`, `half`, `bfloat16_t`, `float`.
+    - The source tile element type and destination partition element type must have the same bitwidth.
+  - For `loc=acc` (including quantized/atomic variants):
+    - Source dtype must be `int32_t` or `float`.
+    - When not using quantization, destination dtype must be `int32_t/float/half/bfloat16_t`.
+    - Static tile shape constraints: `1 <= cols <= 4095`; 
+    - Runtime: `1 <= src.valid_shape[1] <= 4095`.
+- **Implementation checks (A5)**
+  - The source tile must use `loc=vec` or `loc=acc` (A5 does not support `loc=mat` stores here).
+  - For `loc=vec`:
+    - The source tile element type and destination partition element type must have the same bitwidth.
+    - Tile element type must be one of: `int8_t`, `uint8_t`, `int16_t`, `uint16_t`, `int32_t`, `uint32_t`, `int64_t`, `uint64_t`, `half`, `bfloat16_t`, `float`.
+  - For `loc=acc`:
+    - source dtype must be `int32_t` or `float`.
+    - When not using quantization, destination dtype must be `int32_t/float/half/bfloat16_t`.
 
 **Hardware Mapping:**
 
@@ -766,13 +794,22 @@ For each element (i, j):
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - `src` and `dst` are tile_buf types
-  - `src`/`dst` ranks and element types match
-
-**Notes:**
-
-- `pto.tmov` targets tile_buf-to-tile_buf local domain moves.
+- **Implementation checks (A2A3)**
+  - Static tile shapes must match: `src.rows == dst.rows` and `src.cols == dst.cols`.
+  - Supported location pairs (compile-time checked):
+    - `loc=mat -> loc=left/right/bias/scaling`
+    - `loc=vec -> loc=vec`
+    - `loc=acc -> loc=mat` (including optional pre-quant / relu / fp variants via overloads)
+  - For `loc=acc -> loc=mat`, additional fractal and dtype constraints apply (for example `acc` uses accumulator-style layout, `mat` uses `fractal=512`, and only selected dtype conversions are legal).
+- **Implementation checks (A5)**
+  - For `loc=mat -> *`, static tile shapes must match; for some `loc=vec` moves, the effective copy size is the min of the source and destination valid regions.
+  - Supported location pairs include (target-dependent):
+    - `loc=mat -> loc=left/right/bias/scaling/scale`
+    - `loc=vec -> loc=vec` and `loc=vec -> loc=mat`
+    - `loc=acc -> loc=vec` and `loc=acc -> loc=mat` (including optional pre-quant / relu / fp variants via overloads)
+  - `loc=mat -> loc=left/right` has additional target-specific fractal and dtype constraints.
+  - `loc=acc -> loc=vec/mat` has additional target-specific fractal, dtype, and alignment constraints.
+  - `loc=mat -> loc=scale` has additional target-specific fractal and dtype constraints.
 
 **Hardware Mapping:**
 
@@ -810,8 +847,25 @@ For each element (i, j):
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks tile_buf types and element type consistency
-- `tmp` is currently required (TBD)
+- **Implementation checks (A2A3)**
+  - Source and destination tile element type must match.
+  - The source tile must use `blayout=row_major`.
+  - Element size must be `1`, `2`, or `4` bytes.
+  - Supported element types are restricted per element width:
+    - 4 bytes: `uint32_t`, `int32_t`, `float`
+    - 2 bytes: `uint16_t`, `int16_t`, `half`, `bfloat16_t`
+    - 1 byte: `uint8_t`, `int8_t`
+  - The transpose domain is taken from the source tile valid region.
+- **Implementation checks (A5)**
+  - Source and destination tile element sizes must match.
+  - 32-byte alignment constraints are enforced on the major dimension of both input and output (for `blayout=row_major`, check `cols * sizeof(T) % 32 == 0`; for `blayout=col_major`, check `rows * sizeof(T) % 32 == 0`).
+  - Supported element types are restricted per element width:
+    - 4 bytes: `uint32_t`, `int32_t`, `float`
+    - 2 bytes: `uint16_t`, `int16_t`, `half`, `bfloat16_t`
+    - 1 byte: `uint8_t`, `int8_t`
+  - The implementation operates over the static tile shape (`rows/cols`) and does not consult the valid region.
+- **Temporary tile**:
+  - The C++ API requires `tmp`, but some implementations may not use it.
 
 **Hardware Mapping:**
 
@@ -849,7 +903,25 @@ For each (i, j):
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier (shape/layout/element type legality is target-defined)
+- **Implementation checks (A2A3)**
+  - Supported `(dstType, lhsType, rhsType)` triples:
+    - `(int32_t, int8_t, int8_t)`
+    - `(float, half, half)`
+    - `(float, float, float)`
+    - `(float, bfloat16_t, bfloat16_t)`
+  - Shape constraints: `lhs.rows == dst.rows`, `lhs.cols == rhs.rows`, and `rhs.cols == dst.cols`.
+  - Tile locations: `lhs.loc=left`, `rhs.loc=right`, `dst.loc=acc`.
+  - Runtime: `m/k/n` (taken from `lhs.valid_shape[0]`, `lhs.valid_shape[1]`, `rhs.valid_shape[1]`) must be in `[1, 4095]`.
+- **Implementation checks (A5)**
+  - Accumulator type must be `int32_t` or `float`.
+    - If `int32_t`: `AType == int8_t` and `BType == int8_t`.
+    - If `float`: supports `half/bfloat16_t/float` and selected fp8 pairs (target-defined).
+  - Shape constraints: `lhs.rows == dst.rows`, `lhs.cols == rhs.rows`, and `rhs.cols == dst.cols`.
+  - PTO-visible layout/fractal constraints:
+    - `lhs.loc=left`, `lhs.blayout=col_major`, `lhs.slayout=row_major`
+    - `rhs.loc=right`, `rhs.blayout=row_major`, `rhs.slayout=col_major`
+    - `dst.loc=acc`, `dst.blayout=col_major`, `dst.slayout=row_major`
+  - Runtime: `m/k/n` (taken from `lhs.valid_shape[0]`, `lhs.valid_shape[1]`, `rhs.valid_shape[1]`) must be in `[1, 4095]`.
 
 **Hardware Mapping:**
 
@@ -889,7 +961,10 @@ For each (i, j):
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- All constraints from `pto.tmatmul` apply to the `(Destination accumulator, Left matrix, Right matrix)` triple.
+- **A2/A3 and A5 notes:**
+  - `lhs.valid_shape[0]`, `lhs.valid_shape[1]`, and `rhs.valid_shape[1]` for `m/k/n`.
+  - `acc_in Matrix` is not validated by explicit assertions in the current implementations (target-defined behavior).
 
 **Hardware Mapping:**
 
@@ -930,7 +1005,13 @@ For each (i, j):
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- All constraints from `pto.tmatmul` apply to the `(Destination accumulator, Left matrix, Right matrix)` triple.
+- **A2/A3 bias constraints:**
+  - `bias` element type must match `dst` element type.
+  - `bias` must use `loc=bias` and `rows=1`.
+- **A5 bias constraints:**
+  - `bias` element type must match `dst` element type.
+  - `bias` must use `loc=bias`, `rows=1`, and `blayout=row_major`.
 
 **Hardware Mapping:**
 
@@ -973,7 +1054,8 @@ For each (i, j):
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier (scaling tile legality is target-defined)
+- **Implementation checks (A5)**
+  - `m/k/n` are taken from `lhs.valid_shape[0]`, `lhs.valid_shape[1]`, and `rhs.valid_shape[1]`.
 
 **Hardware Mapping:**
 
@@ -1014,7 +1096,8 @@ dst = acc_in + (lhs * rhs)   // scaling tiles configure target-defined behavior
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks (A5)**
+  - `m/k/n` are taken from `lhs.valid_shape[0]`, `lhs.valid_shape[1]`, and `rhs.valid_shape[1]`.
 
 **Hardware Mapping:**
 
@@ -1055,7 +1138,10 @@ dst = (lhs * rhs) + bias   // scaling tiles configure target-defined behavior
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks (A5)**
+  - `m/k/n` are taken from `lhs.valid_shape[0]`, `lhs.valid_shape[1]`, and `rhs.valid_shape[1]`.
+- **Bias form**:
+  - `bias` must use element type `float`, `loc=bias`, and `rows=1` (the current implementation enforces this with compile-time checks).
 
 **Hardware Mapping:**
 
@@ -1094,7 +1180,26 @@ For each row i:
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks (A2A3)**
+  - Supported `(dstType, lhsType, rhsType)` triples:
+    - `(int32_t, int8_t, int8_t)`
+    - `(float, half, half)`
+    - `(float, float, float)`
+    - `(float, bfloat16_t, bfloat16_t)`
+  - Shape constraints: `lhs.rows == dst.rows`, `lhs.cols == rhs.rows`, and `rhs.cols == dst.cols`.
+  - Tile locations: `lhs.loc=left`, `rhs.loc=right`, `dst.loc=acc`.
+  - Runtime: `m` must be `1`; `k/n` (taken from `rhs.valid_shape[0]`, `rhs.valid_shape[1]`) must be in `[1, 4095]`.
+- **Implementation checks (A5)**
+  - Accumulator type must be `int32_t` or `float`.
+    - If `int32_t`: `AType == int8_t` and `BType == int8_t`.
+    - If `float`: supports `half/bfloat16_t/float` and selected fp8 pairs (target-defined).
+  - Shape constraints: `lhs.rows == dst.rows`, `lhs.cols == rhs.rows`, and `rhs.cols == dst.cols`.
+  - PTO-visible layout/fractal constraints:
+    - `lhs.loc=left`, `lhs.blayout=col_major`, `lhs.slayout=row_major`
+    - `rhs.loc=right`, `rhs.blayout=row_major`, `rhs.slayout=col_major`
+    - `dst.loc=acc`, `dst.blayout=col_major`, `dst.slayout=row_major`
+  - No explicit runtime range checks on `m/k/n` are enforced in `TMATMUL_IMPL` on this target.
+  - Runtime: `m` must be `1`; `k/n` (taken from `rhs.valid_shape[0]`, `rhs.valid_shape[1]`) must be in `[1, 4095]`.
 
 **Hardware Mapping:**
 
@@ -1132,7 +1237,27 @@ dst = acc_in + (lhs * rhs)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+
+- **Implementation checks (A2A3)**
+  - Supported `(dstType, lhsType, rhsType)` triples:
+    - `(int32_t, int8_t, int8_t)`
+    - `(float, half, half)`
+    - `(float, float, float)`
+    - `(float, bfloat16_t, bfloat16_t)`
+  - Shape constraints: `lhs.rows == dst.rows`, `lhs.cols == rhs.rows`, and `rhs.cols == dst.cols`.
+  - Tile locations: `lhs.loc=left`, `rhs.loc=right`, `dst.loc=acc`.
+  - Runtime: `m` must be `1`; `k/n` (taken from `rhs.valid_shape[0]`, `rhs.valid_shape[1]`) must be in `[1, 4095]`.
+- **Implementation checks (A5)**
+  - Accumulator type must be `int32_t` or `float`.
+    - If `int32_t`: `AType == int8_t` and `BType == int8_t`.
+    - If `float`: supports `half/bfloat16_t/float` and selected fp8 pairs (target-defined).
+  - Shape constraints: `lhs.rows == dst.rows`, `lhs.cols == rhs.rows`, and `rhs.cols == dst.cols`.
+  - PTO-visible layout/fractal constraints:
+    - `lhs.loc=left`, `lhs.blayout=col_major`, `lhs.slayout=row_major`
+    - `rhs.loc=right`, `rhs.blayout=row_major`, `rhs.slayout=col_major`
+    - `dst.loc=acc`, `dst.blayout=col_major`, `dst.slayout=row_major`
+  - No explicit runtime range checks on `m/k/n` are enforced in `TMATMUL_IMPL` on this target.
+  - Runtime: `m` must be `1`; `k/n` (taken from `rhs.valid_shape[0]`, `rhs.valid_shape[1]`) must be in `[1, 4095]`.
 
 **Hardware Mapping:**
 
@@ -1170,7 +1295,34 @@ dst = (lhs * rhs) + bias
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks (A2A3)**
+  - Supported `(dstType, lhsType, rhsType)` triples:
+    - `(int32_t, int8_t, int8_t)`
+    - `(float, half, half)`
+    - `(float, float, float)`
+    - `(float, bfloat16_t, bfloat16_t)`
+  - Shape constraints: `lhs.rows == dst.rows`, `lhs.cols == rhs.rows`, and `rhs.cols == dst.cols`.
+  - Tile locations: `lhs.loc=left`, `rhs.loc=right`, `dst.loc=acc`.
+  - Runtime: `m` must be `1`; `k/n` (taken from `rhs.valid_shape[0]`, `rhs.valid_shape[1]`) must be in `[1, 4095]`.
+  - Bias checks:
+    - The bias tile element type must exactly match the result tile element type.
+    - The bias tile must be configured as a single row.
+    - The bias tile must use `loc=bias`.
+- **Implementation checks (A5)**
+  - Accumulator type must be `int32_t` or `float`.
+    - If `int32_t`: `AType == int8_t` and `BType == int8_t`.
+    - If `float`: supports `half/bfloat16_t/float` and selected fp8 pairs (target-defined).
+  - Shape constraints: `lhs.rows == dst.rows`, `lhs.cols == rhs.rows`, and `rhs.cols == dst.cols`.
+  - PTO-visible layout/fractal constraints:
+    - `lhs.loc=left`, `lhs.blayout=col_major`, `lhs.slayout=row_major`
+    - `rhs.loc=right`, `rhs.blayout=row_major`, `rhs.slayout=col_major`
+    - `dst.loc=acc`, `dst.blayout=col_major`, `dst.slayout=row_major`
+  - No explicit runtime range checks on `m/k/n` are enforced in `TMATMUL_IMPL` on this target.
+  - Runtime: `m` must be `1`; `k/n` (taken from `rhs.valid_shape[0]`, `rhs.valid_shape[1]`) must be in `[1, 4095]`.
+  - Bias checks:
+    - The bias tile element type must exactly match the result tile element type.
+    - The bias tile must be configured as a single row.
+    - The bias tile must use `loc=bias`.
 
 **Hardware Mapping:**
 
@@ -1237,8 +1389,12 @@ pto.tadd ins(<src0>, <src1> : <src0_type>, <src1_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - `src0`, `src1`, and `dst` must have same shapes and compatible element types
+- **Implementation checks (A2A3)**
+  - Tile element type must be one of: `int32_t`, `int16_t`, `half`, `float`.
+  - Tile must use row-major layout (`blayout=row_major`).
+- **Implementation checks (A5)**
+  - Tile element type must be one of: `int32_t`, `uint32_t`, `float`, `int16_t`, `uint16_t`, `half`, `bfloat16_t`, `uint8_t`, `int8_t`.
+  - Tile must use row-major layout (`blayout=row_major`).
 
 **Hardware Mapping:**
 
@@ -1292,8 +1448,16 @@ pto.tsub ins(<src0>, <src1> : <src0_type>, <src1_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - `src0`, `src1`, and `dst` must have same shapes and compatible element types
+- **Implementation checks (A2A3)**
+  - Tile element type must be one of: `int32_t`, `int16_t`, `half`, `float`.
+  - Tile must use row-major layout (`blayout=row_major`).
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src0`, `src1` and `dst` tiles should have the same `validRow/validCol`.
+- **Implementation checks (A5)**
+  - Tile element type must be one of: `uint32_t`, `int32_t`, `uint16_t`, `int16_t`, `uint8_t`,  `int8_t`, `float`, `half`.
+  - Tile must use row-major layout (`blayout=row_major`).
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src0`, `src1` and `dst` tiles should have the same `validRow/validCol`.
 
 **Hardware Mapping:**
 
@@ -1346,8 +1510,18 @@ pto.tmul ins(<src0>, <src1> : <src0_type>, <src1_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - `src0`, `src1`, and `dst` must have same shapes and compatible element types
+- **Implementation checks (A2A3)**
+  - Tile element type must be one of: `int32_t`, `int16_t`, `half`, `float`.
+  - Tile must use `loc=vec`.
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Tile must use row-major layout (`blayout=row_major`).
+  - Runtime: `src0`, `src1` and `dst` tiles should have the same `validRow/validCol`.
+- **Implementation checks (A5)**
+  - Tile element type must be one of: `int32_t`, `uint32_t`, `float`, `int16_t`, `uint16_t`, `half`.
+  - Tile must use `loc=vec`.
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Tile must use row-major layout (`blayout=row_major`).
+  - Runtime: `src0`, `src1` and `dst` tiles should have the same `validRow/validCol`.
 
 **Hardware Mapping:**
 
@@ -1402,8 +1576,18 @@ pto.tdiv ins(<src0>, <src1> : <src0_type>, <src1_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - `src0`, `src1`, and `dst` must have same shapes and compatible element types
+- **Implementation checks (A2A3)**
+  - Tile element type must be one of: `half`, `float`.
+  - Tile must use row-major layout (`blayout=row_major`).
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src0`, `src1` and `dst` tiles should have the same `validRow/validCol`.
+- **Implementation checks (A5)**
+  - Tile element type must be one of: `int32_t`, `uint32_t`, `float`, `int16_t`, `uint16_t`, `half`.
+  - Tile must use row-major layout (`blayout=row_major`).
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src0`, `src1` and `dst` tiles should have the same `validRow/validCol`.
+- **Division-by-zero**:
+  - Behavior is target-defined.
 
 **Hardware Mapping:**
 
@@ -1456,8 +1640,16 @@ pto.tmax ins(<src0>, <src1> : <src0_type>, <src1_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - `src0`, `src1`, and `dst` must have same shapes and compatible element types
+- **Implementation checks (A2A3)**
+  - Tile element type must be one of: `int32_t`, `int16_t`, `half`, `float`.
+  - Tile must use row-major layout (`blayout=row_major`).
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src0`, `src1` and `dst` tiles should have the same `validRow/validCol`.
+- **Implementation checks (A5)**
+  - Tile element type must be one of: `uint32_t`, `int32_t`, `uint16_t`, `int16_t`, `uint8_t`,  `int8_t`, `float`, `half`.
+  - Tile must use row-major layout (`blayout=row_major`).
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src0`, `src1` and `dst` tiles should have the same `validRow/validCol`.
 
 **Hardware Mapping:**
 
@@ -1510,8 +1702,16 @@ pto.tmin ins(<src0>, <src1> : <src0_type>, <src1_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - `src0`, `src1`, and `dst` must have same shapes and compatible element types
+- **Implementation checks (A2A3)**
+  - Tile element type must be one of: `int32_t`, `int16_t`, `half`, `float`.
+  - Tile must use row-major layout (`blayout=row_major`).
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src0`, `src1` and `dst` tiles should have the same `validRow/validCol`.
+- **Implementation checks (A5)**
+  - Tile element type must be one of: `uint32_t`, `int32_t`, `uint16_t`, `int16_t`, `uint8_t`,  `int8_t`, `float`, `half`.
+  - Tile must use row-major layout (`blayout=row_major`).
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src0`, `src1` and `dst` tiles should have the same `validRow/validCol`.
 
 **Hardware Mapping:**
 
@@ -1564,8 +1764,17 @@ pto.trem ins(<src0>, <src1> : <src0_type>, <src1_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - `src0`, `src1`, and `dst` must have same shapes and compatible element types
+- The implementation uses `dst.valid_shape[0]` / `dst.valid_shape[1]` as the iteration domain.
+- **Implementation checks (A2A3)**
+  - Tile element type must be one of: `int32_t`, `int16_t`, `half`, `float`.
+  - Tile must use row-major layout (`blayout=row_major`).
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src0`, `src1` and `dst` tiles should have the same `validRow/validCol`.
+- **Implementation checks (A5)**
+  - Tile element type must be one of: `uint32_t`, `int32_t`, `uint16_t`, `int16_t`, `float`, `half`.
+  - Tile must use row-major layout (`blayout=row_major`).
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src0`, `src1` and `dst` tiles should have the same `validRow/validCol`.
 
 **Hardware Mapping:**
 
@@ -1622,7 +1831,13 @@ pto.tpartadd ins(<src0>, <src1> : <src0_type>, <src1_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks (A2A3)**
+  - `dst/src0/src1` element types must be identical, and must be one of: `int32_t`, `int16_t`, `half`, `float`.
+  - All three tiles must use row-major layout (`blayout=row_major`).
+  - The implementation requires at least one input's valid region to match `dst`'s valid region, and the other's valid region not greater than `dst`'s valid region (otherwise it asserts).
+- **Implementation checks (A5)**
+  - `dst/src0/src1` element types must be identical, and must be one of: `uint8_t`, `int8_t`, `uint16_t`, `int16_t`, `uint32_t`, `int32_t`, `half`, `float`, `bfloat16_t`.
+  - Only certain partial-validity patterns are handled (e.g., one source equal to `dst` while the other is smaller by valid-rows or valid-cols); other patterns are not supported (target-defined behavior).
 
 **Hardware Mapping:**
 
@@ -1670,7 +1885,13 @@ The valid region is the intersection of each tile's valid rectangle defined by `
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks (A2A3)**
+  - `dst/src0/src1` element types must be identical, and must be one of: `int32_t`, `int16_t`, `half`, `float`.
+  - All three tiles must use row-major layout (`blayout=row_major`).
+  - The implementation requires at least one input's valid region to match `dst`'s valid region, and the other input's valid region not greater than `dst`'s valid region (otherwise it asserts).
+- **Implementation checks (A5)**
+  - `dst/src0/src1` element types must be identical and must be one of: `int8_t`, `uint8_t`, `int16_t`, `uint16_t`, `int32_t`, `uint32_t`, `half`, `bfloat16_t`, `float`.
+  - Requires `src0` and `src1` valid region to be `<= dst` valid region in both dimensions; other patterns are not supported (target-defined behavior).
 
 **Hardware Mapping:**
 
@@ -1718,7 +1939,13 @@ The valid region is the intersection of each tile's valid rectangle defined by `
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks (A2A3)**
+  - `dst/src0/src1` element types must be identical, and must be one of: `int32_t`, `int16_t`, `half`, `float`.
+  - All three tiles must use row-major layout (`blayout=row_major`).
+  - The implementation requires at least one input's valid region to match `dst`'s valid region, and the other input's valid region not greater than `dst`'s valid region (otherwise it asserts).
+- **Implementation checks (A5)**
+  - `dst/src0/src1` element types must be identical and must be one of: `int8_t`, `uint8_t`, `int16_t`, `uint16_t`, `int32_t`, `uint32_t`, `half`, `bfloat16_t`, `float`.
+  - Requires `src0` and `src1` valid region to be `<= dst` valid region in both dimensions; other patterns are not supported (target-defined behavior).
 
 **Hardware Mapping:**
 
@@ -1771,8 +1998,16 @@ pto.tprelu ins(<src0>, <src1> : <src0_type>, <src1_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - All operands must have same shapes and compatible element types
+- For A3, 2 source Tile, destination Tile, temporary space must in different memory range without overlapping.
+- **Implementation checks (A2A3)**
+  - `dst/src0/src1` element types must be identical, and must be one of: `uint8_t`, `half`, `float`.
+  - All three tiles must use row-major layout (`blayout=row_major`).
+  - Runtime: the implementation requires at least one input's valid region to match `dst`'s valid region, and the other input's valid region not greater than `dst`'s valid region (otherwise it asserts).
+- **Implementation checks (A5)**
+  - `dst/src0/src1` element types must be identical and must be one of: `half`, `float`.
+  - All three tiles must use row-major layout (`blayout=row_major`).
+  - Requires `src0` and `src1` valid region to be `<= dst` valid region in both dimensions; other patterns are not supported (target-defined behavior).
+
 
 **Hardware Mapping:**
 
@@ -1839,10 +2074,17 @@ pto.tadds ins(<src>, <scalar> : <src_type>, <scalar_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - `src` and `dst` must have same shapes and element types
-  - `scalar` must be a scalar type (`index` / integer / float)
-
+- **Implementation checks (A2A3)**
+  - Tile element type must be one of: `int32_t`, `int`, `int16_t`, `half`, `float`, `float32_t`.
+  - Tile must use `loc=vec`.
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src.valid_shape[0] == dst.valid_shape[0]` and `src.valid_shape[1] == dst.valid_shape[1]`.
+- **Implementation checks (A5)**
+  - Tile element type must be one of: `uint8_t`, `int8_t`, `uint16_t`, `int16_t`, `uint32_t`, `int32_t`, `half`, `float`, `bfloat16_t`.
+  - Tile must use `loc=vec`.
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src.valid_shape[0] == dst.valid_shape[0]` and `src.valid_shape[1] == dst.valid_shape[1]`.
+  
 **Hardware Mapping:**
 
 - Executes on the **Vector pipeline** (`PIPE_V`)
@@ -1878,7 +2120,7 @@ For each element (i, j):
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile buffer |
-| `scalar` | `ScalarType` (`index` / integer / float) | Scalar value to subtract |
+| `scalar` | `ScalarType`| Scalar value to subtract |
 | `dst` | `pto.tile_buf` | Destination tile buffer for the result |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -1892,9 +2134,16 @@ pto.tsubs ins(<src>, <scalar> : <src_type>, <scalar_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - `src` and `dst` must have same shapes and element types
-  - `scalar` must be a scalar type (`index` / integer / float)
+- **Implementation checks (A2A3)**
+  - Tile element type must be one of: `int32_t`, `int`, `int16_t`, `half`, `float`, `float32_t`.
+  - Tile must use `loc=vec`.
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src.valid_shape[0] == dst.valid_shape[0]` and `src.valid_shape[1] == dst.valid_shape[1]`.
+- **Implementation checks (A5)**
+  - Tile element type must be one of: `uint8_t`, `int8_t`, `uint16_t`, `int16_t`, `uint32_t`, `int32_t`, `half`, `float`, `bfloat16_t`.
+  - Tile must use `loc=vec`.
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src.valid_shape[0] == dst.valid_shape[0]` and `src.valid_shape[1] == dst.valid_shape[1]`.
 
 **Hardware Mapping:**
 
@@ -1944,10 +2193,16 @@ pto.tmuls ins(<src>, <scalar> : <src_type>, <scalar_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - `src` and `dst` must have same shapes and element types
-  - Tile operands are rank-2 `tile_buf` types
-  - Tile operands are `tile_buf` types; scalar is a builtin scalar type (currently `f32`)
+- **Implementation checks (A2A3)**
+  - Tile element type must be one of: `int32_t`, `int`, `int16_t`, `half`, `float16_t`, `float`, `float32_t`.
+  - Tile must use `loc=vec`.
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src.valid_shape[0] == dst.valid_shape[0]` and `src.valid_shape[1] == dst.valid_shape[1]`.
+- **Implementation checks (A5)**
+  - Tile element type must be one of: `uint8_t`, `int8_t`, `uint16_t`, `int16_t`, `uint32_t`, `int32_t`, `half`, `float`, `bfloat16_t`.
+  - Tile must use `loc=vec`.
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src.valid_shape[1] == dst.valid_shape[1]`.
 
 **Hardware Mapping:**
 
@@ -2003,11 +2258,18 @@ pto.tdivs ins(<scalar>, <src> : <scalar_type>, <src_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - Exactly one operand is a `tile_buf`, the other is a scalar
-  - `dst` must be a `tile_buf` type
-  - Tile operand and `dst` must have the same shape and element type
-  - Scalar type must be integer, float, or index, and must match the tile element type
+- **A2/A3 constraints (both overloads):**
+  - Tile element type must be one of: `int32_t`, `int`, `int16_t`, `half`, `float16_t`, `float`, `float32_t`.
+  - Tile must use `loc=vec`.
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src.valid_shape[0] == dst.valid_shape[0]` and `src.valid_shape[1] == dst.valid_shape[1]`.
+- **A5 constraints (both overloads):**
+  - Tile element type must be one of: `uint8_t`, `int8_t`, `uint16_t`, `int16_t`, `uint32_t`, `int32_t`, `half`, `float`.
+  - Tile must use `loc=vec`.
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src.valid_shape[0] == dst.valid_shape[0]` and `src.valid_shape[1] == dst.valid_shape[1]`.
+- **Division-by-zero**:
+  - Behavior is target-defined; on A5 the tile/scalar form maps to multiply-by-reciprocal and uses `1/0 -> +inf` for `scalar == 0`.
 
 **Hardware Mapping:**
 
@@ -2066,10 +2328,16 @@ pto.tmaxs ins(<src>, <scalar> : <src_type>, <scalar_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - `src` and `dst` must have same shapes and element types
-  - Tile operands are rank-2 `tile_buf` types
-  - Tile operands are `tile_buf` types; scalar is a builtin scalar type (currently `f32`)
+- **A2/A3 constraints (both overloads):**
+  - Tile element type must be one of: `int32_t`, `int`, `int16_t`, `half`, `float`.
+  - Tile must use `loc=vec`.
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src.valid_shape[1] == dst.valid_shape[1]`.
+- **A5 constraints (both overloads):**
+  - Tile element type must be one of: `uint8_t`, `int8_t`, `uint16_t`, `int16_t`, `uint32_t`, `int32_t`, `half`, `float`.
+  - Tile must use `loc=vec`.
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src.valid_shape[0] == dst.valid_shape[0]` and `src.valid_shape[1] == dst.valid_shape[1]`.
 
 **Hardware Mapping:**
 
@@ -2119,10 +2387,16 @@ pto.tmins ins(<src>, <scalar> : <src_type>, <scalar_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - `src` and `dst` must have same shapes and element types
-  - Tile operands are rank-2 `tile_buf` types
-  - Tile operands are `tile_buf` types; scalar is a builtin scalar type (currently `f32`)
+- **Implementation checks (A2A3)**
+  - Tile element type must be one of: `int32_t`, `int`, `int16_t`, `half`, `float`.
+  - Tile must use `loc=vec`.
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src.valid_shape[0] == dst.valid_shape[0]` and `src.valid_shape[1] == dst.valid_shape[1]`.
+- **Implementation checks (A5)**
+  - Tile element type must be one of: `uint8_t`, `int8_t`, `uint16_t`, `int16_t`, `uint32_t`, `int32_t`, `half`, `float`, `bfloat16_t`.
+  - Tile must use `loc=vec`.
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src.valid_shape[0] == dst.valid_shape[0]` and `src.valid_shape[1] == dst.valid_shape[1]`.
 
 **Hardware Mapping:**
 
@@ -2172,10 +2446,17 @@ pto.trems ins(<src>, <scalar> : <src_type>, <scalar_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - `src` and `dst` must have same shapes and element types
-  - Tile operands are rank-2 `tile_buf` types
-  - Scalar must be a floating-point type (textual form currently uses `f32`)
+- Division-by-zero behavior is target-defined; the CPU simulator asserts in debug builds.
+- **Implementation checks (A2A3)**
+  - Tile element type must be one of: `int32_t`, `int`, `int16_t`, `half`, `float`.
+  - Tile must use `loc=vec`.
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src0.valid_shape[0] == dst.valid_shape[0]` and `src0.valid_shape[1] == dst.valid_shape[1]`.
+- **Implementation checks (A5)**
+  - Tile element type must be one of: `uint8_t`, `int8_t`, `uint16_t`, `int16_t`, `uint32_t`, `int32_t`, `half`, `float`, `bfloat16_t`.
+  - Tile must use `loc=vec`.
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src0.valid_shape[0] == dst.valid_shape[0]` and `src0.valid_shape[1] == dst.valid_shape[1]`.
 
 **Hardware Mapping:**
 
@@ -2237,8 +2518,7 @@ pto.taddc ins(<src0>, <src1>, <src2> : <type0>, <type1>, <type2>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - All operands must have same shapes and compatible element types
+- The implementation uses `dst.valid_shape[0]` / `dst.valid_shape[1]` as the iteration domain.
 
 **Hardware Mapping:**
 
@@ -2295,8 +2575,7 @@ pto.tsubc ins(<src0>, <src1>, <src2> : <type0>, <type1>, <type2>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - All operands must have same shapes and compatible element types
+- The implementation uses `dst.valid_shape[0]` / `dst.valid_shape[1]` as the iteration domain.
 
 **Hardware Mapping:**
 
@@ -2353,7 +2632,7 @@ pto.taddsc ins(<src0>, <scalar>, <src1> : <type0>, <scalar_type>, <type1>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- The implementation uses `dst.valid_shape[0]` / `dst.valid_shape[1]` as the iteration domain.
 
 **Hardware Mapping:**
 
@@ -2407,7 +2686,7 @@ pto.tsubsc ins(<src0>, <scalar>, <src1> : <type0>, <scalar_type>, <type1>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- The implementation uses `dst.valid_shape[0]` / `dst.valid_shape[1]` as the iteration domain.
 
 **Hardware Mapping:**
 
@@ -2475,8 +2754,12 @@ pto.tabs ins(<src> : <src_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - `src` and `dst` must have same shapes and element types
+- **NPU constraints:**
+  - Tile element type must be one of: `float` or `half`;
+  - `src` and `dst` must use `loc=vec`;
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`;
+  - Runtime: `src` and `dst` must have the same valid region;
+  - Tiles must use `blayout=row_major`.
 
 **Hardware Mapping:**
 
@@ -2526,8 +2809,16 @@ pto.tneg ins(<src> : <src_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - `src` and `dst` must have same shapes and element types
+- **Implementation checks (A2A3)**
+  - Tile element type must be one of: `int32_t`, `int`, `int16_t`, `half`, `float16_t`, `float`, `float32_t`.
+  - Tile must use `loc=vec`.
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src.valid_shape[0] == dst.valid_shape[0]` and `src.valid_shape[1] == dst.valid_shape[1]`.
+- **Implementation checks (A5)**
+  - Tile element type must be one of: `uint8_t`, `int8_t`, `uint16_t`, `int16_t`, `uint32_t`, `int32_t`, `half`, `float`, `bfloat16_t`.
+  - Tile must use `loc=vec`.
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src.valid_shape[1] == dst.valid_shape[1]`.
 
 **Hardware Mapping:**
 
@@ -2575,8 +2866,12 @@ pto.texp ins(<src> : <src_type>) outs(<dst> : <dst_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - `src` and `dst` must have same shapes and element types
+- **NPU constraints:**
+  - Tile element type must be one of: `float` or `half`;
+  - `src` and `dst` must use `loc=vec`;
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`;
+  - Runtime: `src` and `dst` must have the same valid region;
+  - Tiles must use `blayout=row_major`.
 
 **Hardware Mapping:**
 
@@ -2624,8 +2919,14 @@ pto.tlog ins(<src> : <src_type>) outs(<dst> : <dst_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - `src` and `dst` must have same shapes and element types
+- **NPU constraints:**
+  - Tile element type must be one of: `float` or `half`;
+  - `src` and `dst` must use `loc=vec`;
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`;
+  - `src` and `dst` must have the same valid region;
+  - Tiles must use `blayout=row_major`.
+- **Domain / NaN**:
+  - Domain behavior (e.g., `log(<=0)`) is target-defined.
 
 **Hardware Mapping:**
 
@@ -2673,8 +2974,14 @@ pto.tsqrt ins(<src> : <src_type>) outs(<dst> : <dst_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - `src` and `dst` must have same shapes and element types
+- **NPU constraints:**
+  - Tile element type must be one of: `float` or `half`;
+  - `src` and `dst` must use `loc=vec`;
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`;
+  - Runtime: `src` and `dst` must have the same valid region;
+  - Tiles must use `blayout=row_major`.
+- **Domain / NaN**:
+  - Behavior is target-defined (e.g., for negative inputs).
 
 **Hardware Mapping:**
 
@@ -2722,8 +3029,14 @@ pto.trsqrt ins(<src> : <src_type>) outs(<dst> : <dst_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - `src` and `dst` must have same shapes and element types
+- **NPU constraints:**
+  - Tile element type must be one of: `float` or `half`;
+  - `src` and `dst` must use `loc=vec`;
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`;
+  - Runtime: `src` and `dst` must have the same valid region;
+  - Tiles must use `blayout=row_major`.
+- **Domain / NaN**:
+  - Behavior is target-defined (e.g., for `src == 0` or negative inputs).
 
 **Hardware Mapping:**
 
@@ -2771,8 +3084,15 @@ pto.trecip ins(<src> : <src_type>) outs(<dst> : <dst_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - `src` and `dst` must have same shapes and element types
+- **NPU constraints:**
+  - Tile element type must be one of: `float` or `half`;
+  - Tile must use `loc=vec`;
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`;
+  - Runtime: `src.valid_shape[0] == dst.valid_shape[0]` and `src.valid_shape[1] == dst.valid_shape[1]`;
+  - Tile must use row-major layout (`blayout=row_major`).
+  - A3's TRECIP instruction does not support setting the source Tile and destination Tile to the same memory.
+- **Domain / NaN**:
+  - Division-by-zero behavior is target-defined; the CPU simulator asserts in debug builds.
 
 **Hardware Mapping:**
 
@@ -2820,8 +3140,18 @@ pto.trelu ins(<src> : <src_type>) outs(<dst> : <dst_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - `src` and `dst` must have same shapes and element types
+- **Implementation checks (A2A3)**
+  - Tile element type must be one of: `half`, `float`, `int32_t`.
+  - Tile must use row-major layout (`blayout=row_major`).
+  - Tile must use `loc=vec`.
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src` and `dst` tiles should have the same `validRow/validCol`.
+- **Implementation checks (A5)**
+  - Tile element type must be one of: `half`, `float`, `int32_t`.
+  - Tile must use row-major layout (`blayout=row_major`).
+  - Tile must use `loc=vec`.
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src` and `dst` tiles should have the same `validRow/validCol`.
 
 **Hardware Mapping:**
 
@@ -2871,8 +3201,16 @@ pto.tlrelu ins(<src>, <slope> : <src_type>, <slope_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that checks:
-  - `src` and `dst` must have same shapes and element types
+- **Implementation checks (A2A3)**
+  - Tile element type must be one of: `half`, `float`.
+  - Tile must use `loc=vec`.
+  - Valid bounds: `0 < valid_shape[0] <= rows` and `0 < valid_shape[1] <= cols`.
+  - Runtime: `src` and `dst` tiles should have the same `validRow/validCol`.
+- **Implementation checks (A5)**
+  - Tile element type must be one of: `half`, `float`.
+  - Tile must use `loc=vec`.
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - Runtime: `src` and `dst` tiles should have the same `validRow/validCol`.
 
 **Hardware Mapping:**
 
@@ -2935,9 +3273,30 @@ pto.trowsum ins(<src> : <src_type>) outs(<dst> : <dst_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
-- `dst` should have a single column (or compatible shape for row reduction output)
+- **NPU constraints:**
 
+- **Implementation checks (A2A3)**
+  - `src` and `dst` must use `loc=vec`.
+  - `src` must use ND-style tile layout (`blayout=row_major`, `slayout=none_box`).
+  - Tile layout of `dst`:
+    - **Recommended**: a DN-style 1D column vector tile (`cols=1`, `blayout=col_major`)
+    - **Legacy**: an ND-style 2D tile with `valid_shape[1] == 1`
+  - Data types: `half` or `float`.
+  - Element type consistency: `src_type == dst_type`.
+  - Valid checks:
+    - `src.valid_shape[1] != 0` and `src.valid_shape[0] != 0`.
+    - `src.valid_shape[0] == dst.valid_shape[0]` (the output valid row must match the input valid row).
+- **Implementation checks (A5)**
+  - `src` and `dst` must use `loc=vec`.
+  - `src` must use ND-style tile layout (`blayout=row_major`, `slayout=none_box`).
+  - Tile layout of `dst`:
+    - **Recommended**: a DN-style 1D column vector tile (`cols=1`, `blayout=col_major`)
+    - **Legacy**: an ND-style 2D tile with `valid_shape[1] == 1`
+  - Data types: `half` or `float`.
+  - Element type consistency: `src_type == dst_type`.
+  - Valid checks:
+    - `src.valid_shape[1] != 0` and `src.valid_shape[0] != 0`.
+    - `src.valid_shape[0] == dst.valid_shape[0]` (the output valid row must match the input valid row).
 **Hardware Mapping:**
 
 - Executes on the **Vector pipeline** (`PIPE_V`)
@@ -2984,7 +3343,30 @@ pto.trowmax ins(<src> : <src_type>) outs(<dst> : <dst_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **NPU constraints:**
+
+- **Implementation checks (A2A3)**
+  - `src` and `dst` must use `loc=vec`.
+  - `src` must use ND-style tile layout (`blayout=row_major`, `slayout=none_box`).
+  - Tile layout of `dst`:
+    - **Recommended**: a DN-style 1D column vector tile (`cols=1`, `blayout=col_major`)
+    - **Legacy**: an ND-style 2D tile with `valid_shape[1] == 1`
+  - Data types: `half` or `float`.
+  - Element type consistency: `src_type == dst_type`.
+  - Runtime valid checks:
+    - `src.valid_shape[1] != 0` and `src.valid_shape[0] != 0`.
+    - `src.valid_shape[0] == dst.valid_shape[0]` (the output valid row must match the input valid row).
+- **Implementation checks (A5)**
+  - `src` and `dst` must use `loc=vec`.
+  - `src` must use ND-style tile layout (`blayout=row_major`, `slayout=none_box`).
+  - Tile layout of `dst`:
+    - **Recommended**: a DN-style 1D column vector tile (`cols=1`, `blayout=col_major`)
+    - **Legacy**: an ND-style 2D tile with `valid_shape[1] == 1`
+  - Data types: `half` or `float`.
+  - Element type consistency: `src_type == dst_type`.
+  - Runtime valid checks:
+    - `src.valid_shape[1] != 0` and `src.valid_shape[0] != 0`.
+    - `src.valid_shape[0] == dst.valid_shape[0]` (the output valid row must match the input valid row).
 
 **Hardware Mapping:**
 
@@ -3034,7 +3416,30 @@ pto.trowmin ins(<src>, <tmp> : <src_type>, <tmp_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **NPU constraints:**
+
+- **Implementation checks (A2A3)**
+  - `src` and `dst` must use `loc=vec`.
+  - `src` must use ND-style tile layout (`blayout=row_major`, `slayout=none_box`).
+  - Tile layout of `dst`:
+    - **Recommended**: a DN-style 1D column vector tile (`cols=1`, `blayout=col_major`)
+    - **Legacy**: an ND-style 2D tile with `valid_shape[1] == 1`
+  - Data types: `half` or `float`.
+  - Element type consistency: `src_type == dst_type`.
+  - Runtime valid checks:
+    - `src.valid_shape[1] != 0` and `src.valid_shape[0] != 0`.
+    - `src.valid_shape[0] == dst.valid_shape[0]` (the output valid row must match the input valid row).
+- **Implementation checks (A5)**
+  - `src` and `dst` must use `loc=vec`.
+  - `src` must use ND-style tile layout (`blayout=row_major`, `slayout=none_box`).
+  - Tile layout of `dst`:
+    - **Recommended**: a DN-style 1D column vector tile (`cols=1`, `blayout=col_major`)
+    - **Legacy**: an ND-style 2D tile with `valid_shape[1] == 1`
+  - Data types: `half` or `float`.
+  - Element type consistency: `src_type == dst_type`.
+  - Runtime valid checks:
+    - `src.valid_shape[1] != 0` and `src.valid_shape[0] != 0`.
+    - `src.valid_shape[0] == dst.valid_shape[0]` (the output valid row must match the input valid row).
 
 **Hardware Mapping:**
 
@@ -3088,7 +3493,16 @@ pto.tcolsum ins(<src>, <tmp> : <src_type>, <tmp_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks (A2A3):**
+- `src`, `tmp`, and `dst` must use `loc=vec`.
+- All tiles must use ND-style layout (`blayout=row_major`, `slayout=none_box`).
+- `src_type` must be one of `half`, `float`, `int16_t`, `int32_t`, and `dst_type == tmp_type == src_type`.
+- `src.valid_shape[1] == dst.valid_shape[1]`;
+- **Implementation checks (A5):**
+- `src`, `tmp`, and `dst` must use `loc=vec`.
+- All tiles must use ND-style layout (`blayout=row_major`, `slayout=none_box`).
+- `src_type` must be one of `half`, `float`, `int8_t`, `uint8_t`, `uint16_t`, `int16_t`, `int32_t`,`uint32_t`,`bfloat16_t`, and `dst_type == tmp_type == src_type`.
+- `src.valid_shape[0]` and `src.valid_shape[1]` must be non-zero; `src.valid_shape[1] == dst.valid_shape[1]` is required.
 
 **Hardware Mapping:**
 
@@ -3139,7 +3553,16 @@ pto.tcolmax ins(<src> : <src_type>) outs(<dst> : <dst_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks (A2A3):**
+- `src`, `tmp`, and `dst` must use `loc=vec`.
+- All tiles must use ND-style layout (`blayout=row_major`, `slayout=none_box`).
+- `src_type` must be one of `half`, `float`, `int16_t`, `int32_t`, and `dst_type == tmp_type == src_type`.
+- `src.valid_shape[1] == dst.valid_shape[1]`;
+- **Implementation checks (A5):**
+- `src`, `tmp`, and `dst` must use `loc=vec`.
+- All tiles must use ND-style layout (`blayout=row_major`, `slayout=none_box`).
+- `src_type` must be one of `half`, `float`, `int8_t`, `uint8_t`, `uint16_t`, `int16_t`, `int32_t`,`uint32_t`,`bfloat16_t`, and `dst_type == tmp_type == src_type`.
+- `src.valid_shape[0]` and `src.valid_shape[1]` must be non-zero; `src.valid_shape[1] == dst.valid_shape[1]` is required.
 
 **Hardware Mapping:**
 
@@ -3187,7 +3610,16 @@ pto.tcolmin ins(<src> : <src_type>) outs(<dst> : <dst_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks (A2A3):**
+- `src`, `tmp`, and `dst` must use `loc=vec`.
+- All tiles must use ND-style layout (`blayout=row_major`, `slayout=none_box`).
+- `src_type` must be one of `half`, `float`, `int16_t`, `int32_t`, and `dst_type == tmp_type == src_type`.
+- `src.valid_shape[1] == dst.valid_shape[1]`;
+- **Implementation checks (A5):**
+- `src`, `tmp`, and `dst` must use `loc=vec`.
+- All tiles must use ND-style layout (`blayout=row_major`, `slayout=none_box`).
+- `src_type` must be one of `half`, `float`, `int8_t`, `uint8_t`, `uint16_t`, `int16_t`, `int32_t`,`uint32_t`,`bfloat16_t`, and `dst_type == tmp_type == src_type`.
+- `src.valid_shape[0]` and `src.valid_shape[1]` must be non-zero; `src.valid_shape[1] == dst.valid_shape[1]` is required.
 
 **Hardware Mapping:**
 
@@ -3250,7 +3682,14 @@ pto.trowexpand ins(<src> : <src_type>) outs(<dst> : <dst_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **NPU constraints:**
+
+- `src` and `dst` must use `loc=vec`.
+- `src` must `slayout=none_box`.
+- `dst` must use ND-style layout (`blayout=row_major`, `slayout=none_box`).
+- `dst_type == src_type`
+- Data type: A2/A3/A5 element types must be one of: `int8_t` or `uint8_t` or `int16_t` or `uint16_t` or `int32_t` or `uint32_t` or `half` or `bfloat16_t` or `float`.
+- requires `src.valid_shape[0] == dst.valid_shape[0]` and requires `src.valid_shape[0] != 0 && src.valid_shape[1] != 0 && dst.valid_shape[0] != 0 && dst.valid_shape[1] != 0`.
 
 **Hardware Mapping:**
 
@@ -3298,7 +3737,11 @@ pto.tcolexpand ins(<src> : <src_type>) outs(<dst> : <dst_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- `src` and `dst` must use `loc=vec`.
+- Both `src` and `dst` must use ND-style layout (`blayout=row_major`, `slayout=none_box`).
+- `dst_type == src_type`
+- Data type: A2/A3/A5 element types must be one of: `int8_t` or `uint8_t` or `int16_t` or `uint16_t` or `int32_t` or `uint32_t` or `half` or `bfloat16_t` or `float`.
+- requires `src.valid_shape[1] == dst.valid_shape[1]`
 
 **Hardware Mapping:**
 
@@ -3348,8 +3791,11 @@ pto.trowexpandmul ins(<src0>, <src1> : <src0_type>, <src1_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
-
+- **Implementation checks**:
+  - `dst`, `src0`, and `src1` must have the same element type.
+  - The shared element type must be one of: `half`, `float`.
+  - `dst` must use row-major layout (`blayout=row_major`).
+ 
 **Hardware Mapping:**
 
 - Executes on the **Vector pipeline** (`PIPE_V`)
@@ -3401,7 +3847,10 @@ pto.trowexpanddiv ins(<src0>, <src1> : <src0_type>, <src1_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks**:
+  - `dst`, `src0`, and `src1` must have the same element type.
+  - The shared element type must be one of: `half`, `float`.
+  - `dst` must use row-major layout (`blayout=row_major`).
 
 **Hardware Mapping:**
 
@@ -3454,7 +3903,10 @@ pto.trowexpandsub ins(<src0>, <src1> : <src0_type>, <src1_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks**:
+  - `dst`, `src0`, and `src1` must have the same element type.
+  - The shared element type must be one of: `half`, `float`.
+  - `dst` must use row-major layout (`blayout=row_major`).
 
 **Hardware Mapping:**
 
@@ -3505,8 +3957,17 @@ pto.texpands ins(<scalar> : <scalar_type>) outs(<dst> : <dst_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
-- Supported scalar types: `f16`, `f32`, `i16`, `i32`, `i8`, `ui8`, `ui16`, `ui32`
+- **Implementation checks (A2A3)**
+  - Tile element type must be one of: `int32_t`, `int16_t`, `half`, `float`.
+  - Tile must use `loc=vec` or `loc=mat`.
+  - If `loc=vec`:
+   - Tile must use row-major layout (`blayout=row_major`).
+   - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+- **Implementation checks (A5)**
+  - Tile element type must be one of: `uint8_t`, `int8_t`, `uint16_t`, `int16_t`, `uint32_t`, `int32_t`, `half`, `float`.
+  - Tile must use `loc=vec` or `loc=mat`.
+  - If `loc=vec`:
+   - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
 
 **Hardware Mapping:**
 
@@ -3575,7 +4036,14 @@ pto.tcmp ins(<src0>, <src1> {cmpMode = <mode>} : <type0>, <type1>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks (A2A3)**:
+  - Input type must be one of: `int32_t`, `half`, `float`.
+  - Output type must be `uint8_t`.
+  - `src0/src1/dst` tile location must be `TileType::Vec`.
+  - Valid bounds: `TileDataSrc::ValidRow <= TileDataSrc::Rows` and `TileDataSrc::ValidCol <= TileDataSrc::Cols`.
+  - `src0.GetValidRow() == dst.GetValidRow()` and `src0.GetValidCol() == dst.GetValidCol()`.
+- **Implementation checks (A5)**:
+  - Input type must be one of: `uint32_t`, `int32_t`, `uint16_t`, `int16_t`, `uint8_t`,  `int8_t`, `float`, `half`.
 
 **Hardware Mapping:**
 
@@ -3623,7 +4091,16 @@ For each element (i, j):
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks (A2A3)**:
+  - Input type must be one of: `int32_t`, `half`, `float`, `uint16_t`, `int16_t`.
+  - `src` and `dst` tile location must be vector (`TileType::Vec`).
+  - Static valid bounds: `TileDataSrc::ValidRow <= TileDataSrc::Rows` and `TileDataSrc::ValidCol <= TileDataSrc::Cols`.
+  - `src.GetValidRow() == dst.GetValidRow()`
+- **Implementation checks (A5)**:
+  - Input type must be one of: `int32_t`, `uint32_t`, `half`, `float`, `uint16_t`, `int16_t`, `uint8_t`, `int8_t`.
+  - `src` and `dst` tile location must be vector (`TileType::Vec`).
+  - Static valid bounds: `TileDataSrc::ValidRow <= TileDataSrc::Rows` and `TileDataSrc::ValidCol <= TileDataSrc::Cols` ,`TileDataDst::ValidRow <= TileDataDst::Rows` and `TileDataDst::ValidCol <= TileDataDst::Cols`..
+  - `src.GetValidRow() == dst.GetValidRow()`
 
 **Hardware Mapping:**
 
@@ -3675,7 +4152,14 @@ pto.tsel ins(<mask>, <src0>, <src1> : <mask_type>, <type0>, <type1>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks (A2A3)**:
+  - `src0`, `src1`, and `dst` must have the same element type.
+  - The shared element type must be a 16-bit or 32-bit type supported by PTO IR: `i16`, `u16`, `i32`, `u32`, `f16`, or `f32`.
+  - `src0`, `src1`, and `dst` must use row-major layout (`blayout=row_major`).
+- **Implementation checks (A5)**:
+  - `src0`, `src1`, and `dst` must have the same element type.
+  - The shared element type must be an 8-bit, 16-bit, or 32-bit type supported by PTO IR: `i8`, `u8`, `i16`, `u16`, `i32`, `u32`, `f16`, or `f32`.
+  - `src0`, `src1`, and `dst` must use row-major layout (`blayout=row_major`).
 
 **Hardware Mapping:**
 
@@ -3724,7 +4208,16 @@ dst = (selectMode != 0) ? src0 : src1
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks (A2A3)**:
+  - `src0`, `src1`, and `dst` must have the same element type.
+  - The shared element type must be a 16-bit or 32-bit type supported by PTO IR: `i16`, `u16`, `i32`, `u32`, `f16`, or `f32`.
+  - `src0` and `dst` must use row-major layout (`blayout=row_major`).
+  - `src0` and `dst` must have the same valid region: `src0.valid_shape[0] == dst.valid_shape[0]` and `src0.valid_shape[1] == dst.valid_shape[1]`.
+- **Implementation checks (A5)**:
+  - `src0`, `src1`, and `dst` must have the same element type.
+  - The shared element type must be an 8-bit, 16-bit, or 32-bit type supported by PTO IR: `i8`, `u8`, `i16`, `u16`, `i32`, `u32`, `f16`, or `f32`.
+  - `src0`, `src1`, and `dst` must use row-major layout (`blayout=row_major`).
+  - `src0` and `dst` must have the same valid region: `src0.valid_shape[0] == dst.valid_shape[0]` and `src0.valid_shape[1] == dst.valid_shape[1]`.
 
 **Hardware Mapping:**
 
@@ -3793,7 +4286,18 @@ pto.tand ins(<src0>, <src1> : <src0_type>, <src1_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks (A2A3)**:
+  - `src0`, `src1`, and `dst` must have the same element type.
+  - The shared element type must be an 8-bit or 16-bit integral type supported by PTO IR: `i8`, `u8`, `i16`, or `u16`.
+  - `src0`, `src1`, and `dst` must use row-major layout (`blayout=row_major`).
+  - `src0` and `dst` must have the same valid region: `src0.valid_shape[0] == dst.valid_shape[0]` and `src0.valid_shape[1] == dst.valid_shape[1]`.
+  - `src1` and `dst` must have the same valid region: `src1.valid_shape[0] == dst.valid_shape[0]` and `src1.valid_shape[1] == dst.valid_shape[1]`.
+- **Implementation checks (A5)**:
+  - `src0`, `src1`, and `dst` must have the same element type.
+  - The shared element type must be an 8-bit, 16-bit, or 32-bit integral type supported by PTO IR: `i8`, `u8`, `i16`, `u16`, `i32`, or `u32`.
+  - `src0`, `src1`, and `dst` must use row-major layout (`blayout=row_major`).
+  - `src0` and `dst` must have the same valid region: `src0.valid_shape[0] == dst.valid_shape[0]` and `src0.valid_shape[1] == dst.valid_shape[1]`.
+  - `src1` and `dst` must have the same valid region: `src1.valid_shape[0] == dst.valid_shape[0]` and `src1.valid_shape[1] == dst.valid_shape[1]`.
 
 **Hardware Mapping:**
 
@@ -3839,7 +4343,18 @@ For each element (i, j):
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks (A2A3)**:
+  - `src0`, `src1`, and `dst` must have the same element type.
+  - The shared element type must be an 8-bit or 16-bit integral type supported by PTO IR: `i8`, `u8`, `i16`, or `u16`.
+  - `src0`, `src1`, and `dst` must use row-major layout (`blayout=row_major`).
+  - `src0` and `dst` must have the same valid region: `src0.valid_shape[0] == dst.valid_shape[0]` and `src0.valid_shape[1] == dst.valid_shape[1]`.
+  - `src1` and `dst` must have the same valid region: `src1.valid_shape[0] == dst.valid_shape[0]` and `src1.valid_shape[1] == dst.valid_shape[1]`.
+- **Implementation checks (A5)**:
+  - `src0`, `src1`, and `dst` must have the same element type.
+  - The shared element type must be an 8-bit, 16-bit, or 32-bit integral type supported by PTO IR: `i8`, `u8`, `i16`, `u16`, `i32`, or `u32`.
+  - `src0`, `src1`, and `dst` must use row-major layout (`blayout=row_major`).
+  - `src0` and `dst` must have the same valid region: `src0.valid_shape[0] == dst.valid_shape[0]` and `src0.valid_shape[1] == dst.valid_shape[1]`.
+  - `src1` and `dst` must have the same valid region: `src1.valid_shape[0] == dst.valid_shape[0]` and `src1.valid_shape[1] == dst.valid_shape[1]`.
 
 **Hardware Mapping:**
 
@@ -3879,13 +4394,26 @@ For each element (i, j):
 |------|------|-------------|
 | `src0` | `pto.tile_buf` | First source tile buffer |
 | `src1` | `pto.tile_buf` | Second source tile buffer |
+| `tmp` | `pto.tile_buf`(optional) | Temporary source tile buffer for A2/A3, A5 do not needs this buffer|
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks (A2A3)**:
+  - `src0`, `src1`, `tmp` and `dst` must have the same element type.
+  - The shared element type must be an 8-bit or 16-bit integral type supported by PTO IR: `i8`, `u8`, `i16`, or `u16`.
+  - `src0`, `src1`, , `tmp` and `dst` must use row-major layout (`blayout=row_major`).
+  - `src0` and `dst` must have the same valid region: `src0.valid_shape[0] == dst.valid_shape[0]` and `src0.valid_shape[1] == dst.valid_shape[1]`.
+  - `src1` and `dst` must have the same valid region: `src1.valid_shape[0] == dst.valid_shape[0]` and `src1.valid_shape[1] == dst.valid_shape[1]`.
+  - `tmp` and `dst` must have the same valid region: `tmp.valid_shape[0] == dst.valid_shape[0]` and `tmp.valid_shape[1] == dst.valid_shape[1]`.
+- **Implementation checks (A5)**:
+  - `src0`, `src1`, and `dst` must have the same element type.
+  - The shared element type must be an 8-bit, 16-bit, or 32-bit integral type supported by PTO IR: `i8`, `u8`, `i16`, `u16`, `i32`, or `u32`.
+  - `src0`, `src1`, and `dst` must use row-major layout (`blayout=row_major`).
+  - `src0` and `dst` must have the same valid region: `src0.valid_shape[0] == dst.valid_shape[0]` and `src0.valid_shape[1] == dst.valid_shape[1]`.
+  - `src1` and `dst` must have the same valid region: `src1.valid_shape[0] == dst.valid_shape[0]` and `src1.valid_shape[1] == dst.valid_shape[1]`.
 
 **Hardware Mapping:**
 
@@ -3931,7 +4459,18 @@ For each element (i, j):
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks (A2A3)**:
+  - `src0`, `src1` must have the same element type.
+  - The shared element type must be one of: `i8`, `u8`, `i16`, `u16`, `i32` or `u32`.
+  - `src0`, `src1`, and `dst` must use row-major layout (`blayout=row_major`).
+  - `src0` and `dst` must have the same valid region: `src0.valid_shape[0] == dst.valid_shape[0]` and `src0.valid_shape[1] == dst.valid_shape[1]`.
+  - `src1` and `dst` must have the same valid region: `src1.valid_shape[0] == dst.valid_shape[0]` and `src1.valid_shape[1] == dst.valid_shape[1]`.
+- **Implementation checks (A5)**:
+  - `src0`, `src1` must have the same element type.
+  - The shared element type must be one of: `i8`, `u8`, `i16`, `u16`, `i32` or `u32`.
+  - `src0`, `src1`, and `dst` must use row-major layout (`blayout=row_major`).
+  - `src0` and `dst` must have the same valid region: `src0.valid_shape[0] == dst.valid_shape[0]` and `src0.valid_shape[1] == dst.valid_shape[1]`.
+  - `src1` and `dst` must have the same valid region: `src1.valid_shape[0] == dst.valid_shape[0]` and `src1.valid_shape[1] == dst.valid_shape[1]`.
 
 **Hardware Mapping:**
 
@@ -3977,8 +4516,18 @@ For each element (i, j):
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
-
+- **Implementation checks (A2A3)**:
+  - `src0`, `src1` must have the same element type.
+  - The shared element type must be one of: `i8`, `u8`, `i16`, `u16`, `i32` or `u32`.
+  - `src0`, `src1`, and `dst` must use row-major layout (`blayout=row_major`).
+  - `src0` and `dst` must have the same valid region: `src0.valid_shape[0] == dst.valid_shape[0]` and `src0.valid_shape[1] == dst.valid_shape[1]`.
+  - `src1` and `dst` must have the same valid region: `src1.valid_shape[0] == dst.valid_shape[0]` and `src1.valid_shape[1] == dst.valid_shape[1]`.
+- **Implementation checks (A5)**:
+  - `src0`, `src1` must have the same element type.
+  - The shared element type must be one of: `i8`, `u8`, `i16`, `u16`, `i32` or `u32`.
+  - `src0`, `src1`, and `dst` must use row-major layout (`blayout=row_major`).
+  - `src0` and `dst` must have the same valid region: `src0.valid_shape[0] == dst.valid_shape[0]` and `src0.valid_shape[1] == dst.valid_shape[1]`.
+  - `src1` and `dst` must have the same valid region: `src1.valid_shape[0] == dst.valid_shape[0]` and `src1.valid_shape[1] == dst.valid_shape[1]`.
 **Hardware Mapping:**
 
 - Executes on the **Vector pipeline** (`PIPE_V`)
@@ -4030,7 +4579,22 @@ pto.tnot ins(<src> : <src_type>) outs(<dst> : <dst_type>)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+## Constraints
+
+- **Implementation checks (A2A3)**
+  - Tile element type must be one of: `int16_t`, `uint16_t`.
+  - `src.Dtype == dst.Dtype`.
+  - Tile must use row-major layout (`blayout=row_major`).
+  - Tile must use `loc=vec`.
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - `src` and `dst` tiles should have the same `validRow/validCol`.
+- **Implementation checks (A5)**
+  - Tile element type must be one of: `uint32_t`, `int32_t`, `uint16_t`, `int16_t`, `uint8_t`,  `int8_t`.
+  - `src.Dtype == dst.Dtype`.
+  - Tile must use row-major layout (`blayout=row_major`).
+  - Tile must use `loc=vec`.
+  - Valid bounds: `valid_shape[0] <= rows` and `valid_shape[1] <= cols`.
+  - `src` and `dst` tiles should have the same `validRow/validCol`.
 
 **Hardware Mapping:**
 
@@ -4085,7 +4649,16 @@ For each element (i, j):
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks (A2A3)**:
+  - `src` and `dst` must have the same element type.
+  - The shared element type must be an 8-bit or 16-bit integral type supported by PTO IR: `i8`, `u8`, `i16`, or `u16`.
+  - `src0`, and `dst` must use row-major layout (`blayout=row_major`).
+  - `src0` and `dst` must have the same valid region: `src0.valid_shape[0] == dst.valid_shape[0]` and `src0.valid_shape[1] == dst.valid_shape[1]`.
+- **Implementation checks (A5)**:
+  - `src0` and `dst` must have the same element type.
+  - The shared element type must be an 8-bit, 16-bit, or 32-bit integral type supported by PTO IR: `i8`, `u8`, `i16`, `u16`, `i32`, or `u32`.
+  - `src0`and `dst` must use row-major layout (`blayout=row_major`).
+  - `src0` and `dst` must have the same valid region: `src0.valid_shape[0] == dst.valid_shape[0]` and `src0.valid_shape[1] == dst.valid_shape[1]`.
 
 **Hardware Mapping:**
 
@@ -4128,7 +4701,18 @@ For each element (i, j):
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks (A2A3)**:
+  - `src0` and `dst` must have the same element type.
+  - The shared element type must be an 8-bit or 16-bit integral type supported by PTO IR: `i8`, `u8`, `i16`, or `u16`.
+  - `src0` and `dst` must use row-major layout (`blayout=row_major`).
+  - `src0` and `dst` must have the same valid region: `src0.valid_shape[0] == dst.valid_shape[0]` and `src0.valid_shape[1] == dst.valid_shape[1]`.
+- **Implementation checks (A5)**:
+  - `src0`and `dst` must have the same element type.
+  - The shared element type must be an 8-bit, 16-bit, or 32-bit integral type supported by PTO IR: `i8`, `u8`, `i16`, `u16`, `i32`, or `u32`.
+  - `src0` and `dst` must use row-major layout (`blayout=row_major`).
+  - `src0` and `dst` must have the same valid region: `src0.valid_shape[0] == dst.valid_shape[0]` and `src0.valid_shape[1] == dst.valid_shape[1]`.
+  
+**Unsupported**.
 
 **Hardware Mapping:**
 
@@ -4171,8 +4755,17 @@ For each element (i, j):
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
-
+- **Implementation checks (A2A3)**:
+  - `src0` and `dst` must have the same element type.
+  - The shared element type must be an 8-bit or 16-bit integral type supported by PTO IR: `i8`, `u8`, `i16`, or `u16`.
+  - `src0` and `dst` must use row-major layout (`blayout=row_major`).
+  - `src0` and `dst` must have the same valid region: `src0.valid_shape[0] == dst.valid_shape[0]` and `src0.valid_shape[1] == dst.valid_shape[1]`.
+- **Implementation checks (A5)**:
+  - `src0`and `dst` must have the same element type.
+  - The shared element type must be an 8-bit, 16-bit, or 32-bit integral type supported by PTO IR: `i8`, `u8`, `i16`, `u16`, `i32`, or `u32`.
+  - `src0` and `dst` must use row-major layout (`blayout=row_major`).
+  - `src0` and `dst` must have the same valid region: `src0.valid_shape[0] == dst.valid_shape[0]` and `src0.valid_shape[1] == dst.valid_shape[1]`.
+  
 **Hardware Mapping:**
 
 - Executes on the **Vector pipeline** (`PIPE_V`)
@@ -4214,7 +4807,18 @@ For each element (i, j):
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks (A2A3)**:
+  - `src`, `dst` must have the same element type.
+  - The shared element type must be one of: `i16`, `u16`, `i32` or `u32`.
+  - src and dst tiles must be `loc=vec`.
+  - `src`, `src1`, and `dst` must use row-major layout (`blayout=row_major`).
+  - `src` and `dst` must have the same valid region: `src0.valid_shape[0] == dst.valid_shape[0]` and `src0.valid_shape[1] == dst.valid_shape[1]`.
+- **Implementation checks (A5)**:
+  - `src`, `dst` must have the same element type.
+  - The shared element type must be one of: `i8`, `u8`, `i16`, `u16`, `i32` or `u32`.
+  - src and dst tiles must be `loc=vec`.
+  - `src`, `dst` must use row-major layout (`blayout=row_major`).
+  - `src` and `dst` must have the same valid region: `src0.valid_shape[0] == dst.valid_shape[0]` and `src0.valid_shape[1] == dst.valid_shape[1]`.
 
 **Hardware Mapping:**
 
@@ -4257,7 +4861,18 @@ For each element (i, j):
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks (A2A3)**:
+  - `src`, `dst` must have the same element type.
+  - The shared element type must be one of: `i16`, `u16`, `i32` or `u32`.
+  - src and dst tiles must be `loc=vec`.
+  - `src`, `src1`, and `dst` must use row-major layout (`blayout=row_major`).
+  - `src` and `dst` must have the same valid region: `src0.valid_shape[0] == dst.valid_shape[0]` and `src0.valid_shape[1] == dst.valid_shape[1]`.
+- **Implementation checks (A5)**:
+  - `src`, `dst` must have the same element type.
+  - The shared element type must be one of: `i8`, `u8`, `i16`, `u16`, `i32` or `u32`.
+  - src and dst tiles must be `loc=vec`.
+  - `src`, `dst` must use row-major layout (`blayout=row_major`).
+  - `src` and `dst` must have the same valid region: `src0.valid_shape[0] == dst.valid_shape[0]` and `src0.valid_shape[1] == dst.valid_shape[1]`.
 
 **Hardware Mapping:**
 
@@ -4319,7 +4934,28 @@ Else (mask pattern):
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier (exact legality of indices/masks is implementation-defined)
+- **Index-based gather: implementation checks (A2/A3)**:
+  - `dst` element size must correspond to one of: `int16_t`, `uint16_t`, `int32_t`, `uint32_t`, `half`, `float`.
+  - `indices` element size must correspond to `int32_t` or `uint32_t`.
+  - `dst` element type must match `src` element type.
+  - `indices.valid_shape[1] == indices.cols` and `dst.valid_shape[1] == dst.cols`.
+- **Index-based gather: implementation checks (A5)**:
+  - `dst` element size must correspond to one of: `int16_t`, `uint16_t`, `int32_t`, `uint32_t`, `half`, `float`.
+  - `indices` element size must correspond to `int16_t`, `uint16_t`, `int32_t`, or `uint32_t`.
+  - `dst` element type must match `src` element type.
+  - `indices.valid_shape[1] == indices.cols` and `dst.valid_shape[1] == dst.cols`.
+- **Mask-pattern gather: implementation checks (A2/A3)**:
+  - Source element size must be `2` or `4` bytes.
+  - `src`/`dst` element type must be `int16_t` or `uint16_t` or `int32_t` or `uint32_t`
+    or `half` or `bfloat16_t` or `float`.
+  - `src` and `dst` must both use `loc=vec` and `blayout=row_major`.
+  - `src` and `dst` element sizes must match, and `dst.valid_shape[1] == dst.cols`.
+- **Mask-pattern gather: implementation checks (A5)**:
+  - Source element size must be `1` or `2` or `4` bytes.
+  - `src` and `dst` must both use `loc=vec` and `blayout=row_major`.
+  - `src`/`dst` element type must be `int8_t` or `uint8_t` or `int16_t` or `uint16_t` or `int32_t` or `uint32_t`
+    or `half` or `bfloat16_t` or `float` or `float8_e4m3_t`or `float8_e5m2_t` or `hifloat8_t`.
+  - `src` and `dst` element sizes must match, and `dst.valid_shape[1] == dst.cols`.
 
 **Hardware Mapping:**
 
@@ -4356,7 +4992,15 @@ dst[i, j] = src[byte_offsets[i, j]]
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks (A2A3)**
+  - `dst` must use row-major layout (`blayout=row_major`).
+  - `dst` element size must be `1`, `2`, or `4` bytes.
+  - `src`/`dst` element type must be `int8_t` or `uint8_t` or `int16_t` or `uint16_t` or `int32_t` or `uint32_t` or `half` or `bfloat16_t` or `float`.
+- **Implementation checks (A5)**
+  - Destination element size must be `1`, `2`, or `4` bytes.
+  - `src`/`dst` element type must be `int8_t` or `uint8_t` or `int16_t` or `uint16_t` or `int32_t` or `uint32_t` or `half` or `bfloat16_t` or `float`.
+- **Offset interpretation**:
+  - Offsets are interpreted as `uint32_t` values (byte offsets) by the implementation.
 
 **Hardware Mapping:**
 
@@ -4393,7 +5037,26 @@ dst[row_index[i], j] = src[i, j]
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks (A2A3)**
+  - `dst`, `src`, and `indexes` must all use `loc=vec`.
+  - `dst`/`src` element type must be one of: `int32_t`, `int16_t`, `int8_t`, `half`, `float32_t`, `uint32_t`, `uint16_t`, `uint8_t`, `bfloat16_t`.
+  - `indexes` element type must be one of: `int16_t`, `int32_t`, `uint16_t`, or `uint32_t`.
+  - No bounds checks are enforced on `indexes` values.
+  - Valid bounds: `dst.valid_shape[i] <= dst.shape[i]`, `src.valid_shape[i] <= src.shape[i]`, and `indexes.valid_shape[i] <= indexes.shape[i]` for each dimension `i`.
+  - `dst` and `src` must have the same element type.
+  - When `dst` element size is 4 bytes, `indexes` element size must also be 4 bytes.
+  - When `dst` element size is 2 bytes, `indexes` element size must also be 2 bytes.
+  - When `dst` element size is 1 byte, `indexes` element size must be 2 bytes.
+- **Implementation checks (A5)**
+  - `dst`, `src`, and `indexes` must all use `loc=vec`.
+  - `dst`/`src` element type must be one of: `int32_t`, `int16_t`, `int8_t`, `half`, `float32_t`, `uint32_t`, `uint16_t`, `uint8_t`, `bfloat16_t`.
+  - `indexes` element type must be one of: `int16_t`, `int32_t`, `uint16_t`, or `uint32_t`.
+  - No bounds checks are enforced on `indexes` values.
+  - Valid bounds: `dst.valid_shape[i] <= dst.shape[i]`, `src.valid_shape[i] <= src.shape[i]`, and `indexes.valid_shape[i] <= indexes.shape[i]` for each dimension `i`.
+  - `dst` and `src` must have the same element type.
+  - When `dst` element size is 4 bytes, `indexes` element size must also be 4 bytes.
+  - When `dst` element size is 2 bytes, `indexes` element size must also be 2 bytes.
+  - When `dst` element size is 1 byte, `indexes` element size must be 2 bytes.
 
 **Hardware Mapping:**
 
@@ -4430,7 +5093,8 @@ dst[i, j] = mem[idx[i, j]]
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- Index interpretation is target-defined. The CPU simulator treats indices as linear element indices into `src.data()`.
+- No bounds checks are enforced on `indexes` by the CPU simulator.
 
 **Hardware Mapping:**
 
@@ -4467,7 +5131,8 @@ mem[idx[i, j]] = src[i, j]
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- Index interpretation is target-defined. The CPU simulator treats indices as linear element indices into `dst.data()`.
+- No bounds checks are enforced on `indexes` by the CPU simulator.
 
 **Hardware Mapping:**
 
@@ -4503,7 +5168,10 @@ dst = reinterpret(src)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier that requires tile_buf types
+- **Tile location must match**: `src.loc == dst.loc`.
+- **Total byte size must match**: `sizeof(srcElem) * drcNumel == sizeof(dstElem) * dstNumel`.
+- **No boxed/non-boxed conversion**:
+  - cannot reshape between `SLayout::NoneBox` and boxed layouts.
 
 **Hardware Mapping:**
 
@@ -4540,7 +5208,17 @@ dst[i, j] = src[i + indexRow, j + indexCol]
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks (A2A3)**
+  - `dst` element type must match `src` element type and must be one of: `int8_t`, `half`, `bfloat16_t`, `float`.
+  - Source layout/fractal must satisfy one of the target-supported combinations: `slayout=col_major` with `blayout=row_major`, or `slayout=row_major` with non-row-major base layout.
+  - Runtime bounds checks:
+    - `indexRow + dst.rows <= src.rows`
+    - `indexCol + dst.cols <= src.cols`
+  - `dst` must use `loc=left` or `loc=right` with a target-supported fractal configuration.
+- **Implementation checks (A5)**
+  - `dst` element type must match `src` element type and must be one of the target-supported fp8/fp16/bf16/f32 families listed here.
+  - Source layout/fractal must satisfy the target-supported combinations for `left`/`right`/scaling destinations; in PTO IR terms this is expressed through the `blayout`/`slayout`/`fractal` tuple.
+  - Destination supports `Mat -> Left/Right/Scale` and also supports `Vec -> Mat` for specific tile locations.
 
 **Hardware Mapping:**
 
@@ -4576,7 +5254,11 @@ For padded elements: dst = PadVal(dst)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- `dst.pad` must not be `null`.
+- `src` and `dst` element sizes must match, and the element size must be `1`, `2`, or `4` bytes.
+- `dst.rows/cols` must match `src.rows/cols`.
+- `dst.rows >= src.rows` and `dst.cols >= src.cols`.
+- For `mat` tiles, the current implementation only supports `blayout=col_major`, `slayout=row_major`, and `pad=zero`.
 
 **Hardware Mapping:**
 
@@ -4652,8 +5334,11 @@ idx = permutation indices for the sort
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
-- Sorting granularity and layout constraints are target-defined
+- **Implementation checks (A2/A3/A5)**
+  - `dst` element type must be `half` or `float`.
+  - `src` element type must match `dst` element type.
+  - `idx` element type must be `uint32_t`.
+  - `src`, `dst`, and `idx` must all use `loc=vec` and `blayout=row_major`.
 
 **Hardware Mapping:**
 
@@ -4690,7 +5375,15 @@ dst = merge_sort(src, blockLen)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **A2/A3 and Implementation checks (A5)**
+  - Element type must be `half` or `float` and must match across `dst/tmp/src*` tiles.
+  - All tiles must use `loc=vec`, `blayout=row_major`, and `rows == 1` (the list is stored in a single row).
+- **Single-list variant (`TMRGSORT(dst, src, blockLen)`)**:
+  - `blockLen` must be a multiple of 64 (as checked by the implementation).
+  - `src.valid_shape[1]` must be an integer multiple of `blockLen * 4`.
+  - `repeatTimes = src.valid_shape[1] / (blockLen * 4)` must be in `[1, 255]`.
+- **Multi-list variants**:
+  - `tmp` is required and `executedNumList` is written by the implementation; supported list counts and exact semantics are target-defined.
 
 **Hardware Mapping:**
 
@@ -4747,7 +5440,9 @@ dst[i, j] = cast(src[i, j], rmode)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- `dst` and `src` must be compatible in shape/valid region as required by the implementation.
+- **A2/A3 and A5 notes:**
+  - The current implementation does not add extra compile-time or runtime checks for the type pair; unsupported conversions are target-defined.
 
 **Hardware Mapping:**
 
@@ -4778,7 +5473,7 @@ dst[i, j] = S + linear_index(i, j)   // or descending if requested
 
 | Name | Type | Description |
 |------|------|-------------|
-| `S` | `AnyInteger` | Starting value |
+| `S` | `Integer` | Starting value |
 | `dst` | `pto.tile_buf` | Destination tile |
 | `descending` | `BoolAttr` (default: false) | Generate descending sequence |
 
@@ -4786,7 +5481,10 @@ dst[i, j] = S + linear_index(i, j)   // or descending if requested
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- **Implementation checks (A2/A3/A5)**
+  - Tile element type must be exactly the same type as the `S`.
+  - `dst/scalar` element types must be identical, and must be one of: `int32_t`, `uint32_t`, `int16_t`, `uint16_t`.
+  - `dst.cols != 1`.
 
 **Hardware Mapping:**
 
@@ -4823,7 +5521,10 @@ result = src[offset]
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- `src` must be a `!pto.tile_buf` or a `memref`.
+- `src` must use `loc=vec`.
+- If `src` uses `loc=mat`, the current verifier rejects it explicitly because scalar reads from mat tiles are not supported.
+- Result type must exactly match the element type of `src`.
 
 **Hardware Mapping:**
 
@@ -4859,7 +5560,8 @@ dst[offset] = val
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+If `dst` is a shaped type, `val` must have exactly the same type as `dst`'s element type.
+- The current verifier does not add extra checks on `offset`.
 
 **Hardware Mapping:**
 
@@ -4897,7 +5599,18 @@ dst[i, j] = Convert(src[i, j]; fp)   // target-defined quantization/dequantizati
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier (fp tile legality is target-defined)
+- **Implementation checks (A2A3)**
+  - Src data type only support `float` or `int32_t`.
+  - `fp` must use `loc=scaling`.
+  - Source TileType only support `loc=acc`.
+  - Destination TileType only support `loc=mat`.
+  - Destination SFractalSize only support fractalABSize(512).
+  - Src layout format should be (Blayout: ColMajor, Slayout: RowMajor).
+  - Dst layout format should be (Blayout: ColMajor, Slayout: RowMajor).
+- **Implementation checks (A5)**
+  - Src data type only support `float` or `int32_t`.
+  - `fp` must use `loc=scaling`.
+  - Src layout format should be (Blayout: ColMajor, Slayout: RowMajor).
 
 **Hardware Mapping:**
 
@@ -4934,7 +5647,15 @@ dst[...] = Convert(src[i, j]; fp)
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier (quantized accumulator store legality is target-defined)
+- **Implementation checks (A2A3)**
+  - Source TileType only suport `loc==acc`
+  - Source dtype must be `int32_t` or `float`.
+  - Shape constraints: `1 <= cols <= 4095`;
+  - Runtime: `1 <= src.valid_shape[1] <= 4095`.
+  - `fp` is used to configure scaling/FPC state; no separate PTO-visible static constraint is enforced on its shape.
+- **Implementation checks (A5)**
+  - Source TileType only suport `loc==acc`
+  - `fp` is used to configure scaling/FPC state; no separate PTO-visible static constraint is enforced on its shape.
 
 **Hardware Mapping:**
 
@@ -5374,7 +6095,32 @@ print(src)
 
 **Constraints & Verification:**
 
-- No custom verifier beyond type consistency
+- **Supported element type**:
+  - Floating-point: `float`, `half`
+  - Signed integers: `int8_t`, `int16_t`, `int32_t`
+  - Unsigned integers: `uint8_t`, `uint16_t`, `uint32_t`
+- **For Tiles**: only `loc=vec` tiles are printable.
+- **For GlobalTensor**: Layout must be one of `Layout::ND`, `Layout::DN`, or `Layout::NZ`.
+
+## Behavior
+- **Mandatory Compilation Flag**:
+
+  On A2/A3/A5 devices, `TPRINT` uses `cce::printf` to emit output via the device-to-host debug channel. **You must enable the CCE option `-D_DEBUG --cce-enable-print`**.
+
+- **Buffer Limitation:**
+
+  The internal print buffer of `cce::printf` is limited in size. If the output exceeds this buffer, a warning message such as `"Warning: out of bound! try best to print"` may appear, and **only partial data will be printed**.
+
+- **Synchronization**:
+
+  Automatically inserts a `pipe_barrier(PIPE_ALL)` before printing to ensure all prior operations complete and data is consistent.
+
+- **Formatting**:
+
+  - Floating-point values: printed as `%6.2f`
+  - Integer values: printed as `%6d`
+  - For `GlobalTensor`, due to data size and buffer limitations, only elements within its logical shape (defined by `Shape`) are printed.
+  - For `tile_buf`, elements outside `valid_shape` are still printed and are marked with a `|` separator when partial validity is specified.
 
 **Hardware Mapping:**
 

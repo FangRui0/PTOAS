@@ -39,7 +39,6 @@
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Func/Transforms/FuncConversions.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"                   
-#include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Conversion/SCFToEmitC/SCFToEmitC.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 
@@ -6217,14 +6216,21 @@ struct PTOXORToEmitC : public OpConversionPattern<pto::TXorOp> {
     Value src0 = peelUnrealized(adaptor.getSrc0());
     Value src1 = peelUnrealized(adaptor.getSrc1());
     Value dst = peelUnrealized(adaptor.getDst());
-
-    // pto-isa TXOR requires a tmp tile argument. Current NPU implementation
-    // does not use tmp, so we safely pass dst as tmp for compatibility.
-    SmallVector<Value, 4> operands{dst, src0, src1, dst};
+    // Use explicit tmp when present; otherwise pass dst as tmp for pto-isa compatibility.
+    if (op.getTmp()) {
+      Value tmp = peelUnrealized(adaptor.getTmp());
+      SmallVector<Value, 4> operands{dst, src0, src1, tmp};
     rewriter.create<emitc::CallOpaqueOp>(
         loc, TypeRange{}, "TXOR",
         /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
         /*operands=*/operands);
+    } else {
+      SmallVector<Value, 3> operands{dst, src0, src1};
+      rewriter.create<emitc::CallOpaqueOp>(
+          loc, TypeRange{}, "TXOR",
+          /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
+          /*operands=*/operands);
+    }
 
     rewriter.eraseOp(op);
     return success();
@@ -6349,31 +6355,6 @@ struct PTOTrapOpToEmitC : public OpConversionPattern<pto::TrapOp> {
         loc, TypeRange{}, "trap",
         /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
         /*operands=*/ValueRange{});
-
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
-//===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TSYNC DPS/memref op)
-//===----------------------------------------------------------------------===//
-
-struct PTOSYNCToEmitC : public OpConversionPattern<pto::TSyncOp> {
-  using OpConversionPattern<pto::TSyncOp>::OpConversionPattern;
-
-  LogicalResult matchAndRewrite(pto::TSyncOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-
-    Value events = peelUnrealized(adaptor.getEvents());
-    Value dst = peelUnrealized(adaptor.getDst());
-
-    SmallVector<Value, 4> operands{dst, events};
-    rewriter.create<emitc::CallOpaqueOp>(
-        loc, TypeRange{}, "TSYNC",
-        /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
-        /*operands=*/operands);
 
     rewriter.eraseOp(op);
     return success();
@@ -6826,6 +6807,22 @@ static bool isTriviallyInlineableExecuteRegion(scf::ExecuteRegionOp op) {
 static bool needsWholeFunctionSCFToCF(func::FuncOp func) {
   bool needs = false;
   func.walk([&](Operation *op) {
+    if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
+      if (llvm::any_of(ifOp.getResultTypes(),
+                       [](Type t) { return isa<MemRefType>(t); })) {
+        needs = true;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    }
+    if (auto forOp = dyn_cast<scf::ForOp>(op)) {
+      if (llvm::any_of(forOp.getResultTypes(),
+                       [](Type t) { return isa<MemRefType>(t); })) {
+        needs = true;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    }
     if (!isa<scf::WhileOp, scf::IndexSwitchOp, scf::ExecuteRegionOp>(op))
       return WalkResult::advance();
     Operation *parentOp = op->getParentOp();
@@ -7259,7 +7256,6 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOGetBufToEmitC>(typeConverter, ctx);
   patterns.add<PTORlsBufToEmitC>(typeConverter, ctx);
   patterns.add<PTOXORSToEmitC>(typeConverter, ctx);
-  patterns.add<PTOSYNCToEmitC>(typeConverter, ctx);
   patterns.add<PTOSubSToEmitC>(typeConverter, ctx);
   patterns.add<PTOXORToEmitC>(typeConverter, ctx);
   patterns.add<PTOReluToEmitC>(typeConverter, ctx);
@@ -7551,27 +7547,8 @@ struct EmitPTOManualPass
         return signalPassFailure();
     }
 
+    // 2. 配置转换目标
     PTOToEmitCTypeConverter typeConverter(ctx);
-
-    // 2. Pre-convert SCF structural op types (e.g. scf.if/scf.for results)
-    // using the same type converter. This avoids creating emitc.variable with
-    // unsupported types such as memref.
-    {
-      RewritePatternSet scfTypePatterns(ctx);
-      ConversionTarget scfTypeTarget(*ctx);
-      scf::populateSCFStructuralTypeConversionsAndLegality(
-          typeConverter, scfTypePatterns, scfTypeTarget);
-      scfTypeTarget.markUnknownOpDynamicallyLegal(
-          [](Operation *) { return true; });
-
-      if (failed(applyPartialConversion(mop, scfTypeTarget,
-                                        std::move(scfTypePatterns)))) {
-        mop.emitError("failed to reconcile SCF structural types");
-        return signalPassFailure();
-      }
-    }
-
-    // 3. 配置转换目标
     ConversionTarget target(*ctx);
 
     target.addIllegalDialect<memref::MemRefDialect>();
@@ -7607,14 +7584,14 @@ struct EmitPTOManualPass
     populatePTOToEmitCPatterns(patterns, typeConverter, ctx, *solver, targetArch);
     populateCallOpTypeConversionPattern(patterns, typeConverter);
 
-    // 4. 执行转换
+    // 3. 执行转换
     if (failed(applyPartialConversion(mop, target, std::move(patterns)))) {
       llvm::errs() << "Conversion FAILED! Rolling back executed.\n";
       return signalPassFailure();
     }
 
     // =========================================================================
-    // 5. [终极清理] 
+    // 4. [终极清理] 
     // 顺序至关重要：
     // Step A: 先移除所有 Cast，让 Loop 的 Operand 类型变成底层类型 (如 int32)
     // Step B: 再根据新的 Operand 类型，修复 Loop IV 的类型
@@ -7623,14 +7600,6 @@ struct EmitPTOManualPass
     // --- Step A: 清理 UnrealizedConversionCastOp ---
     // Prefer dropping redundant/unused casts; otherwise lower to emitc.cast
     // so the C++ emitter can print it.
-    auto isEmitCPointerLikeType = [](Type ty) {
-      if (isa<emitc::PointerType>(ty))
-        return true;
-      if (auto opaqueTy = dyn_cast<emitc::OpaqueType>(ty))
-        return opaqueTy.getValue().ends_with("*");
-      return false;
-    };
-
     llvm::SmallVector<UnrealizedConversionCastOp> castsToErase;
     bool castCleanupFailed = false;
     mop.walk([&](UnrealizedConversionCastOp cast) {
@@ -7659,10 +7628,7 @@ struct EmitPTOManualPass
         return;
       }
 
-      // SCF/CFG type conversion can transiently materialize pointer->memref
-      // bridge casts. At this stage, the producing value is already in the
-      // lowered EmitC pointer form; keep it and drop the bridge cast.
-      if (isEmitCPointerLikeType(inTy) && isa<BaseMemRefType>(outTy)) {
+      if (isa<emitc::PointerType>(inTy) && isa<MemRefType>(outTy)) {
         output.replaceAllUsesWith(input);
         castsToErase.push_back(cast);
         return;

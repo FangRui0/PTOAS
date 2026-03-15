@@ -46,15 +46,17 @@ def build():
                 sv_src0 = pto.PartitionViewOp(tile_view_32, tv_src0, offsets=[c0, c0], sizes=[c32, c32]).result
                 sv_src1 = pto.PartitionViewOp(tile_view_32, tv_src1, offsets=[c0, c0], sizes=[c32, c32]).result
 
-                # alloc tiles: src, dst
+                # alloc tiles: src, dst (and optional tmp for second kernel)
                 tb_src0 = pto.AllocTileOp(tile_buf_32).result
                 tb_src1 = pto.AllocTileOp(tile_buf_32).result
+                tb_tmp = pto.AllocTileOp(tile_buf_32).result
                 tb_dst = pto.AllocTileOp(tile_buf_32).result
 
                 pto.TLoadOp(None, sv_src0, tb_src0)  # result=None
                 pto.TLoadOp(None, sv_src1, tb_src1)
 
-                pto.TXorOp(tb_src0, tb_src1, tb_dst)
+                # TXor without optional tmp (tmp implied as dst in lowering)
+                pto.TXorOp(tb_src0, tb_src1, tb_dst, tmp=tb_tmp)
 
                 # output subview
                 sv_dst = pto.PartitionViewOp(tile_view_32, tv_dst, offsets=[c0, c0], sizes=[c32, c32]).result
@@ -62,6 +64,33 @@ def build():
                 # store result in destination
                 pto.TStoreOp(None, tb_dst, sv_dst)
 
+                func.ReturnOp([])
+
+            # Second kernel: TXor with explicit optional tmp
+            with InsertionPoint(m.body):
+                fn_tmp = func.FuncOp("xor_kernel_2d_with_tmp", fn_ty)
+                entry_tmp = fn_tmp.add_entry_block()
+
+            with InsertionPoint(entry_tmp):
+                c0 = arith.ConstantOp(IndexType.get(ctx), 0).result
+                c1 = arith.ConstantOp(IndexType.get(ctx), 1).result
+                c32 = arith.ConstantOp(IndexType.get(ctx), 32).result
+                arg0, arg1 = entry_tmp.arguments
+                tv_src0 = pto.MakeTensorViewOp(tv2_i16, arg0, [c32, c32], [c32, c1]).result
+                tv_src1 = pto.MakeTensorViewOp(tv2_i16, arg0, [c32, c32], [c32, c1]).result
+                tv_dst = pto.MakeTensorViewOp(tv2_i16, arg1, [c32, c32], [c32, c1]).result
+                sv_src0 = pto.PartitionViewOp(tile_view_32, tv_src0, offsets=[c0, c0], sizes=[c32, c32]).result
+                sv_src1 = pto.PartitionViewOp(tile_view_32, tv_src1, offsets=[c0, c0], sizes=[c32, c32]).result
+                tb_src0 = pto.AllocTileOp(tile_buf_32).result
+                tb_src1 = pto.AllocTileOp(tile_buf_32).result
+                tb_tmp = pto.AllocTileOp(tile_buf_32).result
+                tb_dst = pto.AllocTileOp(tile_buf_32).result
+                pto.TLoadOp(None, sv_src0, tb_src0)
+                pto.TLoadOp(None, sv_src1, tb_src1)
+                # TXor with explicit optional tmp (keyword arg after rebuild)
+                pto.TXorOp(tb_src0, tb_src1, tb_dst, tmp=tb_tmp)
+                sv_dst = pto.PartitionViewOp(tile_view_32, tv_dst, offsets=[c0, c0], sizes=[c32, c32]).result
+                pto.TStoreOp(None, tb_dst, sv_dst)
                 func.ReturnOp([])
 
             m.operation.verify()
