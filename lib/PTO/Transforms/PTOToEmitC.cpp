@@ -6431,10 +6431,8 @@ struct PTOXORToEmitC : public OpConversionPattern<pto::TXorOp> {
     Value src0 = peelUnrealized(adaptor.getSrc0());
     Value src1 = peelUnrealized(adaptor.getSrc1());
     Value dst = peelUnrealized(adaptor.getDst());
-
-    // pto-isa TXOR requires a tmp tile argument. Current NPU implementation
-    // does not use tmp, so we safely pass dst as tmp for compatibility.
-    SmallVector<Value, 4> operands{dst, src0, src1, dst};
+    Value tmp = peelUnrealized(adaptor.getTmp());
+    SmallVector<Value, 4> operands{dst, src0, src1, tmp};
     rewriter.create<emitc::CallOpaqueOp>(
         loc, TypeRange{}, "TXOR",
         /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
@@ -6563,31 +6561,6 @@ struct PTOTrapOpToEmitC : public OpConversionPattern<pto::TrapOp> {
         loc, TypeRange{}, "trap",
         /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
         /*operands=*/ValueRange{});
-
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
-//===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TSYNC DPS/memref op)
-//===----------------------------------------------------------------------===//
-
-struct PTOSYNCToEmitC : public OpConversionPattern<pto::TSyncOp> {
-  using OpConversionPattern<pto::TSyncOp>::OpConversionPattern;
-
-  LogicalResult matchAndRewrite(pto::TSyncOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-
-    Value events = peelUnrealized(adaptor.getEvents());
-    Value dst = peelUnrealized(adaptor.getDst());
-
-    SmallVector<Value, 4> operands{dst, events};
-    rewriter.create<emitc::CallOpaqueOp>(
-        loc, TypeRange{}, "TSYNC",
-        /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
-        /*operands=*/operands);
 
     rewriter.eraseOp(op);
     return success();
@@ -7474,7 +7447,6 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTORlsBufToEmitC>(typeConverter, ctx);
   patterns.add<PTOSetFFTsToEmitC>(typeConverter, ctx);
   patterns.add<PTOXORSToEmitC>(typeConverter, ctx);
-  patterns.add<PTOSYNCToEmitC>(typeConverter, ctx);
   patterns.add<PTOSubSToEmitC>(typeConverter, ctx);
   patterns.add<PTOXORToEmitC>(typeConverter, ctx);
   patterns.add<PTOReluToEmitC>(typeConverter, ctx);

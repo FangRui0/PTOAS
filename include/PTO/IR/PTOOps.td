@@ -176,6 +176,8 @@ def PartitionViewOp : PTO_Op<"partition_view", [AttrSizedOperandSegments]> {
 
   let results = (outs PartitionTensorViewType:$result); // 输出: 逻辑切片
 
+  let hasVerifier = 1;
+
   let assemblyFormat = [{
     $source `,` `offsets` `=` `[` $offsets `]` `,` `sizes` `=` `[` $sizes `]`
     attr-dict `:` qualified(type($source)) `->` qualified(type($result))
@@ -3767,34 +3769,6 @@ def TXorSOp: PTO_TOp<"txors", [
 
 }
 //===----------------------------------------------------------------------===//
-// PTOOps.td  (add TSYNC TBDPS/tile buffer op)
-//===----------------------------------------------------------------------===//
-
-def TSyncOp: PTO_TOp<"tsync", [
-  PTO_DpsInitOpInterface,
-]> {
-  let summary = "TSYNC: Synchronize PTO execution with event tokens or single-op barrier.";
-
-  let arguments = (ins
-    PTODpsType:$events,
-    PTODpsType:$dst
-  );
-
-  let results = (outs);
-
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `ins` `(` $events `:` type($events) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    attr-dict
-  }];
-  let extraClassDeclaration = [{
-    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
-  }];
-}
-
-//===----------------------------------------------------------------------===//
 // PTOOps.td  (add TXOR TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
@@ -3804,10 +3778,16 @@ def TXorOp: PTO_TOp<"txor", [
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TXOR: Elementwise bitwise XOR of two tiles.";
+  let description = [{
+    DPS form:
+      without tmp: pto.txor ins(%src0, %src1) outs(%dst)
+      with tmp:    pto.txor ins(%src0, %src1, %tmp) outs(%dst)
+  }];
 
   let arguments = (ins
     PTODpsType:$src0,
     PTODpsType:$src1,
+    PTODpsType:$tmp,
     PTODpsType:$dst
   );
 
@@ -3816,7 +3796,7 @@ def TXorOp: PTO_TOp<"txor", [
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    `ins` `(` $src0 `,` $src1 `:` qualified(type($src0)) `,` qualified(type($src1)) `)`
+    `ins` `(` $src0 `,` $src1  `,` $tmp `:` qualified(type($src0)) `,` qualified(type($src1)) `,` qualified(type($tmp)) `)`
     `outs` `(` $dst `:` qualified(type($dst) ) `)`
     attr-dict
   }];
