@@ -535,6 +535,29 @@ PY
       fi
     fi
 
+    if [[ "$base" == "tinsert" ]]; then
+      local golden_file="${dir}/tinsert.golden"
+      local tinsert_ok=1
+      if [[ ! -f "${golden_file}" ]]; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing golden ref: ${golden_file}"
+        overall=1
+        continue
+      fi
+      while IFS= read -r pat || [[ -n "$pat" ]]; do
+        [[ -n "$pat" ]] || continue
+        [[ "$pat" =~ ^# ]] && continue
+        if ! grep -Eq "$pat" "$cpp"; then
+          echo -e "${A}(${base}.py)\tFAIL\tgolden mismatch: missing pattern '$pat'"
+          overall=1
+          tinsert_ok=0
+          break
+        fi
+      done < "${golden_file}"
+      if [[ ${tinsert_ok} -eq 0 ]]; then
+        continue
+      fi
+    fi
+
     if [[ "$base" == "fillpad" ]]; then
       if ! grep -Fq "TFILLPAD(" "$cpp"; then
         echo -e "${A}(${base}.py)\tFAIL\tmissing TFILLPAD() lowering for pto.tfillpad"
