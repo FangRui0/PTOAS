@@ -5812,14 +5812,14 @@ mlir::LogicalResult mlir::pto::TStoreFPOp::verify() {
 
   auto verifyDstType = [&]() -> LogicalResult {
     Type dstTy = getDst().getType();
-    if (!isa<MemRefType, pto::PartitionTensorViewType>(dstTy))
+    auto dstPart = dyn_cast<pto::PartitionTensorViewType>(dstTy);
+    if (!dstPart)
       return emitOpError()
-             << "expects dst to be a memref or !pto.partition_tensor_view";
-    if (auto dstPart = dyn_cast<pto::PartitionTensorViewType>(dstTy)) {
-      for (auto [idx, dim] : llvm::enumerate(dstPart.getShape())) {
-        if (dim != ShapedType::kDynamic && dim <= 0)
-          return emitOpError()
-                 << "expects dst shape[" << idx << "] to be positive";
+             << "expects dst to be !pto.partition_tensor_view";
+    for (auto [idx, dim] : llvm::enumerate(dstPart.getShape())) {
+      if (dim != ShapedType::kDynamic && dim <= 0) {
+        return emitOpError()
+               << "expects dst shape[" << idx << "] to be positive";
       }
     }
     return success();
