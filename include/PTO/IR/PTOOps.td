@@ -46,7 +46,7 @@ def ScalarPtrOrMemRef :
     "Ptr or MemRef in GM">;
 
 def ScalarType :
-  AnyTypeOf<[Index, AnySignlessInteger, AnyFloat], "numeric (index/integer/float)">;
+  AnyTypeOf<[AnySignlessInteger, AnyFloat], "numeric (integer/float)">;
 
 //===----------------------------------------------------------------------===//
 // Op Class
@@ -1353,7 +1353,7 @@ def TSetValOp : PTO_TOp<"tsetval", [
   let arguments = (ins
     PTODpsType:$dst,
     Index:$offset,
-    AnyType:$val
+    ScalarType:$val
   );
 
   let results = (outs);
@@ -1386,7 +1386,7 @@ def TGetValOp : PTO_TOp<"tgetval", [
     Index:$offset
   );
 
-  let results = (outs AnyType:$dst);
+  let results = (outs ScalarType:$dst);
 
   let hasVerifier = 1;
 
@@ -1583,7 +1583,7 @@ def TAddSCOp : PTO_TOp<"taddsc", [
   let summary = "dst = src0 + scalar + src1 ";
   let arguments = (ins
     PTODpsType:$src0,
-    AnyType:$scalar,
+    ScalarType:$scalar,
     PTODpsType:$src1,
     PTODpsType:$dst
   );
@@ -1669,7 +1669,7 @@ def TAndSOp : PTO_TOp<"tands", [
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TANDS(dst, src, scalar) bitwise-and tile with scalar";
-  let arguments = (ins PTODpsType:$src, AnyType:$scalar, PTODpsType:$dst);
+  let arguments = (ins PTODpsType:$src, AnySignlessInteger:$scalar, PTODpsType:$dst);
   let results = (outs);
 
   let assemblyFormat = [{
@@ -1760,7 +1760,7 @@ def TCmpSOp : PTO_TOp<"tcmps", [
 
   let arguments = (ins
     PTODpsType:$src,
-    AnyTypeOf<[AnyFloat, AnySignlessInteger, Index]>:$scalar,
+    ScalarType:$scalar,
     DefaultValuedAttr<PTO_CmpModeAttr, "::mlir::pto::CmpMode::EQ">:$cmpMode,
     PTODpsType:$dst
   );
@@ -2053,7 +2053,7 @@ def TDivSOp : PTO_TOp<"tdivs", [
 
   let arguments = (ins
     AnyType:$src,
-    AnyType:$scalar,
+    ScalarType:$scalar,
     PTODpsType:$dst
   );
 
@@ -2106,7 +2106,7 @@ def TExpandsOp : PTO_TOp<"texpands", [
   let summary = "Broadcast scalar into dst (tilebuf, DPS)";
 
   let arguments = (ins
-    AnyTypeOf<[F16, F32, I16, I32, I8, UI8, UI16, UI32]>:$scalar,
+    ScalarType:$scalar,
     PTODpsType:$dst
   );
 
@@ -2446,7 +2446,7 @@ def TMaxSOp : PTO_TOp<"tmaxs", [
 
   let arguments = (ins
     PTODpsType:$src,
-    F32:$scalar,
+    ScalarType:$scalar,
     PTODpsType:$dst
   );
 
@@ -2504,7 +2504,7 @@ def TMinSOp : PTO_TOp<"tmins", [
 
   let arguments = (ins
     PTODpsType:$src,
-    F32:$scalar,
+    ScalarType:$scalar,
     PTODpsType:$dst
   );
 
@@ -2630,7 +2630,7 @@ def TMulSOp: PTO_TOp<"tmuls", [
 
   let arguments = (ins
     PTODpsType:$src0,
-    F32:$scalar,
+    ScalarType:$scalar,
     PTODpsType:$dst
   );
 
@@ -3015,7 +3015,7 @@ def TRemSOp: PTO_TOp<"trems", [
 
   let arguments = (ins
     PTODpsType:$src,
-    F32:$scalar,
+    ScalarType:$scalar,
     PTODpsType:$dst
   );
 
@@ -3516,7 +3516,7 @@ def TShlSOp : PTO_TOp<"tshls", [
   let summary = "TSHLS: Elementwise shift-left of a tile by a scalar (shift count).";
   let arguments = (ins
     PTODpsType:$src,
-    AnyTypeOf<[AnyFloat, AnySignlessInteger, Index]>:$scalar,
+    AnySignlessInteger:$scalar,
     PTODpsType:$dst
   );
   let results = (outs);
@@ -3540,7 +3540,7 @@ def TShrSOp : PTO_TOp<"tshrs", [
   let summary = "TSHRS: Elementwise shift-right of a tile by a scalar (shift count).";
   let arguments = (ins
     PTODpsType:$src,
-    AnyTypeOf<[AnyFloat, AnySignlessInteger, Index]>:$scalar,
+    AnySignlessInteger:$scalar,
     PTODpsType:$dst
   );
   let results = (outs);
@@ -3765,7 +3765,7 @@ def TSubSCOp: PTO_TOp<"tsubsc", [
 
   let arguments = (ins
     PTODpsType:$src0,
-    F32:$scalar,
+    ScalarType:$scalar,
     PTODpsType:$src1,
     PTODpsType:$dst
   );
@@ -3804,7 +3804,7 @@ def TXorSOp: PTO_TOp<"txors", [
 
   let arguments = (ins
     PTODpsType:$src,
-    AnyInteger:$scalar,
+    AnySignlessInteger:$scalar,
     PTODpsType:$tmp,
     PTODpsType:$dst
   );

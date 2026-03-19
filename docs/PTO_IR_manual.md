@@ -2060,7 +2060,7 @@ For each element (i, j):
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile buffer containing the input data |
-| `scalar` | `ScalarType` (`index` / integer / f32) | Scalar value to add to each element |
+| `scalar` | `ScalarType` (signless integer / float) | Scalar value to add to each element |
 | `dst` | `pto.tile_buf` | Destination tile buffer for the result |
 
 **Results:** None. The operation writes results into `dst` following the Destination-Passing Style (DPS) pattern.
@@ -2120,7 +2120,7 @@ For each element (i, j):
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile buffer |
-| `scalar` | `ScalarType`| Scalar value to subtract |
+| `scalar` | `ScalarType` (signless integer / float) | Scalar value to subtract |
 | `dst` | `pto.tile_buf` | Destination tile buffer for the result |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -2179,7 +2179,7 @@ For each element (i, j):
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile buffer |
-| `scalar` | `F32` | Scalar multiplier |
+| `scalar` | `ScalarType` (signless integer / float) | Scalar multiplier |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -2239,7 +2239,7 @@ For each element (i, j):
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `AnyType` | Source tile buffer |
-| `scalar` | `AnyType` | Scalar divisor (or dividend in reverse mode) |
+| `scalar` | `ScalarType` (signless integer / float) | Scalar divisor (or dividend in reverse mode) |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -2314,7 +2314,7 @@ For each element (i, j):
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile buffer |
-| `scalar` | `F32` | Scalar value |
+| `scalar` | `ScalarType` (signless integer / float) | Scalar value |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -2373,7 +2373,7 @@ For each element (i, j):
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile buffer |
-| `scalar` | `F32` | Scalar value |
+| `scalar` | `ScalarType` (signless integer / float) | Scalar value |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -2432,7 +2432,7 @@ For each element (i, j):
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile buffer |
-| `scalar` | `F32` | Scalar divisor |
+| `scalar` | `ScalarType` (signless integer / float) | Scalar divisor |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -2617,7 +2617,7 @@ For each element (i, j):
 | Name | Type | Description |
 |------|------|-------------|
 | `src0` | `pto.tile_buf` | First source tile buffer |
-| `scalar` | `AnyType` | Scalar value |
+| `scalar` | `ScalarType` (signless integer / float) | Scalar value |
 | `src1` | `pto.tile_buf` | Second source tile buffer |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
@@ -2671,7 +2671,7 @@ For each element (i, j):
 | Name | Type | Description |
 |------|------|-------------|
 | `src0` | `pto.tile_buf` | First source tile buffer |
-| `scalar` | `F32` | Scalar value |
+| `scalar` | `ScalarType` (signless integer / float) | Scalar value |
 | `src1` | `pto.tile_buf` | Second source tile buffer |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
@@ -4126,7 +4126,7 @@ For each element (i, j):
 
 | Name | Type | Description |
 |------|------|-------------|
-| `scalar` | `AnyTypeOf<[F16, F32, I16, I32, I8, UI8, UI16, UI32]>` | Scalar value to broadcast |
+| `scalar` | `ScalarType` (signless integer / float) | Scalar value to broadcast |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -4265,7 +4265,7 @@ For each element (i, j):
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Tile operand |
-| `scalar` | `AnyFloat/AnyInteger/Index` | Scalar value to compare against |
+| `scalar` | `ScalarType` (signless integer / float)| Scalar value to compare against |
 | `cmpMode` | `CmpModeAttr` (default: EQ) | Comparison mode |
 | `dst` | `pto.tile_buf` | Destination mask |
 
@@ -4857,7 +4857,7 @@ For each element (i, j):
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile buffer |
-| `scalar` | `AnyType` | Scalar value |
+| `scalar` | `AnySignlessInteger` | Scalar value |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -4965,7 +4965,7 @@ For each element (i, j):
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile buffer |
-| `scalar` | `AnyInteger` | Scalar value |
+| `scalar` | `AnySignlessInteger` | Scalar value |
 | `tmp` | `pto.tile_buf` | Temporary scratch tile; required by the PTO IR DPS form |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
@@ -5858,7 +5858,7 @@ result = src[offset]
 | `src` | `pto.tile_buf` | Source tile |
 | `offset` | `Index` | Linear element offset |
 
-**Results:** Scalar value (`AnyType`)
+**Results:** Scalar value (`ScalarType`)
 
 **Constraints & Verification:**
 
@@ -5895,7 +5895,7 @@ dst[offset] = val
 |------|------|-------------|
 | `dst` | `pto.tile_buf` | Destination tile |
 | `offset` | `Index` | Linear element offset |
-| `val` | `AnyType` | Scalar value to write |
+| `val` | `ScalarType` (signless integer / float) | Scalar value to write |
 
 **Results:** None. Writes into `dst` via DPS pattern.
 
@@ -6490,7 +6490,7 @@ printf(format, scalar);
 | Name | Type | Description |
 |------|------|-------------|
 | `format` | `StrAttr` | Compile-time format string (e.g. `"%+08.3f"`); must be a literal attribute |
-| `scalar` | `index` / integer / f32 | Numeric value to print |
+| `ScalarType` (signless integer / float) | Numeric value to print |
 
 **Results:** None.
 
