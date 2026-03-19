@@ -188,6 +188,44 @@ def _is_static_event_id(event_id):
     return isinstance(event_id, _ods_ir.Attribute)
 
 
+def set_flag_dyn(src_pipe, dst_pipe, event_id, *, loc=None, ip=None):
+    """Low-level dynamic event-id set_flag helper."""
+    ctx = loc.context if loc else _ods_ir.Context.current
+    src_attr = _ensure_pipe_attr(src_pipe, ctx)
+    dst_attr = _ensure_pipe_attr(dst_pipe, ctx)
+    event_val = _pto_ops_gen._get_op_result_or_value(event_id)
+    if hasattr(_pto_ops_gen, "set_flag_dyn"):
+        return _pto_ops_gen.set_flag_dyn(
+            src_attr, dst_attr, event_val, loc=loc, ip=ip
+        )
+    return _ods_ir.Operation.create(
+        "pto.set_flag_dyn",
+        attributes={"src_pipe": src_attr, "dst_pipe": dst_attr},
+        operands=[event_val],
+        loc=loc,
+        ip=ip,
+    )
+
+
+def wait_flag_dyn(src_pipe, dst_pipe, event_id, *, loc=None, ip=None):
+    """Low-level dynamic event-id wait_flag helper."""
+    ctx = loc.context if loc else _ods_ir.Context.current
+    src_attr = _ensure_pipe_attr(src_pipe, ctx)
+    dst_attr = _ensure_pipe_attr(dst_pipe, ctx)
+    event_val = _pto_ops_gen._get_op_result_or_value(event_id)
+    if hasattr(_pto_ops_gen, "wait_flag_dyn"):
+        return _pto_ops_gen.wait_flag_dyn(
+            src_attr, dst_attr, event_val, loc=loc, ip=ip
+        )
+    return _ods_ir.Operation.create(
+        "pto.wait_flag_dyn",
+        attributes={"src_pipe": src_attr, "dst_pipe": dst_attr},
+        operands=[event_val],
+        loc=loc,
+        ip=ip,
+    )
+
+
 def set_flag(src_pipe, dst_pipe, event_id, *, loc=None, ip=None):
     """Unified low-level set_flag API.
 
@@ -201,13 +239,7 @@ def set_flag(src_pipe, dst_pipe, event_id, *, loc=None, ip=None):
         return _pto_ops_gen.set_flag(
             src_attr, dst_attr, _ensure_event_attr(event_id, ctx), loc=loc, ip=ip
         )
-    return _pto_ops_gen.set_flag_dyn(
-        src_attr,
-        dst_attr,
-        _pto_ops_gen._get_op_result_or_value(event_id),
-        loc=loc,
-        ip=ip,
-    )
+    return set_flag_dyn(src_attr, dst_attr, event_id, loc=loc, ip=ip)
 
 
 def wait_flag(src_pipe, dst_pipe, event_id, *, loc=None, ip=None):
@@ -223,13 +255,7 @@ def wait_flag(src_pipe, dst_pipe, event_id, *, loc=None, ip=None):
         return _pto_ops_gen.wait_flag(
             src_attr, dst_attr, _ensure_event_attr(event_id, ctx), loc=loc, ip=ip
         )
-    return _pto_ops_gen.wait_flag_dyn(
-        src_attr,
-        dst_attr,
-        _pto_ops_gen._get_op_result_or_value(event_id),
-        loc=loc,
-        ip=ip,
-    )
+    return wait_flag_dyn(src_attr, dst_attr, event_id, loc=loc, ip=ip)
 
 # -----------------------------------------------------------------------------
 # Inter-core sync helpers (pto.sync.set / pto.sync.wait / pto.set_ffts)

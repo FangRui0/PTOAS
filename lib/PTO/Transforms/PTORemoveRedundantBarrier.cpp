@@ -5,6 +5,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
  
 using namespace mlir;
 using namespace mlir::pto;
@@ -119,9 +120,14 @@ struct PTORemoveRedundantBarrierPass : public PassWrapper<PTORemoveRedundantBarr
         dst = setOp.getDstPipe();
         return true;
       }
-      if (auto setDynOp = dyn_cast<pto::SetFlagDynOp>(op)) {
-        src = setDynOp.getSrcPipe();
-        dst = setDynOp.getDstPipe();
+      StringRef opName = op->getName().getStringRef();
+      if (opName == "pto.set_flag_dyn" || opName == "pto.set_flag_d") {
+        auto srcAttr = op->getAttrOfType<pto::PipeAttr>("src_pipe");
+        auto dstAttr = op->getAttrOfType<pto::PipeAttr>("dst_pipe");
+        if (!srcAttr || !dstAttr)
+          return false;
+        src = srcAttr;
+        dst = dstAttr;
         return true;
       }
       return false;
@@ -132,8 +138,12 @@ struct PTORemoveRedundantBarrierPass : public PassWrapper<PTORemoveRedundantBarr
         dst = waitOp.getDstPipe();
         return true;
       }
-      if (auto waitDynOp = dyn_cast<pto::WaitFlagDynOp>(op)) {
-        dst = waitDynOp.getDstPipe();
+      StringRef opName = op->getName().getStringRef();
+      if (opName == "pto.wait_flag_dyn" || opName == "pto.wait_flag_d") {
+        auto dstAttr = op->getAttrOfType<pto::PipeAttr>("dst_pipe");
+        if (!dstAttr)
+          return false;
+        dst = dstAttr;
         return true;
       }
       return false;

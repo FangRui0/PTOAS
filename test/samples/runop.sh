@@ -358,7 +358,7 @@ process_one_dir() {
         overall=1
         continue
       fi
-      if ! grep -Fq "static_cast<event_t>" "$cpp"; then
+      if ! grep -Fq "static_cast<event_t>" "$cpp" && ! grep -Fq "(event_t)" "$cpp"; then
         echo -e "${A}(${base}.py)\tFAIL\tmissing dynamic event-id cast from unified API"
         overall=1
         continue
