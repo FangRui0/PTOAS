@@ -6802,6 +6802,12 @@ struct PTOTrapOpToEmitC : public OpConversionPattern<pto::TrapOp> {
 struct PTOBindTileToEmitC : public OpConversionPattern<pto::BindTileOp> {
   using OpConversionPattern::OpConversionPattern;
 
+  struct TileBuildSpec {
+    std::string tileTypeStr;
+    bool useConstructor = false;
+    SmallVector<Value> constructorArgs;
+  };
+
   static bool getIndexConst(Value v, int64_t &out) {
     if (!v)
       return false;
@@ -6835,8 +6841,7 @@ struct PTOBindTileToEmitC : public OpConversionPattern<pto::BindTileOp> {
       StringRef s = ot.getValue();
       return s.contains("Tile<") || s.contains("ConvTile<");
     };
-
-    auto buildTileValue = [&]() -> FailureOr<Value> {
+    auto buildTileSpec = [&]() -> FailureOr<TileBuildSpec> {
       auto resMrTy = dyn_cast<MemRefType>(op.getType());
       if (!resMrTy)
         return failure();
@@ -6990,12 +6995,16 @@ struct PTOBindTileToEmitC : public OpConversionPattern<pto::BindTileOp> {
                                 ", " + vrowTok + ", " + vcolTok + ", " + slTok +
                                 ", " + std::to_string(fractal) + ", " + padTok +
                                 ">";
+      return TileBuildSpec{tileTypeStr, useConstructor, constructorArgs};
+    };
 
-      auto tileType = emitc::OpaqueType::get(ctx, tileTypeStr);
-      if (useConstructor) {
+    auto buildTileValue = [&](const TileBuildSpec &spec) -> Value {
+      auto tileType = emitc::OpaqueType::get(ctx, spec.tileTypeStr);
+      if (spec.useConstructor) {
         return rewriter
-            .create<emitc::CallOpaqueOp>(loc, tileType, tileTypeStr, ArrayAttr{},
-                                         ArrayAttr{}, ValueRange(constructorArgs))
+            .create<emitc::CallOpaqueOp>(loc, tileType, spec.tileTypeStr,
+                                         ArrayAttr{}, ArrayAttr{},
+                                         ValueRange(spec.constructorArgs))
             .getResult(0);
       }
 
@@ -7071,47 +7080,60 @@ struct PTOBindTileToEmitC : public OpConversionPattern<pto::BindTileOp> {
     Value tileCandidate = peelAllCasts(adaptor.getSource());
     if (viewSemantics && viewSemantics.getValue() == "bitcast" &&
         isTileLike(tileCandidate)) {
-      FailureOr<Value> dstTile = buildTileValue();
-      if (failed(dstTile))
+      FailureOr<TileBuildSpec> tileSpec = buildTileSpec();
+      if (failed(tileSpec))
         return failure();
+      Value dstTile = buildTileValue(*tileSpec);
       FailureOr<Value> addr = buildIntegralAddress(tileCandidate);
       if (failed(addr))
         return failure();
 
       rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "TASSIGN",
                                            ArrayAttr{}, ArrayAttr{},
-                                           ValueRange{*dstTile, *addr});
-      rewriter.replaceOp(op, *dstTile);
+                                           ValueRange{dstTile, *addr});
+      rewriter.replaceOp(op, dstTile);
       return success();
     }
 
     if (viewSemantics && viewSemantics.getValue() == "treshape" &&
         isTileLike(tileCandidate)) {
-      FailureOr<Value> dstTile = buildTileValue();
-      if (failed(dstTile))
+      FailureOr<TileBuildSpec> tileSpec = buildTileSpec();
+      if (failed(tileSpec))
         return failure();
+      Value dstTile = buildTileValue(*tileSpec);
 
       rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "TRESHAPE",
                                            ArrayAttr{}, ArrayAttr{},
-                                           ValueRange{*dstTile, tileCandidate});
-      rewriter.replaceOp(op, *dstTile);
+                                           ValueRange{dstTile, tileCandidate});
+      rewriter.replaceOp(op, dstTile);
       return success();
     }
 
     // Generic tile-to-tile rebind path: preserve the same backing storage and
     // rebuild a sibling tile with updated metadata/valid dims.
     if (isTileLike(tileCandidate)) {
-      FailureOr<Value> dstTile = buildTileValue();
-      if (failed(dstTile))
+      FailureOr<TileBuildSpec> tileSpec = buildTileSpec();
+      if (failed(tileSpec))
         return failure();
+
+      if (!tileSpec->useConstructor) {
+        if (auto srcTy = dyn_cast<emitc::OpaqueType>(tileCandidate.getType())) {
+          if (srcTy.getValue() == tileSpec->tileTypeStr) {
+            rewriter.replaceOp(op, tileCandidate);
+            return success();
+          }
+        }
+      }
+
+      Value dstTile = buildTileValue(*tileSpec);
       FailureOr<Value> addr = buildIntegralAddress(tileCandidate);
       if (failed(addr))
         return failure();
 
       rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "TASSIGN",
                                            ArrayAttr{}, ArrayAttr{},
-                                           ValueRange{*dstTile, *addr});
-      rewriter.replaceOp(op, *dstTile);
+                                           ValueRange{dstTile, *addr});
+      rewriter.replaceOp(op, dstTile);
       return success();
     }
 
