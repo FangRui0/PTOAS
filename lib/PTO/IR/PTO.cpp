@@ -211,21 +211,48 @@ static bool isGmAddressSpaceAttr(Attribute memorySpace) {
   return false;
 }
 
-static VerifierTargetArch getVerifierTargetArch(Operation *op) {
-  auto module = op ? op->getParentOfType<ModuleOp>() : ModuleOp();
+PTOArch mlir::pto::getTargetArch(ModuleOp module) {
   if (!module)
-    return VerifierTargetArch::A2A3;
-  auto arch = module->getAttrOfType<StringAttr>("pto.target_arch");
+    return PTOArch::A3;
+
+  auto arch = module->getAttrOfType<StringAttr>(kPTOTargetArchAttrName);
   if (arch && arch.getValue().equals_insensitive("a5"))
-    return VerifierTargetArch::A5;
-  return VerifierTargetArch::A2A3;
+    return PTOArch::A5;
+  return PTOArch::A3;
+}
+
+PTOArch mlir::pto::getTargetArch(Operation *op) {
+  if (!op)
+    return PTOArch::A3;
+  return getTargetArch(op->getParentOfType<ModuleOp>());
+}
+
+bool mlir::pto::isTargetArchA3(ModuleOp module) {
+  return getTargetArch(module) == PTOArch::A3;
+}
+
+bool mlir::pto::isTargetArchA5(ModuleOp module) {
+  return getTargetArch(module) == PTOArch::A5;
+}
+
+bool mlir::pto::isTargetArchA3(Operation *op) {
+  return getTargetArch(op) == PTOArch::A3;
+}
+
+bool mlir::pto::isTargetArchA5(Operation *op) {
+  return getTargetArch(op) == PTOArch::A5;
+}
+
+static VerifierTargetArch getVerifierTargetArch(Operation *op) {
+  return isTargetArchA5(op) ? VerifierTargetArch::A5
+                            : VerifierTargetArch::A2A3;
 }
 
 static std::optional<StringRef> getVerifierArchName(Operation *op) {
   auto module = op ? op->getParentOfType<ModuleOp>() : ModuleOp();
   if (!module)
     return std::nullopt;
-  if (auto arch = module->getAttrOfType<StringAttr>("pto.target_arch"))
+  if (auto arch = module->getAttrOfType<StringAttr>(kPTOTargetArchAttrName))
     return arch.getValue();
   return std::nullopt;
 }

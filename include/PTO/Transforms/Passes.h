@@ -30,11 +30,6 @@ namespace pto {
 #define GEN_PASS_DECL
 #include "PTO/Transforms/Passes.h.inc"
 
-enum class PTOArch {
-  A3,
-  A5,
-};
-
 std::unique_ptr<Pass> createLoweringSyncToPipePass();
 std::unique_ptr<Pass> createPTOLowerFrontendPipeOpsPass();
 std::unique_ptr<Pass> createPTOResolveReservedBuffersPass();
