@@ -2861,29 +2861,38 @@ def TFillPadExpandOp : PTO_TOp<"tfillpad_expand", [
 }
 
 def TGatherOp : PTO_TOp<"tgather", [
+  AttrSizedOperandSegments,
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
-  let summary = "Gather/select elements using an index tile or a mask pattern (tilebuf, DPS)";
+  let summary = "Gather/select elements using index+tmp, scalar-compare+tmp, or a mask pattern (tilebuf, DPS)";
 
-  // --- operands (DPS): src0 + optional indices + outs(dst) ---
   let arguments = (ins
     PTODpsType:$src,
     PTODpsType:$dst,
+    Optional<PTODpsType>:$cdst,
     Optional<PTODpsType>:$indices,
-    OptionalAttr<PTO_MaskPatternAttr>:$maskPattern
+    Optional<PTODpsType>:$tmp,
+    Optional<ScalarType>:$kValue,
+    OptionalAttr<PTO_MaskPatternAttr>:$maskPattern,
+    OptionalAttr<PTO_CmpModeAttr>:$cmpMode,
+    OptionalAttr<I32Attr>:$offset
   );
 
-  // --- DPS op: no SSA results ---
   let results = (outs);
 
   let hasVerifier = 1;
   let hasCustomAssemblyFormat = 1;
 
   let extraClassDeclaration = [{
+    bool hasCompareForm() { return static_cast<bool>(getCdst()) || static_cast<bool>(getKValue()); }
+    bool hasIndexForm() { return static_cast<bool>(getIndices()); }
+    bool hasMaskForm() { return static_cast<bool>(getMaskPatternAttr()); }
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
-    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+    ::mlir::MutableOperandRange getDpsInitsMutable() {
+      return ::mlir::MutableOperandRange(getOperation(), 1, 1 + (getCdst() ? 1 : 0));
+    }
   }];
 }
 
