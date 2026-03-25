@@ -2,26 +2,26 @@
 
 本文档说明如何在**没有 `/dev/davinci*` 设备节点**的机器上，使用 `ptoas + CANN(bisheng) + pto-isa` 对生成的 `.cpp` 做**仅编译验证**。
 
-适用场景：
+本文档适用于以下场景：
 
 - 本地开发机没有 NPU 卡，只想验证 `ptoas` 生成的 C++ 能否通过 `bisheng` 编译。
 - CI 或评审机只有 CANN 工具链，没有运行环境，不需要执行 kernel。
-- 想在上板前先做一轮 host-side compile-only 筛查。
+- 需要在上板前完成一轮 host-side compile-only 预检查。
 
-不适用场景：
+本文档不适用于以下场景：
 
 - 需要真正执行 kernel。
 - 需要生成 golden 并做数值比对。
 - 需要验证运行时 ACL / 驱动 / 权限问题。
 
-## 1. 结论先说
+## 1. 概述
 
 - **可以**在无卡环境做 compile-only。
 - 需要的不是 NPU 卡，而是：
   - `bisheng` 可用
   - `ASCEND_HOME_PATH` 正确
   - `pto-isa` 头文件和公共测试头可用
-- `STAGE=build` 不会检查 `/dev/davinci*`，因此可以直接复用现有验证脚本。
+- `STAGE=build` 不会检查 `/dev/davinci*`，因此可以复用现有验证脚本完成编译验证。
 - A5 case 对 `CANN` 与 `pto-isa` 版本对齐更敏感；如果遇到 A5 静态检查或头文件命名空间错误，需要优先检查版本匹配，而不是默认认为 `ptoas` 代码生成有问题。
 
 ## 2. 依赖准备
@@ -76,7 +76,7 @@ ls $PTO_ISA_ROOT/tests/common
 
 ## 3. 单个 case 的 compile-only
 
-### 3.1 先用 ptoas 生成 `.cpp`
+### 3.1 使用 ptoas 生成 `.cpp`
 
 ```bash
 ./build/tools/ptoas/ptoas test/basic/example.pto -o /tmp/example-pto.cpp
@@ -112,7 +112,7 @@ python3 test/npu_validation/scripts/generate_testcase.py \
         └── ...
 ```
 
-### 3.3 只编译，不运行
+### 3.3 执行编译验证
 
 ```bash
 cd /tmp/ptoas_compile_only/<sample_name>/example
@@ -124,9 +124,9 @@ cmake --build build --parallel
 
 这里不会访问 `/dev/davinci*`，因此无卡环境也可以完成。
 
-## 4. 复用仓库脚本做批量 compile-only
+## 4. 批量编译验证流程
 
-如果你已经有一批 `*-pto.cpp`，最省事的方法不是自己写循环，而是直接复用：
+对于一批已经生成的 `*-pto.cpp`，建议直接复用仓库中的现有脚本：
 
 - `test/npu_validation/scripts/run_remote_npu_validation.sh`
 
@@ -156,9 +156,9 @@ export LD_LIBRARY_PATH="$LLVM_BUILD_DIR/lib:$PTO_INSTALL_DIR/lib:${LD_LIBRARY_PA
 bash test/samples/runop.sh --enablebc all
 ```
 
-### 4.2 批量 compile-only
+### 4.2 批量执行 compile-only
 
-如果当前目录已经准备好 `test/samples/**/*.cpp`，直接运行：
+如果当前目录已经准备好 `test/samples/**/*.cpp`，可以执行：
 
 ```bash
 export STAGE=build
@@ -172,7 +172,7 @@ bash test/npu_validation/scripts/run_remote_npu_validation.sh
 
 如果本地已经有 vendored 的 `pto-isa/` 目录，也可以不走网络 clone，脚本会优先使用本地目录。
 
-### 4.3 只编特定 case
+### 4.3 指定测试用例
 
 ```bash
 export STAGE=build
@@ -180,7 +180,7 @@ export RUN_ONLY_CASES=abs,gather,scatter
 bash test/npu_validation/scripts/run_remote_npu_validation.sh
 ```
 
-### 4.4 跳过已知问题 case
+### 4.4 排除特定测试用例
 
 ```bash
 export STAGE=build
@@ -190,7 +190,7 @@ bash test/npu_validation/scripts/run_remote_npu_validation.sh
 
 ## 5. A3 / A5 的注意事项
 
-### 5.1 A3 通常更稳
+### 5.1 A3 目标
 
 A3 compile-only 一般只要求：
 
@@ -198,7 +198,7 @@ A3 compile-only 一般只要求：
 - `bisheng` 可用
 - `pto-isa` include 对齐
 
-### 5.2 A5 更依赖版本对齐
+### 5.2 A5 目标
 
 A5 case 常见两类失败：
 
@@ -210,7 +210,7 @@ A5 case 常见两类失败：
 no member named 'RoundZType' in namespace '__cce_simd'
 ```
 
-这类问题通常不是 `.cpp` 语法本身错误，而是当前 `CANN` 与 `pto-isa` 的 A5 头文件接口不一致。
+此类问题通常不是 `.cpp` 语法本身错误，而是当前 `CANN` 与 `pto-isa` 的 A5 头文件接口不一致。
 
 建议处理顺序：
 
@@ -231,9 +231,9 @@ static assertion failed: Non-conforming matrix fractal
 - tile layout / fractal / pad 与 A5 要求不一致
 - 或者 `.py/.pto` 中的 A5 配置在 lowering 过程中被改写了
 
-这种情况需要检查生成出来的 `Tile<...>` 模板参数，而不是只看前端输入。
+此类情况需要检查生成出来的 `Tile<...>` 模板参数，而不是只看前端输入。
 
-## 6. 推荐排障顺序
+## 6. 排障建议
 
 出现 compile-only 失败时，按下面顺序看：
 
@@ -244,7 +244,7 @@ static assertion failed: Non-conforming matrix fractal
 5. 确认生成 `.cpp` 时使用的 `--pto-arch` 是否正确
 6. 对 A5 case，直接看生成的 `Tile<...>` 参数是否已经偏离预期
 
-## 7. 边界说明
+## 7. 说明与限制
 
 compile-only 能证明的是：
 
@@ -257,7 +257,7 @@ compile-only **不能**证明：
 - 输出数值一定正确
 - 自动同步 / event 分配在真机上一定不会死锁
 
-因此更合理的验证顺序是：
+建议采用以下验证顺序：
 
 1. 本地或无卡机先做 compile-only
 2. 通过后再上板做 `STAGE=run`
