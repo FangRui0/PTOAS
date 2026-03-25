@@ -370,15 +370,21 @@ PYBIND11_MODULE(_pto, m) {
       .def_classmethod(
           "get",
           [](py::object cls, py::object value, MlirContext ctx) -> py::object {
-            int32_t v = 0;
+            MlirAttribute a{nullptr};
             if (py::isinstance<py::int_>(value)) {
-              v = py::cast<int32_t>(value);
+              int32_t v = py::cast<int32_t>(value);
+              a = mlirPTOMaskPatternAttrGet(ctx, v);
+              if (mlirAttributeIsNull(a))
+                throw std::runtime_error(
+                    "MaskPatternAttr.get(int, ...) only accepts legacy raw values {0,3,4,5}; "
+                    "pass pto.MaskPattern enum members for ISA-aligned values");
             } else if (py::hasattr(value, "value")) {
-              v = value.attr("value").cast<int32_t>();
+              auto v =
+                  static_cast<MlirPTOMaskPattern>(value.attr("value").cast<int32_t>());
+              a = mlirPTOMaskPatternAttrGetEnum(ctx, v);
             } else {
               throw std::runtime_error("MaskPatternAttr.get expects int or MaskPattern enum");
             }
-            MlirAttribute a = mlirPTOMaskPatternAttrGet(ctx, v);
             if (mlirAttributeIsNull(a)) return py::none();
             return cls.attr("__call__")(a);
           },

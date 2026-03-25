@@ -93,6 +93,17 @@ MLIR_CAPI_EXPORTED int32_t mlirPTOEventAttrGetValue(MlirAttribute attr);
 MLIR_CAPI_EXPORTED MlirAttribute mlirPTOMaskPatternAttrGet(MlirContext ctx, int32_t value);
 MLIR_CAPI_EXPORTED bool mlirPTOAttrIsAMaskPatternAttr(MlirAttribute attr);
 MLIR_CAPI_EXPORTED int32_t mlirPTOMaskPatternAttrGetValue(MlirAttribute attr);
+typedef enum MlirPTOMaskPattern {
+  MlirPTOMaskPattern_P0101 = 1,
+  MlirPTOMaskPattern_P1010 = 2,
+  MlirPTOMaskPattern_P0001 = 3,
+  MlirPTOMaskPattern_P0010 = 4,
+  MlirPTOMaskPattern_P0100 = 5,
+  MlirPTOMaskPattern_P1000 = 6,
+  MlirPTOMaskPattern_P1111 = 7,
+} MlirPTOMaskPattern;
+MLIR_CAPI_EXPORTED MlirAttribute mlirPTOMaskPatternAttrGetEnum(MlirContext ctx, MlirPTOMaskPattern value);
+MLIR_CAPI_EXPORTED MlirPTOMaskPattern mlirPTOMaskPatternAttrGetEnumValue(MlirAttribute attr);
 
 // ---- CmpMode (compare mode for cmp/cvt) ----
 typedef enum MlirPTOCmpMode {
