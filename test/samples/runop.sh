@@ -769,7 +769,7 @@ PY
     # Regression guard for row-reduction kernels:
     # (32 x 1) row-major outputs are minor-2D ambiguous; layout must align with
     # row-major tiles (ND), otherwise pto-isa can hit layout/tile static_assert.
-    if [[ "$base" == "rowmin" || "$base" == "rowsum" || "$base" == "rowmax" ]]; then
+    if [[ "$base" == "rowmin" || "$base" == "rowsum" || "$base" == "rowmax" || "$base" == "rowprod" ]]; then
       if ! grep -Eq "pto::Shape<1, 1, 1, 32, 1>.*pto::Layout::ND" "$cpp"; then
         echo -e "${A}(${base}.py)\tFAIL\texpected pto::Layout::ND for shape (32 x 1) GlobalTensor"
         overall=1

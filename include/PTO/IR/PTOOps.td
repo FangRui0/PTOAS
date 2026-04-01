@@ -2301,6 +2301,35 @@ def TColExpandOp : PTO_TOp<"tcolexpand", [
   }];
 }
 
+def TColExpandAddOp : PTO_TOp<"tcolexpandadd", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Column-wise broadcast add: add a per-column scalar vector src1 to src0 ";
+
+  let arguments = (ins
+    PTODpsType:$src0,
+    PTODpsType:$src1,
+    PTODpsType:$dst
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+  }];
+
+  let assemblyFormat = [{
+    `ins` `(` $src0 `,` $src1 `:` qualified(type($src0)) `,` qualified(type($src1)) `)`
+    `outs` `(` $dst `:` qualified(type($dst) ) `)`
+    attr-dict
+  }];
+}
+
 def TColExpandMulOp : PTO_TOp<"tcolexpandmul", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
@@ -2365,6 +2394,35 @@ def TColExpandSubOp : PTO_TOp<"tcolexpandsub", [
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Column-wise broadcast subtract: subtract a per-column scalar vector src1 from src0 ";
+
+  let arguments = (ins
+    PTODpsType:$src0,
+    PTODpsType:$src1,
+    PTODpsType:$dst
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+  }];
+
+  let assemblyFormat = [{
+    `ins` `(` $src0 `,` $src1 `:` qualified(type($src0)) `,` qualified(type($src1)) `)`
+    `outs` `(` $dst `:` qualified(type($dst) ) `)`
+    attr-dict
+  }];
+}
+
+def TColExpandExpdifOp : PTO_TOp<"tcolexpandexpdif", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Column-wise broadcast expdif: compute exp(src0 - src1) using a per-column scalar vector src1 ";
 
   let arguments = (ins
     PTODpsType:$src0,
@@ -2530,6 +2588,34 @@ def TColSumOp : PTO_TOp<"tcolsum", [
   }];
 }
 
+def TColProdOp : PTO_TOp<"tcolprod", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Reduce each column by multiplying across rows";
+
+  let arguments = (ins
+    PTODpsType:$src,
+    PTODpsType:$dst
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+  }];
+
+  let assemblyFormat = [{
+    `ins` `(` $src `:` qualified(type($src)) `)`
+    `outs` `(` $dst `:` qualified(type($dst) ) `)`
+    attr-dict
+  }];
+}
+
 def TCvtOp : PTO_TOp<"tcvt", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
@@ -2617,6 +2703,64 @@ def TDivSOp : PTO_TOp<"tdivs", [
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
 
+}
+
+def TFModOp : PTO_TOp<"tfmod", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Elementwise fmod/remainder of two tiles (tilebuf, DPS)";
+
+  let arguments = (ins
+    PTODpsType:$src0,
+    PTODpsType:$src1,
+    PTODpsType:$dst
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+  }];
+
+  let assemblyFormat = [{
+    `ins` `(` $src0 `,` $src1 `:` qualified(type($src0)) `,` qualified(type($src1)) `)`
+    `outs` `(` $dst `:` qualified(type($dst) ) `)`
+    attr-dict
+  }];
+}
+
+def TFModSOp : PTO_TOp<"tfmods", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Elementwise fmod/remainder with a scalar (tilebuf, DPS)";
+
+  let arguments = (ins
+    PTODpsType:$src,
+    ScalarType:$scalar,
+    PTODpsType:$dst
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `ins` `(` $src `,` $scalar `:` qualified(type($src)) `,` type($scalar) `)`
+    `outs` `(` $dst `:` qualified(type($dst) ) `)`
+    attr-dict
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+  }];
 }
 
 def TExpOp : PTO_TOp<"texp", [
@@ -3835,6 +3979,93 @@ def TRowExpandAddOp: PTO_TOp<"trowexpandadd", [
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
 }
+
+def TRowExpandExpdifOp: PTO_TOp<"trowexpandexpdif", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "TROWEXPANDEXPDIF: Row-wise broadcast expdif with per-row scalar vector.";
+  let description = [{
+    pto-isa has overloads with/without tmp on A2/A3; A5 supports the 3-operand form only.
+  }];
+
+  let arguments = (ins
+    PTODpsType:$src0,
+    PTODpsType:$src1,
+    Optional<PTODpsType>:$tmp,
+    PTODpsType:$dst
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let hasCustomAssemblyFormat = 1;
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+  }];
+}
+
+def TRowExpandMaxOp: PTO_TOp<"trowexpandmax", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "TROWEXPANDMAX: Row-wise broadcast max with per-row scalar vector.";
+  let description = [{
+    pto-isa has overloads with/without tmp on A2/A3; A5 supports the 3-operand form only.
+  }];
+
+  let arguments = (ins
+    PTODpsType:$src0,
+    PTODpsType:$src1,
+    Optional<PTODpsType>:$tmp,
+    PTODpsType:$dst
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let hasCustomAssemblyFormat = 1;
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+  }];
+}
+
+def TRowExpandMinOp: PTO_TOp<"trowexpandmin", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "TROWEXPANDMIN: Row-wise broadcast min with per-row scalar vector.";
+  let description = [{
+    pto-isa has overloads with/without tmp on A2/A3; A5 supports the 3-operand form only.
+  }];
+
+  let arguments = (ins
+    PTODpsType:$src0,
+    PTODpsType:$src1,
+    Optional<PTODpsType>:$tmp,
+    PTODpsType:$dst
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let hasCustomAssemblyFormat = 1;
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+  }];
+}
 //===----------------------------------------------------------------------===//
 // PTOOps.td  (add TROWMAX TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
@@ -3909,6 +4140,35 @@ def TRowSumOp: PTO_TOp<"trowsum", [
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TROWSUM: Reduce each row by summing across columns.";
+
+  let arguments = (ins
+    PTODpsType:$src,
+    PTODpsType:$tmp,
+    PTODpsType:$dst
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `ins` `(` $src `,` $tmp `:` qualified(type($src)) `,` qualified(type($tmp)) `)`
+    `outs` `(` $dst `:` qualified(type($dst) ) `)`
+    attr-dict
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+  }];
+}
+
+def TRowProdOp: PTO_TOp<"trowprod", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "TROWPROD: Reduce each row by multiplying across columns.";
 
   let arguments = (ins
     PTODpsType:$src,
