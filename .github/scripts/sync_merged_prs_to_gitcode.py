@@ -266,6 +266,37 @@ def commit_parent_count(repo_dir: str, commit: str) -> int:
     return max(0, len(parts) - 1)
 
 
+def conflicted_files(repo_dir: str) -> list[str]:
+    result = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=U"],
+        cwd=repo_dir,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def auto_drop_github_conflicts(repo_dir: str) -> bool:
+    paths = conflicted_files(repo_dir)
+    if not paths or any(not path.startswith(".github/") for path in paths):
+        return False
+
+    for path in paths:
+        log(f"Auto-resolving .github conflict by deleting {path}")
+        subprocess.run(
+            ["git", "rm", "-f", "--", path],
+            cwd=repo_dir,
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+
+    return not conflicted_files(repo_dir)
+
+
 def is_gitcode_pr_merged(pr: dict) -> bool:
     return bool(pr.get("merged_at")) or pr.get("state") == "merged"
 
@@ -283,6 +314,78 @@ def extract_sync_numbers(pr: dict) -> set[int]:
         numbers.add(int(legacy.group(2)))
 
     return numbers
+
+
+def extract_sync_numbers_from_history_text(text: str) -> set[int]:
+    numbers: set[int] = set()
+    numbers.update(int(match.group(1)) for match in re.finditer(r"\[GH PR #(\d+)\]\b", text))
+    numbers.update(
+        int(match.group(1))
+        for match in re.finditer(
+            r"<!-- github-pr-sync-item:(?:[^#]+/[^#]+)#(\d+) -->",
+            text,
+        )
+    )
+    numbers.update(
+        int(match.group(1))
+        for match in re.finditer(r"(?m)^\s*-\s+#(\d+):", text)
+    )
+    return numbers
+
+
+def fetch_remote_branch_if_needed(repo_dir: str, branch: str) -> str | None:
+    remote_ref = f"refs/remotes/origin/{branch}"
+    if git_ref_exists(repo_dir, remote_ref):
+        return remote_ref
+
+    fetched = subprocess.run(
+        ["git", "fetch", "origin", f"+refs/heads/{branch}:{remote_ref}"],
+        cwd=repo_dir,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if fetched.returncode == 0 and git_ref_exists(repo_dir, remote_ref):
+        return remote_ref
+    return None
+
+
+def collect_sync_numbers_from_history(branches: set[str]) -> dict[str, set[int]]:
+    if not branches:
+        return {}
+
+    branch_numbers: dict[str, set[int]] = {}
+    with tempfile.TemporaryDirectory() as tempdir:
+        run(["git", "clone", "--filter=blob:none", "--no-checkout", GITCODE_REPO_SSH, tempdir])
+
+        for branch in sorted(branches):
+            remote_ref = fetch_remote_branch_if_needed(tempdir, branch)
+            if remote_ref is None:
+                continue
+
+            logged = subprocess.run(
+                [
+                    "git",
+                    "log",
+                    "--format=%B%x00",
+                    "--grep=^\\[GH PR #",
+                    "--grep=^\\[Batch Sync\\] GitHub PR #",
+                    "--grep=^\\s*-\\s*#\\d+:",
+                    "--grep=<!-- github-pr-sync-item:",
+                    "--extended-regexp",
+                    remote_ref,
+                ],
+                cwd=tempdir,
+                check=False,
+                text=True,
+                capture_output=True,
+            )
+            if logged.returncode != 0:
+                continue
+
+            branch_numbers[branch] = extract_sync_numbers_from_history_text(logged.stdout)
+
+    return branch_numbers
 
 
 def pr_head_ref(pr: dict) -> str:
@@ -358,6 +461,7 @@ def baseline_merged_at() -> datetime | None:
 def collect_gitcode_sync_state() -> tuple[set[int], dict[str, OpenBatchPR]]:
     synced_numbers: set[int] = set()
     open_pr_by_base: dict[str, OpenBatchPR] = {}
+    batch_prs: list[tuple[dict, str, str]] = []
     page = 1
 
     while True:
@@ -376,27 +480,36 @@ def collect_gitcode_sync_state() -> tuple[set[int], dict[str, OpenBatchPR]]:
             if not is_batch_sync_pr(pr):
                 continue
 
-            numbers = extract_sync_numbers(pr)
-
-            if is_gitcode_pr_merged(pr):
-                synced_numbers.update(numbers)
-                continue
-
-            if pr.get("state") == "open":
-                base_ref = pr["base"]["ref"]
-                head_ref = pr_head_ref(pr)
-                if not head_ref:
-                    head_ref = batch_branch_for(base_ref)
-                current = open_pr_by_base.get(base_ref)
-                candidate = OpenBatchPR(
-                    number=pr["number"],
-                    head_ref=head_ref,
-                    included_numbers=tuple(sorted(numbers)),
-                )
-                if current is None or pr["number"] > current.number:
-                    open_pr_by_base[base_ref] = candidate
+            base_ref = pr["base"]["ref"]
+            head_ref = pr_head_ref(pr) or batch_branch_for(base_ref)
+            batch_prs.append((pr, base_ref, head_ref))
 
         page += 1
+
+    history_refs = {base_ref for pr, base_ref, _ in batch_prs if is_gitcode_pr_merged(pr)}
+    history_refs.update(
+        head_ref for pr, _, head_ref in batch_prs if pr.get("state") == "open" and head_ref
+    )
+    history_numbers = collect_sync_numbers_from_history(history_refs)
+
+    for pr, base_ref, head_ref in batch_prs:
+        numbers = extract_sync_numbers(pr)
+
+        if is_gitcode_pr_merged(pr):
+            numbers.update(history_numbers.get(base_ref, set()))
+            synced_numbers.update(numbers)
+            continue
+
+        if pr.get("state") == "open":
+            numbers.update(history_numbers.get(head_ref, set()))
+            current = open_pr_by_base.get(base_ref)
+            candidate = OpenBatchPR(
+                number=pr["number"],
+                head_ref=head_ref,
+                included_numbers=tuple(sorted(numbers)),
+            )
+            if current is None or pr["number"] > current.number:
+                open_pr_by_base[base_ref] = candidate
 
     return synced_numbers, open_pr_by_base
 
@@ -490,6 +603,24 @@ def commit_one_pr(repo_dir: str, pr: dict) -> bool:
         capture_output=True,
     )
     if cherry_pick.returncode != 0:
+        if auto_drop_github_conflicts(repo_dir):
+            log("Resolved .github-only cherry-pick conflicts by deleting conflicted files")
+        else:
+            subprocess.run(
+                ["git", "cherry-pick", "--abort"],
+                cwd=repo_dir,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            details = (cherry_pick.stderr or cherry_pick.stdout or "").strip()
+            if not details:
+                details = "cherry-pick failed with conflicts"
+            raise RuntimeError(
+                f"Unable to apply merged commit {merged_sha} for GitHub PR #{pr['number']}: {details}"
+            )
+
+    if conflicted_files(repo_dir):
         subprocess.run(
             ["git", "cherry-pick", "--abort"],
             cwd=repo_dir,
@@ -568,11 +699,14 @@ def apply_batch_to_gitcode(batch: BatchTarget) -> tuple[bool, str, list[dict], l
         gitcode_base_ref = resolve_gitcode_base_branch(tempdir, batch.gitcode_base_ref)
         local_branch = batch_branch_for(gitcode_base_ref)
         push_ref = batch.open_gitcode_pr.head_ref if batch.open_gitcode_pr and not FORCE_RESYNC else batch_branch_for(gitcode_base_ref)
-        if batch.open_gitcode_pr and not FORCE_RESYNC:
-            run(
-                ["git", "fetch", "origin", f"+refs/heads/{push_ref}:refs/remotes/origin/{push_ref}"],
-                cwd=tempdir,
-            )
+        existing_sync_branch = subprocess.run(
+            ["git", "fetch", "origin", f"+refs/heads/{push_ref}:refs/remotes/origin/{push_ref}"],
+            cwd=tempdir,
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        if not FORCE_RESYNC and existing_sync_branch.returncode == 0:
             run(
                 ["git", "checkout", "-B", local_branch, f"refs/remotes/origin/{push_ref}"],
                 cwd=tempdir,
