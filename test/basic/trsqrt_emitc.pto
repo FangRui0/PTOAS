@@ -18,4 +18,5 @@ module {
 // A3: pto.trsqrt ins([[SRC1:%[0-9]+]], [[TMP:%[0-9]+]] : memref<1x16xf16
 // A3: outs([[DST1:%[0-9]+]] : memref<1x16xf16
 // A3: TRSQRT([[VDST0:v[0-9]+]], [[VSRC0:v[0-9]+]]);
-// A3: TRSQRT([[VDST1:v[0-9]+]], [[VSRC1:v[0-9]+]], [[VTMP:v[0-9]+]]);
+// A3: Event<Op::TLOAD, Op::TRSQRT> [[VEVT:v[0-9]+]];
+// A3: TRSQRT([[VDST1:v[0-9]+]], [[VSRC1:v[0-9]+]], [[VTMP:v[0-9]+]], [[VEVT]]);

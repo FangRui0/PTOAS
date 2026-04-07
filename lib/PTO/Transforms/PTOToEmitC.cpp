@@ -7581,8 +7581,19 @@ struct PTORsqrtToEmitC : public OpConversionPattern<pto::TRsqrtOp> {
     Value src = peelUnrealized(adaptor.getSrc());
     Value dst = peelUnrealized(adaptor.getDst());
     SmallVector<Value, 3> operands{dst, src};
-    if (Value tmp = adaptor.getTmp())
-      operands.push_back(peelUnrealized(tmp));
+    if (Value tmp = adaptor.getTmp()) {
+      Value peeledTmp = peelUnrealized(tmp);
+      operands.push_back(peeledTmp);
+      auto *ctx = rewriter.getContext();
+      auto eventTy =
+          emitc::OpaqueType::get(ctx, "Event<Op::TLOAD, Op::TRSQRT>");
+      Value event =
+          rewriter
+              .create<emitc::VariableOp>(loc, eventTy,
+                                         emitc::OpaqueAttr::get(ctx, ""))
+              .getResult();
+      operands.push_back(event);
+    }
     rewriter.create<emitc::CallOpaqueOp>(
         loc, TypeRange{}, "TRSQRT",
         /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
