@@ -1483,12 +1483,8 @@ def generate_testcase(
         mem_base_define = "REGISTER_BASE"
 
     # CCE printing support is gated behind `--cce-enable-print` on some bisheng
-    # toolchains. Enable it when kernels emit printf. For the rmsnorm A5 repro
-    # we also support a compile-only toggle (without injecting debug prints) to
-    # isolate toolchain-flag impact from IR instruction changes.
+    # toolchains. Only enable it when kernels emit printf.
     needs_cce_print = bool(re.search(r"\b(?:bisheng::)?cce::printf\s*\(", raw_kernel_for_analysis))
-    if testcase == "rmsnorm_incore_0":
-        needs_cce_print = True
     cce_enable_print_opt = "    --cce-enable-print" if needs_cce_print else ""
     cce_print_define_opt = "    -DPTOAS_ENABLE_CCE_PRINT=1" if needs_cce_print else ""
 
