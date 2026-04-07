@@ -285,9 +285,18 @@ def extract_sync_numbers(pr: dict) -> set[int]:
     return numbers
 
 
+def pr_head_ref(pr: dict) -> str:
+    return (((pr.get("head") or {}).get("ref")) or "").strip()
+
+
 def is_batch_sync_pr(pr: dict) -> bool:
     body = pr.get("body") or ""
-    return marker_for_batch(pr["base"]["ref"]) in body or bool(extract_sync_numbers(pr))
+    base_ref = pr["base"]["ref"]
+    return (
+        marker_for_batch(base_ref) in body
+        or bool(extract_sync_numbers(pr))
+        or pr_head_ref(pr) == batch_branch_for(base_ref)
+    )
 
 
 def list_recent_merged_prs() -> list[dict]:
@@ -368,8 +377,6 @@ def collect_gitcode_sync_state() -> tuple[set[int], dict[str, OpenBatchPR]]:
                 continue
 
             numbers = extract_sync_numbers(pr)
-            if not numbers:
-                continue
 
             if is_gitcode_pr_merged(pr):
                 synced_numbers.update(numbers)
@@ -377,7 +384,7 @@ def collect_gitcode_sync_state() -> tuple[set[int], dict[str, OpenBatchPR]]:
 
             if pr.get("state") == "open":
                 base_ref = pr["base"]["ref"]
-                head_ref = ((pr.get("head") or {}).get("ref") or "").strip()
+                head_ref = pr_head_ref(pr)
                 if not head_ref:
                     head_ref = batch_branch_for(base_ref)
                 current = open_pr_by_base.get(base_ref)
