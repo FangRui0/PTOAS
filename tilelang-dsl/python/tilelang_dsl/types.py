@@ -24,6 +24,15 @@ class Tile:
 
 
 @dataclass(frozen=True)
+class PointerType:
+    element_dtype: ScalarType
+    memory_space: "MemorySpace"
+
+    def __repr__(self) -> str:
+        return f"ptr({self.element_dtype!r}, {self.memory_space!r})"
+
+
+@dataclass(frozen=True)
 class WildcardType:
     name: str
 
@@ -111,6 +120,14 @@ def TypeVar(name: str) -> TypeVariable:
     return TypeVariable(name)
 
 
+def ptr(dtype: ScalarType, memory_space: MemorySpace) -> PointerType:
+    if not isinstance(dtype, ScalarType):
+        raise TypeError("ptr() expects a TileLang scalar dtype")
+    if not isinstance(memory_space, MemorySpace):
+        raise TypeError("ptr() expects a TileLang MemorySpace")
+    return PointerType(element_dtype=dtype, memory_space=memory_space)
+
+
 def get_lanes(dtype: ScalarType) -> int:
     if not isinstance(dtype, ScalarType):
         raise TypeError("get_lanes expects a TileLang scalar dtype")
@@ -135,6 +152,8 @@ __all__ = [
     "TypeVar",
     "TensorView",
     "Tile",
+    "PointerType",
+    "ptr",
     "MemorySpace",
     "Pipe",
     "Event",
