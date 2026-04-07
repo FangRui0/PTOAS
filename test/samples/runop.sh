@@ -963,6 +963,12 @@ PY
         *-pto-ir.pto) continue ;;
       esac
       base="$(basename "$f" .pto)"
+      if [[ ( "$base" == "test_tmov_col_major_16x1_align_a5" || \
+              "$base" == "test_tmov_row_major_1x16_control_a5" ) && \
+            "${target_arch_lc}" != "a5" ]]; then
+        echo -e "${A}(${base}.pto)\tSKIP\trequires --pto-arch=a5"
+        continue
+      fi
       local pto_input="$f"
       ptobc_file="${out_subdir}/${base}.ptobc"
       decoded_pto="${out_subdir}/${base}-roundtrip.pto"
