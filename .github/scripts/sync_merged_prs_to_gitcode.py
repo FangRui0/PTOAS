@@ -23,7 +23,30 @@ def env_text(name: str, default: str | None = None) -> str:
     return raw.strip()
 
 
-UPSTREAM_REPO = env_text("UPSTREAM_REPO")
+def normalize_upstream_repo(raw: str) -> tuple[str, str]:
+    raw = raw.strip()
+    ssh_match = re.fullmatch(r"git@github\.com:([^/]+/[^/]+?)(?:\.git)?", raw)
+    if ssh_match:
+        slug = ssh_match.group(1)
+        return slug, raw
+
+    https_match = re.fullmatch(r"https://github\.com/([^/]+/[^/]+?)(?:\.git)?", raw)
+    if https_match:
+        slug = https_match.group(1)
+        return slug, raw
+
+    slug_match = re.fullmatch(r"[^/]+/[^/]+", raw)
+    if slug_match:
+        return raw, f"https://github.com/{raw}.git"
+
+    raise RuntimeError(
+        "UPSTREAM_REPO must be either 'owner/repo', "
+        "'https://github.com/owner/repo(.git)', or "
+        "'git@github.com:owner/repo(.git)'"
+    )
+
+
+UPSTREAM_REPO, UPSTREAM_GIT_URL = normalize_upstream_repo(env_text("UPSTREAM_REPO"))
 UPSTREAM_OWNER, UPSTREAM_NAME = UPSTREAM_REPO.split("/", 1)
 
 GITCODE_OWNER = env_text("GITCODE_OWNER")
@@ -533,7 +556,7 @@ def apply_batch_to_gitcode(batch: BatchTarget) -> tuple[bool, str, list[dict], l
             ["git", "config", "user.email", GITCODE_COMMIT_EMAIL],
             cwd=tempdir,
         )
-        run(["git", "remote", "add", "upstream", f"https://github.com/{UPSTREAM_REPO}.git"], cwd=tempdir)
+        run(["git", "remote", "add", "upstream", UPSTREAM_GIT_URL], cwd=tempdir)
 
         gitcode_base_ref = resolve_gitcode_base_branch(tempdir, batch.gitcode_base_ref)
         local_branch = batch_branch_for(gitcode_base_ref)

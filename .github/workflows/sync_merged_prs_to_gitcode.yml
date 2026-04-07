@@ -29,7 +29,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      UPSTREAM_REPO: ${{ vars.UPSTREAM_REPO || 'zhangstevenunity/PTOAS' }}
+      # Accept either a repo slug (owner/repo) or a full Git URL.
+      UPSTREAM_REPO: ${{ vars.UPSTREAM_REPO || 'hw-native-sys/PTOAS' }}
       GITCODE_OWNER: cann
       GITCODE_REPO: pto-as
       GITCODE_REPO_SSH: git@gitcode.com:cann/pto-as.git
