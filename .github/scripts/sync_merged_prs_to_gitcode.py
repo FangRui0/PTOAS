@@ -602,10 +602,20 @@ def apply_batch_to_gitcode(batch: BatchTarget) -> tuple[bool, str, list[dict], l
         if not newly_applied and not batch.open_gitcode_pr:
             return False, gitcode_base_ref, [], skipped_prs
 
-        run(
-            ["git", "push", "--force", "origin", f"HEAD:refs/heads/{push_ref}"],
-            cwd=tempdir,
-        )
+        try:
+            run(
+                ["git", "push", "origin", f"HEAD:refs/heads/{push_ref}"],
+                cwd=tempdir,
+            )
+        except subprocess.CalledProcessError as exc:
+            stderr = ((exc.stderr or "") + "\n" + (exc.stdout or "")).strip()
+            if "non-fast-forward" in stderr or "fetch first" in stderr:
+                raise RuntimeError(
+                    f"GitCode branch '{push_ref}' requires a non-fast-forward update. "
+                    "Force-push is disabled on the target project, so please merge or "
+                    "manually reconcile the existing branch before re-running sync."
+                ) from exc
+            raise
 
     return True, gitcode_base_ref, applied_prs, skipped_prs
 
