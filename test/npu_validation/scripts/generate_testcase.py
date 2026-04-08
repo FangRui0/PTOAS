@@ -226,6 +226,24 @@ def _describe_kernel_source(text: str):
     }
 
 
+def _append_mixed_kernel_wrapper(
+    kernel_text: str,
+    kernel_name: str,
+    raw_params: list[str],
+    aic_name: str,
+    aiv_name: str,
+) -> str:
+    wrapper_call_args = ", ".join(_extract_cpp_name(param) for param in raw_params)
+    wrapper = (
+        "\n\n"
+        f"__global__ AICORE void {kernel_name}({', '.join(raw_params)}) {{\n"
+        f"    {aic_name}({wrapper_call_args});\n"
+        f"    {aiv_name}({wrapper_call_args});\n"
+        "}\n"
+    )
+    return kernel_text.rstrip() + wrapper
+
+
 def _is_gm_pointer_param(param: str) -> bool:
     return "__gm__" in param and "*" in param
 
@@ -1613,6 +1631,15 @@ def generate_testcase(
                     logical_elem_count=logical_elem_count,
                 )
 
+    if is_mixed_kernel:
+        kernel_text_out = _append_mixed_kernel_wrapper(
+            kernel_text_out,
+            kernel_name,
+            raw_params,
+            kernel_info["aic_name"],
+            kernel_info["aiv_name"],
+        )
+
     kernel_out = output_dir / f"{testcase}_kernel.cpp"
     kernel_out.write_text(_replace_includes(kernel_text_out), encoding="utf-8")
 
@@ -1631,51 +1658,22 @@ def generate_testcase(
     kernel_call_args_host = ", ".join(kernel_call_args_host)
     raw_params_host = [_rewrite_host_unsupported_types(p) for p in raw_params]
     launch_block_count = _infer_launch_block_count(raw_kernel_for_analysis, testcase)
-    if is_mixed_kernel:
-        wrapper_call_args = ", ".join([p["name"] for p in params])
-        launch_cpp = (
-            INCLUDE_REPLACEMENT
-            + "\n"
-            "#if defined(__CCE_AICORE__)\n"
-            f"AICORE void {kernel_info['aic_name']}({', '.join(raw_params)});\n"
-            f"AICORE void {kernel_info['aiv_name']}({', '.join(raw_params)});\n"
-            f"__global__ AICORE void {kernel_name}({', '.join(raw_params)}) {{\n"
-            f"    {kernel_info['aic_name']}({wrapper_call_args});\n"
-            f"    {kernel_info['aiv_name']}({wrapper_call_args});\n"
-            "}\n"
-            "#else\n"
-            f"AICORE void {kernel_info['aic_name']}({', '.join(raw_params_host)});\n"
-            f"AICORE void {kernel_info['aiv_name']}({', '.join(raw_params_host)});\n"
-            f"__global__ AICORE void {kernel_name}({', '.join(raw_params_host)}) {{\n"
-            f"    {kernel_info['aic_name']}({wrapper_call_args});\n"
-            f"    {kernel_info['aiv_name']}({wrapper_call_args});\n"
-            "}\n"
-            "#endif\n\n"
-            f"void {launch_name}({launch_fn_params}) {{\n"
-            "#if defined(__CCE_AICORE__)\n"
-            f"    {kernel_name}<<<{launch_block_count}, nullptr, stream>>>({kernel_call_args_device});\n"
-            "#else\n"
-            f"    {kernel_name}<<<{launch_block_count}, nullptr, stream>>>({kernel_call_args_host});\n"
-            "#endif\n"
-            f"}}\n"
-        )
-    else:
-        launch_cpp = (
-            INCLUDE_REPLACEMENT
-            + "\n"
-            "#if defined(__CCE_AICORE__)\n"
-            f"__global__ AICORE void {kernel_name}({', '.join(raw_params)});\n"
-            "#else\n"
-            f"__global__ AICORE void {kernel_name}({', '.join(raw_params_host)});\n"
-            "#endif\n\n"
-            f"void {launch_name}({launch_fn_params}) {{\n"
-            "#if defined(__CCE_AICORE__)\n"
-            f"    {kernel_name}<<<{launch_block_count}, nullptr, stream>>>({kernel_call_args_device});\n"
-            "#else\n"
-            f"    {kernel_name}<<<{launch_block_count}, nullptr, stream>>>({kernel_call_args_host});\n"
-            "#endif\n"
-            f"}}\n"
-        )
+    launch_cpp = (
+        INCLUDE_REPLACEMENT
+        + "\n"
+        "#if defined(__CCE_AICORE__)\n"
+        f"__global__ AICORE void {kernel_name}({', '.join(raw_params)});\n"
+        "#else\n"
+        f"__global__ AICORE void {kernel_name}({', '.join(raw_params_host)});\n"
+        "#endif\n\n"
+        f"void {launch_name}({launch_fn_params}) {{\n"
+        "#if defined(__CCE_AICORE__)\n"
+        f"    {kernel_name}<<<{launch_block_count}, nullptr, stream>>>({kernel_call_args_device});\n"
+        "#else\n"
+        f"    {kernel_name}<<<{launch_block_count}, nullptr, stream>>>({kernel_call_args_host});\n"
+        "#endif\n"
+        f"}}\n"
+    )
     (output_dir / "launch.cpp").write_text(launch_cpp, encoding="utf-8")
 
     # pto-isa selects instruction implementations based on MEMORY_BASE vs
