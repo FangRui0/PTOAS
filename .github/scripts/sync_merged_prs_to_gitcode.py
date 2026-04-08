@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -62,6 +63,9 @@ FORCE_RESYNC = env_text("FORCE_RESYNC", "false").lower() == "true"
 GITCODE_COMMIT_NAME = env_text("GITCODE_COMMIT_NAME", "FangRui")
 GITCODE_COMMIT_EMAIL = env_text("GITCODE_COMMIT_EMAIL", "fangrui0827@gmail.com")
 GITCODE_AUTHOR = f"{GITCODE_COMMIT_NAME} <{GITCODE_COMMIT_EMAIL}>"
+WAIT_FOR_GITCODE_CI = env_text("WAIT_FOR_GITCODE_CI", "true").lower() == "true"
+GITCODE_CI_TIMEOUT_SECONDS = int(env_text("GITCODE_CI_TIMEOUT_SECONDS", "1200"))
+GITCODE_CI_POLL_SECONDS = int(env_text("GITCODE_CI_POLL_SECONDS", "30"))
 
 BATCH_MARKER_PREFIX = "github-pr-sync-batch"
 ITEM_MARKER_PREFIX = "github-pr-sync-item"
@@ -166,6 +170,52 @@ def gitcode_comment_on_pr(pr_number: int, body: str) -> None:
             "need_to_resolve": False,
         },
     )
+
+
+def gitcode_get_pr(pr_number: int) -> dict:
+    return gitcode_get(f"/api/v5/repos/{GITCODE_OWNER}/{GITCODE_REPO}/pulls/{pr_number}")
+
+
+def normalize_pipeline_status(raw: str | None) -> str:
+    return (raw or "").strip().lower()
+
+
+def is_pipeline_terminal(status: str) -> bool:
+    return status in {"success", "failed", "canceled", "cancelled", "skipped", "manual"}
+
+
+def is_pipeline_success(status: str) -> bool:
+    return status in {"success", "skipped"}
+
+
+def wait_for_gitcode_ci(pr_number: int) -> str:
+    deadline = time.monotonic() + GITCODE_CI_TIMEOUT_SECONDS
+    last_status = ""
+
+    while True:
+        pr = gitcode_get_pr(pr_number)
+        status = normalize_pipeline_status(
+            pr.get("pipeline_status")
+            or pr.get("pipeline_status_with_code_quality")
+        )
+        pipeline_id = pr.get("head_pipeline_id")
+        status_text = status or "pending"
+
+        if status != last_status:
+            details = f", pipeline #{pipeline_id}" if pipeline_id else ""
+            log(f"GitCode PR #{pr_number} pipeline status: {status_text}{details}")
+            last_status = status
+
+        if is_pipeline_terminal(status):
+            return status
+
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"Timed out waiting for GitCode PR #{pr_number} CI after "
+                f"{GITCODE_CI_TIMEOUT_SECONDS}s (last status: {status_text})"
+            )
+
+        time.sleep(GITCODE_CI_POLL_SECONDS)
 
 
 def parse_timestamp(raw: str) -> datetime:
@@ -875,6 +925,13 @@ def main() -> int:
                 f"Synced batch [{pr_numbers}] to GitCode PR #{gitcode_pr_number} "
                 f"({action}, commented /compile)"
             )
+            if WAIT_FOR_GITCODE_CI:
+                final_status = wait_for_gitcode_ci(gitcode_pr_number)
+                if not is_pipeline_success(final_status):
+                    raise RuntimeError(
+                        f"GitCode PR #{gitcode_pr_number} CI finished with status '{final_status}'"
+                    )
+                log(f"GitCode PR #{gitcode_pr_number} CI finished with status '{final_status}'")
         except Exception as exc:  # pylint: disable=broad-except
             failures.append(f"Base {batch.gitcode_base_ref}: {exc}")
 
