@@ -50,6 +50,8 @@ _export_generated_symbols()
 
 register_dialect = _pto_mod.register_dialect
 PtrType = _pto_mod.PtrType
+AsyncSessionType = _pto_mod.AsyncSessionType
+AsyncEventType = _pto_mod.AsyncEventType
 TensorViewType = _pto_mod.TensorViewType
 PartitionTensorViewType = _pto_mod.PartitionTensorViewType
 TileType = _pto_mod.TileType
@@ -63,6 +65,8 @@ SLayout = _pto_mod.SLayout
 SLayoutAttr = _pto_mod.SLayoutAttr
 PadValue = _pto_mod.PadValue
 PadValueAttr = _pto_mod.PadValueAttr
+CompactMode = _pto_mod.CompactMode
+CompactModeAttr = _pto_mod.CompactModeAttr
 RoundMode = _pto_mod.RoundMode
 RoundModeAttr = _pto_mod.RoundModeAttr
 CmpMode = _pto_mod.CmpMode
@@ -85,6 +89,8 @@ __all__ = [
     "register_dialect",
     # Types
     "PtrType",
+    "AsyncSessionType",
+    "AsyncEventType",
     "TensorViewType",
     "PartitionTensorViewType",
     "TileType",
@@ -97,6 +103,8 @@ __all__ = [
     "SLayoutAttr",
     "PadValue",
     "PadValueAttr",
+    "CompactMode",
+    "CompactModeAttr",
     "RoundMode",
     "RoundModeAttr",
     "CmpMode",
