@@ -1,0 +1,62 @@
+name: Notify GitCode CI Failures
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GITCODE_OWNER: cann
+      GITCODE_REPO: pto-as
+      GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+      FEISHU_BOT_WEBHOOK: ${{ secrets.FEISHU_BOT_WEBHOOK }}
+      FEISHU_BOT_SECRET: ${{ secrets.FEISHU_BOT_SECRET }}
+      ALERT_STATE_FILE: .cache/gitcode-ci-alert-state.json
+
+    steps:
+      - name: Checkout fork repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Restore alert state
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/gitcode-ci-alert-state.json
+          key: gitcode-ci-alert-state-${{ github.run_id }}
+          restore-keys: |
+            gitcode-ci-alert-state-
+
+      - name: Notify Feishu on GitCode CI failures
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${GITCODE_TOKEN}" ]]; then
+            echo "ERROR: secrets.GITCODE_TOKEN is not set"
+            exit 1
+          fi
+          if [[ -z "${FEISHU_BOT_WEBHOOK}" ]]; then
+            echo "ERROR: secrets.FEISHU_BOT_WEBHOOK is not set"
+            exit 1
+          fi
+          mkdir -p .cache
+          python .github/scripts/notify_gitcode_ci_failures.py
+
+      - name: Save alert state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/gitcode-ci-alert-state.json
+          key: gitcode-ci-alert-state-${{ github.run_id }}
