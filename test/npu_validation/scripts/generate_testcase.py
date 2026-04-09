@@ -152,6 +152,66 @@ def _find_matching_brace(text: str, open_brace_index: int) -> Optional[int]:
     return None
 
 
+def _extract_function_body(function_text: str) -> str:
+    brace_index = function_text.find("{")
+    if brace_index < 0:
+        return ""
+    end_index = _find_matching_brace(function_text, brace_index)
+    if end_index is None:
+        return ""
+    body = function_text[brace_index + 1:end_index].strip()
+    body = re.sub(r"\breturn\s*;\s*$", "", body, flags=re.S).rstrip()
+    return body
+
+
+def _strip_ptoas_auto_sync_tail(body: str) -> tuple[str, bool]:
+    pattern = re.compile(
+        r"\n?\s*ptoas_auto_sync_tail\s*\([^;]*\)\s*;\s*$",
+        re.S,
+    )
+    updated = pattern.sub("", body.rstrip())
+    return updated.rstrip(), updated != body.rstrip()
+
+
+def _indent_block(text: str, spaces: int = 4) -> str:
+    prefix = " " * spaces
+    return "\n".join((prefix + line) if line else "" for line in text.splitlines())
+
+
+def _split_cpp_args(text: str):
+    text = text.strip()
+    if not text:
+        return []
+    parts = []
+    depth_angle = 0
+    depth_paren = 0
+    depth_brace = 0
+    depth_bracket = 0
+    start = 0
+    for idx, ch in enumerate(text):
+        if ch == "<":
+            depth_angle += 1
+        elif ch == ">":
+            depth_angle = max(depth_angle - 1, 0)
+        elif ch == "(":
+            depth_paren += 1
+        elif ch == ")":
+            depth_paren = max(depth_paren - 1, 0)
+        elif ch == "{":
+            depth_brace += 1
+        elif ch == "}":
+            depth_brace = max(depth_brace - 1, 0)
+        elif ch == "[":
+            depth_bracket += 1
+        elif ch == "]":
+            depth_bracket = max(depth_bracket - 1, 0)
+        elif ch == "," and depth_angle == 0 and depth_paren == 0 and depth_brace == 0 and depth_bracket == 0:
+            parts.append(text[start:idx].strip())
+            start = idx + 1
+    parts.append(text[start:].strip())
+    return [part for part in parts if part]
+
+
 def _extract_aicore_functions(text: str):
     pattern = re.compile(
         r"(?P<global>__global__\s+)?AICORE\s+void\s+(?P<name>\w+)\s*\((?P<params>[^)]*)\)\s*\{",
@@ -211,8 +271,8 @@ def _describe_kernel_source(text: str):
                 "raw_params": params,
                 "analysis_texts": [group["aic"]["text"], group["aiv"]["text"]],
                 "writer_texts": [group["aiv"]["text"]],
-                "aic_name": group["aic"]["name"],
-                "aiv_name": group["aiv"]["name"],
+                "aic_text": group["aic"]["text"],
+                "aiv_text": group["aiv"]["text"],
                 "call_text": group["aiv"]["text"],
             }
 
@@ -230,15 +290,167 @@ def _append_mixed_kernel_wrapper(
     kernel_text: str,
     kernel_name: str,
     raw_params: list[str],
-    aic_name: str,
-    aiv_name: str,
+    aic_text: str,
+    aiv_text: str,
 ) -> str:
-    wrapper_call_args = ", ".join(_extract_cpp_name(param) for param in raw_params)
+    pipe_decl_pattern = re.compile(
+        r"^(?P<indent>\s*)auto\s+(?P<name>\w+)\s*=\s*(?P<type>TPipe<[^;=]+>)\s*\((?P<args>[^;]*)\)\s*;\s*$",
+        re.M,
+    )
+    param_names = {_extract_cpp_name(param) for param in raw_params}
+    safe_identifiers = {"nullptr", "NULL", "true", "false"}
+
+    def _find_decl_init(prefix: str, name: str):
+        pattern = re.compile(
+            rf"^\s*(?P<type>[^=\n;]+?)\s+{re.escape(name)}\s*=\s*(?P<init>[^;]+);\s*$",
+            re.M,
+        )
+        match = None
+        for current in pattern.finditer(prefix):
+            match = current
+        if match is None:
+            return None, None, None
+        return match.group("type").strip(), match.group("init").strip(), match.start()
+
+    def _render_pointer_init(type_text: str, init_text: str) -> str:
+        expr = init_text.strip()
+        if "*" not in type_text:
+            return expr
+        if expr.startswith("(") or expr.startswith("reinterpret_cast") or expr.startswith("static_cast"):
+            return expr
+        return f"({type_text}){expr}"
+
+    def _resolve_ctor_arg(arg_text: str, prefix: str, depth: int = 0):
+        arg_text = arg_text.strip()
+        if not arg_text:
+            return None
+        if depth > 8:
+            return None
+        if not re.fullmatch(r"[A-Za-z_]\w*", arg_text):
+            return arg_text
+        if arg_text in safe_identifiers:
+            return arg_text
+        if arg_text in param_names:
+            return arg_text
+        type_text, init_text, decl_start = _find_decl_init(prefix, arg_text)
+        if type_text is None or init_text is None:
+            return None
+        resolved_init = init_text
+        if (
+            re.fullmatch(r"[A-Za-z_]\w*", init_text)
+            and init_text not in param_names
+            and init_text not in safe_identifiers
+        ):
+            resolved_init = _resolve_ctor_arg(init_text, prefix[:decl_start], depth + 1)
+            if resolved_init is None:
+                return None
+        return _render_pointer_init(type_text, resolved_init)
+
+    def _extract_pipe_decls(body: str):
+        decls = []
+        for match in pipe_decl_pattern.finditer(body):
+            ctor_args = _split_cpp_args(match.group("args"))
+            prefix = body[:match.start()]
+            resolved_args = []
+            for arg in ctor_args:
+                resolved = _resolve_ctor_arg(arg, prefix)
+                if resolved is None:
+                    break
+                resolved_args.append(resolved)
+            else:
+                decls.append(
+                    {
+                        "name": match.group("name"),
+                        "type_text": match.group("type").strip(),
+                        "ctor_args": tuple(resolved_args),
+                        "span": match.span(),
+                    }
+                )
+        return decls
+
+    def _rewrite_body(body: str, replacements):
+        rewritten = body
+        for replacement in sorted(replacements, key=lambda item: item["span"][0], reverse=True):
+            start, end = replacement["span"]
+            rewritten = rewritten[:start] + rewritten[end:]
+        for replacement in replacements:
+            rewritten = re.sub(
+                rf"\b{re.escape(replacement['old_name'])}\b",
+                replacement["new_name"],
+                rewritten,
+            )
+        return rewritten.strip()
+
+    def _next_shared_name(seed: int, texts: list[str]) -> str:
+        index = seed
+        while True:
+            name = f"__ptoas_shared_pipe{index}"
+            if all(name not in text for text in texts):
+                return name
+            index += 1
+
+    aic_body = _extract_function_body(aic_text)
+    aiv_body = _extract_function_body(aiv_text)
+    aic_body, aic_has_tail = _strip_ptoas_auto_sync_tail(aic_body)
+    aiv_body, aiv_has_tail = _strip_ptoas_auto_sync_tail(aiv_body)
+    aic_decls = _extract_pipe_decls(aic_body)
+    aiv_decls = _extract_pipe_decls(aiv_body)
+
+    shared_pairs = []
+    aiv_by_key = {}
+    for decl in aiv_decls:
+        key = (decl["type_text"], decl["ctor_args"])
+        aiv_by_key.setdefault(key, []).append(decl)
+    for decl in aic_decls:
+        key = (decl["type_text"], decl["ctor_args"])
+        bucket = aiv_by_key.get(key)
+        if not bucket:
+            continue
+        shared_pairs.append((decl, bucket.pop(0)))
+
+    shared_decls = []
+    aic_replacements = []
+    aiv_replacements = []
+    shared_seed = 0
+    texts_for_name_check = [kernel_text, aic_body, aiv_body]
+    for aic_decl, aiv_decl in shared_pairs:
+        shared_name = _next_shared_name(shared_seed, texts_for_name_check)
+        shared_seed += 1
+        texts_for_name_check.append(shared_name)
+        shared_decls.append(
+            f"  auto {shared_name} = {aic_decl['type_text']}({', '.join(aic_decl['ctor_args'])});"
+        )
+        aic_replacements.append(
+            {
+                "old_name": aic_decl["name"],
+                "new_name": shared_name,
+                "span": aic_decl["span"],
+            }
+        )
+        aiv_replacements.append(
+            {
+                "old_name": aiv_decl["name"],
+                "new_name": shared_name,
+                "span": aiv_decl["span"],
+            }
+        )
+
+    wrapper_blocks = []
+    for body in (_rewrite_body(aic_body, aic_replacements), _rewrite_body(aiv_body, aiv_replacements)):
+        if not body:
+            continue
+        wrapper_blocks.append("  {\n" + _indent_block(body) + "\n  }")
+
+    if not wrapper_blocks:
+        return kernel_text
+
     wrapper = (
         "\n\n"
         f"__global__ AICORE void {kernel_name}({', '.join(raw_params)}) {{\n"
-        f"    {aic_name}({wrapper_call_args});\n"
-        f"    {aiv_name}({wrapper_call_args});\n"
+        + ("\n".join(shared_decls) + ("\n\n" if shared_decls else ""))
+        + "\n".join(wrapper_blocks)
+        + ("\n  ptoas_auto_sync_tail(PTOAutoSyncTailMode::kBarrierAll);" if (aic_has_tail or aiv_has_tail) else "")
+        + "\n"
         "}\n"
     )
     return kernel_text.rstrip() + wrapper
@@ -1636,8 +1848,8 @@ def generate_testcase(
             kernel_text_out,
             kernel_name,
             raw_params,
-            kernel_info["aic_name"],
-            kernel_info["aiv_name"],
+            kernel_info["aic_text"],
+            kernel_info["aiv_text"],
         )
 
     kernel_out = output_dir / f"{testcase}_kernel.cpp"
