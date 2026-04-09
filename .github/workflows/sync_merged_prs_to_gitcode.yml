@@ -1,0 +1,81 @@
+name: Sync merged upstream PR batch to GitCode
+
+on:
+  schedule:
+    # GitHub cron uses UTC. 21:00 Asia/Shanghai == 13:00 UTC.
+    - cron: "0 13 * * *"
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Only sync one merged upstream PR number into the batch"
+        required: false
+        type: string
+      lookback_days:
+        description: "How many days of merged PRs to scan when pr_number is empty"
+        required: false
+        default: "3"
+        type: string
+      force_resync:
+        description: "Rebuild the batch even if some PRs were already marked as synced"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Accept either a repo slug (owner/repo) or a full Git URL.
+      UPSTREAM_REPO: ${{ vars.UPSTREAM_REPO || 'hw-native-sys/PTOAS' }}
+      GITCODE_OWNER: cann
+      GITCODE_REPO: pto-as
+      GITCODE_REPO_SSH: git@gitcode.com:cann/pto-as.git
+      LOOKBACK_DAYS: ${{ github.event.inputs.lookback_days || vars.SYNC_LOOKBACK_DAYS || '3' }}
+      INPUT_PR_NUMBER: ${{ github.event.inputs.pr_number || '' }}
+      FORCE_RESYNC: ${{ github.event.inputs.force_resync || 'false' }}
+      GITCODE_PRUNE_SOURCE_BRANCH: ${{ vars.GITCODE_PRUNE_SOURCE_BRANCH || 'true' }}
+      WAIT_FOR_GITCODE_CI: ${{ vars.WAIT_FOR_GITCODE_CI || 'true' }}
+      GITCODE_CI_TIMEOUT_SECONDS: ${{ vars.GITCODE_CI_TIMEOUT_SECONDS || '1200' }}
+      GITCODE_CI_POLL_SECONDS: ${{ vars.GITCODE_CI_POLL_SECONDS || '30' }}
+      GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+      GITCODE_SSH_PRIVATE_KEY: ${{ secrets.GITCODE_SSH_PRIVATE_KEY }}
+      GH_TOKEN: ${{ secrets.GH_PAT }}
+
+    steps:
+      - name: Checkout fork repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Configure SSH for GitCode
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${GITCODE_SSH_PRIVATE_KEY}" ]]; then
+            echo "ERROR: secrets.GITCODE_SSH_PRIVATE_KEY is not set"
+            exit 1
+          fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${GITCODE_SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan gitcode.com >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Sync merged PR batch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${GITCODE_TOKEN}" ]]; then
+            echo "ERROR: secrets.GITCODE_TOKEN is not set"
+            exit 1
+          fi
+          python .github/scripts/sync_merged_prs_to_gitcode.py
