@@ -10354,7 +10354,7 @@ void CommTGatherOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
   addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
-  addEffect(effects, &getPingMutable(), MemoryEffects::Read::get());
+  addEffect(effects, &getPingMutable(), MemoryEffects::Write::get());
 }
 
 void CommTScatterOp::getEffects(
