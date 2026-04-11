@@ -181,7 +181,7 @@ scf.for %i = %c0 to %N step %c1 {
 | Aspect | `set_flag`/`wait_flag` | `get_buf`/`rls_buf` |
 |--------|------------------------|---------------------|
 | **Dependency tracking** | Manual: track event IDs, signal directions, pair every set with wait | Automatic: buffer ID + program order |
-| **Event ID management** | 8 IDs for 2-buffer ping/pong (grows with buffers) | Just buffer IDs (shared global pool) |
+| **Event ID management** | **8 IDs per pipe-pair direction** (HW limit); 2-buffer ping/pong uses 4 IDs per pipe-pair (2 fwd + 2 rev) | **1 buffer ID per shared resource** (HW limit: 32 global); same ID used across all pipelines |
 | **Error-prone areas** | Forgetting prime/drain, mismatched IDs, wrong direction | Forgetting release (but compile-time checkable) |
 
 ### Quick Example Comparison
