@@ -64,7 +64,7 @@ The number of elements loaded/stored in a single vector operation is determined 
 vector_lanes = 256 // element_size_bytes(element_type)
 ```
 
-**Convenience API**: Use `pto.elements_per_vreg(dtype)` to compute the number of elements per vector register for a given element type (e.g., `pto.elements_per_vreg(pto.f32)` returns 64, `pto.elements_per_vreg(pto.f16)` returns 128). See [Type Query Operations](09-frontend-operations.md#type-query-operations) for full documentation.
+**Convenience API**: Use `pto.elements_per_vreg(dtype)` to compute the number of elements per vector register for a given element type (e.g., `pto.elements_per_vreg(pto.f32)` returns 64, `pto.elements_per_vreg(pto.f16)` returns 128). See [Type Query Operations](07-frontend-operations.md#type-query-operations) for full documentation.
 
 Where `element_size_bytes` is:
 - 1 byte for `i8`

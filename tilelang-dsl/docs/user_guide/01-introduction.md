@@ -16,7 +16,7 @@ The DSL surface is organized into multiple maturity tiers, reflecting the stabil
 | `strict_vecscope` | `advanced` | Explicit vector-scope management for expert authoring. |
 | Raw pointer family (`ptr(...)`, `castptr`, `addptr`) | `advanced` | For expert authoring and migration; not required for Quick Start. |
 | DMA family (`copy_*`, `set_loop*_stride_*`, `set_loop_size_*`) | `advanced` | Direct DMA engine control for expert authoring. |
-| Tile helper family (`tile.slice(...)`, `tile.reshape(...)`, `tile.as_ptr()`, `tile_from_ptr(...)`, `tile_with_strides(...)`, `tile_config(...)`) | `advanced` | Partial or evolving surface; not the default entry point. |
+| Tile pointer helper (`tile.as_ptr()`) | `advanced` | Expert-only helper when advanced authoring needs explicit typed pointers. |
 
 For the authoritative tier classification, consult `tilelang-dsl/python/tilelang_dsl/support_matrix.py`. For known implementation gaps, refer to `tilelang-dsl/docs/unsupported-features.md`.
 
@@ -45,4 +45,3 @@ The TileLang DSL provides two distinct authoring modes:
 - Tile slices in basic mode correspond to MLIR `memref` types
 - Raw pointers in advanced mode correspond to MLIR `pto.ptr` types
 - No automatic conversion between tile and pointer semantics - choose the appropriate syntax for your authoring mode
-

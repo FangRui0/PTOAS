@@ -87,7 +87,7 @@ of the supported authoring surface:
 
 ### Missing Extended Vector Arithmetic Families
 
-The previously missing `13-vector-arithmetic-operations.md` gap list is now
+The previously missing `11-vector-arithmetic-operations.md` gap list is now
 implemented in the current package surface (including fused ops, broadcast/index
 generation, reduction-flavored ops, and rearrangement/sort groups).
 
