@@ -171,22 +171,23 @@ scf.for %slice = %c0 to %c8 step %c1 {
 }
 ```
 
-With `get_buf`/`rls_buf`, acquire/release can stay **inside or outside** the loop — both work:
+With `get_buf`/`rls_buf`, acquire/release can be **inside the loop** — no peeling needed:
 
 ```mlir
-// get_buf/rls_buf: same 1:8 pattern, but more flexible
+// get_buf/rls_buf: same 1:8 pattern, acquire/release inside loop works fine
 // MTE2 loads large tile
 pto.get_buf "PIPE_MTE2", %bufid_tile, %c0 : i64, i64
 pto.copy_gm_to_ubuf %gm_ptr, %ub_tile, ...
 pto.rls_buf "PIPE_MTE2", %bufid_tile, %c0 : i64, i64
 
-// Vector can acquire once outside, or acquire/release per slice — both correct
-pto.get_buf "PIPE_V", %bufid_tile, %c0 : i64, i64  // acquire once
+// Vector acquires/releases per slice — all 8 iterations work correctly
 scf.for %slice = %c0 to %c8 step %c1 {
+  pto.get_buf "PIPE_V", %bufid_tile, %c0 : i64, i64  // iteration 0: blocks until MTE2 done
+                                                      // iteration 1-7: proceeds immediately (already acquired)
   // compute on %ub_tile[%slice]
+  pto.rls_buf "PIPE_V", %bufid_tile, %c0 : i64, i64
 }
-pto.rls_buf "PIPE_V", %bufid_tile, %c0 : i64, i64  // release once
-// No peeling required — get_buf blocks until MTE2's rls_buf completes
+// No peeling required — get_buf handles the MTE2→V dependency automatically
 ```
 
 ### 3. Simpler Mental Model
