@@ -1130,33 +1130,7 @@ Reduction operations across vector lanes or channels.
 
 Operations for rearranging data within vectors.
 
-#### `pto.pdintlv_b8(mask: pto.mask_b8) -> pto.mask_b8`
-
-**Description**: Deinterleave 8-bit mask.
-
-**Parameters**:
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `mask` | `pto.mask_b8` | Input 8-bit mask |
-
-**Returns**:
-| Return Value | Type | Description |
-|--------------|------|-------------|
-| `result` | `pto.mask_b8` | Deinterleaved mask |
-
-#### `pto.pintlv_b16(mask: pto.mask_b16) -> pto.mask_b16`
-
-**Description**: Interleave 16-bit mask.
-
-**Parameters**:
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `mask` | `pto.mask_b16` | Input 16-bit mask |
-
-**Returns**:
-| Return Value | Type | Description |
-|--------------|------|-------------|
-| `result` | `pto.mask_b16` | Interleaved mask |
+Predicate rearrangement ops `pto.pdintlv_b8` and `pto.pintlv_b16` are documented in `10-predicate-operations.md` because they operate on predicate masks rather than vector registers.
 
 Implemented current-package rearrangement surface also includes:
 - `pto.vintlvv2(vec0, vec1, part) -> VRegType`

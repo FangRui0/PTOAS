@@ -180,6 +180,18 @@ class InterleaveDist(str, Enum):
     B32 = "INTLV_B32"
 
 
+class PredicateDist(str, Enum):
+    NORM = "NORM"
+    US = "US"
+    DS = "DS"
+    PK = "PK"
+
+
+class PredicatePart(str, Enum):
+    LOWER = "LOWER"
+    HIGHER = "HIGHER"
+
+
 class StrideMode(str, Enum):
     S3_B16 = "STRIDE_S3_B16"
     S4_B64 = "STRIDE_S4_B64"
@@ -414,6 +426,8 @@ __all__ = [
     "OrderMode",
     "DeinterleaveDist",
     "InterleaveDist",
+    "PredicateDist",
+    "PredicatePart",
     "StrideMode",
     "TileConfig",
     "TileSpecialization",

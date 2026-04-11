@@ -4,11 +4,13 @@ Operations for creating and manipulating typed masks.
 
 **Recommended API**: For most use cases, prefer the unified `pto.make_mask()` function which automatically selects the appropriate mask granularity based on element type and supports both tail processing (remaining element count) and pattern-based mask generation. This eliminates the need to manually choose between `plt_b8`/`plt_b16`/`plt_b32` (tail processing) and `pset_b8`/`pset_b16`/`pset_b32` (pattern generation) operations.
 
-**Pattern alias**: For brevity in examples, the documentation uses `PAT` as an alias for `pto.MaskPattern` (e.g., `PAT.ALL` instead of `pto.MaskPattern.PAT_ALL`). In practice, you can create this alias with `from pto import MaskPattern as PAT` or `PAT = pto.MaskPattern`.
+**Pattern alias**: For brevity in examples, the documentation uses `PAT` as an alias for `pto.MaskPattern` (e.g., `PAT.ALL` instead of `pto.MaskPattern.ALL`). In practice, you can create this alias with `from pto import MaskPattern as PAT` or `PAT = pto.MaskPattern`.
 
-**Part Mode Enum**: The `PartMode` enum provides type-safe part selection for `pto.ppack` and `pto.punpack` operations. It includes the following values: `EVEN` (selects even-indexed elements) and `ODD` (selects odd-indexed elements).
+**Predicate Part Enum**: `pto.ppack` and `pto.punpack` require the `PredicatePart` enum. Use `PredicatePart.LOWER` or `PredicatePart.HIGHER`; these lower to the VPTO canonical `PART` tokens `"LOWER"` and `"HIGHER"`.
 
-**Predicate Dist Enum**: The `PredicateDist` enum provides type-safe distribution mode selection for predicate load/store families. Common values include `NORM`, `US`, and `DS`.
+**Predicate Dist Enum**: The `PredicateDist` enum provides type-safe distribution mode selection for predicate memory families. Load families (`plds`, `pld`, `pldi`) use `NORM`, `US`, and `DS`. Store families (`pst`, `psti`) use `NORM` and `PK`.
+
+**Pattern coverage**: The VPTO canonical predicate-generation families use `PAT_*` tokens such as `PAT_ALL`, `PAT_ALLF`, `PAT_H`, `PAT_Q`, `PAT_VL*`, `PAT_M3`, and `PAT_M4`. The Python DSL surface may expose only a subset through `pto.MaskPattern`; check the enum for currently available values.
 
 #### `pto.pset_b8(pattern: pto.MaskPattern) -> pto.mask_b8`
 
@@ -17,7 +19,7 @@ Operations for creating and manipulating typed masks.
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `pattern` | `pto.MaskPattern` | Mask pattern enum (e.g., `pto.MaskPattern.PAT_ALL`, `pto.MaskPattern.PAT_EVEN`) |
+| `pattern` | `pto.MaskPattern` | Mask pattern enum (for example `pto.MaskPattern.ALL`, `pto.MaskPattern.ALLF`, or `pto.MaskPattern.VL32`) |
 
 **Returns**:
 | Return Value | Type | Description |
@@ -29,7 +31,7 @@ Operations for creating and manipulating typed masks.
 
 **Example**:
 ```python
-mask8 = pto.make_mask(pto.i8, PAT.ALL)
+mask8 = pto.pset_b8(PAT.ALL)
 ```
 
 #### `pto.pset_b16(pattern: pto.MaskPattern) -> pto.mask_b16`
@@ -39,7 +41,7 @@ mask8 = pto.make_mask(pto.i8, PAT.ALL)
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `pattern` | `pto.MaskPattern` | Mask pattern enum (e.g., `pto.MaskPattern.PAT_ALL`, `pto.MaskPattern.PAT_EVEN`) |
+| `pattern` | `pto.MaskPattern` | Mask pattern enum (for example `pto.MaskPattern.ALL`, `pto.MaskPattern.ALLF`, or `pto.MaskPattern.VL32`) |
 
 **Returns**:
 | Return Value | Type | Description |
@@ -51,7 +53,7 @@ mask8 = pto.make_mask(pto.i8, PAT.ALL)
 
 **Example**:
 ```python
-mask16 = pto.make_mask(pto.f16, PAT.ALL)
+mask16 = pto.pset_b16(PAT.ALL)
 ```
 
 #### `pto.pset_b32(pattern: pto.MaskPattern) -> pto.mask_b32`
@@ -61,7 +63,7 @@ mask16 = pto.make_mask(pto.f16, PAT.ALL)
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `pattern` | `pto.MaskPattern` | Mask pattern enum (e.g., `pto.MaskPattern.PAT_ALL`, `pto.MaskPattern.PAT_EVEN`) |
+| `pattern` | `pto.MaskPattern` | Mask pattern enum (for example `pto.MaskPattern.ALL`, `pto.MaskPattern.ALLF`, or `pto.MaskPattern.VL32`) |
 
 **Returns**:
 | Return Value | Type | Description |
@@ -73,7 +75,7 @@ mask16 = pto.make_mask(pto.f16, PAT.ALL)
 
 **Example**:
 ```python
-mask32 = pto.make_mask(pto.f32, PAT.ALL)
+mask32 = pto.pset_b32(PAT.ALL)
 ```
 
 #### `pto.pge_b8(pattern: pto.MaskPattern) -> pto.mask_b8`
@@ -83,7 +85,7 @@ mask32 = pto.make_mask(pto.f32, PAT.ALL)
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `pattern` | `pto.MaskPattern` | Tail mask pattern enum (e.g., `pto.MaskPattern.PAT_VL8`, `pto.MaskPattern.PAT_VL16`) |
+| `pattern` | `pto.MaskPattern` | Tail mask pattern enum lowered to a VPTO `PAT_*` token (for example `pto.MaskPattern.VL16` or `pto.MaskPattern.VL32`) |
 
 **Returns**:
 | Return Value | Type | Description |
@@ -96,8 +98,8 @@ mask32 = pto.make_mask(pto.f32, PAT.ALL)
 
 **Example**:
 ```python
-# Tail mask for first 8 lanes
-tail_mask = pto.pge_b8(PAT.VL8)
+# Tail mask pattern lowered as `PAT_VL16`
+tail_mask = pto.pge_b8(PAT.VL16)
 ```
 
 #### `pto.pge_b16(pattern: pto.MaskPattern) -> pto.mask_b16`
@@ -107,7 +109,7 @@ tail_mask = pto.pge_b8(PAT.VL8)
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `pattern` | `pto.MaskPattern` | Tail mask pattern enum (e.g., `pto.MaskPattern.PAT_VL8`, `pto.MaskPattern.PAT_VL16`) |
+| `pattern` | `pto.MaskPattern` | Tail mask pattern enum lowered to a VPTO `PAT_*` token (for example `pto.MaskPattern.VL16` or `pto.MaskPattern.VL32`) |
 
 **Returns**:
 | Return Value | Type | Description |
@@ -131,7 +133,7 @@ tail_mask = pto.pge_b16(PAT.VL16)
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `pattern` | `pto.MaskPattern` | Tail mask pattern enum (e.g., `pto.MaskPattern.PAT_VL8`, `pto.MaskPattern.PAT_VL16`, `pto.MaskPattern.PAT_VL32`) |
+| `pattern` | `pto.MaskPattern` | Tail mask pattern enum lowered to a VPTO `PAT_*` token (for example `pto.MaskPattern.VL16` or `pto.MaskPattern.VL32`) |
 
 **Returns**:
 | Return Value | Type | Description |
@@ -231,7 +233,7 @@ mask, remaining = pto.plt_b32(remaining)  # generates mask for next chunk, updat
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `element_type` | `Type` | Element type (e.g., `pto.f32`, `pto.f16`, `pto.i8`) |
-| `value` | `pto.i32` \| `pto.MaskPattern` | Either: <br>- Remaining element count (as `pto.i32`) for tail processing <br>- Mask pattern enum value for fixed mask generation (e.g., `pto.MaskPattern.PAT_ALL`, `pto.MaskPattern.PAT_VL32`) |
+| `value` | `pto.i32` \| `pto.MaskPattern` | Either: <br>- Remaining element count (as `pto.i32`) for tail processing <br>- Mask pattern enum value for fixed mask generation (for example `pto.MaskPattern.ALL` or `pto.MaskPattern.VL32`) |
 
 **Returns**:
 | Return Value | Type | Description |
@@ -276,35 +278,45 @@ mask1, updated = pto.make_mask(pto.f32, remaining)     # tail processing
 mask2 = pto.make_mask(pto.f32, PAT.ALL)              # pattern mode
 ```
 
-#### `pto.ppack(mask: MaskType, part: PartMode) -> MaskType`
+#### `pto.ppack(mask: MaskType, part: PredicatePart) -> MaskType`
 
-**Description**: Rearranges a mask according to the requested `part` selector.
+**Description**: Narrowing pack of a predicate register.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `mask` | `MaskType` | Input mask (`mask_b8`, `mask_b16`, or `mask_b32`) |
-| `part` | `PartMode` | Part selector enum: `PartMode.EVEN` or `PartMode.ODD`. Determines which half of the mask to pack (even-indexed or odd-indexed elements). |
+| `part` | `PredicatePart` | Part selector enum. Use `PredicatePart.LOWER` or `PredicatePart.HIGHER`. |
 
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
-| `packed` | `MaskType` | Reordered mask |
+| `packed` | `MaskType` | Packed mask |
 
-#### `pto.punpack(mask: MaskType, part: PartMode) -> MaskType`
+**Example**:
+```python
+packed = pto.ppack(mask, pto.PredicatePart.LOWER)
+```
 
-**Description**: Applies the inverse mask-part rearrangement selected by `part`.
+#### `pto.punpack(mask: MaskType, part: PredicatePart) -> MaskType`
+
+**Description**: Widening unpack of a predicate register.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `mask` | `MaskType` | Input mask |
-| `part` | `PartMode` | Part selector enum: `PartMode.EVEN` or `PartMode.ODD`. Determines which half of the mask to unpack (even-indexed or odd-indexed elements). |
+| `part` | `PredicatePart` | Part selector enum. Use `PredicatePart.LOWER` or `PredicatePart.HIGHER`. |
 
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
-| `mask` | `MaskType` | Reordered mask |
+| `mask` | `MaskType` | Unpacked mask |
+
+**Example**:
+```python
+unpacked = pto.punpack(mask, pto.PredicatePart.HIGHER)
+```
 
 #### `pto.pnot(mask: MaskType, gate: MaskType) -> MaskType`
 
@@ -400,99 +412,187 @@ mask = pto.pld(buf, offset, PredicateDist.NORM)
 mask = pto.pldi(buf, 0, PredicateDist.NORM)
 ```
 
-#### `pto.pst(mask: MaskType, buf: ptr, offset: Index) -> None`  [Advanced Tier]
+#### `pto.psts(mask: MaskType, buf: ptr, offset: Index) -> None`  [Advanced Tier]
 
-**Description**: Stores a predicate mask to buffer.
+**Description**: Stores a predicate mask to UB memory using scalar-offset form.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `mask` | `MaskType` | Predicate mask to store |
 | `buf` | `ptr` | Pointer to destination buffer |
-| `offset` | `Index` | Byte offset |
+| `offset` | `Index` | Scalar/index-style offset |
 
 **Returns**: None (side-effect operation)
 
 **Example**:
 ```python
-pto.pst(mask, buf, offset)
+pto.psts(mask, buf, offset)
 ```
 
-#### `pto.psti(mask: MaskType, imm: pto.i32) -> None`
+#### `pto.pst(mask: MaskType, buf: ptr, offset: Index, dist: PredicateDist = PredicateDist.NORM) -> None`  [Advanced Tier]
 
-**Description**: Stores a predicate mask to immediate destination.
+**Description**: Stores a predicate mask to UB memory using areg/index offset encoding.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `mask` | `MaskType` | Predicate mask to store |
-| `imm` | `pto.i32` | Immediate destination identifier |
+| `buf` | `ptr` | Pointer to destination UB buffer |
+| `offset` | `Index` | Areg/index-style offset |
+| `dist` | `PredicateDist` | Distribution mode for predicate store. Use `PredicateDist.NORM` or `PredicateDist.PK`. Default is `PredicateDist.NORM`. |
 
 **Returns**: None (side-effect operation)
 
 **Example**:
 ```python
-pto.psti(mask, 1)
+pto.pst(mask, buf, offset, PredicateDist.NORM)
 ```
 
-#### `pto.pand(src0: MaskType, src1: MaskType) -> MaskType`
+#### `pto.psti(mask: MaskType, buf: ptr, imm_offset: pto.i32, dist: PredicateDist = PredicateDist.NORM) -> None`  [Advanced Tier]
 
-**Description**: Bitwise AND of two predicate masks.
+**Description**: Stores a predicate mask to UB memory using immediate-offset encoding.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `mask` | `MaskType` | Predicate mask to store |
+| `buf` | `ptr` | Pointer to destination UB buffer |
+| `imm_offset` | `pto.i32` | Immediate-offset operand |
+| `dist` | `PredicateDist` | Distribution mode for predicate store. Use `PredicateDist.NORM` or `PredicateDist.PK`. Default is `PredicateDist.NORM`. |
+
+**Returns**: None (side-effect operation)
+
+**Example**:
+```python
+pto.psti(mask, buf, pto.i32(8), PredicateDist.PK)
+```
+
+#### `pto.pstu(align_in: pto.align, mask: MaskType, buf: ptr) -> (pto.align, ptr)`  [Advanced Tier]
+
+**Description**: Unaligned predicate store with align-state update.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `align_in` | `pto.align` | Input alignment state |
+| `mask` | `MaskType` | Predicate mask to store |
+| `buf` | `ptr` | Pointer to destination UB buffer |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `align_out` | `pto.align` | Updated alignment state |
+| `base_out` | `ptr` | Updated destination pointer |
+
+**Example**:
+```python
+align_out, base_out = pto.pstu(align_in, mask, buf)
+```
+
+#### `pto.pand(src0: MaskType, src1: MaskType, mask: MaskType) -> MaskType`
+
+**Description**: Bitwise AND of two predicate masks under a gating mask.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `src0` | `MaskType` | First input mask |
 | `src1` | `MaskType` | Second input mask |
+| `mask` | `MaskType` | Gating mask with the same granularity |
 
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
-| `result` | `MaskType` | Bitwise AND of input masks |
+| `result` | `MaskType` | Bitwise AND result |
 
 **Example**:
 ```python
-result = pto.pand(mask1, mask2)
+result = pto.pand(mask1, mask2, gate)
 ```
 
-#### `pto.por(src0: MaskType, src1: MaskType) -> MaskType`
+#### `pto.por(src0: MaskType, src1: MaskType, mask: MaskType) -> MaskType`
 
-**Description**: Bitwise OR of two predicate masks.
+**Description**: Bitwise OR of two predicate masks under a gating mask.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `src0` | `MaskType` | First input mask |
 | `src1` | `MaskType` | Second input mask |
+| `mask` | `MaskType` | Gating mask with the same granularity |
 
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
-| `result` | `MaskType` | Bitwise OR of input masks |
+| `result` | `MaskType` | Bitwise OR result |
 
 **Example**:
 ```python
-result = pto.por(mask1, mask2)
+result = pto.por(mask1, mask2, gate)
 ```
 
-#### `pto.pxor(src0: MaskType, src1: MaskType) -> MaskType`
+#### `pto.pxor(src0: MaskType, src1: MaskType, mask: MaskType) -> MaskType`
 
-**Description**: Bitwise XOR of two predicate masks.
+**Description**: Bitwise XOR of two predicate masks under a gating mask.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `src0` | `MaskType` | First input mask |
 | `src1` | `MaskType` | Second input mask |
+| `mask` | `MaskType` | Gating mask with the same granularity |
 
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
-| `result` | `MaskType` | Bitwise XOR of input masks |
+| `result` | `MaskType` | Bitwise XOR result |
 
 **Example**:
 ```python
-result = pto.pxor(mask1, mask2)
+result = pto.pxor(mask1, mask2, gate)
+```
+
+#### `pto.pdintlv_b8(src0: pto.mask_b8, src1: pto.mask_b8) -> (pto.mask_b8, pto.mask_b8)`
+
+**Description**: Predicate deinterleave for 8-bit masks.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `src0` | `pto.mask_b8` | First input mask |
+| `src1` | `pto.mask_b8` | Second input mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `low` | `pto.mask_b8` | First result mask |
+| `high` | `pto.mask_b8` | Second result mask |
+
+**Example**:
+```python
+low8, high8 = pto.pdintlv_b8(mask_a, mask_b)
+```
+
+#### `pto.pintlv_b16(src0: pto.mask_b16, src1: pto.mask_b16) -> (pto.mask_b16, pto.mask_b16)`
+
+**Description**: Predicate interleave for 16-bit masks.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `src0` | `pto.mask_b16` | First input mask |
+| `src1` | `pto.mask_b16` | Second input mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `low` | `pto.mask_b16` | First result mask |
+| `high` | `pto.mask_b16` | Second result mask |
+
+**Example**:
+```python
+low16, high16 = pto.pintlv_b16(mask_a, mask_b)
 ```
 
 **Note**: Prefer `pto.make_mask()` for automatic bitwidth selection and unified tail/pattern mask generation.

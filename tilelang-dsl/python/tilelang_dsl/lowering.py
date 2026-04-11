@@ -560,19 +560,22 @@ class _AuthoringRenderer:
         if len(stmt.targets) != len(stmt.value.type.elements):
             raise NotImplementedError("multi-result lowering expects tuple assignment arity to match the call result count")
 
-        if stmt.value.name == "make_mask":
-            dtype_expr, remaining_expr = stmt.value.args
-            if not self._is_dtype_meta_expr(dtype_expr):
-                raise NotImplementedError("make_mask dtype lowering expects a dtype symbol")
-
+        if stmt.value.name == "make_mask" or stmt.value.name in {"plt_b8", "plt_b16", "plt_b32"}:
             lines: list[str] = []
+            if stmt.value.name == "make_mask":
+                dtype_expr, remaining_expr = stmt.value.args
+                if not self._is_dtype_meta_expr(dtype_expr):
+                    raise NotImplementedError("make_mask dtype lowering expects a dtype symbol")
+                opname = f"pto.plt_{self._mask_suffix(stmt.value.type.elements[0])}"
+            else:
+                remaining_expr = stmt.value.args[0]
+                opname = f"pto.{stmt.value.name}"
             remaining = self._lower_remaining_to_i32(remaining_expr, env, indent=indent, into=lines)
             mask_target, remaining_target = stmt.targets
             mask_type, remaining_type = stmt.value.type.elements
-            suffix = self._mask_suffix(mask_type)
             lines.append(
                 self._indent(indent)
-                + f"{mask_target.ssa_name}, {remaining_target.ssa_name} = pto.plt_{suffix} {remaining.name} : "
+                + f"{mask_target.ssa_name}, {remaining_target.ssa_name} = {opname} {remaining.name} : "
                 + f"i32 -> {self._render_type(mask_type)}, {self._render_type(remaining_type)}"
             )
             env[mask_target.name] = _RenderedValue(name=mask_target.ssa_name, type=mask_type)
@@ -617,7 +620,7 @@ class _AuthoringRenderer:
             env[carry_target.name] = _RenderedValue(name=carry_target.ssa_name, type=carry_type)
             return lines
 
-        if stmt.value.name in {"vintlv", "vdintlv"}:
+        if stmt.value.name in {"vintlv", "vdintlv", "pdintlv_b8", "pintlv_b16"}:
             lines = []
             lhs = self._lower_expr(stmt.value.args[0], env, indent=indent, into=lines)
             rhs = self._lower_expr(stmt.value.args[1], env, indent=indent, into=lines)
@@ -2425,7 +2428,9 @@ class _AuthoringRenderer:
         if expr.namespace != "pto":
             raise NotImplementedError(f"unsupported call namespace {expr.namespace!r}")
         if isinstance(expr.type, SemanticTupleType):
-            raise NotImplementedError("multi-result call values must be assigned directly in TileLang DSL v1")
+            raise NotImplementedError(
+                f"multi-result call `pto.{expr.name}` must be assigned directly in TileLang DSL v1"
+            )
         if into is None:
             into = []
         result_name = desired_name or self._new_temp()
@@ -2443,6 +2448,34 @@ class _AuthoringRenderer:
                     self._indent(indent)
                     + f"pto.psts {value.name}, {destination_name}[{offset_name}] : "
                     + f"{self._render_type(value.type)}, {destination_type}"
+                )
+                return _RenderedValue(name="__void_call__", type=expr.type)
+
+            if expr.name == "pst":
+                value = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+                destination_name, destination_type, offset_name, offset_type = self._lower_memory_buffer_with_offset(
+                    expr.args[1:-1],
+                    env,
+                    indent=indent,
+                    into=into,
+                )
+                dist = self._render_string_literal(expr.args[-1])
+                into.append(
+                    self._indent(indent)
+                    + f"pto.pst {value.name}, {destination_name}[{offset_name}], {dist} : "
+                    + f"{self._render_type(value.type)}, {destination_type}, {offset_type}"
+                )
+                return _RenderedValue(name="__void_call__", type=expr.type)
+
+            if expr.name == "psti":
+                value = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+                destination = self._lower_expr(expr.args[1], env, indent=indent, into=into)
+                offset = self._lower_expr(expr.args[2], env, indent=indent, into=into)
+                dist = self._render_string_literal(expr.args[-1])
+                into.append(
+                    self._indent(indent)
+                    + f"pto.psti {value.name}, {destination.name}, {offset.name}, {dist} : "
+                    + f"{self._render_type(value.type)}, {self._render_type(destination.type)}, {self._render_type(offset.type)}"
                 )
                 return _RenderedValue(name="__void_call__", type=expr.type)
 
@@ -2501,12 +2534,23 @@ class _AuthoringRenderer:
             dtype_expr, pattern_expr = expr.args
             if not self._is_dtype_meta_expr(dtype_expr):
                 raise NotImplementedError("make_mask dtype lowering expects a dtype symbol")
-            if not isinstance(pattern_expr, SemanticSymbolExpr) or not isinstance(pattern_expr.value, MaskPattern):
+            pattern_value = self._extract_mask_pattern_value(pattern_expr)
+            if pattern_value is None:
                 raise NotImplementedError("make_mask pattern lowering expects a MaskPattern symbol")
             suffix = expr.type.granularity
             into.append(
                 self._indent(indent)
-                + f'{result_name} = pto.pset_{suffix} "{pattern_expr.value.value}" : {self._render_type(expr.type)}'
+                + f'{result_name} = pto.pset_{suffix} "{pattern_value}" : {self._render_type(expr.type)}'
+            )
+            return _RenderedValue(name=result_name, type=expr.type)
+
+        if expr.name in {"pset_b8", "pset_b16", "pset_b32", "pge_b8", "pge_b16", "pge_b32"}:
+            pattern_value = self._extract_mask_pattern_value(expr.args[0])
+            if pattern_value is None:
+                raise NotImplementedError(f"{expr.name} lowering expects a MaskPattern symbol")
+            into.append(
+                self._indent(indent)
+                + f'{result_name} = pto.{expr.name} "{pattern_value}" : {self._render_type(expr.type)}'
             )
             return _RenderedValue(name=result_name, type=expr.type)
 
@@ -2547,6 +2591,47 @@ class _AuthoringRenderer:
             into.append(
                 self._indent(indent)
                 + f"{result_name} = pto.vldas {source_name} : {source_type} -> {self._render_type(expr.type)}"
+            )
+            return _RenderedValue(name=result_name, type=expr.type)
+
+        if expr.name == "plds":
+            source_name, source_type, offset_name, _ = self._lower_memory_buffer_with_offset(
+                expr.args[:-1],
+                env,
+                indent=indent,
+                into=into,
+            )
+            dist = self._render_string_literal(expr.args[-1])
+            into.append(
+                self._indent(indent)
+                + f'{result_name} = pto.plds {source_name}[{offset_name}] {{dist = {dist}}} : '
+                + f"{source_type} -> {self._render_type(expr.type)}"
+            )
+            return _RenderedValue(name=result_name, type=expr.type)
+
+        if expr.name == "pld":
+            source_name, source_type, offset_name, offset_type = self._lower_memory_buffer_with_offset(
+                expr.args[:-1],
+                env,
+                indent=indent,
+                into=into,
+            )
+            dist = self._render_string_literal(expr.args[-1])
+            into.append(
+                self._indent(indent)
+                + f"{result_name} = pto.pld {source_name}[{offset_name}], {dist} : "
+                + f"{source_type}, {offset_type} -> {self._render_type(expr.type)}"
+            )
+            return _RenderedValue(name=result_name, type=expr.type)
+
+        if expr.name == "pldi":
+            source = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+            offset = self._lower_expr(expr.args[1], env, indent=indent, into=into)
+            dist = self._render_string_literal(expr.args[2])
+            into.append(
+                self._indent(indent)
+                + f"{result_name} = pto.pldi {source.name}, {offset.name}, {dist} : "
+                + f"{self._render_type(source.type)}, {self._render_type(offset.type)} -> {self._render_type(expr.type)}"
             )
             return _RenderedValue(name=result_name, type=expr.type)
 
@@ -2676,6 +2761,18 @@ class _AuthoringRenderer:
             into.append(
                 self._indent(indent)
                 + f"{result_name} = pto.psel {src0.name}, {src1.name}, {mask.name} : "
+                + f"{self._render_type(src0.type)}, {self._render_type(src1.type)}, {self._render_type(mask.type)} "
+                + f"-> {self._render_type(expr.type)}"
+            )
+            return _RenderedValue(name=result_name, type=expr.type)
+
+        if expr.name in {"pand", "por", "pxor"}:
+            src0 = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+            src1 = self._lower_expr(expr.args[1], env, indent=indent, into=into)
+            mask = self._lower_expr(expr.args[2], env, indent=indent, into=into)
+            into.append(
+                self._indent(indent)
+                + f"{result_name} = pto.{expr.name} {src0.name}, {src1.name}, {mask.name} : "
                 + f"{self._render_type(src0.type)}, {self._render_type(src1.type)}, {self._render_type(mask.type)} "
                 + f"-> {self._render_type(expr.type)}"
             )
@@ -3162,6 +3259,34 @@ class _AuthoringRenderer:
         if not isinstance(ty, SemanticMaskType):
             raise NotImplementedError("tail make_mask lowering expects a mask result type")
         return ty.granularity
+
+    def _extract_mask_pattern_value(self, expr: SemanticExpr) -> str | None:
+        if isinstance(expr, SemanticSymbolExpr) and isinstance(expr.value, MaskPattern):
+            return expr.value.value
+        if (
+            isinstance(expr, SemanticBindingRef)
+            and isinstance(expr.type, SemanticMetaType)
+            and expr.type.kind == "mask_pattern"
+            and isinstance(expr.binding.value, MaskPattern)
+        ):
+            return expr.binding.value.value
+        return None
+
+    def _emit_full_mask_for_type(
+        self,
+        ty: SemanticType,
+        *,
+        indent: int,
+        into: list[str],
+    ) -> _RenderedValue:
+        if not isinstance(ty, SemanticMaskType):
+            raise NotImplementedError("full-mask synthesis expects a mask type")
+        result_name = self._new_temp()
+        into.append(
+            self._indent(indent)
+            + f'{result_name} = pto.pset_{ty.granularity} "PAT_ALL" : {self._render_type(ty)}'
+        )
+        return _RenderedValue(name=result_name, type=ty)
 
     def _is_dtype_meta_expr(self, expr: SemanticExpr) -> bool:
         if isinstance(expr, SemanticSymbolExpr):

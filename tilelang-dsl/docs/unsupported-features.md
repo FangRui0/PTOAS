@@ -65,29 +65,11 @@ The previously missing vector-memory surfaces
 are now implemented. Remaining guide gaps are concentrated in the wider
 indexed/flush families that are still not wired through this DSL package.
 
-### Missing Direct Predicate Constructor/Compare APIs
-
-The implementation expects users to go through `pto.make_mask(...)` rather than
-call the underlying mask ops directly. These guide-documented APIs are not part
-of the supported authoring surface:
-
-- `pto.pset_b8(...)`, `pto.pset_b16(...)`, `pto.pset_b32(...)`
-- `pto.pge_b8(...)`, `pto.pge_b16(...)`, `pto.pge_b32(...)`
-- `pto.plt_b8(...)`, `pto.plt_b16(...)`, `pto.plt_b32(...)`
-
 ### Missing Extended Vector Arithmetic Families
 
 The previously missing `11-vector-arithmetic-operations.md` gap list is now
 implemented in the current package surface (including fused ops, broadcast/index
 generation, reduction-flavored ops, and rearrangement/sort groups).
-
-### Missing Predicate Rearrangement Shorthands
-
-The guide documents mask-specific rearrangement helpers that are not currently
-implemented:
-
-- `pto.pdintlv_b8(...)`
-- `pto.pintlv_b16(...)`
 
 ### Deferred Surface
 
