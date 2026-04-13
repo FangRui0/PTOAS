@@ -79,12 +79,15 @@ The `dtypes` parameter supports flexible type matching:
 
 1. **Concrete Types**: Exact type matches using DSL scalar types:
    - `pto.f16`, `pto.f32`, `pto.bf16`
-   - `pto.i8`, `pto.i16`, `pto.i32`, `pto.i64`
+   - `pto.i8`, `pto.si8`, `pto.ui8`
+   - `pto.i16`, `pto.si16`, `pto.ui16`
+   - `pto.i32`, `pto.si32`, `pto.ui32`
+   - `pto.i64`, `pto.si64`, `pto.ui64`
    - `pto.mask_b8`, `pto.mask_b16`, `pto.mask_b32`
 
 2. **Type Wildcards**: Generic type patterns:
    - `pto.AnyFloat`: Matches any floating-point type (`f16`, `bf16`, `f32`)
-   - `pto.AnyInt`: Matches any integer type (`i8`, `i16`, `i32`, `i64`)
+   - `pto.AnyInt`: Matches any integer type (`i*`, `si*`, `ui*`)
    - `pto.AnyType`: Matches any scalar type
    - `pto.AnyMask`: Matches any mask type (`mask_b8`, `mask_b16`, `mask_b32`)
 

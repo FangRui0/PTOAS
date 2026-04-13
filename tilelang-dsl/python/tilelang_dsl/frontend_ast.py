@@ -801,6 +801,8 @@ def _build_expr(node: ast.AST, context: _FrontendBuildContext) -> FrontendExprNo
             "BarrierType",
             "MemorySpace",
             "PadMode",
+            "DeinterleaveDist",
+            "InterleaveDist",
             "PositionMode",
             "OrderMode",
             "BLayout",

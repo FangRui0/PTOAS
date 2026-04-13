@@ -879,7 +879,7 @@ scaled = pto.vmuls(vec_f32, pto.f32(2.0), mask32)
 | `result` | `VRegType` | Vector whose active lanes all carry `value` |
 
 **Constraints**:
-- Supported scalar types are `i8`, `i16`, `i32`, `f16`, `bf16`, `f32`.
+- Supported scalar types are the 8/16/32-bit integer families (`i*`, `si*`, `ui*`) plus `f16`, `bf16`, and `f32`.
 - For integer types, only the low bits of the scalar source are consumed according to the bit width (8, 16, or 32 bits).
 
 **Example**:
@@ -893,44 +893,59 @@ rowmax_seed_f32 = pto.vbr(pto.f32("-inf"))
 rowmax_seed_f16 = pto.vbr(pto.f16("0xFC00"))
 ```
 
-**Position Mode Enum**: The `PositionMode` enum provides type-safe position selection for `pto.vdup` operations. Currently only `LOWEST` (selects the lowest-index element) is supported, with more position options planned for future releases.
+**Position Mode Enum**: The `PositionMode` enum provides type-safe source-lane
+selection for `pto.vdup`. `LOWEST` selects the lowest-index element of the
+source vector and `HIGHEST` selects the highest-index element. When the input is
+a scalar, the duplicated scalar value is independent of `position`.
 
-#### `pto.vdup(input: ScalarType | VRegType, position: PositionMode = PositionMode.LOWEST) -> VRegType`
+#### `pto.vdup(input: ScalarType | VRegType, mask: MaskType, position: PositionMode = PositionMode.LOWEST) -> VRegType`
 
-**Description**: Duplicate scalar or vector element to all lanes.
+**Description**: Duplicate a scalar value or one selected vector element into
+the active lanes of a destination vector.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `input` | `ScalarType` or `VRegType` | Input scalar or source vector |
-| `position` | `PositionMode` | Optional enum selecting which source element to duplicate (default: `PositionMode.LOWEST`) |
+| `mask` | `MaskType` | Predicate mask controlling which lanes are written |
+| `position` | `PositionMode` | Optional enum selecting the source vector element to duplicate (default: `PositionMode.LOWEST`) |
 
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
-| `result` | `VRegType` | Vector with duplicated value in all lanes |
+| `result` | `VRegType` | Vector whose active lanes receive the duplicated value |
 
 **Constraints**:
-- When `input` is a scalar, it is broadcast to all lanes (similar to `pto.vbr` but with `position` attribute).
-- When `input` is a vector, the element selected by `position` is duplicated to all lanes.
-- Supported scalar types are `i8`, `i16`, `i32`, `f16`, `bf16`, `f32`.
-- The `position` enum selects which source element or scalar position is duplicated. Currently only `PositionMode.LOWEST` is supported, which selects the lowest-index element.
+- `mask` granularity must match the destination vector element type. For
+  example, `f32`/`i32`/`si32`/`ui32` vectors require `mask_b32`.
+- When `input` is a scalar, the scalar value is duplicated to every active lane.
+- When `input` is a vector, `position` selects a single source element and that
+  value is duplicated to every active lane.
+- Inactive lanes follow VPTO predicate semantics and are not guaranteed to carry
+  meaningful values for subsequent masked-off use.
+- Supported scalar types are the 8/16/32-bit integer families (`i*`, `si*`, `ui*`) plus `f16`, `bf16`, and `f32`.
+- `position` is only meaningful for vector input. TileLang DSL currently exposes
+  `PositionMode.LOWEST` and `PositionMode.HIGHEST`, matching VPTO v0.3.
 
 **Example**:
 ```python
-# Broadcast scalar to vector (similar to pto.vbr)
-broadcast = pto.vdup(3.14)  # position defaults to "POS_LOWEST"
+mask32 = pto.make_mask(pto.f32, pto.PAT.ALL)
 
-# Use dtype constructor when the semantic value is floating-point special value
-seed = pto.vdup(pto.f32("-inf"))
-seed_f16 = pto.vdup(pto.f16("0xFC00"))
+# Duplicate a scalar into all active lanes.
+broadcast = pto.vdup(3.14, mask32)  # position defaults to "LOWEST"
 
-# Duplicate lowest element of vector to all lanes
-vec = pto.vreg_f32(64)  # 64-element vector
-dup_lowest = pto.vdup(vec)  # position defaults to "POS_LOWEST"
+# Use dtype constructors for floating-point special values.
+seed = pto.vdup(pto.f32("-inf"), mask32)
+seed_f16 = pto.vdup(pto.f16("0xFC00"), pto.make_mask(pto.f16, pto.PAT.ALL))
 
-# Explicit position specification
-dup_explicit = pto.vdup(vec, position=PositionMode.LOWEST)
+# Assume `vec` is an existing `f32` vector register value.
+vec = pto.vlds(src, 0)
+
+# Duplicate the lowest source lane to all active lanes.
+dup_lowest = pto.vdup(vec, mask32)  # position defaults to "LOWEST"
+
+# Duplicate the highest source lane to all active lanes.
+dup_highest = pto.vdup(vec, mask32, pto.PositionMode.HIGHEST)
 ```
 
 **Type Safety Note**:

@@ -1,17 +1,28 @@
 ### Enum Types for Vector Memory Operations
 
-The following enum types provide type-safe parameter specification for vector memory operations:
+The current DSL exposes type-safe Enum operands for the dual load/store
+distribution families:
 
-- **`DeinterleaveDist`**: Deinterleave distribution modes for `pto.vldx2`
-  - `B8`: 8-bit element deinterleave (for i8)
-  - `B16`: 16-bit element deinterleave (for i16, f16, bf16)
-  - `B32`: 32-bit element deinterleave (for i32, f32)
-  - `BD`: Broadcast deinterleave mode
+- **`DeinterleaveDist`** for `pto.vldsx2`
+  - `DeinterleaveDist.DINTLV`: alternating-element deinterleave
+  - `DeinterleaveDist.BDINTLV`: block deinterleave
+  - compatibility aliases: `DeinterleaveDist.B8`, `DeinterleaveDist.B16`,
+    `DeinterleaveDist.B32`, `DeinterleaveDist.BD`
 
-- **`InterleaveDist`**: Interleave distribution modes for `pto.vstx2`
-  - `B8`: 8-bit element interleave (for i8)
-  - `B16`: 16-bit element interleave (for i16, f16, bf16)
-  - `B32`: 32-bit element interleave (for i32, f32)
+- **`InterleaveDist`** for `pto.vstsx2`
+  - `InterleaveDist.INTLV`: interleave two vectors into one destination stream
+  - compatibility aliases: `InterleaveDist.B8`, `InterleaveDist.B16`,
+    `InterleaveDist.B32`
+
+The canonical VPTO v0.3 spellings are the enum values:
+
+- `DeinterleaveDist.DINTLV.value == "DINTLV"`
+- `DeinterleaveDist.BDINTLV.value == "BDINTLV"`
+- `InterleaveDist.INTLV.value == "INTLV"`
+
+For migration convenience, the implementation still accepts legacy raw strings
+such as `"DINTLV_B32"` and `"INTLV_B32"`, but new DSL code should prefer the
+Enum operands.
 
 - **`StrideMode`**: Stride modes for `pto.vsld`
   - `S3_B16`: Stride 3, block size 16
@@ -72,10 +83,10 @@ vector_lanes = 256 // element_size_bytes(element_type)
 **Convenience API**: Use `pto.elements_per_vreg(dtype)` to compute the number of elements per vector register for a given element type (e.g., `pto.elements_per_vreg(pto.f32)` returns 64, `pto.elements_per_vreg(pto.f16)` returns 128). See [Type Query Operations](07-frontend-operations.md#type-query-operations) for full documentation.
 
 Where `element_size_bytes` is:
-- 1 byte for `i8`
-- 2 bytes for `i16`, `f16`, `bf16`
-- 4 bytes for `i32`, `f32`
-- 8 bytes for `i64`
+- 1 byte for `i8`, `si8`, `ui8`
+- 2 bytes for `i16`, `si16`, `ui16`, `f16`, `bf16`
+- 4 bytes for `i32`, `si32`, `ui32`, `f32`
+- 8 bytes for `i64`, `si64`, `ui64`
 
 #### Offset Computation
 
@@ -134,8 +145,8 @@ The byte offset is automatically computed based on tile layout:
 The indexing syntax is supported for all vector load and store operations with the following syntax mapping:
 
 - **Vector-range indexing** (`tile[row, col:]` or `tile[start:]`):
-  - Load operations: `vlds`, `vldas`, `vldus`, `vldx2`
-  - Store operations: `vsts`, `vsta`, `psts`, `vsst`, `vstx2`
+  - Load operations: `vlds`, `vldas`, `vldus`, `vldsx2`
+  - Store operations: `vsts`, `vsta`, `psts`, `vsst`, `vstsx2`
 
 - **Single-element indexing** (`tile[row, col]` or `tile[pos]`):
   - Load operations: `vsld` (scalar load with broadcast)
@@ -154,7 +165,7 @@ vec = pto.vlds(tile[k:])             # Load vector from elements k to k+vector_l
 pto.vsts(vec, tile[k:], mask)        # Store vector with mask
 
 # Dual load with deinterleave
-low, high = pto.vldx2(tile[i, j:], DeinterleaveDist.B32)
+low, high = pto.vldsx2(tile[i, j:], "DINTLV")
 
 # Aligned load with indexing
 vec = pto.vldas(tile[i, j:], align)
@@ -319,9 +330,9 @@ for n in range(4):
 ```
 
 
-#### `pto.vldx2(buf: ptr, offset: Index, dist: DeinterleaveDist) -> (VRegType, VRegType)`  [Advanced Tier]
-#### `pto.vldx2(tile[row, col:], dist: DeinterleaveDist) -> (VRegType, VRegType)`  [Basic Tier]
-#### `pto.vldx2(tile[start:], dist: DeinterleaveDist) -> (VRegType, VRegType)`  [Basic Tier]
+#### `pto.vldsx2(buf: ptr, offset: Index, dist: DeinterleaveDist) -> (VRegType, VRegType)`  [Advanced Tier]
+#### `pto.vldsx2(tile[row, col:], dist: DeinterleaveDist) -> (VRegType, VRegType)`  [Basic Tier]
+#### `pto.vldsx2(tile[start:], dist: DeinterleaveDist) -> (VRegType, VRegType)`  [Basic Tier]
 
 **Description**: Dual vector load with deinterleave (AoS → SoA conversion). Loads interleaved data from a single buffer and deinterleaves into two vectors. Supports both byte-offset and element-indexing syntax.
 
@@ -330,16 +341,16 @@ for n in range(4):
 |-----------|------|-------------|
 | `buf` | `ptr` | Pointer to source buffer in UB memory space (Advanced mode only - requires explicit pointer) |
 | `offset` | `Index` | Byte offset |
-| `dist` | `DeinterleaveDist` | Deinterleave distribution mode: `DeinterleaveDist.B8`, `DeinterleaveDist.B16`, `DeinterleaveDist.B32`, `DeinterleaveDist.BD`. Determines element size and interleave pattern. |
+| `dist` | `DeinterleaveDist` | Deinterleave distribution enum. Prefer `DeinterleaveDist.DINTLV` or `DeinterleaveDist.BDINTLV`. |
 
 **Parameters (element-indexing syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `tile[row, col:]` | `Tile` with indexing | 2D tile with row index and starting column (vector-width range) |
-| `dist` | `DeinterleaveDist` | Deinterleave distribution mode: `DeinterleaveDist.B8`, `DeinterleaveDist.B16`, `DeinterleaveDist.B32`, `DeinterleaveDist.BD`. Determines element size and interleave pattern. |
+| `dist` | `DeinterleaveDist` | Deinterleave distribution enum. Prefer `DeinterleaveDist.DINTLV` or `DeinterleaveDist.BDINTLV`. |
 | _or_ | | |
 | `tile[start:]` | `Tile` with indexing | 1D tile with starting element index (vector-width range) |
-| `dist` | `DeinterleaveDist` | Deinterleave distribution mode: `DeinterleaveDist.B8`, `DeinterleaveDist.B16`, `DeinterleaveDist.B32`, `DeinterleaveDist.BD`. |
+| `dist` | `DeinterleaveDist` | Deinterleave distribution enum. Prefer `DeinterleaveDist.DINTLV` or `DeinterleaveDist.BDINTLV`. |
 
 **Returns**:
 | Return Value | Type | Description |
@@ -351,21 +362,19 @@ for n in range(4):
 - Source buffer must be in UB memory space
 - Offset must satisfy alignment requirements for the selected distribution mode
 - The requested vector region must be within tile bounds (for element-indexing syntax)
-- Distribution mode must match element type (e.g., `DeinterleaveDist.B32` for 32-bit elements)
+- Distribution mode must match element type (e.g., `"DINTLV"` for 32-bit elements)
 
 **Examples**:
 ```python
-from pto import DeinterleaveDist
-
 # Byte-offset syntax
-low, high = pto.vldx2(ub_ptr, offset, DeinterleaveDist.B32)
+low, high = pto.vldsx2(ub_ptr, offset, pto.DeinterleaveDist.DINTLV)
 
 # Element-indexing syntax
-low, high = pto.vldx2(tile[i, j:], DeinterleaveDist.B32)
-low, high = pto.vldx2(tile[k:], DeinterleaveDist.B16)
+low, high = pto.vldsx2(tile[i, j:], pto.DeinterleaveDist.DINTLV)
+low, high = pto.vldsx2(tile[k:], pto.DeinterleaveDist.DINTLV)
 
 # Example: Load interleaved XY pairs into separate X/Y vectors
-x_vec, y_vec = pto.vldx2(xy_tile[i, j:], DeinterleaveDist.B32)
+x_vec, y_vec = pto.vldsx2(xy_tile[i, j:], pto.DeinterleaveDist.DINTLV)
 ```
 
 #### `pto.vsld(buf: ptr, offset: Index, stride: StrideMode) -> VRegType`  [Advanced Tier]
@@ -637,9 +646,9 @@ def generic_store(src: pto.Tile, dst: pto.Tile):
 
 **Returns**: None (side-effect operation)
 
-#### `pto.vstx2(low: VRegType, high: VRegType, buf: ptr, offset: Index, dist: InterleaveDist, mask: MaskType) -> None`  [Advanced Tier]
-#### `pto.vstx2(low: VRegType, high: VRegType, tile[row, col:], dist: InterleaveDist, mask: MaskType) -> None`  
-#### `pto.vstx2(low: VRegType, high: VRegType, tile[start:], dist: InterleaveDist, mask: MaskType) -> None`
+#### `pto.vstsx2(low: VRegType, high: VRegType, buf: ptr, offset: Index, dist: InterleaveDist, mask: MaskType) -> None`  [Advanced Tier]
+#### `pto.vstsx2(low: VRegType, high: VRegType, tile[row, col:], dist: InterleaveDist, mask: MaskType) -> None`  
+#### `pto.vstsx2(low: VRegType, high: VRegType, tile[start:], dist: InterleaveDist, mask: MaskType) -> None`
 
 **Description**: Dual interleaved store (SoA → AoS conversion). Stores two vectors interleaved into a single buffer. Supports both byte-offset and element-indexing syntax.
 
@@ -650,7 +659,7 @@ def generic_store(src: pto.Tile, dst: pto.Tile):
 | `high` | `VRegType` | Second vector (odd elements in interleaved stream) |
 | `buf` | `ptr` | Pointer to destination buffer in UB memory space (Advanced mode only - requires explicit pointer) |
 | `offset` | `Index` | Byte offset |
-| `dist` | `InterleaveDist` | Interleave distribution mode: `InterleaveDist.B8`, `InterleaveDist.B16`, `InterleaveDist.B32`. Determines element size and interleave pattern. |
+| `dist` | `InterleaveDist` | Interleave distribution enum. Prefer `InterleaveDist.INTLV`. |
 | `mask` | `MaskType` | Predicate mask |
 
 **Parameters (element-indexing syntax)**:
@@ -659,7 +668,7 @@ def generic_store(src: pto.Tile, dst: pto.Tile):
 | `low` | `VRegType` | First vector (even elements in interleaved stream) |
 | `high` | `VRegType` | Second vector (odd elements in interleaved stream) |
 | `tile[row, col:]` | `Tile` with indexing | 2D tile with row index and starting column (vector-width range) |
-| `dist` | `InterleaveDist` | Interleave distribution mode: `InterleaveDist.B8`, `InterleaveDist.B16`, `InterleaveDist.B32`. |
+| `dist` | `InterleaveDist` | Interleave distribution enum. Prefer `InterleaveDist.INTLV`. |
 | `mask` | `MaskType` | Predicate mask |
 
 **Parameters (1D element-indexing syntax)**:
@@ -668,7 +677,7 @@ def generic_store(src: pto.Tile, dst: pto.Tile):
 | `low` | `VRegType` | First vector (even elements in interleaved stream) |
 | `high` | `VRegType` | Second vector (odd elements in interleaved stream) |
 | `tile[start:]` | `Tile` with indexing | 1D tile with starting element index (vector-width range) |
-| `dist` | `InterleaveDist` | Interleave distribution mode: `InterleaveDist.B8`, `InterleaveDist.B16`, `InterleaveDist.B32`. |
+| `dist` | `InterleaveDist` | Interleave distribution enum. Prefer `InterleaveDist.INTLV`. |
 | `mask` | `MaskType` | Predicate mask |
 
 **Returns**: None (side-effect operation)
@@ -677,22 +686,20 @@ def generic_store(src: pto.Tile, dst: pto.Tile):
 - Destination buffer must be in UB memory space
 - Offset must satisfy alignment requirements for the selected distribution mode
 - The destination vector region must be within tile bounds (for element-indexing syntax)
-- Distribution mode must match element type (e.g., `InterleaveDist.B32` for 32-bit elements)
+- Distribution mode must match element type (e.g., `"INTLV"` for 32-bit elements)
 - The two source vectors form an ordered pair; interleave semantics must be preserved
 
 **Examples**:
 ```python
-from pto import InterleaveDist
-
 # Byte-offset syntax
-pto.vstx2(x_vec, y_vec, ub_ptr, offset, InterleaveDist.B32, mask)
+pto.vstsx2(x_vec, y_vec, ub_ptr, offset, pto.InterleaveDist.INTLV, mask)
 
 # Element-indexing syntax
-pto.vstx2(x_vec, y_vec, tile[i, j:], InterleaveDist.B32, mask)
-pto.vstx2(x_vec, y_vec, tile[k:], InterleaveDist.B16, mask)
+pto.vstsx2(x_vec, y_vec, tile[i, j:], pto.InterleaveDist.INTLV, mask)
+pto.vstsx2(x_vec, y_vec, tile[k:], pto.InterleaveDist.INTLV, mask)
 
 # Example: Store separate X/Y vectors as interleaved XY pairs
-pto.vstx2(x_vec, y_vec, xy_tile[i, j:], InterleaveDist.B32, all_mask)
+pto.vstsx2(x_vec, y_vec, xy_tile[i, j:], pto.InterleaveDist.INTLV, all_mask)
 ```
 
 #### `pto.vsta(align: pto.align, buf: ptr, offset: Index) -> None`  [Advanced Tier]

@@ -40,6 +40,7 @@ from .semantic import (
     SemanticPtrType,
     SemanticReturnStmt,
     SemanticRlsBufStmt,
+    SemanticScalarStoreStmt,
     SemanticScalarType,
     SemanticSetCrossCoreStmt,
     SemanticSetFlagStmt,
@@ -59,12 +60,24 @@ from .semantic import (
     SemanticTupleExpr,
     SemanticTupleType,
     SemanticVRegType,
+    SemanticVectorPairStoreStmt,
     SemanticVectorStoreStmt,
     SemanticWaitFlagDevStmt,
     SemanticWaitFlagStmt,
     SemanticWaitIntraCoreStmt,
 )
-from .types import MaskPattern, MemorySpace, ScalarType, TileConfig, get_lanes, tile_strides
+from .types import (
+    MaskPattern,
+    MemorySpace,
+    ScalarType,
+    TileConfig,
+    bytewidth,
+    get_lanes,
+    integer_bitwidth,
+    integer_signedness,
+    is_integer_dtype,
+    tile_strides,
+)
 
 
 _I1_TYPE = SemanticScalarType(dtype=ScalarType("i1"))
@@ -404,6 +417,10 @@ class _AuthoringRenderer:
             return self._render_dma_store(stmt, env, indent=indent)
         if isinstance(stmt, SemanticVectorStoreStmt):
             return self._render_vector_store(stmt, env, indent=indent)
+        if isinstance(stmt, SemanticVectorPairStoreStmt):
+            return self._render_vector_pair_store(stmt, env, indent=indent)
+        if isinstance(stmt, SemanticScalarStoreStmt):
+            return self._render_scalar_store(stmt, env, indent=indent)
         if isinstance(stmt, SemanticSetFlagStmt):
             return [
                 self._indent(indent)
@@ -834,6 +851,41 @@ class _AuthoringRenderer:
             )
             for target, result_type in zip(stmt.targets, stmt.value.type.elements):
                 env[target.name] = _RenderedValue(name=target.ssa_name, type=result_type)
+
+        if stmt.value.name == "vldsx2":
+            lines = []
+            source = self._lower_expr(stmt.value.args[0], env, indent=indent, into=lines)
+            if isinstance(source.type, SemanticTileType):
+                source = self._materialize_tile_memref(source, indent=indent, into=lines)
+            index_args = stmt.value.args[1:-1]
+            if (
+                isinstance(stmt.value.args[0].type, SemanticTileType)
+                and stmt.value.args[0].type.rank == 2
+                and len(index_args) == 2
+            ):
+                source = self._materialize_rank2_tile_subview(
+                    source,
+                    stmt.value.args[0].type,
+                    index_args,
+                    env,
+                    indent=indent,
+                    into=lines,
+                )
+                rendered_indices = self._materialize_constant(0, SemanticIndexType())
+            else:
+                rendered_indices = self._render_index_list(index_args, env, indent=indent, into=lines)
+            dist = self._render_string_literal(stmt.value.args[-1])
+            low_target, high_target = stmt.targets
+            low_type, high_type = stmt.value.type.elements
+            lines.append(
+                self._indent(indent)
+                + f"{low_target.ssa_name}, {high_target.ssa_name} = pto.vldsx2 "
+                + f"{source.name}[{rendered_indices}], {dist} : "
+                + f"{self._render_type(source.type)}, index -> "
+                + f"{self._render_type(low_type)}, {self._render_type(high_type)}"
+            )
+            env[low_target.name] = _RenderedValue(name=low_target.ssa_name, type=low_type)
+            env[high_target.name] = _RenderedValue(name=high_target.ssa_name, type=high_type)
             return lines
 
         raise NotImplementedError(
@@ -972,6 +1024,64 @@ class _AuthoringRenderer:
             + "pto.vsts "
             + f"{value.name}, {destination.name}[{rendered_indices}], {mask.name} : "
             + f"{self._render_type(value.type)}, {self._render_type(destination.type)}, {self._render_type(mask.type)}"
+        )
+        return lines
+
+    def _render_vector_pair_store(
+        self,
+        stmt: SemanticVectorPairStoreStmt,
+        env: dict[str, _RenderedValue],
+        *,
+        indent: int,
+    ) -> list[str]:
+        lines: list[str] = []
+        low = self._lower_expr(stmt.low, env, indent=indent, into=lines)
+        high = self._lower_expr(stmt.high, env, indent=indent, into=lines)
+        destination = self._lower_expr(stmt.destination, env, indent=indent, into=lines)
+        if isinstance(destination.type, SemanticTileType):
+            destination = self._materialize_tile_memref(destination, indent=indent, into=lines)
+        if (
+            isinstance(stmt.destination.type, SemanticTileType)
+            and stmt.destination.type.rank == 2
+            and len(stmt.indices) == 2
+        ):
+            destination = self._materialize_rank2_tile_subview(
+                destination,
+                stmt.destination.type,
+                stmt.indices,
+                env,
+                indent=indent,
+                into=lines,
+            )
+            rendered_indices = self._materialize_constant(0, SemanticIndexType())
+        else:
+            rendered_indices = self._render_index_list(stmt.indices, env, indent=indent, into=lines)
+        dist = self._render_string_literal(stmt.dist)
+        mask = self._lower_expr(stmt.mask, env, indent=indent, into=lines)
+        lines.append(
+            self._indent(indent)
+            + "pto.vstsx2 "
+            + f"{low.name}, {high.name}, {destination.name}[{rendered_indices}], {dist}, {mask.name} : "
+            + f"{self._render_type(low.type)}, {self._render_type(high.type)}, "
+            + f"{self._render_type(destination.type)}, {self._render_type(mask.type)}"
+        )
+        return lines
+
+    def _render_scalar_store(
+        self,
+        stmt: SemanticScalarStoreStmt,
+        env: dict[str, _RenderedValue],
+        *,
+        indent: int,
+    ) -> list[str]:
+        lines: list[str] = []
+        value = self._lower_expr(stmt.value, env, indent=indent, into=lines)
+        destination = self._lower_expr(stmt.destination, env, indent=indent, into=lines)
+        offset = self._lower_expr(stmt.offset, env, indent=indent, into=lines)
+        lines.append(
+            self._indent(indent)
+            + f"pto.store_scalar {value.name}, {destination.name}[{offset.name}] : "
+            + f"{self._render_type(destination.type)}, {self._render_type(value.type)}"
         )
         return lines
 
@@ -1759,20 +1869,22 @@ class _AuthoringRenderer:
         )
 
     def _mask_granularity_for_dtype(self, dtype: ScalarType) -> str:
-        if dtype.name in {"f32", "i32"}:
+        int_bits = integer_bitwidth(dtype)
+        if dtype.name == "f32" or int_bits == 32:
             return "b32"
-        if dtype.name in {"f16", "bf16", "i16"}:
+        if dtype.name in {"f16", "bf16"} or int_bits == 16:
             return "b16"
-        if dtype.name == "i8":
+        if int_bits == 8:
             return "b8"
         raise NotImplementedError(f"dtype `{dtype.name}` is not supported by DMA load prefill lowering")
 
     def _broadcast_dist_for_dtype(self, dtype: ScalarType) -> str:
-        if dtype.name in {"f32", "i32"}:
+        int_bits = integer_bitwidth(dtype)
+        if dtype.name == "f32" or int_bits == 32:
             return "BRC_B32"
-        if dtype.name in {"f16", "bf16", "i16"}:
+        if dtype.name in {"f16", "bf16"} or int_bits == 16:
             return "BRC_B16"
-        if dtype.name == "i8":
+        if int_bits == 8:
             return "BRC_B8"
         raise NotImplementedError(f"dtype `{dtype.name}` is not supported by DMA load broadcast lowering")
 
@@ -2737,6 +2849,24 @@ class _AuthoringRenderer:
                 + f"{result_name} = pto.vstur {align.name}, {value.name}, {base.name}, {mode} : "
                 + f"{self._render_type(align.type)}, {self._render_type(value.type)}, {self._render_type(base.type)} -> {self._render_type(expr.type)}"
             )
+
+        if expr.name == "load_scalar":
+            source = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+            offset = self._lower_expr(expr.args[1], env, indent=indent, into=into)
+            into.append(
+                self._indent(indent)
+                + f"{result_name} = pto.load_scalar {source.name}[{offset.name}] : "
+                + f"{self._render_type(source.type)} -> {self._render_type(expr.type)}"
+            )
+            return _RenderedValue(name=result_name, type=expr.type)
+
+        if expr.name in {
+            "get_block_idx",
+            "get_subblock_idx",
+            "get_block_num",
+            "get_subblock_num",
+        }:
+            into.append(self._indent(indent) + f"{result_name} = pto.{expr.name}")
             return _RenderedValue(name=result_name, type=expr.type)
 
         if expr.name == "vbr":
@@ -2750,11 +2880,12 @@ class _AuthoringRenderer:
 
         if expr.name == "vdup":
             value = self._lower_expr(expr.args[0], env, indent=indent, into=into)
-            position = self._render_string_literal(expr.args[1])
+            mask = self._lower_expr(expr.args[1], env, indent=indent, into=into)
+            position = self._render_string_literal(expr.args[2])
             into.append(
                 self._indent(indent)
-                + f"{result_name} = pto.vdup {value.name} {{position = {position}}} : "
-                + f"{self._render_type(value.type)} -> {self._render_type(expr.type)}"
+                + f"{result_name} = pto.vdup {value.name}, {mask.name} {{position = {position}}} : "
+                + f"{self._render_type(value.type)}, {self._render_type(mask.type)} -> {self._render_type(expr.type)}"
             )
             return _RenderedValue(name=result_name, type=expr.type)
 
@@ -2797,7 +2928,24 @@ class _AuthoringRenderer:
             )
             return _RenderedValue(name=result_name, type=expr.type)
 
-        if expr.name in {"i1", "i8", "i16", "i32", "i64", "f16", "bf16", "f32"}:
+        if expr.name in {
+            "i1",
+            "i8",
+            "si8",
+            "ui8",
+            "i16",
+            "si16",
+            "ui16",
+            "i32",
+            "si32",
+            "ui32",
+            "i64",
+            "si64",
+            "ui64",
+            "f16",
+            "bf16",
+            "f32",
+        }:
             value = self._lower_expr(expr.args[0], env, indent=indent, into=into)
             return self._coerce_rendered_value(value, expr.type, indent=indent, into=into)
 
@@ -3268,21 +3416,34 @@ class _AuthoringRenderer:
         indent: int,
         into: list[str],
     ) -> _RenderedValue:
+        def _scalar_int_bits(dtype: ScalarType) -> int | None:
+            if dtype.name == "i1":
+                return 1
+            return integer_bitwidth(dtype)
+
+        def _scalar_int_sign(dtype: ScalarType) -> str:
+            sign = integer_signedness(dtype)
+            return "signless" if sign is None else sign
+
         if type(value.type) is type(target_type) and value.type == target_type:
             return value
         if isinstance(value.type, SemanticIndexType) and isinstance(target_type, SemanticScalarType):
-            if target_type.dtype.name == "i32":
+            target_int_bits = _scalar_int_bits(target_type.dtype)
+            target_sign = _scalar_int_sign(target_type.dtype)
+            if target_int_bits == 32:
+                op = "arith.index_castui" if target_sign == "unsigned" else "arith.index_cast"
                 cast_name = self._new_temp()
                 into.append(
                     self._indent(indent)
-                    + f"{cast_name} = arith.index_cast {value.name} : index to i32"
+                    + f"{cast_name} = {op} {value.name} : index to {target_type.dtype.name}"
                 )
                 return _RenderedValue(name=cast_name, type=target_type)
-            if target_type.dtype.name == "i64":
+            if target_int_bits == 64:
+                op = "arith.index_castui" if target_sign in {"signless", "unsigned"} else "arith.index_cast"
                 cast_name = self._new_temp()
                 into.append(
                     self._indent(indent)
-                    + f"{cast_name} = arith.index_castui {value.name} : index to i64"
+                    + f"{cast_name} = {op} {value.name} : index to {target_type.dtype.name}"
                 )
                 return _RenderedValue(name=cast_name, type=target_type)
             if target_type.dtype.name in {"f16", "bf16", "f32"}:
@@ -3298,25 +3459,32 @@ class _AuthoringRenderer:
             if src == dst:
                 return value
             cast_name = self._new_temp()
-            if src.startswith("i") and dst.startswith("i"):
-                src_bits = int(src[1:])
-                dst_bits = int(dst[1:])
-                op = "arith.extsi" if src_bits < dst_bits else "arith.trunci"
+            src_bits = _scalar_int_bits(value.type.dtype)
+            dst_bits = _scalar_int_bits(target_type.dtype)
+            if src_bits is not None and dst_bits is not None:
+                if src_bits == dst_bits:
+                    op = "arith.bitcast"
+                elif src_bits < dst_bits:
+                    op = "arith.extui" if _scalar_int_sign(value.type.dtype) == "unsigned" else "arith.extsi"
+                else:
+                    op = "arith.trunci"
                 into.append(
                     self._indent(indent)
                     + f"{cast_name} = {op} {value.name} : {src} to {dst}"
                 )
                 return _RenderedValue(name=cast_name, type=target_type)
-            if src.startswith("i") and dst in {"f16", "bf16", "f32"}:
+            if src_bits is not None and dst in {"f16", "bf16", "f32"}:
+                op = "arith.uitofp" if _scalar_int_sign(value.type.dtype) == "unsigned" else "arith.sitofp"
                 into.append(
                     self._indent(indent)
-                    + f"{cast_name} = arith.sitofp {value.name} : {src} to {dst}"
+                    + f"{cast_name} = {op} {value.name} : {src} to {dst}"
                 )
                 return _RenderedValue(name=cast_name, type=target_type)
-            if src in {"f16", "bf16", "f32"} and dst.startswith("i"):
+            if src in {"f16", "bf16", "f32"} and dst_bits is not None:
+                op = "arith.fptoui" if _scalar_int_sign(target_type.dtype) == "unsigned" else "arith.fptosi"
                 into.append(
                     self._indent(indent)
-                    + f"{cast_name} = arith.fptosi {value.name} : {src} to {dst}"
+                    + f"{cast_name} = {op} {value.name} : {src} to {dst}"
                 )
                 return _RenderedValue(name=cast_name, type=target_type)
             if src in {"f16", "bf16", "f32"} and dst in {"f16", "bf16", "f32"}:
@@ -3740,19 +3908,10 @@ class _AuthoringRenderer:
         return "?" if dim is None else str(dim)
 
     def _dtype_byte_width(self, dtype: ScalarType) -> int:
-        widths = {
-            "i8": 1,
-            "i16": 2,
-            "i32": 4,
-            "i64": 8,
-            "f16": 2,
-            "bf16": 2,
-            "f32": 4,
-        }
-        width = widths.get(dtype.name)
-        if width is None:
-            raise NotImplementedError(f"unsupported DMA dtype '{dtype.name}' in TileLang DSL v1 lowering")
-        return width
+        try:
+            return bytewidth(dtype)
+        except TypeError as exc:
+            raise NotImplementedError(f"unsupported DMA dtype '{dtype.name}' in TileLang DSL v1 lowering") from exc
 
     def _indent(self, indent: int) -> str:
         return " " * indent

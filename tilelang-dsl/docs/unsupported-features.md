@@ -50,12 +50,37 @@ The following guide surfaces are not implemented as public APIs:
 
 ### Missing Vector Load/Store Families
 
-The previously missing vector-memory surfaces
-`pto.vldas(...)`, `pto.vldus(...)`, `pto.vldx2(...)`, `pto.vsld(...)`,
-`pto.psts(...)`, `pto.vsst(...)`, `pto.vstx2(...)`, `pto.vsta(...)`,
-`pto.pstu(...)`, `pto.vstu(...)`, `pto.vstus(...)`, and `pto.vstur(...)`
-are now implemented. Remaining guide gaps are concentrated in the wider
-indexed/flush families that are still not wired through this DSL package.
+The current package supports the core v0.3 load/store subset:
+
+- `pto.vlds(...)`
+- `pto.vsts(...)`
+- `pto.vldsx2(...)`
+- `pto.vstsx2(...)`
+- `pto.load_scalar(...)`
+- `pto.store_scalar(...)`
+
+The following documented load/store families are still unsupported:
+
+- `pto.vldas(...)`
+- `pto.vldus(...)`
+- `pto.vsld(...)`
+- `pto.psts(...)`
+- `pto.vsst(...)`
+- `pto.vsta(...)`
+- `pto.pstu(...)`
+- `pto.vstu(...)`
+- `pto.vstus(...)`
+- `pto.vstur(...)`
+
+### Missing Direct Predicate Constructor/Compare APIs
+
+The implementation expects users to go through `pto.make_mask(...)` rather than
+call the underlying mask ops directly. These guide-documented APIs are not part
+of the supported authoring surface:
+
+- `pto.pset_b8(...)`, `pto.pset_b16(...)`, `pto.pset_b32(...)`
+- `pto.pge_b8(...)`, `pto.pge_b16(...)`, `pto.pge_b32(...)`
+- `pto.plt_b8(...)`, `pto.plt_b16(...)`, `pto.plt_b32(...)`
 
 ### Missing Extended Vector Arithmetic Families
 
@@ -156,13 +181,15 @@ Currently supported:
 - rank-1: `tile[start:]`
 - rank-2: `tile[row, col:]`
 - rank-2 column-major: `tile[row_start:, col_index]`
-- available across the current basic vector-memory tile-indexing family
+- for `pto.vlds(...)`, `pto.vsts(...)`, `pto.vldsx2(...)`, and `pto.vstsx2(...)`
 
 Not currently supported from the guide's broader indexing model:
 
 - single-element syntax such as `tile[row, col]` and `tile[pos]`
 - explicit slice `stop`
 - stepped tile vector slices
+- the guide's wider indexed op family (`vldas`, `vldus`, `vsld`,
+  `psts`, `vsst`, `vsta`)
 
 ### Control-Flow Result Merging
 
@@ -194,8 +221,10 @@ For quick orientation, the current package head is strongest in these areas:
 - `templates={...}` and `pto.tpl(...)`
 - `ptr(...)`, `pto.castptr(...)`, `pto.addptr(...)`
 - low-level DMA config/copy ops
+- runtime block queries (`pto.get_block_idx`, `pto.get_block_num`, ...)
 - `pto.make_mask(...)`
-- `pto.vlds(...)` and `pto.vsts(...)`
+- `pto.vlds(...)`, `pto.vsts(...)`, `pto.vldsx2(...)`, `pto.vstsx2(...)`
+- `pto.load_scalar(...)` and `pto.store_scalar(...)`
 - base unary/binary/vector-scalar vector ops
 - advanced compare/select/carry/rearrangement families
 

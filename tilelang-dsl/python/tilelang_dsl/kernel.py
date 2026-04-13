@@ -34,6 +34,7 @@ from .types import (
     TileSpecialization,
     TypeVariable,
     WildcardType,
+    is_integer_dtype,
 )
 from .frontend_ast import _DMA_CALL_KEYWORDS, build_frontend_kernel_node
 from .lowering import lower_semantic_kernel
@@ -1606,7 +1607,7 @@ def _matches_wildcard(pattern: WildcardType, actual: ScalarType | MaskType) -> b
     if pattern.name == "AnyFloat":
         return isinstance(actual, ScalarType) and actual.name in {"f16", "bf16", "f32"}
     if pattern.name == "AnyInt":
-        return isinstance(actual, ScalarType) and actual.name.startswith("i")
+        return isinstance(actual, ScalarType) and is_integer_dtype(actual)
     if pattern.name == "AnyMask":
         return isinstance(actual, MaskType)
     raise TypeError(f"unsupported wildcard matcher {pattern.name!r}")

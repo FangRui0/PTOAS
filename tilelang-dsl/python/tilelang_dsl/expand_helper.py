@@ -31,7 +31,23 @@ _DTYPE_MAP: dict[str, ScalarType] = {}
 def _populate_dtype_map() -> None:
     from . import types as _t
 
-    for name in ("f16", "bf16", "f32", "i8", "i16", "i32", "i64"):
+    for name in (
+        "f16",
+        "bf16",
+        "f32",
+        "i8",
+        "si8",
+        "ui8",
+        "i16",
+        "si16",
+        "ui16",
+        "i32",
+        "si32",
+        "ui32",
+        "i64",
+        "si64",
+        "ui64",
+    ):
         obj = getattr(_t, name, None)
         if isinstance(obj, ScalarType):
             _DTYPE_MAP[name] = obj

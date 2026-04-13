@@ -23,6 +23,48 @@ class ScalarType:
         return self.name
 
 
+_INTEGER_DTYPE_WIDTHS = {
+    "i8": 8,
+    "si8": 8,
+    "ui8": 8,
+    "i16": 16,
+    "si16": 16,
+    "ui16": 16,
+    "i32": 32,
+    "si32": 32,
+    "ui32": 32,
+    "i64": 64,
+    "si64": 64,
+    "ui64": 64,
+}
+
+_INTEGER_DTYPE_SIGNS = {
+    "i8": "signless",
+    "si8": "signed",
+    "ui8": "unsigned",
+    "i16": "signless",
+    "si16": "signed",
+    "ui16": "unsigned",
+    "i32": "signless",
+    "si32": "signed",
+    "ui32": "unsigned",
+    "i64": "signless",
+    "si64": "signed",
+    "ui64": "unsigned",
+}
+
+_FLOAT_DTYPE_WIDTHS = {
+    "f16": 16,
+    "bf16": 16,
+    "f32": 32,
+}
+
+_DTYPE_BYTE_WIDTHS = {
+    name: bits // 8 for name, bits in _INTEGER_DTYPE_WIDTHS.items()
+}
+_DTYPE_BYTE_WIDTHS.update({name: bits // 8 for name, bits in _FLOAT_DTYPE_WIDTHS.items()})
+
+
 class TensorView:
     """Bare TensorView annotation marker for TileLang DSL v1."""
 
@@ -163,15 +205,9 @@ class PadMode(str, Enum):
     PadValue = "PadValue"
 
 
-class PositionMode(str, Enum):
-    LOWEST = "POS_LOWEST"
-
-
-class OrderMode(str, Enum):
-    ASC = "ORDER_ASC"
-
-
 class DeinterleaveDist(str, Enum):
+    DINTLV = "DINTLV"
+    BDINTLV = "BDINTLV"
     B8 = "DINTLV_B8"
     B16 = "DINTLV_B16"
     B32 = "DINTLV_B32"
@@ -179,9 +215,19 @@ class DeinterleaveDist(str, Enum):
 
 
 class InterleaveDist(str, Enum):
+    INTLV = "INTLV"
     B8 = "INTLV_B8"
     B16 = "INTLV_B16"
     B32 = "INTLV_B32"
+
+
+class PositionMode(str, Enum):
+    LOWEST = "LOWEST"
+    HIGHEST = "HIGHEST"
+
+
+class OrderMode(str, Enum):
+    ASC = "ORDER_ASC"
 
 
 class PredicateDist(str, Enum):
@@ -292,11 +338,19 @@ class TileSpecialization:
     valid_shape: tuple[int | None, ...] | None = None
 
 
-i8 = ScalarType("i8")
 i1 = ScalarType("i1")
+i8 = ScalarType("i8")
+si8 = ScalarType("si8")
+ui8 = ScalarType("ui8")
 i16 = ScalarType("i16")
+si16 = ScalarType("si16")
+ui16 = ScalarType("ui16")
 i32 = ScalarType("i32")
+si32 = ScalarType("si32")
+ui32 = ScalarType("ui32")
 i64 = ScalarType("i64")
+si64 = ScalarType("si64")
+ui64 = ScalarType("ui64")
 f16 = ScalarType("f16")
 bf16 = ScalarType("bf16")
 f32 = ScalarType("f32")
@@ -333,18 +387,30 @@ def vreg(dtype: ScalarType) -> VRegType:
     return VRegType(element_dtype=dtype, lanes=get_lanes(dtype))
 
 
+def integer_bitwidth(dtype: ScalarType) -> int | None:
+    if not isinstance(dtype, ScalarType):
+        return None
+    return _INTEGER_DTYPE_WIDTHS.get(dtype.name)
+
+
+def integer_signedness(dtype: ScalarType) -> str | None:
+    if not isinstance(dtype, ScalarType):
+        return None
+    return _INTEGER_DTYPE_SIGNS.get(dtype.name)
+
+
+def is_integer_dtype(dtype: ScalarType) -> bool:
+    return integer_bitwidth(dtype) is not None
+
+
+def is_float_dtype(dtype: ScalarType) -> bool:
+    return isinstance(dtype, ScalarType) and dtype.name in _FLOAT_DTYPE_WIDTHS
+
+
 def bytewidth(dtype: ScalarType) -> int:
     if not isinstance(dtype, ScalarType):
         raise TypeError("bytewidth expects a TileLang scalar dtype")
-    byte_widths = {
-        "i8": 1,
-        "i16": 2,
-        "i32": 4,
-        "f16": 2,
-        "bf16": 2,
-        "f32": 4,
-    }
-    width = byte_widths.get(dtype.name)
+    width = _DTYPE_BYTE_WIDTHS.get(dtype.name)
     if width is None:
         raise TypeError(f"dtype `{dtype.name}` is not supported by bytewidth")
     return width
@@ -427,6 +493,8 @@ __all__ = [
     "PAT",
     "BarrierType",
     "PadMode",
+    "DeinterleaveDist",
+    "InterleaveDist",
     "PositionMode",
     "OrderMode",
     "DeinterleaveDist",
@@ -438,9 +506,17 @@ __all__ = [
     "TileSpecialization",
     "i1",
     "i8",
+    "si8",
+    "ui8",
     "i16",
+    "si16",
+    "ui16",
     "i32",
+    "si32",
+    "ui32",
     "i64",
+    "si64",
+    "ui64",
     "f16",
     "bf16",
     "f32",

@@ -77,15 +77,35 @@ from .types import (
     i16,
     i32,
     i64,
+    integer_bitwidth,
+    integer_signedness,
+    is_float_dtype,
+    is_integer_dtype,
+    si8,
+    si16,
+    si32,
+    si64,
+    ui8,
+    ui16,
+    ui32,
+    ui64,
 )
 
 
 _DTYPE_SYMBOLS = {
     "i1": i1,
     "i8": i8,
+    "si8": si8,
+    "ui8": ui8,
     "i16": i16,
+    "si16": si16,
+    "ui16": ui16,
     "i32": i32,
+    "si32": si32,
+    "ui32": ui32,
     "i64": i64,
+    "si64": si64,
+    "ui64": ui64,
     "f16": f16,
     "bf16": bf16,
     "f32": f32,
@@ -104,6 +124,8 @@ _B_LAYOUT_SYMBOLS = {layout.name: layout for layout in BLayout}
 _S_LAYOUT_SYMBOLS = {layout.name: layout for layout in SLayout}
 _PAD_VALUE_SYMBOLS = {pad_value.name: pad_value for pad_value in PadValue}
 _PAD_MODE_SYMBOLS = {pad_mode.name: pad_mode for pad_mode in PadMode}
+_DEINTERLEAVE_DIST_SYMBOLS = dict(DeinterleaveDist.__members__)
+_INTERLEAVE_DIST_SYMBOLS = dict(InterleaveDist.__members__)
 _POSITION_MODE_SYMBOLS = {position_mode.name: position_mode for position_mode in PositionMode}
 _ORDER_MODE_SYMBOLS = {order_mode.name: order_mode for order_mode in OrderMode}
 _DEINTERLEAVE_DIST_SYMBOLS = {dist.name: dist for dist in DeinterleaveDist}
@@ -190,7 +212,7 @@ _VECTOR_SCALAR_OPS = {
 }
 _VECTOR_IMMEDIATE_OPS = {"vshift", "vslide"}
 _TERNARY_VECTOR_OPS = {"vaxpy", "vmula"}
-_MULTI_RESULT_VECTOR_OPS = {"vmull"}
+_MULTI_RESULT_VECTOR_OPS = {"vmull", "vldsx2"}
 _BROADCAST_VECTOR_OPS = {"vbr", "vdup", "vci"}
 _LOW_LEVEL_DMA_CONFIG_OPS = {
     "set_loop2_stride_outtoub",
@@ -462,6 +484,23 @@ class SemanticVectorStoreStmt(SemanticStmt):
     destination: SemanticExpr
     indices: tuple[SemanticExpr, ...]
     mask: SemanticExpr
+
+
+@dataclass(frozen=True)
+class SemanticVectorPairStoreStmt(SemanticStmt):
+    low: SemanticExpr
+    high: SemanticExpr
+    destination: SemanticExpr
+    indices: tuple[SemanticExpr, ...]
+    dist: SemanticExpr
+    mask: SemanticExpr
+
+
+@dataclass(frozen=True)
+class SemanticScalarStoreStmt(SemanticStmt):
+    value: SemanticExpr
+    destination: SemanticExpr
+    offset: SemanticExpr
 
 
 @dataclass(frozen=True)
@@ -964,6 +1003,11 @@ class _SemanticAnalyzer:
         stmt: FrontendStmtNode,
     ) -> bool:
         return isinstance(stmt, FrontendAssignStmt) or (
+            isinstance(stmt, FrontendExprStmt)
+            and isinstance(stmt.expr, FrontendCallExpr)
+            and stmt.expr.namespace == "pto"
+            and stmt.expr.name == "store_scalar"
+        ) or (
             isinstance(stmt, FrontendIfStmt) and stmt.is_constexpr
         )
 
@@ -1141,6 +1185,8 @@ class _SemanticAnalyzer:
                 )
             if self._is_vector_memory_stmt_call(stmt.expr):
                 return self._analyze_vector_memory_stmt(stmt.expr, env, allow_outer_lookup=allow_outer_lookup)
+            if self._is_scalar_store_call(stmt.expr):
+                return self._analyze_scalar_store_stmt(stmt.expr, env, allow_outer_lookup=allow_outer_lookup)
             expr = self._analyze_expr(stmt.expr, env, allow_outer_lookup=allow_outer_lookup)
             return SemanticExprStmt(expr=expr), dict(env)
         if isinstance(stmt, FrontendReturnStmt):
@@ -1328,7 +1374,14 @@ class _SemanticAnalyzer:
         return (
             isinstance(expr, FrontendCallExpr)
             and expr.namespace == "pto"
-            and expr.name in (_VECTOR_MEMORY_STMT_OPS | _PREDICATE_MEMORY_STMT_OPS)
+            and expr.name in (_VECTOR_MEMORY_STMT_OPS | _PREDICATE_MEMORY_STMT_OPS | {"vstsx2"})
+        )
+
+    def _is_scalar_store_call(self, expr: FrontendExprNode) -> bool:
+        return (
+            isinstance(expr, FrontendCallExpr)
+            and expr.namespace == "pto"
+            and expr.name == "store_scalar"
         )
 
     def _is_sync_call(self, expr: FrontendExprNode) -> bool:
@@ -1474,6 +1527,49 @@ class _SemanticAnalyzer:
                     value=value,
                     destination=destination,
                     indices=indices,
+                    mask=mask,
+                ),
+                dict(env),
+            )
+
+        if expr.name == "vstsx2":
+            if len(expr.args) == 5:
+                low = self._analyze_expr(expr.args[0], env, allow_outer_lookup=allow_outer_lookup)
+                high = self._analyze_expr(expr.args[1], env, allow_outer_lookup=allow_outer_lookup)
+                destination, indices = self._analyze_tile_vector_access(
+                    expr.args[2],
+                    env,
+                    allow_outer_lookup=allow_outer_lookup,
+                    context="pto.vstsx2 destination",
+                )
+                dist = self._analyze_expr(expr.args[3], env, allow_outer_lookup=allow_outer_lookup)
+                mask = self._analyze_expr(expr.args[4], env, allow_outer_lookup=allow_outer_lookup)
+            else:
+                args = tuple(
+                    self._analyze_expr(arg, env, allow_outer_lookup=allow_outer_lookup)
+                    for arg in expr.args
+                )
+                if len(args) != 6:
+                    raise TypeError("pto.vstsx2 expects 5 or 6 positional arguments in TileLang DSL v1")
+                low, high, destination, offset, dist, mask = args
+                indices = (offset,)
+            low_type = self._require_vreg_expr(low, "pto.vstsx2 low")
+            high_type = self._require_vreg_expr(high, "pto.vstsx2 high")
+            if low_type != high_type:
+                raise TypeError("pto.vstsx2 requires low/high vectors to use the same vector type")
+            self._require_vector_pointer_expr(destination, "pto.vstsx2 destination")
+            for index in indices:
+                self._require_index_typed_expr(index)
+            dist = self._normalize_vstsx2_dist(dist)
+            self._require_mask_for_vreg(mask, low_type, "pto.vstsx2")
+            self._require_matching_vector_pointer(low_type, destination.type, "pto.vstsx2")
+            return (
+                SemanticVectorPairStoreStmt(
+                    low=low,
+                    high=high,
+                    destination=destination,
+                    indices=indices,
+                    dist=dist,
                     mask=mask,
                 ),
                 dict(env),
@@ -1703,8 +1799,37 @@ class _SemanticAnalyzer:
                 args=(value, destination, *indices),
                 type=SemanticMetaType(kind="void"),
             )
-
         raise ValueError(f"unsupported vector-memory stmt pto.{expr.name}")
+
+    def _analyze_scalar_store_stmt(
+        self,
+        expr: FrontendCallExpr,
+        env: dict[str, SemanticBinding],
+        *,
+        allow_outer_lookup: bool,
+    ) -> tuple[SemanticStmt, dict[str, SemanticBinding]]:
+        args = tuple(
+            self._analyze_expr(arg, env, allow_outer_lookup=allow_outer_lookup)
+            for arg in expr.args
+        )
+        if len(args) != 3:
+            raise TypeError("pto.store_scalar expects exactly 3 positional arguments in TileLang DSL v1")
+        if isinstance(args[0].type, SemanticPtrType):
+            destination = self._require_pointer_expr(args[0], "pto.store_scalar destination")
+            offset = args[1]
+            value = args[2]
+        else:
+            value = args[0]
+            destination = self._require_pointer_expr(args[1], "pto.store_scalar destination")
+            offset = args[2]
+        self._require_index_typed_expr(offset)
+        value_type = self._require_scalar_expr(value, "pto.store_scalar value")
+        if value_type.dtype != destination.type.element_dtype:
+            raise TypeError("pto.store_scalar value dtype must match destination pointer element dtype")
+        return (
+            SemanticScalarStoreStmt(value=value, destination=destination, offset=offset),
+            dict(env),
+        )
 
     def _analyze_sync_stmt(
         self,
@@ -2764,6 +2889,15 @@ class _SemanticAnalyzer:
                 )
                 dist = self._analyze_expr(expr.args[1], env, allow_outer_lookup=allow_outer_lookup)
                 return self._analyze_vldx2((base, *indices, dist))
+            if expr.namespace == "pto" and expr.name == "vldsx2" and len(expr.args) == 2:
+                base, indices = self._analyze_tile_vector_access(
+                    expr.args[0],
+                    env,
+                    allow_outer_lookup=allow_outer_lookup,
+                    context="pto.vldsx2 source",
+                )
+                dist = self._analyze_expr(expr.args[1], env, allow_outer_lookup=allow_outer_lookup)
+                return self._analyze_vldsx2((base, *indices, dist))
             if (
                 expr.namespace == "pto"
                 and expr.name == "vsld"
@@ -2795,6 +2929,15 @@ class _SemanticAnalyzer:
                     for arg in expr.args[1:]
                 )
                 return self._analyze_predicate_memory_expr_op("plds", (base, *indices, *extra_args))
+            if expr.namespace == "pto" and expr.name == "vldsx2" and len(expr.args) == 2:
+                base, indices = self._analyze_tile_vector_access(
+                    expr.args[0],
+                    env,
+                    allow_outer_lookup=allow_outer_lookup,
+                    context="pto.vldsx2 source",
+                )
+                dist = self._analyze_expr(expr.args[1], env, allow_outer_lookup=allow_outer_lookup)
+                return self._analyze_vldsx2((base, *indices, dist))
             if expr.keywords:
                 return self._analyze_keyword_call_expr(
                     expr,
@@ -2909,6 +3052,24 @@ class _SemanticAnalyzer:
                     name=expr.name,
                     value=pad_mode,
                     type=SemanticMetaType(kind="pad_mode"),
+                )
+        if expr.namespace in {"DeinterleaveDist", "pto.DeinterleaveDist"}:
+            dist = _DEINTERLEAVE_DIST_SYMBOLS.get(expr.name)
+            if dist is not None:
+                return SemanticSymbolExpr(
+                    namespace=expr.namespace,
+                    name=expr.name,
+                    value=dist,
+                    type=SemanticMetaType(kind="deinterleave_dist"),
+                )
+        if expr.namespace in {"InterleaveDist", "pto.InterleaveDist"}:
+            dist = _INTERLEAVE_DIST_SYMBOLS.get(expr.name)
+            if dist is not None:
+                return SemanticSymbolExpr(
+                    namespace=expr.namespace,
+                    name=expr.name,
+                    value=dist,
+                    type=SemanticMetaType(kind="interleave_dist"),
                 )
         if expr.namespace in {"PositionMode", "pto.PositionMode"}:
             position_mode = _POSITION_MODE_SYMBOLS.get(expr.name)
@@ -3443,6 +3604,17 @@ class _SemanticAnalyzer:
             return self._analyze_vstus(args)
         if name == "vstur":
             return self._analyze_vstur(args)
+        if name in {
+            "get_block_idx",
+            "get_subblock_idx",
+            "get_block_num",
+            "get_subblock_num",
+        }:
+            return self._analyze_runtime_block_query(name, args)
+        if name == "vldsx2":
+            return self._analyze_vldsx2(args)
+        if name == "load_scalar":
+            return self._analyze_load_scalar(args)
         if name in {"ppack", "punpack"}:
             return self._analyze_mask_part_op(name, args)
         if name in {"pnot", "psel"} | _PREDICATE_BINARY_LOGIC_OPS:
@@ -3700,7 +3872,7 @@ class _SemanticAnalyzer:
                     return SemanticLiteralExpr(value=bool(literal_value), type=SemanticScalarType(dtype=i1))
                 if isinstance(literal_value, float):
                     return SemanticLiteralExpr(value=bool(literal_value), type=SemanticScalarType(dtype=i1))
-            elif target_dtype.name.startswith("i"):
+            elif is_integer_dtype(target_dtype):
                 if isinstance(literal_value, bool):
                     casted = int(literal_value)
                 elif isinstance(literal_value, (int, float)):
@@ -3708,9 +3880,15 @@ class _SemanticAnalyzer:
                 else:
                     casted = None
                 if casted is not None:
-                    bits = int(target_dtype.name[1:])
-                    min_value = -(1 << (bits - 1))
-                    max_value = (1 << (bits - 1)) - 1
+                    bits = integer_bitwidth(target_dtype)
+                    signedness = integer_signedness(target_dtype)
+                    assert bits is not None
+                    if signedness == "unsigned":
+                        min_value = 0
+                        max_value = (1 << bits) - 1
+                    else:
+                        min_value = -(1 << (bits - 1))
+                        max_value = (1 << (bits - 1)) - 1
                     if casted < min_value or casted > max_value:
                         raise TypeError(
                             f"pto.{name} value {casted} is out of range for {target_dtype.name} in TileLang DSL v1"
@@ -4025,6 +4203,66 @@ class _SemanticAnalyzer:
             type=_ALIGN_TYPE,
         )
 
+    def _analyze_vldsx2(self, args: tuple[SemanticExpr, ...]) -> SemanticExpr:
+        if len(args) not in {3, 4}:
+            raise TypeError("pto.vldsx2 expects 3 or 4 positional arguments in TileLang DSL v1")
+        source, *rest = args
+        if len(rest) == 2:
+            index_args = rest[:1]
+            dist = rest[1]
+        else:
+            index_args = rest[:2]
+            dist = rest[2]
+        source_type = source.type
+        if isinstance(source_type, SemanticTileType):
+            source = self._require_tile_expr(source, "pto.vldsx2 source")
+        else:
+            source = self._require_pointer_expr(source, "pto.vldsx2 source", memory_space="ub")
+        for index in index_args:
+            self._require_index_typed_expr(index)
+        dist = self._normalize_vldsx2_dist(dist)
+        vreg_type = self._vreg_type_for_dtype(source.type.element_dtype)
+        return SemanticCallExpr(
+            namespace="pto",
+            name="vldsx2",
+            args=(source, *index_args, dist),
+            type=SemanticTupleType(elements=(vreg_type, vreg_type)),
+        )
+
+    def _analyze_load_scalar(self, args: tuple[SemanticExpr, ...]) -> SemanticExpr:
+        if len(args) == 2:
+            destination_dtype = None
+            pointer, offset = args
+        elif len(args) == 3:
+            destination_dtype = self._require_dtype_symbol(args[0], "pto.load_scalar result type")
+            pointer, offset = args[1:]
+        else:
+            raise TypeError("pto.load_scalar expects 2 or 3 positional arguments in TileLang DSL v1")
+        pointer = self._require_pointer_expr(pointer, "pto.load_scalar source")
+        self._require_index_typed_expr(offset)
+        if destination_dtype is not None and destination_dtype != pointer.type.element_dtype:
+            raise TypeError("pto.load_scalar result type must match source pointer element dtype")
+        return SemanticCallExpr(
+            namespace="pto",
+            name="load_scalar",
+            args=(pointer, offset),
+            type=SemanticScalarType(dtype=pointer.type.element_dtype),
+        )
+
+    def _analyze_runtime_block_query(
+        self,
+        name: str,
+        args: tuple[SemanticExpr, ...],
+    ) -> SemanticExpr:
+        if args:
+            raise TypeError(f"pto.{name} does not accept positional arguments in TileLang DSL v1")
+        return SemanticCallExpr(
+            namespace="pto",
+            name=name,
+            args=(),
+            type=SemanticScalarType(dtype=i64),
+        )
+
     def _analyze_broadcast_vector_op(
         self,
         name: str,
@@ -4038,19 +4276,21 @@ class _SemanticAnalyzer:
             return SemanticCallExpr(namespace="pto", name=name, args=args, type=vec_type)
 
         if name == "vdup":
-            if len(args) not in {1, 2}:
-                raise TypeError("pto.vdup expects 1 or 2 positional arguments in TileLang DSL v1")
+            if len(args) not in {2, 3}:
+                raise TypeError("pto.vdup expects 2 or 3 positional arguments in TileLang DSL v1")
             value = args[0]
             if isinstance(value.type, SemanticVRegType):
                 vec_type = value.type
             else:
                 vec_type = self._vreg_type_for_scalar_or_index(value, "pto.vdup input")
-            position_arg = args[1] if len(args) == 2 else None
+            mask = args[1]
+            self._require_mask_for_vreg(mask, vec_type, "pto.vdup")
+            position_arg = args[2] if len(args) == 3 else None
             position = self._normalize_position_mode(position_arg, "pto.vdup position")
             return SemanticCallExpr(
                 namespace="pto",
                 name=name,
-                args=(value, position),
+                args=(value, mask, position),
                 type=vec_type,
             )
 
@@ -4059,8 +4299,8 @@ class _SemanticAnalyzer:
                 raise TypeError("pto.vci expects 1 or 2 positional arguments in TileLang DSL v1")
             index = self._require_scalar_or_index_expr(args[0], "pto.vci index")
             index_dtype = i32 if isinstance(index.type, SemanticIndexType) else index.type.dtype
-            if index_dtype.name not in {"i8", "i16", "i32"}:
-                raise TypeError("pto.vci index only supports i8/i16/i32 in TileLang DSL v1")
+            if not (is_integer_dtype(index_dtype) and integer_bitwidth(index_dtype) in {8, 16, 32}):
+                raise TypeError("pto.vci index only supports 8/16/32-bit integer dtypes in TileLang DSL v1")
             order_arg = args[1] if len(args) == 2 else None
             order = self._normalize_order_mode(order_arg, "pto.vci order")
             return SemanticCallExpr(
@@ -4151,7 +4391,7 @@ class _SemanticAnalyzer:
         lhs = self._require_vreg_expr(lhs_expr, f"pto.{name} lhs")
         rhs = self._require_vreg_expr(rhs_expr, f"pto.{name} rhs")
         if name == "vperm":
-            if rhs.element_dtype.name not in {"i8", "i16", "i32"}:
+            if not (is_integer_dtype(rhs.element_dtype) and integer_bitwidth(rhs.element_dtype) in {8, 16, 32}):
                 raise TypeError("pto.vperm indices vector only supports integer vector dtypes in TileLang DSL v1")
             if lhs.lanes != rhs.lanes:
                 raise TypeError("pto.vperm requires data/indices vectors to use the same lane width")
@@ -4186,8 +4426,10 @@ class _SemanticAnalyzer:
             raise TypeError(f"pto.{name} expects exactly 3 positional arguments in TileLang DSL v1")
         vector = self._require_vreg_expr(args[0], f"pto.{name} vector")
         immediate = self._require_scalar_or_index_expr(args[1], f"pto.{name} immediate")
-        if isinstance(immediate.type, SemanticScalarType) and immediate.type.dtype.name not in {"i8", "i16", "i32"}:
-            raise TypeError(f"pto.{name} immediate only supports i8/i16/i32 in TileLang DSL v1")
+        if isinstance(immediate.type, SemanticScalarType) and not (
+            is_integer_dtype(immediate.type.dtype) and integer_bitwidth(immediate.type.dtype) in {8, 16, 32}
+        ):
+            raise TypeError(f"pto.{name} immediate only supports 8/16/32-bit integer dtypes in TileLang DSL v1")
         self._require_mask_for_vreg(args[2], vector, f"pto.{name}")
         self._validate_vector_immediate_dtype(name, vector.element_dtype)
         return SemanticCallExpr(namespace="pto", name=name, args=args, type=vector)
@@ -4605,9 +4847,11 @@ class _SemanticAnalyzer:
         ):
             return SemanticLiteralExpr(value=expr.binding.value.value, type=SemanticMetaType(kind="string"))
         position = self._require_string_expr(expr, context)
-        if position != PositionMode.LOWEST.value:
+        if position == "POS_LOWEST":
+            position = PositionMode.LOWEST.value
+        if position not in {PositionMode.LOWEST.value, PositionMode.HIGHEST.value}:
             raise TypeError(
-                "pto.vdup currently only supports position `PositionMode.LOWEST` in TileLang DSL v1"
+                "pto.vdup position must be `PositionMode.LOWEST` or `PositionMode.HIGHEST` in TileLang DSL v1"
             )
         return SemanticLiteralExpr(value=position, type=SemanticMetaType(kind="string"))
 
@@ -4809,26 +5053,76 @@ class _SemanticAnalyzer:
             return
         raise TypeError(f"{context} requires a Tile or pointer destination in TileLang DSL")
 
+    def _normalize_vldsx2_dist(self, expr: SemanticExpr) -> SemanticExpr:
+        if (
+            isinstance(expr, SemanticSymbolExpr)
+            and isinstance(expr.type, SemanticMetaType)
+            and expr.type.kind == "deinterleave_dist"
+            and isinstance(expr.value, DeinterleaveDist)
+        ):
+            dist = expr.value.value
+        elif (
+            isinstance(expr, SemanticBindingRef)
+            and isinstance(expr.type, SemanticMetaType)
+            and expr.type.kind == "deinterleave_dist"
+            and isinstance(expr.binding.value, DeinterleaveDist)
+        ):
+            dist = expr.binding.value.value
+        else:
+            dist = self._require_string_expr(expr, "pto.vldsx2 dist")
+        legacy_map = {
+            "DINTLV_B8": "DINTLV",
+            "DINTLV_B16": "DINTLV",
+            "DINTLV_B32": "DINTLV",
+            "BD": "BDINTLV",
+        }
+        normalized = legacy_map.get(dist, dist)
+        if normalized not in {"DINTLV", "BDINTLV"}:
+            raise TypeError(
+                "pto.vldsx2 dist must be one of \"DINTLV\" or \"BDINTLV\" in TileLang DSL v1"
+            )
+        return SemanticLiteralExpr(value=normalized, type=SemanticMetaType(kind="string"))
+
+    def _normalize_vstsx2_dist(self, expr: SemanticExpr) -> SemanticExpr:
+        if (
+            isinstance(expr, SemanticSymbolExpr)
+            and isinstance(expr.type, SemanticMetaType)
+            and expr.type.kind == "interleave_dist"
+            and isinstance(expr.value, InterleaveDist)
+        ):
+            dist = expr.value.value
+        elif (
+            isinstance(expr, SemanticBindingRef)
+            and isinstance(expr.type, SemanticMetaType)
+            and expr.type.kind == "interleave_dist"
+            and isinstance(expr.binding.value, InterleaveDist)
+        ):
+            dist = expr.binding.value.value
+        else:
+            dist = self._require_string_expr(expr, "pto.vstsx2 dist")
+        legacy_map = {
+            "INTLV_B8": "INTLV",
+            "INTLV_B16": "INTLV",
+            "INTLV_B32": "INTLV",
+        }
+        normalized = legacy_map.get(dist, dist)
+        if normalized != "INTLV":
+            raise TypeError("pto.vstsx2 dist must be \"INTLV\" in TileLang DSL v1")
+        return SemanticLiteralExpr(value=normalized, type=SemanticMetaType(kind="string"))
+
     def _mask_granularity_for_dtype(self, dtype: ScalarType) -> str:
-        if dtype.name in {"f32", "i32"}:
+        int_bits = integer_bitwidth(dtype)
+        if dtype.name == "f32" or int_bits == 32:
             return "b32"
-        if dtype.name in {"f16", "bf16", "i16"}:
+        if dtype.name in {"f16", "bf16"} or int_bits == 16:
             return "b16"
-        if dtype.name == "i8":
+        if int_bits == 8:
             return "b8"
         raise TypeError(f"dtype `{dtype.name}` is not supported by make_mask/vector lowering in TileLang DSL v1")
 
     def _vreg_type_for_dtype(self, dtype: ScalarType) -> SemanticVRegType:
-        byte_widths = {
-            "i8": 1,
-            "i16": 2,
-            "i32": 4,
-            "f16": 2,
-            "bf16": 2,
-            "f32": 4,
-        }
-        width = byte_widths.get(dtype.name)
-        if width is None:
+        width = bytewidth(dtype)
+        if width not in {1, 2, 4}:
             raise TypeError(f"dtype `{dtype.name}` is not supported by vlds/vsts in TileLang DSL v1")
         return SemanticVRegType(element_dtype=dtype, lanes=256 // width)
 
@@ -4837,9 +5131,13 @@ class _SemanticAnalyzer:
             raise TypeError(f"pto.{name} only supports f16/f32 in TileLang DSL v1")
         if name == "vrelu" and dtype.name not in {"f16", "f32"}:
             raise TypeError("pto.vrelu only supports f16/f32 in TileLang DSL v1")
-        if name in {"vnot", "vbcnt", "vcls", "vsunpack", "vzunpack", "vusqz", "vsqz"} and dtype.name not in {"i8", "i16", "i32"}:
+        if name in {"vnot", "vbcnt", "vcls", "vsunpack", "vzunpack", "vusqz", "vsqz"} and not (
+            is_integer_dtype(dtype) and integer_bitwidth(dtype) in {8, 16, 32}
+        ):
             raise TypeError(f"pto.{name} only supports integer vector dtypes in TileLang DSL v1")
-        if name in {"vabs", "vneg", "vmov", "vtrc", "vbitsort", "vcadd", "vcmax", "vcmin"} and dtype.name not in {"i8", "i16", "i32", "f16", "bf16", "f32"}:
+        if name in {"vabs", "vneg", "vmov", "vtrc", "vbitsort", "vcadd", "vcmax", "vcmin"} and not (
+            (is_integer_dtype(dtype) and integer_bitwidth(dtype) in {8, 16, 32}) or dtype.name in {"f16", "bf16", "f32"}
+        ):
             raise TypeError(f"pto.{name} does not support this dtype in TileLang DSL v1")
 
     def _validate_binary_dtype(self, name: str, dtype: ScalarType) -> None:
@@ -4849,17 +5147,29 @@ class _SemanticAnalyzer:
             raise TypeError("pto.vprelu only supports f16/f32 in TileLang DSL v1")
         if name in {"vaddreluconv", "vmulconv"} and dtype.name not in {"f16", "bf16", "f32"}:
             raise TypeError(f"pto.{name} only supports f16/bf16/f32 in TileLang DSL v1")
-        if name in {"vand", "vor", "vxor"} and dtype.name not in {"i8", "i16", "i32"}:
+        if name in {"vand", "vor", "vxor"} and not (
+            is_integer_dtype(dtype) and integer_bitwidth(dtype) in {8, 16, 32}
+        ):
             raise TypeError(f"pto.{name} only supports integer vector dtypes in TileLang DSL v1")
-        if name in {"vshl", "vshr"} and dtype.name not in {"i8", "i16", "i32"}:
+        if name in {"vshl", "vshr"} and not (
+            is_integer_dtype(dtype) and integer_bitwidth(dtype) in {8, 16, 32}
+        ):
             raise TypeError(f"pto.{name} only supports integer vector dtypes in TileLang DSL v1")
-        if name == "vmul" and dtype.name not in {"i16", "i32", "f16", "f32"}:
-            raise TypeError("pto.vmul only supports i16/i32/f16/f32 in TileLang DSL v1")
-        if name == "vperm" and dtype.name not in {"i8", "i16", "i32", "f16", "bf16", "f32"}:
+        if name == "vmul" and not (
+            (is_integer_dtype(dtype) and integer_bitwidth(dtype) in {16, 32}) or dtype.name in {"f16", "f32"}
+        ):
+            raise TypeError("pto.vmul only supports 16/32-bit integer families and f16/f32 in TileLang DSL v1")
+        if name == "vperm" and not (
+            (is_integer_dtype(dtype) and integer_bitwidth(dtype) in {8, 16, 32}) or dtype.name in {"f16", "bf16", "f32"}
+        ):
             raise TypeError("pto.vperm does not support this data vector dtype in TileLang DSL v1")
-        if name in {"vadd", "vsub", "vmax", "vmin", "vaddrelu", "vsubrelu"} and dtype.name not in {"i8", "i16", "i32", "f16", "bf16", "f32"}:
+        if name in {"vadd", "vsub", "vmax", "vmin", "vaddrelu", "vsubrelu"} and not (
+            (is_integer_dtype(dtype) and integer_bitwidth(dtype) in {8, 16, 32}) or dtype.name in {"f16", "bf16", "f32"}
+        ):
             raise TypeError(f"pto.{name} does not support this dtype in TileLang DSL v1")
-        if name in {"vpack", "vmrgsort"} and dtype.name not in {"i8", "i16", "i32", "f16", "bf16", "f32"}:
+        if name in {"vpack", "vmrgsort"} and not (
+            (is_integer_dtype(dtype) and integer_bitwidth(dtype) in {8, 16, 32}) or dtype.name in {"f16", "bf16", "f32"}
+        ):
             raise TypeError(f"pto.{name} does not support this dtype in TileLang DSL v1")
 
     def _validate_vector_scalar_dtype(self, name: str, dtype: ScalarType) -> None:
@@ -4867,26 +5177,38 @@ class _SemanticAnalyzer:
             raise TypeError("pto.vdivs only supports f16/f32 in TileLang DSL v1")
         if name == "vlrelu" and dtype.name not in {"f16", "f32"}:
             raise TypeError("pto.vlrelu only supports f16/f32 in TileLang DSL v1")
-        if name in {"vshls", "vshrs"} and dtype.name not in {"i8", "i16", "i32"}:
+        if name in {"vshls", "vshrs"} and not (
+            is_integer_dtype(dtype) and integer_bitwidth(dtype) in {8, 16, 32}
+        ):
             raise TypeError(f"pto.{name} only supports integer vector dtypes in TileLang DSL v1")
-        if name in {"vands", "vors", "vxors"} and dtype.name not in {"i8", "i16", "i32"}:
+        if name in {"vands", "vors", "vxors"} and not (
+            is_integer_dtype(dtype) and integer_bitwidth(dtype) in {8, 16, 32}
+        ):
             raise TypeError(f"pto.{name} only supports integer vector dtypes in TileLang DSL v1")
-        if name in {"vadds", "vsubs", "vmuls", "vmaxs", "vmins"} and dtype.name not in {"i8", "i16", "i32", "f16", "bf16", "f32"}:
+        if name in {"vadds", "vsubs", "vmuls", "vmaxs", "vmins"} and not (
+            (is_integer_dtype(dtype) and integer_bitwidth(dtype) in {8, 16, 32}) or dtype.name in {"f16", "bf16", "f32"}
+        ):
             raise TypeError(f"pto.{name} does not support this dtype in TileLang DSL v1")
 
     def _validate_vector_immediate_dtype(self, name: str, dtype: ScalarType) -> None:
-        if name in {"vshift", "vslide"} and dtype.name not in {"i8", "i16", "i32", "f16", "bf16", "f32"}:
+        if name in {"vshift", "vslide"} and not (
+            (is_integer_dtype(dtype) and integer_bitwidth(dtype) in {8, 16, 32}) or dtype.name in {"f16", "bf16", "f32"}
+        ):
             raise TypeError(f"pto.{name} does not support this vector dtype in TileLang DSL v1")
 
     def _validate_ternary_vector_dtype(self, name: str, dtype: ScalarType) -> None:
-        if name == "vaxpy" and dtype.name not in {"i16", "i32", "f16", "f32"}:
-            raise TypeError("pto.vaxpy only supports i16/i32/f16/f32 in TileLang DSL v1")
-        if name == "vmula" and dtype.name not in {"i16", "i32", "f16", "f32"}:
-            raise TypeError("pto.vmula only supports i16/i32/f16/f32 in TileLang DSL v1")
+        if name == "vaxpy" and not (
+            (is_integer_dtype(dtype) and integer_bitwidth(dtype) in {16, 32}) or dtype.name in {"f16", "f32"}
+        ):
+            raise TypeError("pto.vaxpy only supports 16/32-bit integer families and f16/f32 in TileLang DSL v1")
+        if name == "vmula" and not (
+            (is_integer_dtype(dtype) and integer_bitwidth(dtype) in {16, 32}) or dtype.name in {"f16", "f32"}
+        ):
+            raise TypeError("pto.vmula only supports 16/32-bit integer families and f16/f32 in TileLang DSL v1")
 
     def _validate_multi_result_vector_dtype(self, name: str, dtype: ScalarType) -> None:
-        if name == "vmull" and dtype.name != "i32":
-            raise TypeError("pto.vmull only supports i32 vectors in TileLang DSL v1")
+        if name == "vmull" and not (is_integer_dtype(dtype) and integer_bitwidth(dtype) == 32):
+            raise TypeError("pto.vmull only supports 32-bit integer vector families in TileLang DSL v1")
 
     def _require_sync_pipe(self, expr: SemanticExpr, context: str) -> str:
         if isinstance(expr, SemanticSymbolExpr) and expr.type.kind == "pipe":

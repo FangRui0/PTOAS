@@ -45,6 +45,7 @@ from tilelang_dsl.semantic import (
     SemanticPipeBarrierStmt,
     SemanticPtrType,
     SemanticRlsBufStmt,
+    SemanticScalarStoreStmt,
     SemanticScalarType,
     SemanticSetCrossCoreStmt,
     SemanticSetFlagStmt,
@@ -55,6 +56,7 @@ from tilelang_dsl.semantic import (
     SemanticTensorViewType,
     SemanticTileType,
     SemanticVecscopeStmt,
+    SemanticVectorPairStoreStmt,
     SemanticVectorStoreStmt,
     SemanticVRegType,
     SemanticWaitFlagDevStmt,
@@ -93,6 +95,8 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertTrue(hasattr(pto, "PAT"))
         self.assertTrue(hasattr(pto, "PadMode"))
         self.assertTrue(hasattr(pto, "BarrierType"))
+        self.assertTrue(hasattr(pto, "DeinterleaveDist"))
+        self.assertTrue(hasattr(pto, "InterleaveDist"))
         self.assertTrue(hasattr(pto, "PositionMode"))
         self.assertTrue(hasattr(pto, "OrderMode"))
         self.assertTrue(hasattr(pto, "DeinterleaveDist"))
@@ -103,6 +107,14 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertTrue(hasattr(pto, "PIPE"))
         self.assertTrue(hasattr(pto, "EVENT"))
         self.assertEqual(repr(pto.align), "align")
+        self.assertTrue(hasattr(pto, "si8"))
+        self.assertTrue(hasattr(pto, "ui8"))
+        self.assertTrue(hasattr(pto, "si16"))
+        self.assertTrue(hasattr(pto, "ui16"))
+        self.assertTrue(hasattr(pto, "si32"))
+        self.assertTrue(hasattr(pto, "ui32"))
+        self.assertTrue(hasattr(pto, "si64"))
+        self.assertTrue(hasattr(pto, "ui64"))
         self.assertEqual(pto.BarrierType.VST_VLD.value, "VST_VLD")
         self.assertEqual(pto.PadMode.PadNull.value, "PadNull")
         self.assertEqual(pto.PadMode.PadFirstElem.value, "PadFirstElem")
@@ -110,7 +122,11 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertEqual(pto.BLayout.ROW_MAJOR.value, "row_major")
         self.assertEqual(pto.SLayout.NONE_BOX.value, "none_box")
         self.assertEqual(pto.PadValue.ZERO.value, "zero")
-        self.assertEqual(pto.PositionMode.LOWEST.value, "POS_LOWEST")
+        self.assertEqual(pto.PositionMode.LOWEST.value, "LOWEST")
+        self.assertEqual(pto.DeinterleaveDist.DINTLV.value, "DINTLV")
+        self.assertEqual(pto.DeinterleaveDist.BDINTLV.value, "BDINTLV")
+        self.assertEqual(pto.InterleaveDist.INTLV.value, "INTLV")
+        self.assertEqual(pto.PositionMode.HIGHEST.value, "HIGHEST")
         self.assertEqual(pto.OrderMode.ASC.value, "ORDER_ASC")
         self.assertEqual(pto.DeinterleaveDist.B32.value, "DINTLV_B32")
         self.assertEqual(pto.InterleaveDist.B16.value, "INTLV_B16")
@@ -120,6 +136,18 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertEqual(pto.PredicatePart.HIGHER.value, "HIGHER")
         self.assertEqual(pto.StrideMode.S4_B64.value, "STRIDE_S4_B64")
         self.assertEqual(pto.Event.ID31.value, "EVENT_ID31")
+        self.assertIs(pto.DeinterleaveDist.B32, pto.DeinterleaveDist.DINTLV)
+        self.assertIs(pto.InterleaveDist.B32, pto.InterleaveDist.INTLV)
+        self.assertEqual(pto.si8.name, "si8")
+        self.assertEqual(pto.ui16.name, "ui16")
+        self.assertEqual(pto.si32.name, "si32")
+        self.assertEqual(pto.ui64.name, "ui64")
+        self.assertIsNot(pto.si8, pto.i8)
+        self.assertIsNot(pto.ui32, pto.i32)
+        self.assertEqual(pto.bytewidth(pto.si16), 2)
+        self.assertEqual(pto.bytewidth(pto.ui64), 8)
+        self.assertEqual(pto.get_lanes(pto.ui32), 64)
+        self.assertEqual(pto.elements_per_vreg(pto.si8), 256)
 
 
 class TileLangDSLSupportMatrixTests(unittest.TestCase):
@@ -164,6 +192,8 @@ class TileLangDSLSupportMatrixTests(unittest.TestCase):
         self.assertEqual(get_feature_tier("pto.vmuls"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.get_buf"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.rls_buf"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("pto.get_block_idx"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("pto.get_subblock_num"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.mem_bar"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.set_cross_core"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.set_intra_block"), BASIC_TIER)
@@ -190,6 +220,8 @@ class TileLangDSLSupportMatrixTests(unittest.TestCase):
         self.assertEqual(get_feature_tier("pto.vstur"), ADVANCED_TIER)
         self.assertEqual(get_feature_tier("PredicateDist"), ADVANCED_TIER)
         self.assertEqual(get_feature_tier("PredicatePart"), ADVANCED_TIER)
+        self.assertEqual(get_feature_tier("pto.vldsx2"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("pto.vstsx2"), BASIC_TIER)
         self.assertEqual(get_feature_tier("PadMode"), BASIC_TIER)
         self.assertEqual(get_feature_tier("VRegType"), BASIC_TIER)
         self.assertEqual(get_feature_tier("MaskType"), BASIC_TIER)
@@ -225,6 +257,8 @@ class TileLangDSLSupportMatrixTests(unittest.TestCase):
         self.assertEqual(get_feature_tier("pto.strict_vecscope"), ADVANCED_TIER)
         self.assertEqual(get_feature_tier("pto.ptr"), ADVANCED_TIER)
         self.assertEqual(get_feature_tier("pto.castptr"), ADVANCED_TIER)
+        self.assertEqual(get_feature_tier("pto.load_scalar"), ADVANCED_TIER)
+        self.assertEqual(get_feature_tier("pto.store_scalar"), ADVANCED_TIER)
         self.assertEqual(get_feature_tier("pto.copy_ubuf_to_ubuf"), ADVANCED_TIER)
         self.assertEqual(get_feature_tier("pto.tile_with_strides"), ADVANCED_TIER)
 
@@ -377,6 +411,15 @@ class TileLangDSLMatcherEntryTests(unittest.TestCase):
         self.assertEqual(selected.dtype_signature, (pto.f32, pto.i32))
         self.assertEqual(selected.parameters[0].dtype, pto.f32)
         self.assertEqual(selected.parameters[1].dtype, pto.i32)
+
+        selected_int = pto.select_kernel(
+            "a5",
+            "matcher_wildcard_unique",
+            (pto.ui16, pto.si16),
+        )
+        self.assertEqual(selected_int.dtype_signature, (pto.ui16, pto.si16))
+        self.assertEqual(selected_int.parameters[0].dtype, pto.ui16)
+        self.assertEqual(selected_int.parameters[1].dtype, pto.si16)
 
     def test_select_kernel_enforces_typevar_consistency_per_signature(self) -> None:
         @pto.vkernel(
@@ -2414,8 +2457,8 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             vec0 = pto.vlds(src, 0)
 
             broadcast = pto.vbr(seed)
-            dup_from_vec = pto.vdup(vec0)
-            dup_from_scalar = pto.vdup(seed, position=pto.PositionMode.LOWEST)
+            dup_from_vec = pto.vdup(vec0, all_mask, pto.PositionMode.HIGHEST)
+            dup_from_scalar = pto.vdup(seed, all_mask)
             idx0 = pto.vci(seed)
             idx1 = pto.vci(seed, order=pto.OrderMode.ASC)
 
@@ -2437,12 +2480,13 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn("pto.vci", text)
         self.assertRegex(
             text,
-            r'pto\.vdup\s+%[^\s]+\s+\{position = "POS_LOWEST"\}\s+:',
+            r'pto\.vdup\s+%[^\s]+,\s+%[^\s]+\s+\{position = "HIGHEST"\}\s+:',
         )
-        self.assertNotRegex(
+        self.assertRegex(
             text,
-            r'pto\.vdup\s+%[^\s]+,\s*"POS_LOWEST"\s+:',
+            r'pto\.vdup\s+%[^\s]+,\s+%[^\s]+\s+\{position = "LOWEST"\}\s+:',
         )
+        self.assertNotIn('position = "POS_LOWEST"', text)
         self.assertRegex(
             text,
             r'pto\.vci\s+%[^\s]+\s+\{order = "ORDER_ASC"\}\s+:',
@@ -2451,6 +2495,36 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             text,
             r'pto\.vci\s+%[^\s]+,\s*"ORDER_ASC"\s+:',
         )
+
+    def test_signed_and_unsigned_integer_dtypes_lower_distinctly(self) -> None:
+        @pto.vkernel(
+            op="signed_unsigned_integer_types_unique",
+            dtypes=[(pto.si16, pto.si16, pto.ui16, pto.ui16)],
+            advanced=True,
+        )
+        def kernel(dst_s: pto.Tile, src_s: pto.Tile, dst_u: pto.Tile, src_u: pto.Tile):
+            signed_mask = pto.make_mask(pto.si16, pto.PAT.ALL)
+            unsigned_mask = pto.make_mask(pto.ui16, pto.PAT.ALL)
+            signed_vec = pto.vlds(src_s, 0)
+            unsigned_vec = pto.vlds(src_u, 0)
+            signed_out = pto.vadds(signed_vec, pto.si16(-1), signed_mask)
+            unsigned_out = pto.vadds(unsigned_vec, pto.ui16(1), unsigned_mask)
+            pto.vsts(signed_out, dst_s, 0, signed_mask)
+            pto.vsts(unsigned_out, dst_u, 0, unsigned_mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst_s=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+            src_s=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+            dst_u=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+            src_u=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn("dtype=si16", text)
+        self.assertIn("dtype=ui16", text)
+        self.assertIn("!pto.vreg<128xsi16>", text)
+        self.assertIn("!pto.vreg<128xui16>", text)
 
     def test_vbr_accepts_float_literal_constant(self) -> None:
         @pto.vkernel(
@@ -3778,6 +3852,81 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn("pto.set_intra_core %arg5 : i32", text)
         self.assertIn("pto.wait_flag_dev %arg3, %c8_i64 : i64, i64", text)
         self.assertIn("pto.wait_intra_core %arg4, %c31_i64 : i64, i64", text)
+
+    def test_runtime_block_queries_and_scalar_pointer_helpers_lower_to_v0_3_surface(self) -> None:
+        @pto.vkernel(
+            op="runtime_block_queries_and_scalar_helpers",
+            dtypes=[(pto.f32, pto.f32)],
+            advanced=True,
+        )
+        def kernel(
+            src: pto.ptr(pto.f32, pto.MemorySpace.UB),
+            dst: pto.ptr(pto.f32, pto.MemorySpace.UB),
+        ):
+            block = pto.get_block_idx()
+            block_num = pto.get_block_num()
+            subblock = pto.get_subblock_idx()
+            subblock_num = pto.get_subblock_num()
+            value = pto.load_scalar(src, 0)
+            pto.store_scalar(dst, 0, value)
+            return None
+
+        specialized = kernel.specialize()
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+
+        store_stmt = next(stmt for stmt in semantic_kernel.body if isinstance(stmt, SemanticScalarStoreStmt))
+        self.assertIsInstance(store_stmt, SemanticScalarStoreStmt)
+        self.assertEqual(store_stmt.destination.type.element_dtype, pto.f32)
+
+        text = specialized.mlir_text()
+        self.assertIn("= pto.get_block_idx", text)
+        self.assertIn("= pto.get_block_num", text)
+        self.assertIn("= pto.get_subblock_idx", text)
+        self.assertIn("= pto.get_subblock_num", text)
+        self.assertIn("= pto.load_scalar %arg0[%c0] : !pto.ptr<f32, ub> -> f32", text)
+        self.assertIn("pto.store_scalar", text)
+
+    def test_vldsx2_and_vstsx2_tile_sugar_lower_with_normalized_dist_tokens(self) -> None:
+        @pto.vkernel(op="vldsx2_vstsx2_tile_sugar", dtypes=[(pto.f32, pto.f32)])
+        def kernel(src: pto.Tile, dst: pto.Tile):
+            mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+            low, high = pto.vldsx2(src[0, 0:], pto.DeinterleaveDist.B32)
+            pto.vstsx2(low, high, dst[0, 0:], pto.InterleaveDist.B32, mask)
+            return None
+
+        specialized = kernel.specialize(
+            src=pto.TileSpecialization(shape=(1, 128), memory_space=pto.MemorySpace.UB),
+            dst=pto.TileSpecialization(shape=(1, 128), memory_space=pto.MemorySpace.UB),
+        )
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        vecscope = next(stmt for stmt in semantic_kernel.body if isinstance(stmt, SemanticVecscopeStmt))
+        pair_store = next(stmt for stmt in vecscope.body if isinstance(stmt, SemanticVectorPairStoreStmt))
+        self.assertIsInstance(pair_store, SemanticVectorPairStoreStmt)
+
+        text = specialized.mlir_text()
+        self.assertIn("pto.vldsx2", text)
+        self.assertIn("pto.vstsx2", text)
+        self.assertIn('"DINTLV"', text)
+        self.assertIn('"INTLV"', text)
+        self.assertNotIn("DINTLV_B32", text)
+        self.assertNotIn("INTLV_B32", text)
+
+    def test_vldsx2_and_vstsx2_still_accept_legacy_string_tokens_for_compatibility(self) -> None:
+        @pto.vkernel(op="vldsx2_vstsx2_legacy_tokens", dtypes=[(pto.f32, pto.f32)])
+        def kernel(src: pto.Tile, dst: pto.Tile):
+            mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+            low, high = pto.vldsx2(src[0, 0:], "DINTLV_B32")
+            pto.vstsx2(low, high, dst[0, 0:], "INTLV_B32", mask)
+            return None
+
+        specialized = kernel.specialize(
+            src=pto.TileSpecialization(shape=(1, 128), memory_space=pto.MemorySpace.UB),
+            dst=pto.TileSpecialization(shape=(1, 128), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn('"DINTLV"', text)
+        self.assertIn('"INTLV"', text)
 
     def test_strict_vecscope_rejects_implicit_capture_during_semantic_analysis(self) -> None:
         @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f16, pto.i32)], advanced=True)

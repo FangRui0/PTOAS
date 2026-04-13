@@ -5,10 +5,18 @@
 | DSL Type | Description | Bit Width |
 |----------|-------------|-----------|
 | `pto.i1` | Boolean | 1 |
-| `pto.i8` | 8-bit integer | 8 |
-| `pto.i16` | 16-bit integer | 16 |
-| `pto.i32` | 32-bit integer | 32 |
-| `pto.i64` | 64-bit integer | 64 |
+| `pto.i8` | 8-bit signless integer | 8 |
+| `pto.si8` | 8-bit signed integer | 8 |
+| `pto.ui8` | 8-bit unsigned integer | 8 |
+| `pto.i16` | 16-bit signless integer | 16 |
+| `pto.si16` | 16-bit signed integer | 16 |
+| `pto.ui16` | 16-bit unsigned integer | 16 |
+| `pto.i32` | 32-bit signless integer | 32 |
+| `pto.si32` | 32-bit signed integer | 32 |
+| `pto.ui32` | 32-bit unsigned integer | 32 |
+| `pto.i64` | 64-bit signless integer | 64 |
+| `pto.si64` | 64-bit signed integer | 64 |
+| `pto.ui64` | 64-bit unsigned integer | 64 |
 | `pto.f16` | Half precision float | 16 |
 | `pto.bf16` | Brain float 16 | 16 |
 | `pto.f32` | Single precision float | 32 |
@@ -22,7 +30,12 @@ For explicit typing, use type constructors:
 ```python
 x = pto.i32(1024)      # Explicit i32 constant
 y: pto.i32 = 1024      # Type annotation
+z = pto.ui16(7)        # Explicit unsigned 16-bit constant
 ```
+
+Integer sign semantics are part of the DSL type surface. `pto.si16`,
+`pto.ui16`, and `pto.i16` are distinct scalar dtypes and lower to `si16`,
+`ui16`, and `i16` respectively in VPTO IR.
 
 ### Floating-Point Literal Forms
 
@@ -67,8 +80,14 @@ v_i8 = pto.vreg(pto.i8)    # !pto.vreg<256xi8>
 - `pto.f16` → `!pto.vreg<128xf16>`
 - `pto.bf16` → `!pto.vreg<128xbf16>`
 - `pto.i32` → `!pto.vreg<64xi32>`
+- `pto.si32` → `!pto.vreg<64xsi32>`
+- `pto.ui32` → `!pto.vreg<64xui32>`
 - `pto.i16` → `!pto.vreg<128xi16>`
+- `pto.si16` → `!pto.vreg<128xsi16>`
+- `pto.ui16` → `!pto.vreg<128xui16>`
 - `pto.i8` → `!pto.vreg<256xi8>`
+- `pto.si8` → `!pto.vreg<256xsi8>`
+- `pto.ui8` → `!pto.vreg<256xui8>`
 
 Constraint: `element_count × bitwidth(element_type) = 2048`
 
@@ -80,7 +99,8 @@ lanes0 = v_dtype.elements_per_vreg       # 64
 lanes1 = pto.elements_per_vreg(pto.f32)  # 64
 ```
 
-Current TileLang DSL v1 vector lowering supports `i8`, `i16`, `i32`, `f16`, `bf16`, and `f32` element types.
+Current TileLang DSL v1 vector lowering supports the 8/16/32-bit integer
+families (`i*`, `si*`, `ui*`) plus `f16`, `bf16`, and `f32` element types.
 
 ### Typed Masks
 
@@ -98,9 +118,9 @@ mask: pto.mask_b32 = pto.make_mask(pto.f32, PAT.ALL)
 ```
 
 Mask operations must match the vector element family:
-- `f32` vectors use `mask_b32`
-- `f16` vectors use `mask_b16`
-- `i8` vectors use `mask_b8`
+- `f32`, `i32`, `si32`, and `ui32` vectors use `mask_b32`
+- `f16`, `bf16`, `i16`, `si16`, and `ui16` vectors use `mask_b16`
+- `i8`, `si8`, and `ui8` vectors use `mask_b8`
 
 ```python
 # Correct: f32 vector with b32 mask

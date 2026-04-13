@@ -242,8 +242,8 @@ mask, remaining = pto.plt_b32(remaining)  # generates mask for next chunk, updat
 | `remaining` | `pto.i32` | Updated remaining element count (only returned when `value` is a `pto.i32` for tail processing) |
 
 **Constraints**:
-- The `element_type` must be one of: `f32`, `i32`, `f16`, `bf16`, `i16`, `i8`
-- The returned mask granularity matches the element type: 32-bit for `f32`/`i32`, 16-bit for `f16`/`bf16`/`i16`, 8-bit for `i8`
+- The `element_type` must be one of: `f32`, `f16`, `bf16`, or an 8/16/32-bit integer family member (`i*`, `si*`, `ui*`)
+- The returned mask granularity matches the element type: 32-bit for `f32`/`i32`/`si32`/`ui32`, 16-bit for `f16`/`bf16`/`i16`/`si16`/`ui16`, and 8-bit for `i8`/`si8`/`ui8`
 - The function infers the operation mode from the `value` parameter type at compile time:
   - `pto.i32` value → tail processing mode (returns `(mask, updated_remaining)`)
   - `pto.MaskPattern` enum value → pattern mode (returns `mask` only)
