@@ -101,6 +101,9 @@ static SmallVector<int64_t, 4> getShapeVec(Type ty);
 static SmallVector<int64_t, 4> getValidShapeVec(Type ty);
 static SmallVector<int64_t, 4> getValidShapeVec(Value value);
 static LogicalResult verifyTileBufCommon(Operation *op, Type ty, StringRef name);
+static LogicalResult verifyTileBufSameShapeAndElem(Operation *op, Type lhs, Type rhs,
+                                                   StringRef lhsName,
+                                                   StringRef rhsName);
 static LogicalResult verifyTileBufSameElemType(Operation *op, Type lhs, Type rhs,
                                                StringRef lhsName,
                                                StringRef rhsName);
@@ -2287,6 +2290,17 @@ static LogicalResult verifyTileBufSameElemType(Operation *op, Type lhs, Type rhs
   if (getElemTy(lhs) != getElemTy(rhs))
     return op->emitOpError() << "expects " << lhsName << " and " << rhsName
                              << " to have the same element type";
+  return success();
+}
+
+static LogicalResult verifyTileBufSameShapeAndElem(Operation *op, Type lhs, Type rhs,
+                                                   StringRef lhsName,
+                                                   StringRef rhsName) {
+  if (failed(verifyTileBufSameElemType(op, lhs, rhs, lhsName, rhsName)))
+    return failure();
+  if (getShapeVec(lhs) != getShapeVec(rhs))
+    return op->emitOpError() << "expects " << lhsName << " and " << rhsName
+                             << " to have the same shape";
   return success();
 }
 
