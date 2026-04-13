@@ -33,8 +33,8 @@ else()
 endif()
 
 set(PTO_ISA_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../../../../../pto-isa" CACHE PATH "Path to pto-isa repo")
-set(PTO_NPU_VALIDATION_COMMON_DIR
-    "${CMAKE_CURRENT_LIST_DIR}/../../../../../npu_validation/common")
+set(PTO_TILELANG_ST_COMMON_DIR
+    "${CMAKE_CURRENT_LIST_DIR}/common")
 set(ASCEND_DRIVER_PATH /usr/local/Ascend/driver)
 
 set(CMAKE_COMPILER bisheng)
