@@ -188,75 +188,81 @@ struct PTOInlineLibCallPass
       if (func.empty())
         continue;
 
-      SmallVector<func::CallOp, 16> calls;
-      func.walk([&](func::CallOp call) { calls.push_back(call); });
-
       bool changedThisFunc = false;
-      for (func::CallOp oldCall : calls) {
-        if (!oldCall || !oldCall->getBlock())
-          continue;
+      bool madeProgress = true;
+      while (madeProgress) {
+        madeProgress = false;
 
-        auto calleeAttr = oldCall.getCalleeAttr();
-        if (!calleeAttr)
-          continue;
+        SmallVector<func::CallOp, 16> calls;
+        func.walk([&](func::CallOp call) { calls.push_back(call); });
 
-        func::FuncOp callee =
-            module.lookupSymbol<func::FuncOp>(calleeAttr.getValue());
-        if (!callee || !isInlineableLibFunc(callee))
-          continue;
+        for (func::CallOp oldCall : calls) {
+          if (!oldCall || !oldCall->getBlock())
+            continue;
 
-        if (callee.isExternal()) {
-          oldCall.emitError() << kErrInstanceBodyMissing
-                              << ": OP-Lib instance body is missing for @"
-                              << callee.getSymName();
-          if (auto variant =
-                  callee->getAttrOfType<StringAttr>(kOpLibAttrInstVariantId)) {
-            oldCall.emitRemark() << "variant_id=" << variant.getValue();
+          auto calleeAttr = oldCall.getCalleeAttr();
+          if (!calleeAttr)
+            continue;
+
+          func::FuncOp callee =
+              module.lookupSymbol<func::FuncOp>(calleeAttr.getValue());
+          if (!callee || !isInlineableLibFunc(callee))
+            continue;
+
+          if (callee.isExternal()) {
+            oldCall.emitError() << kErrInstanceBodyMissing
+                                << ": OP-Lib instance body is missing for @"
+                                << callee.getSymName();
+            if (auto variant =
+                    callee->getAttrOfType<StringAttr>(kOpLibAttrInstVariantId)) {
+              oldCall.emitRemark() << "variant_id=" << variant.getValue();
+            }
+            if (auto op = callee->getAttrOfType<StringAttr>(kOpLibAttrInstOp)) {
+              oldCall.emitRemark() << "op=" << op.getValue();
+            }
+            if (auto dtype =
+                    callee->getAttrOfType<StringAttr>(kOpLibAttrInstDType)) {
+              oldCall.emitRemark() << "dtype=" << dtype.getValue();
+            }
+            signalPassFailure();
+            return;
           }
-          if (auto op = callee->getAttrOfType<StringAttr>(kOpLibAttrInstOp)) {
-            oldCall.emitRemark() << "op=" << op.getValue();
+
+          func::CallOp call = oldCall;
+          SmallVector<Value, 4> concreteOperands;
+          concreteOperands.reserve(call.getNumOperands());
+          for (auto [operand, expectedTy] : llvm::zip(
+                   call.getOperands(), callee.getFunctionType().getInputs())) {
+            concreteOperands.push_back(
+                maybeUnwrapCastToExpected(operand, expectedTy));
           }
-          if (auto dtype =
-                  callee->getAttrOfType<StringAttr>(kOpLibAttrInstDType)) {
-            oldCall.emitRemark() << "dtype=" << dtype.getValue();
+
+          OpBuilder builder(call);
+          auto newCall = builder.create<func::CallOp>(call.getLoc(), callee,
+                                                      concreteOperands);
+          if (call.getNumResults() != newCall.getNumResults()) {
+            call.emitOpError("call result arity mismatch during inline staging");
+            signalPassFailure();
+            return;
           }
-          signalPassFailure();
-          return;
-        }
+          for (auto [oldResult, newResult] :
+               llvm::zip(call.getResults(), newCall.getResults()))
+            oldResult.replaceAllUsesWith(newResult);
+          call.erase();
 
-        func::CallOp call = oldCall;
-        SmallVector<Value, 4> concreteOperands;
-        concreteOperands.reserve(call.getNumOperands());
-        for (auto [operand, expectedTy] : llvm::zip(
-                 call.getOperands(), callee.getFunctionType().getInputs())) {
-          concreteOperands.push_back(
-              maybeUnwrapCastToExpected(operand, expectedTy));
-        }
+          if (failed(inlineCall(newCall, callee))) {
+            signalPassFailure();
+            return;
+          }
 
-        OpBuilder builder(call);
-        auto newCall = builder.create<func::CallOp>(call.getLoc(), callee,
-                                                    concreteOperands);
-        if (call.getNumResults() != newCall.getNumResults()) {
-          call.emitOpError("call result arity mismatch during inline staging");
-          signalPassFailure();
-          return;
-        }
-        for (auto [oldResult, newResult] :
-             llvm::zip(call.getResults(), newCall.getResults()))
-          oldResult.replaceAllUsesWith(newResult);
-        call.erase();
-
-        if (failed(inlineCall(newCall, callee))) {
-          signalPassFailure();
-          return;
-        }
-
-        ++inlinedCalls;
-        changedThisFunc = true;
-        if (debug) {
-          llvm::errs() << "[op-fusion] inline-libcall: inlined @"
-                       << callee.getSymName() << " into @" << func.getSymName()
-                       << "\n";
+          ++inlinedCalls;
+          changedThisFunc = true;
+          madeProgress = true;
+          if (debug) {
+            llvm::errs() << "[op-fusion] inline-libcall: inlined @"
+                         << callee.getSymName() << " into @" << func.getSymName()
+                         << "\n";
+          }
         }
       }
 

@@ -144,14 +144,18 @@ def _extract_single_function_lines(rendered_text: str) -> list[str]:
 
 def _rewrite_inline_helper_attrs(function_line: str) -> str:
     kernel_attr = "attributes { pto.tilelang.instance }"
-    helper_attr = 'attributes { sym_visibility = "private", pto.tilelang.inline_proc }'
+    helper_attr = "private "
+    helper_marker_attr = "attributes { pto.tilelang.inline_proc }"
     if kernel_attr in function_line:
-        return function_line.replace(kernel_attr, helper_attr)
+        rewritten = function_line.replace("func.func ", f"func.func {helper_attr}", 1)
+        return rewritten.replace(kernel_attr, helper_marker_attr)
     if "attributes {" in function_line:
         return function_line
     if function_line.rstrip().endswith("{"):
         stripped = function_line.rstrip()
-        return stripped[:-1] + f" {helper_attr} {{"
+        if stripped.startswith("func.func "):
+            stripped = stripped.replace("func.func ", f"func.func {helper_attr}", 1)
+        return stripped[:-1] + f" {helper_marker_attr} {{"
     return function_line
 
 

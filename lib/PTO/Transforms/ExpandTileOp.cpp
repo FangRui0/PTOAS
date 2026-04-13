@@ -36,11 +36,13 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Parser/Parser.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -376,23 +378,23 @@ func::FuncOp ExpandState::invokeTilelangDSL(const SpecKey &key,
     return nullptr;
   }
 
-  // 9. Find func.func in the parsed module and clone into target module.
-  func::FuncOp srcFn;
-  for (auto fn : parsedMod->getOps<func::FuncOp>()) {
-    srcFn = fn;
-    break;
-  }
-  if (!srcFn) {
+  // 9. Clone the generated function set into the target module. The TileLang
+  // output may include private inline helper funcs referenced by the entry.
+  SmallVector<func::FuncOp, 4> parsedFuncs;
+  for (auto fn : parsedMod->getOps<func::FuncOp>())
+    parsedFuncs.push_back(fn);
+  if (parsedFuncs.empty()) {
     llvm::errs() << "ExpandTileOp: no func.func in DSL output\n";
     return nullptr;
   }
+  func::FuncOp srcFn = parsedFuncs.front();
 
   OpBuilder builder(ctx);
   builder.setInsertionPointToEnd(mod.getBody());
-  IRMapping mapping;
-  auto cloned = cast<func::FuncOp>(builder.clone(*srcFn, mapping));
+  SmallVector<func::FuncOp, 4> clonedFuncs;
+  llvm::StringMap<std::string> renamedSymbols;
 
-  // Build a unique name from all operand types.
+  // Build a unique base name from all operand types.
   std::string uniqueName = "__pto_tilelang_" + key.opName;
   for (const auto &op : key.operands) {
     uniqueName += op.kind == OperandKind::Tile ? "_tile" : "_scalar";
@@ -400,8 +402,35 @@ func::FuncOp ExpandState::invokeTilelangDSL(const SpecKey &key,
     for (int64_t d : op.shape)
       uniqueName += "_" + std::to_string(d);
   }
-  cloned.setName(uniqueName);
-  cloned.setVisibility(SymbolTable::Visibility::Private);
+
+  for (auto [index, fn] : llvm::enumerate(parsedFuncs)) {
+    IRMapping mapping;
+    auto cloned = cast<func::FuncOp>(builder.clone(*fn, mapping));
+    std::string newName;
+    if (index == 0) {
+      newName = uniqueName;
+      cloned.setVisibility(SymbolTable::Visibility::Private);
+    } else {
+      newName = uniqueName + "__" + std::string(fn.getSymName());
+    }
+    renamedSymbols[fn.getSymName()] = newName;
+    cloned.setName(newName);
+    clonedFuncs.push_back(cloned);
+  }
+
+  for (func::FuncOp fn : clonedFuncs) {
+    fn.walk([&](func::CallOp call) {
+      StringRef callee = call.getCallee();
+      if (callee.empty())
+        return;
+      auto renameIt = renamedSymbols.find(callee);
+      if (renameIt == renamedSymbols.end())
+        return;
+      call.setCallee(renameIt->second);
+    });
+  }
+
+  auto cloned = clonedFuncs.front();
   // The pto.tilelang.instance attribute should already be set by the
   // TileLang DSL frontend in the generated MLIR. Verify it exists.
   if (!cloned->hasAttr("pto.tilelang.instance")) {

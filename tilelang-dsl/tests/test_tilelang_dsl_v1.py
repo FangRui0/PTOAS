@@ -3919,7 +3919,8 @@ class TileLangDSLInlineProcTests(unittest.TestCase):
             dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
             src=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
         ).mlir_text()
-        self.assertIn('sym_visibility = "private", pto.tilelang.inline_proc', text)
+        self.assertIn("func.func private @__tl_inline_", text)
+        self.assertIn("attributes { pto.tilelang.inline_proc }", text)
         self.assertGreaterEqual(text.count("func.func"), 3)
         self.assertGreaterEqual(text.count("pto.tilelang.inline_proc"), 2)
         self.assertRegex(text, r"= func\.call @__tl_inline_[A-Za-z0-9_]+\(.*\) : \([^\)]*\) -> index")
