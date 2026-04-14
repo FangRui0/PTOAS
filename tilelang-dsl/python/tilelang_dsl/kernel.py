@@ -996,21 +996,43 @@ class VKernelDescriptor:
             attrs.setdefault("op", self._selected_op)
             attrs.setdefault("selected_op", self._selected_op)
 
-        for spec in self._parameter_specs:
+        for index, spec in enumerate(self._parameter_specs):
             existing = attrs.get(spec.name)
             param_attrs = {} if not isinstance(existing, dict) else dict(existing)
+            positional_prefix = f"arg{index}"
             param_attrs.setdefault("kind", spec.kind)
             attrs.setdefault(f"{spec.name}_kind", spec.kind)
-            if f"{spec.name}_shape" in attrs:
-                param_attrs.setdefault("shape", tuple(attrs[f"{spec.name}_shape"]))
-            if f"{spec.name}_valid_shape" in attrs:
-                param_attrs.setdefault("valid_shape", tuple(attrs[f"{spec.name}_valid_shape"]))
-            if f"{spec.name}_strides" in attrs:
-                param_attrs.setdefault("strides", tuple(attrs[f"{spec.name}_strides"]))
-            if f"{spec.name}_rank" in attrs:
-                param_attrs.setdefault("rank", attrs[f"{spec.name}_rank"])
-            if f"{spec.name}_memory_space" in attrs:
-                param_attrs.setdefault("memory_space", attrs[f"{spec.name}_memory_space"])
+
+            def set_sequence_attr(attr_name: str) -> None:
+                named_key = f"{spec.name}_{attr_name}"
+                positional_key = f"{positional_prefix}_{attr_name}"
+                if named_key in attrs:
+                    value = tuple(attrs[named_key])
+                elif positional_key in attrs:
+                    value = tuple(attrs[positional_key])
+                    attrs.setdefault(named_key, value)
+                else:
+                    return
+                param_attrs.setdefault(attr_name, value)
+
+            def set_scalar_attr(attr_name: str) -> None:
+                named_key = f"{spec.name}_{attr_name}"
+                positional_key = f"{positional_prefix}_{attr_name}"
+                if named_key in attrs:
+                    value = attrs[named_key]
+                elif positional_key in attrs:
+                    value = attrs[positional_key]
+                    attrs.setdefault(named_key, value)
+                else:
+                    return
+                param_attrs.setdefault(attr_name, value)
+
+            set_sequence_attr("shape")
+            set_sequence_attr("valid_shape")
+            set_sequence_attr("strides")
+            set_scalar_attr("rank")
+            set_scalar_attr("memory_space")
+            set_scalar_attr("config")
 
             if spec.kind in ("tensorview", "partition_tensor_view"):
                 # TensorView authoring form is normalized to 5D in the current DSL spec.

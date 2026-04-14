@@ -3,6 +3,7 @@
 Usage:
     python3 -m tilelang_dsl.expand_helper \
         --template-dir /path/to/templates \
+        --target a5 \
         --op pto.tadd \
         --dtype f32 \
         --shape 16,64 \
@@ -21,7 +22,12 @@ import json
 import sys
 from pathlib import Path
 
-from .kernel import VKernelDescriptor, _match_descriptor_dtype_signature
+from .kernel import (
+    KernelRegistry,
+    VKernelDescriptor,
+    _match_descriptor_dtype_signature,
+    select_kernel,
+)
 from .types import MemorySpace, ScalarType, TileConfig, TileSpecialization
 
 
@@ -85,22 +91,33 @@ def _import_py_file(path: Path):
     return mod
 
 
+def _bind_descriptor_for_query(
+    descriptor: VKernelDescriptor,
+    target: str,
+    op_name: str,
+    operand_types: tuple[ScalarType, ...],
+) -> VKernelDescriptor | None:
+    if descriptor.target != target or op_name not in descriptor.match_ops:
+        return None
+    op_bound = descriptor._bind_selected_op(op_name)
+    matched_signature = _match_descriptor_dtype_signature(op_bound, operand_types)
+    if matched_signature is None:
+        return None
+    if op_bound._selected_dtype_signature == matched_signature:
+        return op_bound
+    return op_bound._bind_selected_dtype_signature(matched_signature)
+
+
 def _match_descriptor(
     descriptors: list[VKernelDescriptor],
     op_name: str,
     operand_types: tuple[ScalarType, ...],
 ) -> VKernelDescriptor | None:
-    """Find and bind the first descriptor matching (op, dtype)."""
+    """Legacy helper: find and bind the first descriptor matching (op, dtype)."""
     for desc in descriptors:
-        if op_name not in desc.match_ops:
-            continue
-        op_bound = desc._bind_selected_op(op_name)
-        matched_signature = _match_descriptor_dtype_signature(op_bound, operand_types)
-        if matched_signature is None:
-            continue
-        if op_bound._selected_dtype_signature == matched_signature:
-            return op_bound
-        return op_bound._bind_selected_dtype_signature(matched_signature)
+        bound = _bind_descriptor_for_query(desc, "a5", op_name, operand_types)
+        if bound is not None:
+            return bound
     return None
 
 
@@ -186,9 +203,101 @@ def _parse_operand_specs(spec_text: str) -> list[dict]:
     return specs
 
 
+def _operand_spec_matches_param_kind(param_kind: str, operand_kind: str) -> bool:
+    if operand_kind == "tile":
+        return param_kind == "tile"
+    if operand_kind == "view":
+        return param_kind in ("tensorview", "partition_tensor_view")
+    if operand_kind == "scalar":
+        return param_kind == "scalar"
+    return False
+
+
+def _filter_descriptors_by_operand_schema(
+    descriptors: list[VKernelDescriptor],
+    *,
+    target: str,
+    op_name: str,
+    operand_specs: list[dict],
+) -> list[VKernelDescriptor]:
+    operand_types = tuple(spec["dtype"] for spec in operand_specs)
+    filtered: list[VKernelDescriptor] = []
+    for descriptor in descriptors:
+        bound = _bind_descriptor_for_query(descriptor, target, op_name, operand_types)
+        if bound is None:
+            continue
+        parameters = bound.parameters
+        if len(parameters) != len(operand_specs):
+            continue
+        if all(
+            _operand_spec_matches_param_kind(param.kind, operand_spec["kind"])
+            for param, operand_spec in zip(parameters, operand_specs)
+        ):
+            filtered.append(bound)
+    return filtered
+
+
+def _build_positional_context_attrs(operand_specs: list[dict]) -> dict[str, object]:
+    attrs: dict[str, object] = {}
+    for index, operand_spec in enumerate(operand_specs):
+        prefix = f"arg{index}"
+        attrs[f"{prefix}_kind"] = operand_spec["kind"]
+        attrs[f"{prefix}_dtype"] = operand_spec["dtype"]
+        if operand_spec["kind"] == "scalar":
+            continue
+        shape = tuple(operand_spec["shape"])
+        attrs[f"{prefix}_shape"] = shape
+        attrs[f"{prefix}_rank"] = len(shape)
+        memory_space = operand_spec.get("memory_space")
+        if isinstance(memory_space, MemorySpace):
+            attrs[f"{prefix}_memory_space"] = memory_space.value
+        elif memory_space is not None:
+            attrs[f"{prefix}_memory_space"] = memory_space
+        if operand_spec["kind"] == "tile":
+            valid_shape = operand_spec.get("valid_shape")
+            effective_valid_shape = shape if valid_shape is None else tuple(valid_shape)
+            attrs[f"{prefix}_valid_shape"] = effective_valid_shape
+            if operand_spec.get("config") is not None:
+                attrs[f"{prefix}_config"] = operand_spec["config"]
+            continue
+        if "strides" in operand_spec:
+            attrs[f"{prefix}_strides"] = tuple(operand_spec["strides"])
+    return attrs
+
+
+def _select_descriptor(
+    descriptors: list[VKernelDescriptor],
+    *,
+    target: str,
+    op_name: str,
+    operand_specs: list[dict],
+) -> VKernelDescriptor:
+    filtered_descriptors = _filter_descriptors_by_operand_schema(
+        descriptors,
+        target=target,
+        op_name=op_name,
+        operand_specs=operand_specs,
+    )
+    operand_types = tuple(spec["dtype"] for spec in operand_specs)
+    if not filtered_descriptors:
+        raise LookupError(
+            "expand_helper found no registered kernel after operand schema filtering for "
+            f"target={target!r}, op={op_name!r}, operand_types={operand_types!r}"
+        )
+    registry = KernelRegistry(tuple(filtered_descriptors))
+    return select_kernel(
+        target,
+        op_name,
+        operand_types,
+        context_attrs=_build_positional_context_attrs(operand_specs),
+        registry=registry,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="TileLang DSL expand helper")
     parser.add_argument("--template-dir", required=True, help="Directory of .py templates")
+    parser.add_argument("--target", default="a5", help="Target architecture, e.g. a5")
     parser.add_argument("--op", required=True, help="Tile op name, e.g. pto.tadd")
     parser.add_argument("--dtype", help="Element dtype, e.g. f32")
     parser.add_argument("--shape", help="Tile shape, e.g. 16,64")
@@ -206,11 +315,11 @@ def main(argv: list[str] | None = None) -> int:
 
     operand_specs: list[dict] | None = None
     if args.operand_specs:
-      try:
-          operand_specs = _parse_operand_specs(args.operand_specs)
-      except ValueError as exc:
-          print(f"expand_helper: error: {exc}", file=sys.stderr)
-          return 1
+        try:
+            operand_specs = _parse_operand_specs(args.operand_specs)
+        except ValueError as exc:
+            print(f"expand_helper: error: {exc}", file=sys.stderr)
+            return 1
     else:
         if args.dtype is None or args.shape is None:
             print(
@@ -243,30 +352,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"expand_helper: error: no @vkernel descriptors found in {template_dir}", file=sys.stderr)
         return 1
 
-    # Match.
-    operand_types = tuple(spec["dtype"] for spec in operand_specs)
-    desc = _match_descriptor(all_descriptors, args.op, operand_types)
-    if desc is None:
-        print(
-            f"expand_helper: error: no template matches op={args.op} operand_types={operand_types!r}",
-            file=sys.stderr,
+    try:
+        desc = _select_descriptor(
+            all_descriptors,
+            target=args.target,
+            op_name=args.op,
+            operand_specs=operand_specs,
         )
-        return 1
-
-    if len(desc.parameters) != len(operand_specs):
-        print(
-            "expand_helper: error: descriptor parameter count does not match operand-specs",
-            file=sys.stderr,
-        )
+    except Exception as exc:
+        print(f"expand_helper: error: {exc}", file=sys.stderr)
         return 1
 
     # Specialize Tile parameters positionally from operand-specs.
-    # View operands match tensorview/partition_tensor_view parameters without
-    # specialization — shape/strides are resolved dynamically via intrinsics.
-    # However, their shape/strides are injected into the constraint context so
-    # that precondition checks (e.g. src.strides[4] == 1) can evaluate.
     tile_specs = {}
-    view_context_attrs: dict[str, object] = {}
     for param, operand_spec in zip(desc.parameters, operand_specs):
         if param.kind == "tile":
             if operand_spec["kind"] != "tile":
@@ -290,10 +388,6 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
                 return 1
-            # Inject shape/strides for constraint evaluation.
-            view_context_attrs[f"{param.name}_shape"] = operand_spec["shape"]
-            if "strides" in operand_spec:
-                view_context_attrs[f"{param.name}_strides"] = operand_spec["strides"]
             continue
         if param.kind == "scalar" and operand_spec["kind"] != "scalar":
             print(
@@ -301,12 +395,6 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
-
-    # Bind view context attrs so constraint checking has access to shape/strides.
-    if view_context_attrs:
-        desc = desc._bind_constraint_context_attrs(
-            {**desc.constraint_context_attrs, **view_context_attrs}
-        )
 
     specialized = desc.specialize(**tile_specs)
 

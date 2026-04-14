@@ -33,6 +33,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
@@ -125,18 +126,20 @@ struct OperandTypeInfo {
 // ============================================================================
 struct SpecKey {
   std::string opName;
+  std::string targetArch;
   SmallVector<OperandTypeInfo, 4> operands;
 
   bool operator==(const SpecKey &rhs) const {
-    return opName == rhs.opName && operands == rhs.operands;
+    return opName == rhs.opName && targetArch == rhs.targetArch &&
+           operands == rhs.operands;
   }
 };
 
 struct SpecKeyInfo : public llvm::DenseMapInfo<SpecKey> {
-  static inline SpecKey getEmptyKey() { return {"", {}}; }
-  static inline SpecKey getTombstoneKey() { return {"__tombstone__", {}}; }
+  static inline SpecKey getEmptyKey() { return {"", "", {}}; }
+  static inline SpecKey getTombstoneKey() { return {"__tombstone__", "", {}}; }
   static unsigned getHashValue(const SpecKey &key) {
-    unsigned h = llvm::hash_value(key.opName);
+    unsigned h = llvm::hash_combine(key.opName, key.targetArch);
     for (const auto &op : key.operands) {
       h = llvm::hash_combine(h, static_cast<int>(op.kind), op.dtype);
       if (op.kind == OperandKind::Tile) {
@@ -173,6 +176,15 @@ static std::string getDtypeString(Type elemTy) {
 
 static StringRef getTileOpName(Operation *op) {
   return op->getName().stripDialect();
+}
+
+static std::string getTargetArchString(ModuleOp mod) {
+  if (!mod)
+    return "";
+  auto targetAttr = mod->getAttrOfType<StringAttr>("pto.target_arch");
+  if (!targetAttr)
+    return "";
+  return targetAttr.getValue().str();
 }
 
 static std::string getMemorySpaceString(pto::TileBufType tbTy) {
@@ -257,6 +269,7 @@ static std::optional<OperandTypeInfo> buildOperandTypeInfo(Type ty) {
 static std::optional<SpecKey> buildSpecKey(Operation *op) {
   SpecKey key;
   key.opName = getTileOpName(op).str();
+  key.targetArch = getTargetArchString(op->getParentOfType<ModuleOp>());
 
   for (unsigned i = 0; i < op->getNumOperands(); ++i) {
     auto info = buildOperandTypeInfo(op->getOperand(i).getType());
@@ -382,6 +395,10 @@ func::FuncOp ExpandState::invokeTilelangDSL(const SpecKey &key,
 
   // 2. Build operand schema JSON for mixed tile/scalar specialization.
   std::string operandSpecsJson = buildOperandSpecsJson(key);
+  if (key.targetArch.empty()) {
+    llvm::errs() << "ExpandTileOp: missing pto.target_arch module attribute\n";
+    return nullptr;
+  }
 
   // 3. Create temp file for stdout redirect.
   SmallString<128> tmpPath;
@@ -399,6 +416,7 @@ func::FuncOp ExpandState::invokeTilelangDSL(const SpecKey &key,
   SmallVector<StringRef> args = {
       *pythonPath, "-m", "tilelang_dsl.expand_helper",
       "--template-dir", tilelangPath,
+      "--target",       key.targetArch,
       "--op",           opName,
       "--operand-specs", operandSpecsJson,
   };
@@ -498,7 +516,7 @@ func::FuncOp ExpandState::invokeTilelangDSL(const SpecKey &key,
   llvm::StringMap<std::string> renamedSymbols;
 
   // Build a unique name from the spec-key-relevant operand fields.
-  std::string uniqueName = "__pto_tilelang_" + key.opName;
+  std::string uniqueName = "__pto_tilelang_" + key.targetArch + "_" + key.opName;
   for (const auto &op : key.operands) {
     uniqueName += op.kind == OperandKind::Tile   ? "_tile"
                  : op.kind == OperandKind::View ? "_view"

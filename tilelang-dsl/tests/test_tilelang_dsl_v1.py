@@ -246,10 +246,11 @@ def kernel(src: pto.Tile, dst: pto.Tile):
 ]
 """
             )
-            desc = expand_helper._match_descriptor(
+            desc = expand_helper._select_descriptor(
                 descriptors,
-                "pto.expand_helper_tile_config_unique",
-                tuple(spec["dtype"] for spec in operand_specs),
+                target="a5",
+                op_name="pto.expand_helper_tile_config_unique",
+                operand_specs=operand_specs,
             )
             self.assertIsNotNone(desc)
 
@@ -276,6 +277,81 @@ def kernel(src: pto.Tile, dst: pto.Tile):
             "blayout=row_major, slayout=none_box, fractal=512, pad=1>",
             mlir_text,
         )
+
+    def test_select_descriptor_uses_positional_context_for_named_constraints(self) -> None:
+        source = """
+import tilelang_dsl as pto
+
+@pto.vkernel(
+    target="a5",
+    op="pto.expand_helper_positional_constraints_unique",
+    dtypes=[(pto.f32, pto.f32)],
+    constraints=[
+        lambda src: src.rank == 5,
+        lambda src: src.strides[4] == 1,
+        lambda dst: dst.config.b_layout == pto.BLayout.ROW_MAJOR,
+    ],
+)
+def template_nd(src: pto.TensorView, dst: pto.Tile):
+    return None
+
+@pto.vkernel(
+    target="a5",
+    op="pto.expand_helper_positional_constraints_unique",
+    dtypes=[(pto.f32, pto.f32)],
+    constraints=[
+        lambda inp: inp.rank == 5,
+        lambda out: out.config.b_layout == pto.BLayout.COL_MAJOR,
+    ],
+    priority=9,
+)
+def template_dn(inp: pto.TensorView, out: pto.Tile):
+    return None
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module_path = Path(tmpdir) / "expand_helper_positional_constraints_unique.py"
+            module_path.write_text(source, encoding="utf-8")
+
+            mod = expand_helper._import_py_file(module_path)
+            self.assertIsNotNone(mod)
+            descriptors = expand_helper._find_descriptors(mod)
+            self.assertTrue(descriptors)
+
+            operand_specs = expand_helper._parse_operand_specs(
+                """
+[
+  {
+    "kind": "view",
+    "dtype": "f32",
+    "shape": [1, 1, 1, 16, 64],
+    "strides": [1024, 1024, 1024, 64, 1],
+    "memory_space": "gm"
+  },
+  {
+    "kind": "tile",
+    "dtype": "f32",
+    "shape": [16, 64],
+    "valid_shape": [16, 64],
+    "memory_space": "ub",
+    "config": {
+      "b_layout": "row_major",
+      "s_layout": "none_box",
+      "s_fractal_size": 512,
+      "pad_value": "0x0"
+    }
+  }
+]
+"""
+            )
+
+            selected = expand_helper._select_descriptor(
+                descriptors,
+                target="a5",
+                op_name="pto.expand_helper_positional_constraints_unique",
+                operand_specs=operand_specs,
+            )
+
+        self.assertEqual(selected.name, "template_nd")
 
 
 class TileLangDSLSupportMatrixTests(unittest.TestCase):
@@ -753,6 +829,69 @@ class TileLangDSLMatcherEntryTests(unittest.TestCase):
         )
         with self.assertRaises(LookupError):
             rejected.mlir_text()
+
+    def test_select_kernel_supports_positional_context_attrs(self) -> None:
+        @pto.vkernel(
+            op="matcher_positional_context_unique",
+            dtypes=[(pto.f32, pto.f32)],
+            constraints=[
+                lambda src: src.rank == 5,
+                lambda src: src.strides[4] == 1,
+                lambda dst: dst.config.b_layout == pto.BLayout.ROW_MAJOR,
+            ],
+        )
+        def template_nd(src: pto.TensorView, dst: pto.Tile):
+            return None
+
+        @pto.vkernel(
+            op="matcher_positional_context_unique",
+            dtypes=[(pto.f32, pto.f32)],
+            constraints=[
+                lambda inp: inp.rank == 5,
+                lambda out: out.config.b_layout == pto.BLayout.COL_MAJOR,
+            ],
+            priority=9,
+        )
+        def template_dn(inp: pto.TensorView, out: pto.Tile):
+            return None
+
+        operand_specs = expand_helper._parse_operand_specs(
+            """
+[
+  {
+    "kind": "view",
+    "dtype": "f32",
+    "shape": [1, 1, 1, 16, 64],
+    "strides": [1024, 1024, 1024, 64, 1],
+    "memory_space": "gm"
+  },
+  {
+    "kind": "tile",
+    "dtype": "f32",
+    "shape": [16, 64],
+    "valid_shape": [16, 64],
+    "memory_space": "ub",
+    "config": {
+      "b_layout": "row_major",
+      "s_layout": "none_box",
+      "s_fractal_size": 512,
+      "pad_value": "0x0"
+    }
+  }
+]
+"""
+        )
+
+        registry = pto.KernelRegistry((template_nd, template_dn))
+        selected = pto.select_kernel(
+            "a5",
+            "matcher_positional_context_unique",
+            (pto.f32, pto.f32),
+            context_attrs=expand_helper._build_positional_context_attrs(operand_specs),
+            registry=registry,
+        )
+
+        self.assertEqual(selected.name, "template_nd")
 
     def test_select_kernel_binds_selected_op_for_multi_op_descriptor(self) -> None:
         @pto.vkernel(

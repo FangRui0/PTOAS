@@ -475,30 +475,32 @@ Step 4: 生成调用并替换原 Tile Op
 
 | 操作数类型 | IR 类型 | 参与 SpecKey 的字段 | 不参与 SpecKey 但传给 Python DSL 的字段 |
 |-----------|---------|--------------------|-----------------------------------------|
-| **Tile** | `TileBufType` | `dtype` + `shape` + `memorySpace` + `config`（blayout/slayout/fractal/pad） | — |
+| **Tile** | `TileBufType` | `dtype` + `shape` + `valid_shape` + `memorySpace` + `config`（blayout/slayout/fractal/pad） | — |
 | **View** | `MemRefType`（降级后的 `PartitionTensorViewType`） | `dtype` | `shape`、`strides`、`memorySpace`（仅用于约束检查） |
 | **Scalar** | 标量类型 | `dtype` | — |
 
-**View 操作数的特化策略**：View 对应的模板参数类型为 `!pto.partition_tensor_view<?x?x...xdtype>`，维度全部动态，shape/strides 通过 intrinsic 在运行时查询。因此不同 view shape 的 Tile op 可以共享同一份模板实例——`shape`/`strides`/`memorySpace` 不参与 SpecKey 的判等和 hash。这些字段通过 `--operand-specs` JSON 传给 Python DSL 的 `expand_helper`，注入到约束上下文中（如 `src.strides[4] == 1`），但不影响模板代码生成。
+**View 操作数的特化策略**：View 对应的模板参数类型为 `!pto.partition_tensor_view<?x?x...xdtype>`，维度全部动态，shape/strides 通过 intrinsic 在运行时查询。因此不同 view shape 的 Tile op 可以共享同一份模板实例——`shape`/`strides`/`memorySpace` 不参与 SpecKey 的判等和 hash。这些字段通过 `--operand-specs` JSON 传给 Python DSL 的 `expand_helper`，先按操作数位置构造成 `arg0_*`、`arg1_*` 一类的位置化上下文，再在 constraint evaluation 阶段按模板参数顺序映射到当前参数名（如 `src` / `dst`）后参与约束检查；它们不直接影响模板代码生成。
 
-**Tile 操作数的排除字段**：`valid_shape` 不参与 SpecKey——因为它可能是动态的，作为运行时值在 inline 后通过 `pto.tile_valid_rows`/`pto.tile_valid_cols` 提取。相同 `(op, operand_types)` 但不同 `valid_shape` 的 Tile op 可以共享同一份实例化结果。
+**Tile 操作数的特化策略**：当前实现中，`valid_shape` 参与 SpecKey，并与 `shape`、`memorySpace`、`config` 一起决定模板实例和缓存 key。也就是说，相同 `(op, operand_types)` 但不同 `valid_shape` 的 Tile op 当前会生成不同的实例化结果。约束检查和缓存命名都基于这一实现语义。
 
 #### 3.2.2 模板实例化过程
 
 Expand TileOp 通过调用 Python 子进程来实例化模板。具体流程：
 
-1. **调用 Python helper**：`python3 -m tilelang_dsl.expand_helper --op pto.<op> --operand-specs <JSON>`，其中 JSON 描述每个操作数的类型信息。
+1. **调用 Python helper**：`python3 -m tilelang_dsl.expand_helper --target <arch> --op pto.<op> --operand-specs <JSON>`，其中 JSON 描述每个操作数的类型信息。
 2. **Python 端处理**：
    - 扫描模板目录下的 `.py` 文件，查找标注了 `@pto.vkernel` 装饰器的模板函数
-   - 按 `op` 名称和 `dtype` 签名匹配模板
-   - 对 `pto.Tile` 参数使用给定的 shape 和 memory_space 进行特化
-   - 对 `pto.PartitionTensorView` 参数，将 shape/strides 注入约束上下文用于前置条件检查，但不影响模板特化（参数类型保持全动态）
+   - 先按操作数个数和参数种类（`tile` / `view` / `scalar`）做 schema 预过滤
+   - 基于 `operand_specs` 构造按位置组织的上下文属性（如 `arg0_shape`、`arg0_strides`、`arg1_config`）
+   - 调用 `pto.select_kernel(target, concrete_op, operand_types, context_attrs, registry)` 按 `target → op → dtypes → constraints → priority` 规则选择模板
+   - 对 `pto.Tile` 参数使用给定的 shape / valid_shape / memory_space / config 进行特化
+   - 对 `pto.PartitionTensorView` 参数，不做 `specialize()`，而是通过位置化上下文把 shape/strides/memorySpace 提供给前置条件检查（参数类型保持全动态）
    - 输出特化后的 MLIR 文本
 3. **C++ 端处理**：
    - 解析 MLIR 文本为 `ModuleOp`
    - 提取 `func.func`，克隆到目标 Module 末尾
-   - 重命名为 `__pto_tilelang_<op>_tile_<dtype>_<dim0>_<dim1>_view_<dtype>_...`（Tile 操作数拼 shape，View/Scalar 只拼 dtype），设为 `private` 可见性
-   - 存入 specCache
+   - 重命名为 `__pto_tilelang_<target>_<op>_tile_<dtype>_<dim0>_<dim1>_view_<dtype>_...`（Tile 操作数拼 shape/valid_shape/config，View/Scalar 只拼 dtype），设为 `private` 可见性
+   - 按 `target + op + operand schema` 存入 specCache
 
 **关键约束**：Python DSL 实例化输出的函数需要满足以下要求：
 
@@ -826,7 +828,7 @@ def template_xxx(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
 算子，这意味着 `ins` 操作数在前、`outs` 在后。例如 `pto.tadd ins(%a, %b) outs(%c)`
 的操作数顺序为 `(src0, src1, dst)`，模板参数必须为 `(src0, src1, dst)`。
 
-`expand_helper.py` 自动扫描目录下所有 `.py` 文件，按 `op` 名称和 `dtype` 签名匹配模板。
+`expand_helper.py` 自动扫描目录下所有 `.py` 文件，先按参数 schema 过滤候选，再通过 `select_kernel()` 按 `target`、`op`、`dtype`、`constraints` 和 `priority` 选择模板。模板约束读取的位置化上下文由 `argN_*` 键提供，并在 constraint evaluation 阶段按参数顺序映射到模板自己的参数名。
 
 
 ## 第四章 前置工作
