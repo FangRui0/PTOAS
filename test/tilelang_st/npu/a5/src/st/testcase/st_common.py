@@ -12,9 +12,8 @@
 """Shared utilities for TileLang ST test cases.
 
 Provides:
-  - Case helpers:  get_valid_shape()
   - Data helpers:  setup_case_rng(), save_case_data()
-  - Compare:       compare_bin(), run_compare()  (full compare entry point)
+  - Compare:       result_cmp()
   - Styling:       supports_color(), style_pass(), style_fail()
 """
 
@@ -30,12 +29,42 @@ import numpy as np
 REQUIRED_CASE_KEYS = {"name", "dtype", "shape", "valid_shape", "eps"}
 
 
+def _to_shape_tuple(shape):
+    if not isinstance(shape, (tuple, list)):
+        raise ValueError(f"shape must be tuple/list, got {type(shape).__name__}: {shape!r}")
+    if not shape:
+        raise ValueError("shape must not be empty")
+    dims = tuple(int(dim) for dim in shape)
+    if any(dim <= 0 for dim in dims):
+        raise ValueError(f"shape dimensions must be > 0, got {dims}")
+    return dims
+
+
+def _validate_shape_pair(shape, valid_shape, label):
+    shape = _to_shape_tuple(shape)
+    valid_shape = _to_shape_tuple(valid_shape)
+    if len(shape) != len(valid_shape):
+        raise ValueError(f"{label}: shape rank mismatch: {shape} vs {valid_shape}")
+    if any(valid_dim > dim for dim, valid_dim in zip(shape, valid_shape)):
+        raise ValueError(f"{label}: valid shape {valid_shape} exceeds shape {shape}")
+    return shape, valid_shape
+
+
 def validate_cases(cases):
     """Check that every case has all required keys."""
     for i, case in enumerate(cases):
         missing = REQUIRED_CASE_KEYS - case.keys()
         if missing:
             raise ValueError(f"cases[{i}] ({case.get('name', '?')}) missing keys: {missing}")
+        _validate_shape_pair(case["shape"], case["valid_shape"], "shape")
+        has_dst_shape = "dst_shape" in case
+        has_dst_valid_shape = "dst_valid_shape" in case
+        if has_dst_shape != has_dst_valid_shape:
+            raise ValueError(
+                f"cases[{i}] ({case.get('name', '?')}) must define both dst_shape and dst_valid_shape"
+            )
+        if has_dst_shape:
+            _validate_shape_pair(case["dst_shape"], case["dst_valid_shape"], "dst")
 
 
 # ---------------------------------------------------------------------------
@@ -93,17 +122,13 @@ def style_fail(text):
 # Comparison
 # ---------------------------------------------------------------------------
 
-def compare_bin(golden_path, output_path, dtype, eps, shape, valid_shape):
-    """Compare golden and output binary files within the valid region.
+def result_cmp(golden, output, eps):
+    """Compare already prepared golden/output arrays.
 
-    Returns True on pass, False on mismatch.
+    The caller is responsible for loading, reshaping and slicing data.
     """
-    golden = np.fromfile(golden_path, dtype=dtype).reshape(shape)
-    output = np.fromfile(output_path, dtype=dtype).reshape(shape)
-
-    vr, vc = valid_shape
-    g = golden[:vr, :vc].astype(np.float64, copy=False)
-    o = output[:vr, :vc].astype(np.float64, copy=False)
+    g = np.asarray(golden).astype(np.float64, copy=False)
+    o = np.asarray(output).astype(np.float64, copy=False)
 
     if g.shape != o.shape:
         print(style_fail(f"[ERROR] Shape mismatch: golden {g.shape} vs output {o.shape}"))
@@ -116,32 +141,3 @@ def compare_bin(golden_path, output_path, dtype, eps, shape, valid_shape):
                          f"(golden={g.flat[idx]}, output={o.flat[idx]})"))
         return False
     return True
-
-
-def run_compare(cases):
-    """Main entry point for per-testcase compare.py scripts.
-
-    Reads an optional case filter from sys.argv[1], iterates over *cases*,
-    and exits with code 2 if any comparison fails.
-    """
-    validate_cases(cases)
-    case_filter = sys.argv[1] if len(sys.argv) > 1 else None
-
-    all_passed = True
-    for case in cases:
-        if case_filter is not None and case["name"] != case_filter:
-            continue
-        case_dir = case["name"]
-        golden_path = os.path.join(case_dir, "golden.bin")
-        output_path = os.path.join(case_dir, "output.bin")
-        ok = compare_bin(golden_path, output_path, case["dtype"], case["eps"],
-                         case["shape"], case["valid_shape"])
-        if ok:
-            print(style_pass(f"[INFO] {case['name']}: compare passed"))
-        else:
-            print(style_fail(f"[ERROR] {case['name']}: compare failed"))
-            all_passed = False
-
-    if not all_passed:
-        sys.exit(2)
-    print(style_pass("[INFO] all cases passed"))

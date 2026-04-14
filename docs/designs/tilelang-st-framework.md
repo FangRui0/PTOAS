@@ -15,6 +15,7 @@
 - 支持在一个 testcase 下放多个 case
 - 支持 `sim` / `npu` 两种运行模式
 - 支持单 case 过滤
+- 支持 `src` / `dst` 逻辑 shape 不一致的 testcase（例如 `trowsum` 这类 reduction）
 - 支持把输入、golden、output 隔离到 `build/testcase/<testcase>/` 下，避免不同 testcase 之间互相覆盖
 
 ## 2. 框架定位
@@ -107,14 +108,14 @@ test/tilelang_st/
                 ├── run_ptoas_to_file.cmake
                 ├── repack_tilelang_kernel.sh
                 ├── st_common.py
-                ├── compare.py
                 └── tadd/
                     ├── CMakeLists.txt
                     ├── cases.py
                     ├── tadd.pto
                     ├── launch.cpp
                     ├── main.cpp
-                    └── gen_data.py
+                    ├── gen_data.py
+                    └── compare.py
 ```
 
 各文件职责如下：
@@ -126,13 +127,13 @@ test/tilelang_st/
 | `testcase/CMakeLists.txt` | 定义 `pto_tilelang_vec_st()` 宏，并注册所有 testcase |
 | `testcase/run_ptoas_to_file.cmake` | 封装 `ptoas` 调用，把 `.pto` 编译成 LLVM IR |
 | `testcase/repack_tilelang_kernel.sh` | 把 device-only `.o` 包装成 host 可链接的 fatobj |
-| `testcase/st_common.py` | 所有 testcase 共享的 Python 公共模块（case 校验、数据生成辅助、精度比较、终端着色） |
-| `testcase/compare.py` | 公共比较脚本，所有 testcase 共享，从 per-testcase 的 `cases.py` 导入 `CASES` 后调用 `st_common.run_compare()` |
-| `testcase/<op>/cases.py` | **case 定义的单一来源**，`gen_data.py` 和 `compare.py` 均从此导入 |
+| `testcase/st_common.py` | 所有 testcase 共享的 Python 公共模块（case 校验、数据生成辅助、`result_cmp`、终端着色） |
+| `testcase/<op>/cases.py` | **case 定义的单一来源**，`gen_data.py` 和 `compare.py` 均从此导入；默认使用 `shape`/`valid_shape`，像 `trowsum` 这类输出 shape 不同的 op 再额外补 `dst_shape`/`dst_valid_shape` |
 | `testcase/<op>/<op>.pto` | testcase 的 kernel 描述，通常一个文件中放多个 case 对应的函数 |
 | `testcase/<op>/launch.cpp` | kernel 声明和 launch wrapper |
 | `testcase/<op>/main.cpp` | host driver，负责分配内存、launch kernel、回写 output（`ACL_CHECK` 宏由公共头 `test_common.h` 提供） |
 | `testcase/<op>/gen_data.py` | 生成 input 与 golden，从 `cases.py` 读取 case 列表 |
+| `testcase/<op>/compare.py` | 每个 testcase 自己的比较脚本，决定读取哪些 bin、reshape 成什么形状、裁哪一块数据，再调用公共 `result_cmp()` |
 
 ## 5. 日常使用方式
 
@@ -234,11 +235,12 @@ build/testcase/tadd/
 | 文件 | 是否新增/修改 | 说明 |
 |---|---|---|
 | `testcase/tsub/CMakeLists.txt` | 新增 | 一般只有一行 `pto_tilelang_vec_st(tsub)` |
-| `testcase/tsub/cases.py` | 新增 | **case 定义的单一来源**：每个 case 必须指定 `name`/`dtype`/`shape`/`valid_shape`/`eps` |
+| `testcase/tsub/cases.py` | 新增 | **case 定义的单一来源**：每个 case 必须指定 `name`/`dtype`/`shape`/`valid_shape`/`eps`；如果输出 shape 不同，再额外补 `dst_shape`/`dst_valid_shape` |
 | `testcase/tsub/tsub.pto` | 新增 | 定义一个或多个 case 的 kernel 函数 |
 | `testcase/tsub/launch.cpp` | 新增 | 为每个 kernel 函数声明 entry 并提供 launch wrapper |
 | `testcase/tsub/main.cpp` | 新增 | host driver，负责 case table、内存拷贝、launch 和 output 落盘 |
 | `testcase/tsub/gen_data.py` | 新增 | 生成每个 case 的输入和 golden，从 `cases.py` 导入 `CASES` |
+| `testcase/tsub/compare.py` | 新增 | testcase 自己决定比较哪些输出数据，再调用公共 `result_cmp()` |
 | `testcase/CMakeLists.txt` | 修改 | 把 `tsub` 加入 `ALL_TESTCASES` |
 
 通常不需要修改：
@@ -246,7 +248,6 @@ build/testcase/tadd/
 - `script/run_st.py`
 - `src/st/CMakeLists.txt`
 - `testcase/st_common.py`
-- `testcase/compare.py`（公共脚本，所有 testcase 共享）
 - `testcase/run_ptoas_to_file.cmake`
 - `testcase/repack_tilelang_kernel.sh`
 
@@ -332,7 +333,7 @@ void LaunchTADD_f32_16x64(float *a, float *b, float *c, void *stream) {
 你需要做的事主要有三类：
 
 1. 声明所有 `LaunchTADD_*` wrapper
-2. 在 `kCases[]` 中列出每个 case 的名字、launch 函数、shape、valid shape、元素大小
+2. 在 `kCases[]` 中列出每个 case 的名字、launch 函数、输入/输出 shape、valid shape、元素大小
 3. 在 `RunCase()` 中完成：
    - 从 `./<case>/input*.bin` 读取输入
    - `aclrtMemcpy` 把输入拷到 device
@@ -362,13 +363,24 @@ static const TestCase kCases[] = {
 
 注意：`ACL_CHECK` 宏已移至公共头文件 `test_common.h`（需在 `acl/acl.h` 之后包含），不需要在每个 testcase 的 `main.cpp` 中重复定义。
 
-你在新增 case 时，必须同步更新这个表，字段需与 `cases.py` 中的 `shape` / `valid_shape` 保持一致。
+你在新增 case 时，必须同步更新这个表。
+
+- 对 `tadd` 这类同 shape op，字段需与 `cases.py` 的 `shape` / `valid_shape` 保持一致。
+- 对 `trowsum` 这类输出 shape 不同的 op，host 侧需要把输入大小和输出大小分开计算。
 
 ### 7.5 `testcase/tadd/cases.py`
 
 这是 case 定义的**单一来源**，`gen_data.py` 和 `compare.py` 均从此导入 `CASES`。
 
 每个 case 必须包含以下字段：
+
+```python
+"name"
+"dtype"
+"shape"
+"valid_shape"
+"eps"
+```
 
 ```python
 CASES = [
@@ -383,6 +395,24 @@ CASES = [
 ```
 
 `valid_shape` 为必填字段。当 valid shape 等于 tile shape 时也必须显式写出。
+
+如果输出 shape 不同，可以额外补下面两个字段：
+
+```python
+CASES = [
+    {
+        "name": "f32_16x64",
+        "dtype": np.float32,
+        "shape": (16, 64),             # 输入 tensor shape
+        "valid_shape": (16, 64),       # 输入有效区域
+        "dst_shape": (16, 1),          # 输出 tensor shape（GM 可见形状）
+        "dst_valid_shape": (16, 1),    # 输出有效区域
+        "eps": 1e-5,
+    },
+]
+```
+
+这也是 `trowsum` 推荐使用的写法。注意 `dst_shape` 描述的是写回 GM 后的实际结果形状，而不是片上 tile 的物理展开形状。
 
 ### 7.6 `testcase/tadd/gen_data.py`
 
@@ -399,29 +429,45 @@ golden[:vr, :vc] = (input1[:vr, :vc] + input2[:vr, :vc]).astype(dtype, copy=Fals
 
 golden 只在 `valid_shape` 区域内计算，区域外保持零值。
 
+如果是 `trowsum` 这类输出 shape 不同的 op，则 `gen_data.py` 应该按 `dst_shape` 生成 `golden`，按 `valid_shape` 完成规约计算。例如：
+
+```python
+shape = case["shape"]
+valid_shape = case["valid_shape"]
+dst_shape = case["dst_shape"]
+dst_valid_shape = case["dst_valid_shape"]
+input1 = np.random.randint(1, 10, size=shape).astype(dtype)
+golden = np.zeros(dst_shape, dtype=dtype)
+golden[:dst_valid_shape[0], 0] = np.sum(
+    input1[:valid_shape[0], :valid_shape[1]], axis=1
+).astype(dtype, copy=False)[:dst_valid_shape[0]]
+```
+
+比较阶段也会按 `dst_shape` / `dst_valid_shape` 读取和 reshape `golden.bin`、`output.bin`。
+
 每个 case 使用独立的随机 seed（`setup_case_rng` 基于 `hash(case["name"])`），
 新增或调整 case 顺序不会影响已有 case 的测试数据。
 
-### 7.7 `testcase/compare.py`（公共，无需 per-testcase 修改）
+### 7.7 `testcase/<op>/compare.py`
 
-`compare.py` 位于 `testcase/` 公共目录，所有 testcase 共享同一份：
+比较脚本不再放在公共目录，而是每个 testcase 自己维护一份。
+
+这样做的目的很直接：
+
+- 公共层只提供 `result_cmp(golden, output, eps)` 这种“比已经准备好的数据”的接口
+- 具体读取哪些 bin、reshape 成什么形状、裁哪一块 valid 区域，由 testcase 自己决定
+
+以 `tadd` 为例，`compare.py` 的核心逻辑就是：
 
 ```python
-from cases import CASES
-from st_common import run_compare
-
-if __name__ == "__main__":
-    run_compare(CASES)
+golden = np.fromfile(os.path.join(case_dir, "golden.bin"), dtype=case["dtype"]).reshape(shape)
+output = np.fromfile(os.path.join(case_dir, "output.bin"), dtype=case["dtype"]).reshape(shape)
+ok = result_cmp(golden[:vr, :vc], output[:vr, :vc], case["eps"])
 ```
 
-`run_st.py` 运行时会将它和 per-testcase 的 `cases.py` 一起拷贝到 build 目录，
-`compare.py` 通过 `from cases import CASES` 获取当前 testcase 的 case 列表。
+如果是 `trowsum`，则可以自己改成按 `dst_shape` reshape，并只比较 `rows x 1` 的有效区域。
 
-`run_compare()` 会：
-- 校验所有 case 必填字段
-- 只在 `valid_shape` 区域内比较 `golden.bin` 与 `output.bin`
-- 支持 `argv[1]` 作为 case filter
-- exit code 2 表示失败
+这种拆法更接近 `pto-isa` 的 `ResultCmp` 思路：公共层只负责“怎么比”，不负责“该比哪块数据”。
 
 ## 8. 如果只是在已有 `tadd` 下新增一个 case
 
@@ -464,10 +510,14 @@ if __name__ == "__main__":
 `.pto` 里 kernel 的参数顺序、`launch.cpp` 声明顺序、`main.cpp` 里 launch wrapper 的参数顺序必须一致。  
 如果 `tadd` 的语义是 `(a, b) -> c`，那 host 侧和 compare 也都要按这个顺序组织。
 
-### 9.3 shape、valid_shape 和 dtype 一致
+### 9.3 shape、valid_shape、dst_shape 和 dtype 一致
 
-`cases.py` 中的 `shape`/`valid_shape`/`dtype` 是 Python 侧的单一来源，`gen_data.py` 和 `compare.py` 自动从中读取。
-但 C++ 侧的 `main.cpp` `kCases[]`（`rows`/`cols`/`validRows`/`validCols`/`elemSize`）和 `.pto` 中的 tile shape 仍需手动与 `cases.py` 保持一致。
+`cases.py` 中的 shape 信息和 `dtype` 是 Python 侧的单一来源，`gen_data.py` 和 `compare.py` 自动从中读取。
+
+- 对大多数 op，`shape`/`valid_shape` 就够了。
+- 对 `trowsum` 这类输出 shape 不同的 op，再额外维护 `dst_shape`/`dst_valid_shape`。
+
+但 C++ 侧的 `main.cpp` `kCases[]` 和 `.pto` 中的 tensor/tile shape 仍需手动与 `cases.py` 保持一致。
 否则运行能成功，结果也可能是错误的，且定位会很耗时。
 
 ## 10. 建议的开发验证节奏

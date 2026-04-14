@@ -144,13 +144,13 @@ def _copy_testcase_scripts(testcase):
     work_dir = get_testcase_work_dir(testcase)
     os.makedirs(work_dir, exist_ok=True)
     # Shared scripts (testcase/ level).
-    for name in ("st_common.py", "compare.py"):
+    for name in ("st_common.py",):
         src = os.path.join("testcase", name)
         if os.path.isfile(src):
             run_command(["cp", src, os.path.join(work_dir, name)])
     # Per-testcase scripts.
     testcase_src = f"testcase/{testcase}"
-    for name in ("cases.py", "gen_data.py"):
+    for name in ("cases.py", "gen_data.py", "compare.py"):
         src = os.path.join(testcase_src, name)
         if os.path.isfile(src):
             run_command(["cp", src, os.path.join(work_dir, name)])

@@ -1058,7 +1058,7 @@ run_st.py
 
 - `gen_data.py` 会基于 `cases.py` 中的 `CASES` 为每个 case 生成 `input*.bin` 和 `golden.bin`
 - host 可执行文件会按 `main.cpp` 中的 case table 逐个读取 `./<case_name>/input*.bin`，运行 kernel，并写回 `./<case_name>/output.bin`
-- `compare.py` 再基于同一份 `CASES` 定义逐 case 做 `numpy.allclose` 比较
+- `compare.py` 再基于同一份 `CASES` 定义逐 case 读取并裁剪需要比较的数据，最后调用公共 `result_cmp()`
 - 若传入 `-c <case_name>`，则运行和比较都只针对单个 case
 
 因此，TileLang ST 的验证对象不是“某一份中间 IR 是否长得对”，而是：
@@ -1070,10 +1070,10 @@ run_st.py
 编译子链由 `testcase/CMakeLists.txt` 中的 `pto_tilelang_vec_st()` 宏自动接管，整条执行链路则由
 `run_st.py` 统一调度。
 
-##### 新增 testcase 所需文件（七件套）
+##### 新增 testcase 所需文件（七个文件 + 一个注册修改）
 
 以新增 `pto.tsub` 为例，需在 `test/tilelang_st/npu/a5/src/st/testcase/tsub/` 下准备
-6 个文件，并修改 1 个注册文件：
+7 个文件，并修改 1 个注册文件：
 
 **1. `CMakeLists.txt`** — 通常只有一行：
 
@@ -1099,7 +1099,9 @@ CASES = [
 ]
 ```
 
-每个 case 必须包含 `name`/`dtype`/`shape`/`valid_shape`/`eps` 五个字段，`valid_shape` 为必填。
+常规 case 必须包含 `name`/`dtype`/`shape`/`valid_shape`/`eps` 五个字段，`valid_shape` 为必填。
+如果输出 shape 与输入不同（如 `trowsum`），再额外补 `dst_shape`/`dst_valid_shape`，供
+`compare.py` 和 `gen_data.py` 使用。
 
 **3. `tsub.pto`** — kernel 描述，一个文件中放多个 case 对应的函数。每个函数
 代表一种 dtype/shape 组合。以 tadd 为参考，kernel 结构为：
@@ -1208,9 +1210,27 @@ for case in CASES:
 
 注意 golden 的计算逻辑必须与 op 语义一致（tadd 是加法，tsub 是减法），且只在 `valid_shape` 区域内计算。
 
-`compare.py` 为公共脚本（位于 `testcase/compare.py`），所有 testcase 共享，无需 per-testcase 编写。
-`run_st.py` 运行时将它与 per-testcase 的 `cases.py` 一起拷贝到 build 目录，自动读取 case 列表和阈值，
-只比较 `valid_shape` 区域。exit code 2 表示失败。
+**7. `compare.py`** — 每个 testcase 自己维护比较脚本。公共层只提供
+`st_common.result_cmp(golden, output, eps)`，具体比较哪些数据由 testcase 自己决定。
+
+以 `tsub` 这种输入输出 shape 一致的 case 为例，核心逻辑通常是：
+
+```python
+from cases import CASES
+from st_common import result_cmp, style_fail, style_pass, validate_cases
+
+validate_cases(CASES)
+
+for case in CASES:
+    shape = case["shape"]
+    vr, vc = case["valid_shape"]
+    golden = np.fromfile(os.path.join(case["name"], "golden.bin"), dtype=case["dtype"]).reshape(shape)
+    output = np.fromfile(os.path.join(case["name"], "output.bin"), dtype=case["dtype"]).reshape(shape)
+    ok = result_cmp(golden[:vr, :vc], output[:vr, :vc], case["eps"])
+```
+
+如果是 `trowsum` 这类输出 shape 不同的 op，则 `compare.py` 可以自己按 `dst_shape` reshape，
+并只比较 `dst_valid_shape` 对应的有效区域。exit code 2 表示失败。
 
 精度阈值参考：
 
@@ -1221,7 +1241,7 @@ for case in CASES:
 | `bfloat16` | `1e-2` |
 | `int8/int16/int32` | `0`（精确匹配） |
 
-**7. 注册** — 修改 `testcase/CMakeLists.txt`，将新 op 加入 `ALL_TESTCASES`：
+**8. 注册** — 修改 `testcase/CMakeLists.txt`，将新 op 加入 `ALL_TESTCASES`：
 
 ```cmake
 set(ALL_TESTCASES
@@ -1242,8 +1262,9 @@ set(ALL_TESTCASES
 | 参数顺序 | `.pto` → `launch.cpp` → `main.cpp` 的 launch 调用 | `(a, b) → c` |
 | shape / valid_shape | `cases.py` ↔ `.pto` tile shape ↔ `main.cpp` rows/cols/validRows/validCols | `16×64` / `(16, 64)` |
 
-Python 侧的 case 名、dtype、shape、valid_shape、eps 已通过 `cases.py` 收敛为单一来源。
-但 C++ 侧 `main.cpp` 的 `kCases[]` 和 `.pto` 仍需手动与 `cases.py` 保持一致。
+Python 侧的 case 名、dtype、shape、valid_shape、eps（以及必要时的 `dst_shape` /
+`dst_valid_shape`）已通过 `cases.py` 收敛为单一来源。但 C++ 侧 `main.cpp` 的 `kCases[]`
+和 `.pto` 仍需手动与 `cases.py` 保持一致。
 
 任何一处不一致都可能导致：编译成功但运行时 segfault，或运行成功但比较结果错误且难以定位。
 
@@ -1275,9 +1296,9 @@ python3 test/tilelang_st/script/run_st.py -r sim -v a5 -t tsub -c f32_16x64 -w
 ```text
 build/testcase/tsub/
 ├── st_common.py     # 从 testcase/ 公共目录拷贝
-├── compare.py       # 从 testcase/ 公共目录拷贝
 ├── cases.py         # 从 testcase/tsub/ 拷贝
 ├── gen_data.py      # 从 testcase/tsub/ 拷贝
+├── compare.py       # 从 testcase/tsub/ 拷贝
 ├── f32_16x64/
 │   ├── input1.bin
 │   ├── input2.bin
