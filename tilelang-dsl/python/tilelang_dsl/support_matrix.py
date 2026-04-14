@@ -96,7 +96,6 @@ SUPPORTED_VECSCOPE_PTO_CALLS = frozenset(
         "vsqz",
         "vexpdiff",
         "vtrc",
-        "vbitsort",
         "vbr",
         "vdup",
         "vadd",
@@ -141,7 +140,6 @@ SUPPORTED_VECSCOPE_PTO_CALLS = frozenset(
         "vsort32",
         "vmrgsort",
         "vcvt",
-        "vmrgsort4",
         "vci",
     }
 )
@@ -165,6 +163,8 @@ ADVANCED_VECSCOPE_PTO_CALLS = frozenset(
         "vdintlv",
         "vintlvv2",
         "vdintlvv2",
+        "vbitsort",
+        "vmrgsort4",
     }
 )
 

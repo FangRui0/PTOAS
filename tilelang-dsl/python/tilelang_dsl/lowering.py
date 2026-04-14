@@ -2741,19 +2741,37 @@ class _AuthoringRenderer:
             )
             return _RenderedValue(name=result_name, type=expr.type)
 
-        if expr.name == "vmrgsort4":
-            vec0 = self._lower_expr(expr.args[0], env, indent=indent, into=into)
-            vec1 = self._lower_expr(expr.args[1], env, indent=indent, into=into)
-            vec2 = self._lower_expr(expr.args[2], env, indent=indent, into=into)
-            vec3 = self._lower_expr(expr.args[3], env, indent=indent, into=into)
-            mask = self._lower_expr(expr.args[4], env, indent=indent, into=into)
+        if expr.name == "vbitsort":
+            destination = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+            source = self._lower_expr(expr.args[1], env, indent=indent, into=into)
+            indices = self._lower_expr(expr.args[2], env, indent=indent, into=into)
+            repeat_times = self._lower_expr(expr.args[3], env, indent=indent, into=into)
             into.append(
                 self._indent(indent)
-                + f"{result_name} = pto.vmrgsort4 {vec0.name}, {vec1.name}, {vec2.name}, {vec3.name}, {mask.name} : "
-                + f"{self._render_type(vec0.type)}, {self._render_type(vec1.type)}, {self._render_type(vec2.type)}, "
-                + f"{self._render_type(vec3.type)}, {self._render_type(mask.type)} -> {self._render_type(expr.type)}"
+                + f"pto.vbitsort {destination.name}, {source.name}, {indices.name}, {repeat_times.name} : "
+                + f"{self._render_type(destination.type)}, {self._render_type(source.type)}, "
+                + f"{self._render_type(indices.type)}, {self._render_type(repeat_times.type)}"
             )
-            return _RenderedValue(name=result_name, type=expr.type)
+            return _RenderedValue(name="__void_call__", type=SemanticMetaType(kind="void"))
+
+        if expr.name == "vmrgsort4":
+            destination = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+            source0 = self._lower_expr(expr.args[1], env, indent=indent, into=into)
+            source1 = self._lower_expr(expr.args[2], env, indent=indent, into=into)
+            source2 = self._lower_expr(expr.args[3], env, indent=indent, into=into)
+            source3 = self._lower_expr(expr.args[4], env, indent=indent, into=into)
+            count = self._lower_expr(expr.args[5], env, indent=indent, into=into)
+            config = self._lower_expr(expr.args[6], env, indent=indent, into=into)
+            count = self._coerce_rendered_value(count, _I64_TYPE, indent=indent, into=into)
+            config = self._coerce_rendered_value(config, _I64_TYPE, indent=indent, into=into)
+            into.append(
+                self._indent(indent)
+                + f"pto.vmrgsort4 {destination.name}, {source0.name}, {source1.name}, {source2.name}, {source3.name}, "
+                + f"{count.name}, {config.name} : {self._render_type(destination.type)}, {self._render_type(source0.type)}, "
+                + f"{self._render_type(source1.type)}, {self._render_type(source2.type)}, {self._render_type(source3.type)}, "
+                + f"{self._render_type(count.type)}, {self._render_type(config.type)}"
+            )
+            return _RenderedValue(name="__void_call__", type=SemanticMetaType(kind="void"))
 
         if expr.name in {
             "vabs",
@@ -2777,7 +2795,6 @@ class _AuthoringRenderer:
             "vsqz",
             "vexpdiff",
             "vtrc",
-            "vbitsort",
             "vcgadd",
             "vcgmax",
             "vcgmin",

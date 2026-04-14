@@ -1395,38 +1395,50 @@ vec_f16_narrow = pto.vcvt(
 )
 ```
 
-#### `pto.vbitsort(vec: VRegType, mask: MaskType) -> VRegType`
+#### `pto.vbitsort(dest: ptr, src: ptr, indices: ptr, repeat_times: index) -> None`  [Advanced Tier]
 
-**Description**: Bitonic sort of vector elements.
-
-**Parameters**:
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `vec` | `VRegType` | Input vector |
-| `mask` | `MaskType` | Predicate mask |
-
-**Returns**:
-| Return Value | Type | Description |
-|--------------|------|-------------|
-| `result` | `VRegType` | Sorted vector |
-
-#### `pto.vmrgsort4(vec1: VRegType, vec2: VRegType, vec3: VRegType, vec4: VRegType, mask: MaskType) -> VRegType`
-
-**Description**: 4-way merge sort of vectors.
+**Description**: Sort 32 region proposals by score and materialize sorted proposal
+records into UB memory. This is a UB helper and not a `vreg -> vreg` operation.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `vec1` | `VRegType` | First input vector |
-| `vec2` | `VRegType` | Second input vector |
-| `vec3` | `VRegType` | Third input vector |
-| `vec4` | `VRegType` | Fourth input vector |
-| `mask` | `MaskType` | Predicate mask |
+| `dest` | `ptr` | Destination pointer in UB memory space |
+| `src` | `ptr` | Source score pointer in UB memory space |
+| `indices` | `ptr` | Source index pointer in UB memory space |
+| `repeat_times` | `index` | Repeat count; each repeat processes the next adjacent group of 32 scores and 32 indices |
 
 **Returns**:
-| Return Value | Type | Description |
-|--------------|------|-------------|
-| `result` | `VRegType` | Merged and sorted vector |
+None. The op writes UB memory directly.
+
+**Constraints**:
+- `dest`, `src`, and `indices` must be UB-backed pointers
+- Scores are sorted in descending order
+- Equal-score ties preserve the earlier input proposal first
+- Output records occupy 8 bytes each: upper 4 bytes for the index and lower 4 bytes for the score
+
+#### `pto.vmrgsort4(dest: ptr, src0: ptr, src1: ptr, src2: ptr, src3: ptr, count: pto.i64, config: pto.i64) -> None`  [Advanced Tier]
+
+**Description**: Merge-sort 4 pre-sorted UB inputs. This op writes UB memory
+directly and does not return a vector SSA value.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `dest` | `ptr` | Destination pointer in UB memory space |
+| `src0` | `ptr` | First pre-sorted input pointer in UB memory space |
+| `src1` | `ptr` | Second pre-sorted input pointer in UB memory space |
+| `src2` | `ptr` | Third pre-sorted input pointer in UB memory space |
+| `src3` | `ptr` | Fourth pre-sorted input pointer in UB memory space |
+| `count` | `pto.i64` | Number of valid input elements participating in the merge |
+| `config` | `pto.i64` | Operation control word encoding sort behavior |
+
+**Returns**:
+None. The op writes UB memory directly.
+
+**Constraints**:
+- `dest` and `src0` through `src3` must be UB-backed pointers
+- Inputs must already be sorted according to the order encoded by `config`
 
 **Order Mode Enum**: The `OrderMode` enum provides type-safe order selection for `pto.vci` operations. Currently only `ASC` (ascending order) is supported, with more order options planned for future releases.
 

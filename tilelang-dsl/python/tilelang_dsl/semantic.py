@@ -161,7 +161,6 @@ _UNARY_VECTOR_OPS = {
     "vsqz",
     "vexpdiff",
     "vtrc",
-    "vbitsort",
     "vcgadd",
     "vcgmax",
     "vcgmin",
@@ -229,7 +228,7 @@ _ADVANCED_VECTOR_ACTIVITY_OPS = (
     | _PREDICATE_MOVEMENT_OPS
     | _CARRY_OPS
     | _REARRANGEMENT_OPS
-    | {"vcvt", "vmrgsort4"}
+    | {"vcvt", "vbitsort", "vmrgsort4"}
 )
 _TENSORVIEW_RANK = 5
 
@@ -3633,6 +3632,8 @@ class _SemanticAnalyzer:
             return self._analyze_rearrangement_op(name, args)
         if name == "vcvt":
             return self._analyze_vcvt(args)
+        if name == "vbitsort":
+            return self._analyze_vbitsort(args)
         if name == "vmrgsort4":
             return self._analyze_vmrgsort4(args)
         if name in _BROADCAST_VECTOR_OPS:
@@ -4423,17 +4424,36 @@ class _SemanticAnalyzer:
             type=self._vreg_type_for_dtype(target_dtype),
         )
 
+    def _analyze_vbitsort(self, args: tuple[SemanticExpr, ...]) -> SemanticExpr:
+        if len(args) != 4:
+            raise TypeError("pto.vbitsort expects exactly 4 positional arguments in TileLang DSL v1")
+        destination = self._require_pointer_expr(args[0], "pto.vbitsort destination", memory_space="ub")
+        source = self._require_pointer_expr(args[1], "pto.vbitsort source", memory_space="ub")
+        indices = self._require_pointer_expr(args[2], "pto.vbitsort indices", memory_space="ub")
+        self._require_index_typed_expr(args[3])
+        return SemanticCallExpr(
+            namespace="pto",
+            name="vbitsort",
+            args=(destination, source, indices, args[3]),
+            type=None,
+        )
+
     def _analyze_vmrgsort4(self, args: tuple[SemanticExpr, ...]) -> SemanticExpr:
-        if len(args) != 5:
-            raise TypeError("pto.vmrgsort4 expects exactly 5 positional arguments in TileLang DSL")
-        vec0 = self._require_vreg_expr(args[0], "pto.vmrgsort4 vec0")
-        vec1 = self._require_vreg_expr(args[1], "pto.vmrgsort4 vec1")
-        vec2 = self._require_vreg_expr(args[2], "pto.vmrgsort4 vec2")
-        vec3 = self._require_vreg_expr(args[3], "pto.vmrgsort4 vec3")
-        if not (vec0 == vec1 == vec2 == vec3):
-            raise TypeError("pto.vmrgsort4 requires all vector operands to use the same vector type")
-        self._require_mask_for_vreg(args[4], vec0, "pto.vmrgsort4")
-        return SemanticCallExpr(namespace="pto", name="vmrgsort4", args=args, type=vec0)
+        if len(args) != 7:
+            raise TypeError("pto.vmrgsort4 expects exactly 7 positional arguments in TileLang DSL v1")
+        destination = self._require_pointer_expr(args[0], "pto.vmrgsort4 destination", memory_space="ub")
+        source0 = self._require_pointer_expr(args[1], "pto.vmrgsort4 src0", memory_space="ub")
+        source1 = self._require_pointer_expr(args[2], "pto.vmrgsort4 src1", memory_space="ub")
+        source2 = self._require_pointer_expr(args[3], "pto.vmrgsort4 src2", memory_space="ub")
+        source3 = self._require_pointer_expr(args[4], "pto.vmrgsort4 src3", memory_space="ub")
+        self._require_i64_like_expr(args[5], "pto.vmrgsort4 count")
+        self._require_i64_like_expr(args[6], "pto.vmrgsort4 config")
+        return SemanticCallExpr(
+            namespace="pto",
+            name="vmrgsort4",
+            args=(destination, source0, source1, source2, source3, args[5], args[6]),
+            type=None,
+        )
 
     def _require_dtype_symbol(self, expr: SemanticExpr, context: str) -> ScalarType:
         if not (
@@ -4912,7 +4932,7 @@ class _SemanticAnalyzer:
             is_integer_dtype(dtype) and integer_bitwidth(dtype) in {8, 16, 32}
         ):
             raise TypeError(f"pto.{name} only supports integer vector dtypes in TileLang DSL v1")
-        if name in {"vabs", "vneg", "vmov", "vtrc", "vbitsort", "vcadd", "vcmax", "vcmin"} and not (
+        if name in {"vabs", "vneg", "vmov", "vtrc", "vcadd", "vcmax", "vcmin"} and not (
             (is_integer_dtype(dtype) and integer_bitwidth(dtype) in {8, 16, 32}) or dtype.name in {"f16", "bf16", "f32"}
         ):
             raise TypeError(f"pto.{name} does not support this dtype in TileLang DSL v1")

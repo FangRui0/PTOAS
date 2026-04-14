@@ -323,6 +323,8 @@ class TileLangDSLSupportMatrixTests(unittest.TestCase):
         self.assertEqual(get_feature_tier("pto.vsort32"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.vldsx2"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.vstsx2"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("pto.vbitsort"), ADVANCED_TIER)
+        self.assertEqual(get_feature_tier("pto.vmrgsort4"), ADVANCED_TIER)
         self.assertEqual(get_feature_tier("PadMode"), BASIC_TIER)
         self.assertEqual(get_feature_tier("VRegType"), BASIC_TIER)
         self.assertEqual(get_feature_tier("MaskType"), BASIC_TIER)
@@ -2401,11 +2403,9 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             out = pto.vcmin(out, all_mask)
             out = pto.vmov(out, all_mask)
             out = pto.vtrc(out, all_mask)
-            out = pto.vbitsort(out, all_mask)
             out = pto.vprelu(out, vec1, all_mask)
             out = pto.vlrelu(out, alpha, all_mask)
             out = pto.vcvt(out, pto.f32, all_mask)
-            out = pto.vmrgsort4(out, vec1, vec2, vec3, all_mask)
             pto.vsts(out, dst, 0, all_mask)
             return None
 
@@ -2425,11 +2425,9 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn("pto.vcmin", text)
         self.assertIn("pto.vmov", text)
         self.assertIn("pto.vtrc", text)
-        self.assertIn("pto.vbitsort", text)
         self.assertIn("pto.vprelu", text)
         self.assertIn("pto.vlrelu", text)
         self.assertIn("pto.vcvt", text)
-        self.assertIn("pto.vmrgsort4", text)
 
     def test_vcvt_supports_keyword_attrs_with_enums(self) -> None:
         @pto.vkernel(
@@ -2462,6 +2460,46 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn('rnd = "R"', text)
         self.assertIn('sat = "SAT"', text)
         self.assertIn('part = "ODD"', text)
+
+    def test_advanced_sort_memory_ops_surface_lower(self) -> None:
+        @pto.vkernel(
+            op="advanced_sort_memory_ops_unique",
+            dtypes=[(pto.f32, pto.f32, pto.i32)],
+            advanced=True,
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile, idx: pto.Tile):
+            dst_ptr = dst.as_ptr()
+            src_ptr = src.as_ptr()
+            idx_ptr = idx.as_ptr()
+
+            pto.vbitsort(dst_ptr, src_ptr, idx_ptr, 1)
+            pto.vmrgsort4(
+                dst_ptr,
+                src_ptr,
+                pto.addptr(src_ptr, 64),
+                pto.addptr(src_ptr, 128),
+                pto.addptr(src_ptr, 192),
+                pto.i64(64),
+                pto.i64(0),
+            )
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 256), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 256), memory_space=pto.MemorySpace.UB),
+            idx=pto.TileSpecialization(shape=(8, 256), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertRegex(
+            text,
+            r"pto\.vbitsort %dst_ptr_\d+, %src_ptr_\d+, %idx_ptr_\d+, %c1 : !pto\.ptr<f32, ub>, !pto\.ptr<f32, ub>, !pto\.ptr<i32, ub>, index",
+        )
+        self.assertRegex(
+            text,
+            r"pto\.vmrgsort4 %dst_ptr_\d+, %src_ptr_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+, %c\d+_i64, %c\d+_i64 : "
+            r"!pto\.ptr<f32, ub>, !pto\.ptr<f32, ub>, !pto\.ptr<f32, ub>, !pto\.ptr<f32, ub>, !pto\.ptr<f32, ub>, i64, i64",
+        )
 
     def test_vcvt_rejects_legacy_string_spellings(self) -> None:
         with self.assertRaises(TypeError) as ctx:
