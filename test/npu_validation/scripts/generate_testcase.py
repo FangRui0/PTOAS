@@ -1658,6 +1658,16 @@ endif()
         file_cnt = ptr_elem_counts.get(name, logical_elem_count)
         if file_cnt and req < int(file_cnt):
             compare_prefix_counts[name] = req
+    # TMRGSORT format2 testcase writes three contiguous regions:
+    # 2-way (256) + 3-way (384) + 4-way (up to 512).
+    # With 4-way exhausted mode, the stable worst-case valid prefix for 4-way
+    # is 128 elements, so compare 256 + 384 + 128 = 768 elements.
+    testcase_lc = testcase.lower()
+    if testcase_lc == "mrgsort_format2":
+        for p in output_ptrs:
+            name = p["name"]
+            file_cnt = int(ptr_elem_counts.get(name, logical_elem_count))
+            compare_prefix_counts[name] = min(file_cnt, 768)
     for p in output_ptrs:
         np_dtype = _np_dtype_for_cpp(p["cpp_type"])
         name = p["name"]
