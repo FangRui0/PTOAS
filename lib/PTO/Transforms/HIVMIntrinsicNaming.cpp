@@ -145,6 +145,44 @@ static IntrinsicSelection makeUnresolved(Operation *op,
   return selection;
 }
 
+static StringRef getMemBarIntrinsicName(MemBarKind kind) {
+  switch (kind) {
+  case MemBarKind::VV_ALL:
+    return "llvm.hivm.mem.bar.vv.all";
+  case MemBarKind::VST_VLD:
+    return "llvm.hivm.mem.bar.vst.vld";
+  case MemBarKind::VLD_VST:
+    return "llvm.hivm.mem.bar.vld.vst";
+  case MemBarKind::VST_VST:
+    return "llvm.hivm.mem.bar.vst.vst";
+  case MemBarKind::VS_ALL:
+    return "llvm.hivm.mem.bar.vs.all";
+  case MemBarKind::VST_LD:
+    return "llvm.hivm.mem.bar.vst.ld";
+  case MemBarKind::VLD_ST:
+    return "llvm.hivm.mem.bar.vld.st";
+  case MemBarKind::VST_ST:
+    return "llvm.hivm.mem.bar.vst.st";
+  case MemBarKind::SV_ALL:
+    return "llvm.hivm.mem.bar.sv.all";
+  case MemBarKind::ST_VLD:
+    return "llvm.hivm.mem.bar.st.vld";
+  case MemBarKind::LD_VST:
+    return "llvm.hivm.mem.bar.ld.vst";
+  case MemBarKind::ST_VST:
+    return "llvm.hivm.mem.bar.st.vst";
+  case MemBarKind::SS_ALL:
+    return "llvm.hivm.mem.bar.ss.all";
+  case MemBarKind::ST_LD:
+    return "llvm.hivm.mem.bar.st.ld";
+  case MemBarKind::LD_ST:
+    return "llvm.hivm.mem.bar.ld.st";
+  case MemBarKind::ST_ST:
+    return "llvm.hivm.mem.bar.st.st";
+  }
+  llvm_unreachable("unexpected membar kind");
+}
+
 static FailureOr<IntrinsicSelection> selectSyncLike(Operation *op) {
   llvm::SmallVector<std::string, 4> usedFields;
   usedFields.push_back("op=" + getOpMnemonic(op));
@@ -162,6 +200,10 @@ static FailureOr<IntrinsicSelection> selectSyncLike(Operation *op) {
   } else if (auto barrier = dyn_cast<pto::BarrierOp>(op)) {
     usedFields.push_back("pipe=" + printAttrText(barrier.getPipe()));
     return makeResolved(op, "llvm.hivm.BARRIER", usedFields, "");
+  } else if (auto membar = dyn_cast<pto::MemBarOp>(op)) {
+    usedFields.push_back("kind=" + printAttrText(membar.getKind()));
+    return makeResolved(op, getMemBarIntrinsicName(membar.getKind().getKind()),
+                        usedFields, "");
   }
 
   llvm::SmallVector<std::string, 2> missingFields = {"confirmed_hivm_name"};
@@ -536,7 +578,8 @@ FailureOr<IntrinsicSelection> selectStoreIntrinsic(Operation *op) {
 }
 
 FailureOr<IntrinsicSelection> selectIntrinsic(Operation *op) {
-  if (isa<pto::SetFlagOp, pto::WaitFlagOp, pto::BarrierOp>(op))
+  if (isa<pto::SetFlagOp, pto::WaitFlagOp, pto::BarrierOp,
+          pto::MemBarOp>(op))
     return selectSyncLike(op);
 
   if (isa<pto::SetLoop2StrideOutToUbOp, pto::SetLoop1StrideOutToUbOp,

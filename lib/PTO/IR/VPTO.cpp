@@ -1810,8 +1810,6 @@ LogicalResult PldsOp::verify() {
     return emitOpError("requires index offset");
   if (!isSupportedPredicateLoadDist(getDist()))
     return emitOpError("requires predicate load dist to be NORM, US, or DS");
-  if (failed(verifyEnclosingLoopLike(*this, "pto.plds")))
-    return failure();
   return success();
 }
 
@@ -1832,8 +1830,6 @@ LogicalResult PldiOp::verify() {
     return emitOpError("requires offset to be a constant index immediate");
   if (!isSupportedPredicateLoadDist(getDist()))
     return emitOpError("requires predicate load dist to be NORM, US, or DS");
-  if (failed(verifyEnclosingLoopLike(*this, "pto.pldi")))
-    return failure();
   return success();
 }
 

@@ -121,6 +121,55 @@ def PTO_PipeAttr : PTO_Attr<"Pipe", "pipe"> {
 }
 
 //===----------------------------------------------------------------------===//
+// MemBar
+//===----------------------------------------------------------------------===//
+
+def PTO_MEMBAR_VV_ALL : I32EnumAttrCase<"VV_ALL", 0>;
+def PTO_MEMBAR_VST_VLD : I32EnumAttrCase<"VST_VLD", 1>;
+def PTO_MEMBAR_VLD_VST : I32EnumAttrCase<"VLD_VST", 2>;
+def PTO_MEMBAR_VST_VST : I32EnumAttrCase<"VST_VST", 3>;
+def PTO_MEMBAR_VS_ALL : I32EnumAttrCase<"VS_ALL", 4>;
+def PTO_MEMBAR_VST_LD : I32EnumAttrCase<"VST_LD", 5>;
+def PTO_MEMBAR_VLD_ST : I32EnumAttrCase<"VLD_ST", 6>;
+def PTO_MEMBAR_VST_ST : I32EnumAttrCase<"VST_ST", 7>;
+def PTO_MEMBAR_SV_ALL : I32EnumAttrCase<"SV_ALL", 8>;
+def PTO_MEMBAR_ST_VLD : I32EnumAttrCase<"ST_VLD", 9>;
+def PTO_MEMBAR_LD_VST : I32EnumAttrCase<"LD_VST", 10>;
+def PTO_MEMBAR_ST_VST : I32EnumAttrCase<"ST_VST", 11>;
+def PTO_MEMBAR_SS_ALL : I32EnumAttrCase<"SS_ALL", 12>;
+def PTO_MEMBAR_ST_LD : I32EnumAttrCase<"ST_LD", 13>;
+def PTO_MEMBAR_LD_ST : I32EnumAttrCase<"LD_ST", 14>;
+def PTO_MEMBAR_ST_ST : I32EnumAttrCase<"ST_ST", 15>;
+
+def PTO_MemBarEnum : PTO_I32Enum<
+  "MemBarKind", "PTO low-level memory barrier kind", [
+    PTO_MEMBAR_VV_ALL,
+    PTO_MEMBAR_VST_VLD,
+    PTO_MEMBAR_VLD_VST,
+    PTO_MEMBAR_VST_VST,
+    PTO_MEMBAR_VS_ALL,
+    PTO_MEMBAR_VST_LD,
+    PTO_MEMBAR_VLD_ST,
+    PTO_MEMBAR_VST_ST,
+    PTO_MEMBAR_SV_ALL,
+    PTO_MEMBAR_ST_VLD,
+    PTO_MEMBAR_LD_VST,
+    PTO_MEMBAR_ST_VST,
+    PTO_MEMBAR_SS_ALL,
+    PTO_MEMBAR_ST_LD,
+    PTO_MEMBAR_LD_ST,
+    PTO_MEMBAR_ST_ST
+  ]>;
+
+def PTO_MemBarAttr : PTO_Attr<"MemBar", "membar"> {
+  let parameters = (ins EnumParameter<PTO_MemBarEnum>:$kind);
+  let assemblyFormat = "`<` params `>`";
+  let description = [{
+    Low-level memory barrier kind for VPTO `pto.mem_bar`.
+  }];
+}
+
+//===----------------------------------------------------------------------===//
 // Sync Op Type (High Level Abstraction)
 //===----------------------------------------------------------------------===//
 

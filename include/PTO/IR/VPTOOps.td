@@ -114,6 +114,20 @@ def StrictVecScopeOp : PTO_Op<"strict_vecscope", [SingleBlock, NoTerminator,
   }];
 }
 
+def PTO_MemBarOp : PTO_Op<"mem_bar"> {
+  let summary = "Low-level VPTO memory barrier";
+  let description = [{
+    Low-level memory ordering barrier that lowers to one of the
+    `llvm.hivm.mem.bar.*` intrinsics exposed by Bisheng.
+  }];
+
+  let arguments = (ins PTO_MemBarAttr:$kind);
+  let results = (outs);
+
+  let hasCustomAssemblyFormat = 1;
+}
+
+
 class PTO_BinaryI64ConfigOp<string mnemonic> : PTO_Op<mnemonic> {
   let arguments = (ins
     I64:$first,

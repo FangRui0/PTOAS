@@ -1661,6 +1661,44 @@ StringRef buildSyncCallee<pto::BarrierOp>(MLIRContext *context) {
   return StringAttr::get(context, "llvm.hivm.BARRIER").getValue();
 }
 
+static StringRef buildMemBarCallee(MemBarKind kind, MLIRContext *context) {
+  switch (kind) {
+  case MemBarKind::VV_ALL:
+    return StringAttr::get(context, "llvm.hivm.mem.bar.vv.all").getValue();
+  case MemBarKind::VST_VLD:
+    return StringAttr::get(context, "llvm.hivm.mem.bar.vst.vld").getValue();
+  case MemBarKind::VLD_VST:
+    return StringAttr::get(context, "llvm.hivm.mem.bar.vld.vst").getValue();
+  case MemBarKind::VST_VST:
+    return StringAttr::get(context, "llvm.hivm.mem.bar.vst.vst").getValue();
+  case MemBarKind::VS_ALL:
+    return StringAttr::get(context, "llvm.hivm.mem.bar.vs.all").getValue();
+  case MemBarKind::VST_LD:
+    return StringAttr::get(context, "llvm.hivm.mem.bar.vst.ld").getValue();
+  case MemBarKind::VLD_ST:
+    return StringAttr::get(context, "llvm.hivm.mem.bar.vld.st").getValue();
+  case MemBarKind::VST_ST:
+    return StringAttr::get(context, "llvm.hivm.mem.bar.vst.st").getValue();
+  case MemBarKind::SV_ALL:
+    return StringAttr::get(context, "llvm.hivm.mem.bar.sv.all").getValue();
+  case MemBarKind::ST_VLD:
+    return StringAttr::get(context, "llvm.hivm.mem.bar.st.vld").getValue();
+  case MemBarKind::LD_VST:
+    return StringAttr::get(context, "llvm.hivm.mem.bar.ld.vst").getValue();
+  case MemBarKind::ST_VST:
+    return StringAttr::get(context, "llvm.hivm.mem.bar.st.vst").getValue();
+  case MemBarKind::SS_ALL:
+    return StringAttr::get(context, "llvm.hivm.mem.bar.ss.all").getValue();
+  case MemBarKind::ST_LD:
+    return StringAttr::get(context, "llvm.hivm.mem.bar.st.ld").getValue();
+  case MemBarKind::LD_ST:
+    return StringAttr::get(context, "llvm.hivm.mem.bar.ld.st").getValue();
+  case MemBarKind::ST_ST:
+    return StringAttr::get(context, "llvm.hivm.mem.bar.st.st").getValue();
+  }
+  llvm_unreachable("unexpected membar kind");
+}
+
 template <>
 StringRef buildSyncCallee<pto::GetBufOp>(MLIRContext *context) {
   return StringAttr::get(context, "llvm.hivm.GET.BUFI.mode").getValue();
@@ -4316,6 +4354,29 @@ private:
   LoweringState &state;
 };
 
+class LowerMemBarOpPattern final : public OpConversionPattern<pto::MemBarOp> {
+public:
+  explicit LowerMemBarOpPattern(TypeConverter &typeConverter,
+                                MLIRContext *context, LoweringState &state)
+      : OpConversionPattern<pto::MemBarOp>(typeConverter, context),
+        state(state) {}
+
+  LogicalResult
+  matchAndRewrite(pto::MemBarOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    (void)adaptor;
+    StringRef calleeName = buildMemBarCallee(op.getKind().getKind(), op.getContext());
+    auto funcType = rewriter.getFunctionType(TypeRange{}, TypeRange{});
+    rewriter.create<func::CallOp>(op.getLoc(), calleeName, TypeRange{}, ValueRange{});
+    state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  LoweringState &state;
+};
+
 template <typename BufSyncOp>
 class LowerBufSyncOpPattern final : public OpConversionPattern<BufSyncOp> {
 public:
@@ -4691,7 +4752,7 @@ static void populateVPTOOpLoweringPatterns(VPTOTypeConverter &typeConverter,
                LowerUnaryConfigOpPattern<pto::SetMovPadValOp>,
                LowerPipeEventSyncOpPattern<pto::SetFlagOp>,
                LowerPipeEventSyncOpPattern<pto::WaitFlagOp>,
-               LowerBarrierOpPattern,
+               LowerBarrierOpPattern, LowerMemBarOpPattern,
                LowerBufSyncOpPattern<pto::GetBufOp>,
                LowerBufSyncOpPattern<pto::RlsBufOp>,
                LowerRuntimeQueryOpPattern<pto::GetBlockIdxOp>,
@@ -4728,7 +4789,7 @@ static void configureVPTOOpLoweringTarget(ConversionTarget &target,
                          func::FuncDialect, scf::SCFDialect>();
   target.addLegalOp<UnrealizedConversionCastOp>();
   target.addIllegalOp<pto::SetFlagOp, pto::WaitFlagOp, pto::BarrierOp,
-                      pto::GetBufOp, pto::RlsBufOp>();
+                      pto::MemBarOp, pto::GetBufOp, pto::RlsBufOp>();
   target.addIllegalOp<pto::GetBlockIdxOp, pto::GetSubBlockIdxOp,
                       pto::GetBlockNumOp, pto::GetSubBlockNumOp>();
   target.addIllegalOp<pto::SetLoop2StrideOutToUbOp, pto::SetLoop1StrideOutToUbOp,

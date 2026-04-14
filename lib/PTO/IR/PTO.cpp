@@ -5536,6 +5536,34 @@ static ParseResult parseQuotedEventToken(OpAsmParser &parser, EventAttr &attr) {
   return success();
 }
 
+static ParseResult parseLegacyOrAttrMemBar(OpAsmParser &parser,
+                                           MemBarAttr &attr) {
+  auto loc = parser.getCurrentLocation();
+  std::string token;
+  if (succeeded(parser.parseOptionalString(&token))) {
+    auto kind = symbolizeMemBarKind(token);
+    if (!kind)
+      return parser.emitError(loc) << "invalid membar token: " << token;
+    attr = MemBarAttr::get(parser.getContext(), *kind);
+    return success();
+  }
+
+  Attribute parsed;
+  if (failed(parser.parseAttribute(parsed)))
+    return failure();
+  auto memBarAttr = dyn_cast<MemBarAttr>(parsed);
+  if (!memBarAttr)
+    return parser.emitError(loc, "expected membar attribute");
+  attr = memBarAttr;
+  return success();
+}
+
+static void printLegacyOrAttrMemBar(OpAsmPrinter &p, MemBarAttr kind,
+                                    ArrayRef<NamedAttribute> attrs) {
+  p << ' ' << '"' << stringifyMemBarKind(kind.getKind()) << '"';
+  p.printOptionalAttrDict(attrs, {"kind"});
+}
+
 static ParseResult parseLegacyOrAttrPipe(OpAsmParser &parser, PipeAttr &attr) {
   auto loc = parser.getCurrentLocation();
   std::string token;
@@ -5663,6 +5691,20 @@ ParseResult WaitFlagOp::parse(OpAsmParser &parser, OperationState &result) {
 void WaitFlagOp::print(OpAsmPrinter &p) {
   printLegacySyncTriplet(p, getSrcPipe(), getDstPipe(), getEventId(),
                          (*this)->getAttrs());
+}
+
+ParseResult MemBarOp::parse(OpAsmParser &parser, OperationState &result) {
+  MemBarAttr kind;
+  if (parseLegacyOrAttrMemBar(parser, kind))
+    return failure();
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+  result.addAttribute("kind", kind);
+  return success();
+}
+
+void MemBarOp::print(OpAsmPrinter &p) {
+  printLegacyOrAttrMemBar(p, getKind(), (*this)->getAttrs());
 }
 
 static ParseResult parseLegacyOrAttrOpType(OpAsmParser &parser,
