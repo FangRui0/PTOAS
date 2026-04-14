@@ -50,6 +50,7 @@ from .support_matrix import (
 from .types import (
     AlignType,
     BarrierType,
+    BLayout,
     DeinterleaveDist,
     Event,
     InterleaveDist,
@@ -58,11 +59,14 @@ from .types import (
     MemorySpace,
     OrderMode,
     PadMode,
+    PadValue,
     Pipe,
     PostUpdateMode,
     PositionMode,
     PointerType,
     ScalarType,
+    SLayout,
+    TileConfig,
     VcvtPartMode,
     VcvtRoundMode,
     VcvtSatMode,
@@ -121,6 +125,9 @@ _EVENT_SYMBOLS = {event.name: event for event in Event}
 _BARRIER_TYPE_SYMBOLS = {barrier_type.name: barrier_type for barrier_type in BarrierType}
 _MEMORY_SPACE_SYMBOLS = {memory_space.name: memory_space for memory_space in MemorySpace}
 _PAD_MODE_SYMBOLS = {pad_mode.name: pad_mode for pad_mode in PadMode}
+_B_LAYOUT_SYMBOLS = {layout.name: layout for layout in BLayout}
+_S_LAYOUT_SYMBOLS = {layout.name: layout for layout in SLayout}
+_PAD_VALUE_SYMBOLS = {pad_value.name: pad_value for pad_value in PadValue}
 _DEINTERLEAVE_DIST_SYMBOLS = dict(DeinterleaveDist.__members__)
 _INTERLEAVE_DIST_SYMBOLS = dict(InterleaveDist.__members__)
 _POSITION_MODE_SYMBOLS = {position_mode.name: position_mode for position_mode in PositionMode}
@@ -255,6 +262,12 @@ class SemanticTileType(SemanticType):
     shape: tuple[int, ...] | None
     valid_shape: tuple[int | None, ...] | None
     memory_space: str | None
+    config: TileConfig | None
+
+
+@dataclass(frozen=True)
+class SemanticTileConfigType(SemanticType):
+    pass
 
 
 @dataclass(frozen=True)
@@ -780,6 +793,7 @@ class _SemanticAnalyzer:
                 shape=shape,
                 valid_shape=valid_shape,
                 memory_space=memory_space,
+                config=None if spec is None else (spec.config or TileConfig()),
             )
         if param.kind == "ptr":
             memory_space = param.annotation.memory_space.value
@@ -1295,7 +1309,7 @@ class _SemanticAnalyzer:
                     shape=parameter.type.shape,
                     valid_shape=parameter.type.valid_shape,
                     memory_space=parameter.type.memory_space or "ub",
-                    config=None,
+                    config=parameter.type.config or TileConfig(),
                 )
             )
         return tuple(tile_bindings)
@@ -2774,10 +2788,18 @@ class _SemanticAnalyzer:
             base = self._analyze_expr(expr.base, env, allow_outer_lookup=allow_outer_lookup)
             if expr.attr == "element_type":
                 return self._attach_expr_source_location(self._element_type_expr(base), expr)
+            if expr.attr == "rank":
+                return self._attach_expr_source_location(self._rank_expr(base), expr)
+            if expr.attr == "memory_space":
+                return self._attach_expr_source_location(self._memory_space_expr(base), expr)
+            if expr.attr == "config":
+                return self._attach_expr_source_location(self._tile_config_expr(base), expr)
             if expr.attr == "valid_shape":
                 return self._attach_expr_source_location(self._valid_shape_expr(base), expr)
             if expr.attr == "strides":
                 return self._attach_expr_source_location(self._strides_expr(base), expr)
+            if isinstance(base.type, SemanticTileConfigType):
+                return self._attach_expr_source_location(self._tile_config_attr_expr(base, expr.attr), expr)
             attr_type = self._attribute_type(base, expr.attr)
             return self._attach_expr_source_location(
                 SemanticAttributeAccess(base=base, attr=expr.attr, type=attr_type),
@@ -2973,6 +2995,33 @@ class _SemanticAnalyzer:
                     value=pad_mode,
                     type=SemanticMetaType(kind="pad_mode"),
                 )
+        if expr.namespace in {"BLayout", "pto.BLayout"}:
+            b_layout = _B_LAYOUT_SYMBOLS.get(expr.name)
+            if b_layout is not None:
+                return SemanticSymbolExpr(
+                    namespace=expr.namespace,
+                    name=expr.name,
+                    value=b_layout,
+                    type=SemanticMetaType(kind="b_layout"),
+                )
+        if expr.namespace in {"SLayout", "pto.SLayout"}:
+            s_layout = _S_LAYOUT_SYMBOLS.get(expr.name)
+            if s_layout is not None:
+                return SemanticSymbolExpr(
+                    namespace=expr.namespace,
+                    name=expr.name,
+                    value=s_layout,
+                    type=SemanticMetaType(kind="s_layout"),
+                )
+        if expr.namespace in {"PadValue", "pto.PadValue"}:
+            pad_value = _PAD_VALUE_SYMBOLS.get(expr.name)
+            if pad_value is not None:
+                return SemanticSymbolExpr(
+                    namespace=expr.namespace,
+                    name=expr.name,
+                    value=pad_value,
+                    type=SemanticMetaType(kind="pad_value"),
+                )
         if expr.namespace in {"DeinterleaveDist", "pto.DeinterleaveDist"}:
             dist = _DEINTERLEAVE_DIST_SYMBOLS.get(expr.name)
             if dist is not None:
@@ -3071,6 +3120,72 @@ class _SemanticAnalyzer:
                 type=SemanticMetaType(kind="dtype"),
             )
         raise TypeError("unsupported attribute access 'element_type' in TileLang DSL v1")
+
+    def _rank_expr(self, base: SemanticExpr) -> SemanticExpr:
+        base_type = base.type
+        if isinstance(base_type, (SemanticTensorViewType, SemanticPartitionTensorViewType, SemanticTileType)):
+            return SemanticLiteralExpr(value=base_type.rank, type=SemanticIndexType())
+        raise TypeError("unsupported attribute access 'rank' in TileLang DSL v1")
+
+    def _memory_space_expr(self, base: SemanticExpr) -> SemanticExpr:
+        base_type = base.type
+        if isinstance(base_type, (SemanticTensorViewType, SemanticPartitionTensorViewType)):
+            return SemanticSymbolExpr(
+                namespace="pto",
+                name=MemorySpace.GM.name,
+                value=MemorySpace.GM,
+                type=SemanticMetaType(kind="memory_space"),
+            )
+        if isinstance(base_type, SemanticTileType):
+            memory_space = MemorySpace.UB if base_type.memory_space is None else MemorySpace(base_type.memory_space)
+            return SemanticSymbolExpr(
+                namespace="pto",
+                name=memory_space.name,
+                value=memory_space,
+                type=SemanticMetaType(kind="memory_space"),
+            )
+        raise TypeError("unsupported attribute access 'memory_space' in TileLang DSL v1")
+
+    def _tile_config_expr(self, base: SemanticExpr) -> SemanticExpr:
+        base_type = base.type
+        if isinstance(base_type, SemanticTileType):
+            return SemanticLiteralExpr(
+                value=base_type.config or TileConfig(),
+                type=SemanticTileConfigType(),
+            )
+        raise TypeError("unsupported attribute access 'config' in TileLang DSL v1")
+
+    def _tile_config_attr_expr(self, base: SemanticExpr, attr: str) -> SemanticExpr:
+        config = self._try_static_value(base)
+        if not isinstance(config, TileConfig):
+            raise TypeError("Tile config metadata must be statically known in TileLang DSL v1")
+        if attr == "b_layout":
+            return SemanticSymbolExpr(
+                namespace="pto",
+                name=config.b_layout.name,
+                value=config.b_layout,
+                type=SemanticMetaType(kind="b_layout"),
+            )
+        if attr == "s_layout":
+            return SemanticSymbolExpr(
+                namespace="pto",
+                name=config.s_layout.name,
+                value=config.s_layout,
+                type=SemanticMetaType(kind="s_layout"),
+            )
+        if attr == "s_fractal_size":
+            return SemanticLiteralExpr(
+                value=config.s_fractal_size,
+                type=SemanticScalarType(dtype=i32),
+            )
+        if attr == "pad_value":
+            return SemanticSymbolExpr(
+                namespace="pto",
+                name=config.pad_value.name,
+                value=config.pad_value,
+                type=SemanticMetaType(kind="pad_value"),
+            )
+        raise TypeError(f"unsupported TileConfig attribute access '{attr}' in TileLang DSL v1")
 
     def _analyze_as_ptr_method(self, base: SemanticExpr) -> SemanticExpr:
         base_type = base.type
@@ -5145,6 +5260,7 @@ __all__ = [
     "SemanticTensorViewType",
     "SemanticPartitionTensorViewType",
     "SemanticTileBinding",
+    "SemanticTileConfigType",
     "SemanticTileType",
     "SemanticTupleExpr",
     "SemanticTupleType",

@@ -194,6 +194,24 @@ class PadMode(str, Enum):
     PadValue = "PadValue"
 
 
+class BLayout(str, Enum):
+    ROW_MAJOR = "row_major"
+    COL_MAJOR = "col_major"
+
+
+class SLayout(str, Enum):
+    NONE_BOX = "none_box"
+    ROW_MAJOR = "row_major"
+    COL_MAJOR = "col_major"
+
+
+class PadValue(str, Enum):
+    NULL = "null"
+    ZERO = "zero"
+    MAX = "max"
+    MIN = "min"
+
+
 class DeinterleaveDist(str, Enum):
     DINTLV = "DINTLV"
     BDINTLV = "BDINTLV"
@@ -249,7 +267,110 @@ class TileConfig:
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, Any]) -> "TileConfig":
-        return cls(tuple(sorted(mapping.items())))
+        if not isinstance(mapping, Mapping):
+            raise TypeError("TileConfig.from_mapping expects a mapping")
+        normalized: dict[str, Any] = {}
+        for key, value in mapping.items():
+            canonical_key = cls._canonical_key(key)
+            if canonical_key in normalized:
+                raise ValueError(f"duplicate TileConfig field '{canonical_key}'")
+            normalized[canonical_key] = cls._normalize_field_value(canonical_key, value)
+        return cls(tuple(sorted(normalized.items())))
+
+    @staticmethod
+    def _canonical_key(key: Any) -> str:
+        if not isinstance(key, str):
+            raise TypeError("TileConfig field names must be strings")
+        aliases = {
+            "layout": "b_layout",
+            "blayout": "b_layout",
+            "b_layout": "b_layout",
+            "slayout": "s_layout",
+            "s_layout": "s_layout",
+            "fractal": "s_fractal_size",
+            "s_fractal_size": "s_fractal_size",
+            "pad": "pad_value",
+            "pad_value": "pad_value",
+        }
+        return aliases.get(key, key)
+
+    @staticmethod
+    def _normalize_field_value(key: str, value: Any) -> Any:
+        if key == "b_layout":
+            return TileConfig._normalize_b_layout(value)
+        if key == "s_layout":
+            return TileConfig._normalize_s_layout(value)
+        if key == "s_fractal_size":
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError("TileConfig.s_fractal_size must be an integer")
+            return value
+        if key == "pad_value":
+            return TileConfig._normalize_pad_value(value)
+        return value
+
+    @staticmethod
+    def _normalize_b_layout(value: Any) -> BLayout:
+        if isinstance(value, BLayout):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().upper().replace("-", "_")
+            if normalized == "ROW_MAJOR":
+                return BLayout.ROW_MAJOR
+            if normalized == "COL_MAJOR":
+                return BLayout.COL_MAJOR
+        raise ValueError(f"unsupported TileConfig b_layout value {value!r}")
+
+    @staticmethod
+    def _normalize_s_layout(value: Any) -> SLayout:
+        if isinstance(value, SLayout):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().upper().replace("-", "_")
+            if normalized == "NONE_BOX":
+                return SLayout.NONE_BOX
+            if normalized == "ROW_MAJOR":
+                return SLayout.ROW_MAJOR
+            if normalized == "COL_MAJOR":
+                return SLayout.COL_MAJOR
+        raise ValueError(f"unsupported TileConfig s_layout value {value!r}")
+
+    @staticmethod
+    def _normalize_pad_value(value: Any) -> PadValue:
+        if isinstance(value, PadValue):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().upper().replace("-", "_")
+            if normalized == "NULL":
+                return PadValue.NULL
+            if normalized == "ZERO":
+                return PadValue.ZERO
+            if normalized == "MAX":
+                return PadValue.MAX
+            if normalized == "MIN":
+                return PadValue.MIN
+        raise ValueError(f"unsupported TileConfig pad_value value {value!r}")
+
+    @property
+    def b_layout(self) -> BLayout:
+        value = dict(self.fields).get("b_layout", BLayout.ROW_MAJOR)
+        return self._normalize_b_layout(value)
+
+    @property
+    def s_layout(self) -> SLayout:
+        value = dict(self.fields).get("s_layout", SLayout.NONE_BOX)
+        return self._normalize_s_layout(value)
+
+    @property
+    def s_fractal_size(self) -> int:
+        value = dict(self.fields).get("s_fractal_size", 512)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError("TileConfig.s_fractal_size must be an integer")
+        return value
+
+    @property
+    def pad_value(self) -> PadValue:
+        value = dict(self.fields).get("pad_value", PadValue.NULL)
+        return self._normalize_pad_value(value)
 
 
 @dataclass(frozen=True)
@@ -372,6 +493,9 @@ __all__ = [
     "PAT",
     "BarrierType",
     "PadMode",
+    "BLayout",
+    "SLayout",
+    "PadValue",
     "DeinterleaveDist",
     "InterleaveDist",
     "PositionMode",

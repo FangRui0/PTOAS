@@ -34,9 +34,9 @@ the current package:
 - `SyncOpType`
 
 Today, the public package exports annotation markers (`TensorView`, `Tile`),
-scalar dtypes, `ptr(...)`, `PadMode`, `TileConfig`, matcher APIs, and a small
-set of enums. The list above covers the remaining missing public constructors
-and aliases from the guide.
+scalar dtypes, `ptr(...)`, `PadMode`, `BLayout`, `SLayout`, `PadValue`,
+`TileConfig`, matcher APIs, and a small set of enums. The list above covers the
+remaining missing public constructors and aliases from the guide.
 
 ### Missing Tile/Tensor Utility Methods
 

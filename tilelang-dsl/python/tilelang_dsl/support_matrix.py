@@ -324,9 +324,6 @@ UNSUPPORTED_LANGUAGE_CONSTRUCTS = frozenset(
         "pto.dma_copy",
         "pto.vreduce",
         "pto.tile",
-        "BLayout",
-        "SLayout",
-        "PadValue",
         "SyncOpType",
     }
 )
@@ -346,6 +343,9 @@ LANGUAGE_CONSTRUCT_TIERS = {
     "pto.mask_b32": BASIC_TIER,
     "BarrierType": BASIC_TIER,
     "PadMode": BASIC_TIER,
+    "BLayout": BASIC_TIER,
+    "SLayout": BASIC_TIER,
+    "PadValue": BASIC_TIER,
     "constexpr": BASIC_TIER,
     "pto.constexpr": BASIC_TIER,
     "tile[start:]": BASIC_TIER,

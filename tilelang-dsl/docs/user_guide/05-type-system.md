@@ -295,8 +295,8 @@ valid_shape = tile.valid_shape        # (240, 120) or same as shape
 config = tile.config
 b_layout = config.b_layout            # pto.BLayout.ROW_MAJOR
 s_layout = config.s_layout            # pto.SLayout.NONE_BOX
-s_fractal = config.s_fractal_size     # pto.i32(16)
-pad = config.pad_value                # pto.PadValue.ZERO
+s_fractal = config.s_fractal_size     # pto.i32(512)
+pad = config.pad_value                # pto.PadValue.NULL
 
 # Dynamic properties
 rank = tile.rank                      # 2

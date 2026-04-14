@@ -40,6 +40,7 @@ from tilelang_dsl.semantic import (
     SemanticGetBufStmt,
     SemanticIfStmt,
     SemanticIndexType,
+    SemanticLiteralExpr,
     SemanticMemBarStmt,
     SemanticLowLevelCopyStmt,
     SemanticMaskType,
@@ -56,6 +57,7 @@ from tilelang_dsl.semantic import (
     SemanticStrictVecscopeStmt,
     SemanticSymbolExpr,
     SemanticTensorViewType,
+    SemanticTileConfigType,
     SemanticTileType,
     SemanticVecscopeStmt,
     SemanticVectorPairStoreStmt,
@@ -94,14 +96,17 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertTrue(hasattr(pto, "PAT"))
         self.assertTrue(hasattr(pto, "PadMode"))
         self.assertTrue(hasattr(pto, "BarrierType"))
+        self.assertTrue(hasattr(pto, "BLayout"))
         self.assertTrue(hasattr(pto, "DeinterleaveDist"))
         self.assertTrue(hasattr(pto, "InterleaveDist"))
         self.assertTrue(hasattr(pto, "PositionMode"))
         self.assertTrue(hasattr(pto, "OrderMode"))
+        self.assertTrue(hasattr(pto, "PadValue"))
         self.assertTrue(hasattr(pto, "VcvtRoundMode"))
         self.assertTrue(hasattr(pto, "VcvtSatMode"))
         self.assertTrue(hasattr(pto, "VcvtPartMode"))
         self.assertTrue(hasattr(pto, "PostUpdateMode"))
+        self.assertTrue(hasattr(pto, "SLayout"))
         self.assertTrue(hasattr(pto, "PIPE"))
         self.assertTrue(hasattr(pto, "EVENT"))
         self.assertTrue(hasattr(pto, "si8"))
@@ -116,6 +121,9 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertEqual(pto.PadMode.PadNull.value, "PadNull")
         self.assertEqual(pto.PadMode.PadFirstElem.value, "PadFirstElem")
         self.assertEqual(pto.PadMode.PadValue.value, "PadValue")
+        self.assertEqual(pto.BLayout.ROW_MAJOR.value, "row_major")
+        self.assertEqual(pto.SLayout.NONE_BOX.value, "none_box")
+        self.assertEqual(pto.PadValue.NULL.value, "null")
         self.assertEqual(pto.DeinterleaveDist.DINTLV.value, "DINTLV")
         self.assertEqual(pto.DeinterleaveDist.BDINTLV.value, "BDINTLV")
         self.assertEqual(pto.InterleaveDist.INTLV.value, "INTLV")
@@ -141,6 +149,26 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertEqual(pto.get_lanes(pto.ui32), 64)
         self.assertEqual(pto.elements_per_vreg(pto.si8), 256)
         self.assertEqual(repr(pto.align), "align")
+
+    def test_tile_config_exposes_normalized_query_properties(self) -> None:
+        default_config = pto.TileConfig()
+        self.assertEqual(default_config.b_layout, pto.BLayout.ROW_MAJOR)
+        self.assertEqual(default_config.s_layout, pto.SLayout.NONE_BOX)
+        self.assertEqual(default_config.s_fractal_size, 512)
+        self.assertEqual(default_config.pad_value, pto.PadValue.NULL)
+
+        config = pto.TileConfig.from_mapping(
+            {
+                "layout": "col_major",
+                "s_layout": "row_major",
+                "fractal": 16,
+                "pad": "max",
+            }
+        )
+        self.assertEqual(config.b_layout, pto.BLayout.COL_MAJOR)
+        self.assertEqual(config.s_layout, pto.SLayout.ROW_MAJOR)
+        self.assertEqual(config.s_fractal_size, 16)
+        self.assertEqual(config.pad_value, pto.PadValue.MAX)
 
 
 class TileLangDSLSupportMatrixTests(unittest.TestCase):
@@ -1656,6 +1684,68 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIsInstance(assign_stmt.value, SemanticSymbolExpr)
         self.assertEqual(assign_stmt.value.value, pto.PadMode.PadFirstElem)
         self.assertEqual(assign_stmt.value.type.kind, "pad_mode")
+
+    def test_tile_config_attributes_bind_as_static_metadata(self) -> None:
+        @pto.vkernel(op="tile_config_attrs_unique", dtypes=[(pto.f16,)])
+        def kernel(tile: pto.Tile):
+            config = tile.config
+            layout = config.b_layout
+            secondary = config.s_layout
+            fractal = config.s_fractal_size
+            pad = config.pad_value
+            rank = tile.rank
+            space = tile.memory_space
+            return None
+
+        specialized = kernel.specialize(
+            tile=pto.TileSpecialization(
+                shape=(8, 16),
+                memory_space=pto.MemorySpace.UB,
+                config=pto.TileConfig.from_mapping(
+                    {
+                        "b_layout": pto.BLayout.COL_MAJOR,
+                        "s_layout": pto.SLayout.ROW_MAJOR,
+                        "s_fractal_size": 16,
+                        "pad_value": pto.PadValue.ZERO,
+                    }
+                ),
+            )
+        )
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        config_assign, layout_assign, secondary_assign, fractal_assign, pad_assign, rank_assign, space_assign = (
+            semantic_kernel.body[:7]
+        )
+
+        self.assertIsInstance(config_assign, SemanticAssignStmt)
+        self.assertIsInstance(config_assign.targets[0].type, SemanticTileConfigType)
+        self.assertIsInstance(config_assign.value, SemanticLiteralExpr)
+        self.assertEqual(config_assign.targets[0].value, config_assign.value.value)
+        self.assertIsInstance(config_assign.value.type, SemanticTileConfigType)
+
+        self.assertIsInstance(layout_assign.value, SemanticSymbolExpr)
+        self.assertEqual(layout_assign.value.value, pto.BLayout.COL_MAJOR)
+        self.assertEqual(layout_assign.value.type.kind, "b_layout")
+
+        self.assertIsInstance(secondary_assign.value, SemanticSymbolExpr)
+        self.assertEqual(secondary_assign.value.value, pto.SLayout.ROW_MAJOR)
+        self.assertEqual(secondary_assign.value.type.kind, "s_layout")
+
+        self.assertIsInstance(fractal_assign.value, SemanticLiteralExpr)
+        self.assertEqual(fractal_assign.value.value, 16)
+        self.assertIsInstance(fractal_assign.targets[0].type, SemanticScalarType)
+        self.assertEqual(fractal_assign.targets[0].type.dtype, pto.i32)
+
+        self.assertIsInstance(pad_assign.value, SemanticSymbolExpr)
+        self.assertEqual(pad_assign.value.value, pto.PadValue.ZERO)
+        self.assertEqual(pad_assign.value.type.kind, "pad_value")
+
+        self.assertEqual(rank_assign.value.value, 2)
+        self.assertIsInstance(rank_assign.targets[0].type, SemanticIndexType)
+
+        self.assertIsInstance(space_assign.value, SemanticSymbolExpr)
+        self.assertEqual(space_assign.value.value, pto.MemorySpace.UB)
+        self.assertEqual(space_assign.value.type.kind, "memory_space")
 
 
     def test_make_mask_vlds_vsts_and_vector_families_lower_inside_strict_vecscope(self) -> None:
