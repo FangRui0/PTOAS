@@ -43,6 +43,7 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
@@ -79,11 +80,11 @@ namespace {
 // Three kinds of operands:
 //   Tile   — from TileBufType.  dtype + shape + memorySpace + config
 //            all participate in the specialization key (SpecKey).
-//   View   — from MemRefType (lowered PartitionTensorViewType).  Only dtype
+//   View   — from MemRefType (lowered PartitionTensorViewType). Only dtype
 //            participates in SpecKey — the template is fully dynamic so
-//            shape/strides/memorySpace don't affect code generation.  They
-//            are carried here solely for JSON serialization to the Python
-//            DSL for constraint checking.
+//            shape/strides/memorySpace don't affect code generation. They are
+//            carried here solely for JSON serialization to the Python DSL for
+//            constraint checking.
 //   Scalar — from a scalar element type.  Only dtype participates in SpecKey.
 // ============================================================================
 enum class OperandKind { Tile, View, Scalar };
@@ -215,7 +216,103 @@ static std::string getSLayoutString(int32_t slayout) {
   return "none_box";
 }
 
-static std::optional<OperandTypeInfo> buildOperandTypeInfo(Type ty) {
+static bool getStaticIntFromValue(Value value, int64_t &out) {
+  if (auto cOp = value.getDefiningOp<arith::ConstantIndexOp>()) {
+    out = cOp.value();
+    return true;
+  }
+  if (auto cInt = value.getDefiningOp<arith::ConstantIntOp>()) {
+    out = cInt.value();
+    return true;
+  }
+  return false;
+}
+
+static int64_t getStaticIntOrDynamic(OpFoldResult ofr) {
+  if (auto attr = ofr.dyn_cast<Attribute>()) {
+    if (auto intAttr = dyn_cast<IntegerAttr>(attr))
+      return intAttr.getInt();
+    return ShapedType::kDynamic;
+  }
+  auto value = llvm::cast<Value>(ofr);
+  int64_t result = ShapedType::kDynamic;
+  if (getStaticIntFromValue(value, result))
+    return result;
+  return ShapedType::kDynamic;
+}
+
+static void recordStaticSizes(ArrayRef<OpFoldResult> inputs,
+                              SmallVectorImpl<int64_t> &out) {
+  out.clear();
+  out.reserve(inputs.size());
+  for (OpFoldResult ofr : inputs)
+    out.push_back(getStaticIntOrDynamic(ofr));
+}
+
+static SmallVector<int64_t> combineSubviewStrides(ArrayRef<int64_t> baseStrides,
+                                                  ArrayRef<OpFoldResult> steps) {
+  SmallVector<int64_t> result;
+  result.reserve(baseStrides.size());
+  for (auto [baseStride, step] : llvm::zip(baseStrides, steps)) {
+    int64_t stepValue = getStaticIntOrDynamic(step);
+    if (baseStride == ShapedType::kDynamic ||
+        stepValue == ShapedType::kDynamic) {
+      result.push_back(ShapedType::kDynamic);
+      continue;
+    }
+    result.push_back(baseStride * stepValue);
+  }
+  return result;
+}
+
+static void populateViewShapeAndStrides(Value value,
+                                        SmallVectorImpl<int64_t> &shape,
+                                        SmallVectorImpl<int64_t> &strides) {
+  if (!value)
+    return;
+
+  if (auto subview = value.getDefiningOp<memref::SubViewOp>()) {
+    populateViewShapeAndStrides(subview.getSource(), shape, strides);
+    SmallVector<int64_t> subviewShape;
+    recordStaticSizes(subview.getMixedSizes(), subviewShape);
+    if (!subviewShape.empty())
+      shape = subviewShape;
+    if (!strides.empty())
+      strides = combineSubviewStrides(strides, subview.getMixedStrides());
+    return;
+  }
+
+  if (auto reinterpret = value.getDefiningOp<memref::ReinterpretCastOp>()) {
+    if (shape.empty()) {
+      SmallVector<int64_t> reinterpretShape;
+      recordStaticSizes(reinterpret.getMixedSizes(), reinterpretShape);
+      if (!reinterpretShape.empty())
+        shape = reinterpretShape;
+    }
+    if (strides.empty())
+      recordStaticSizes(reinterpret.getMixedStrides(), strides);
+    return;
+  }
+
+  if (auto cast = value.getDefiningOp<memref::CastOp>()) {
+    populateViewShapeAndStrides(cast.getSource(), shape, strides);
+    return;
+  }
+
+  if (auto memrefTy = dyn_cast<MemRefType>(value.getType())) {
+    if (shape.empty())
+      shape.assign(memrefTy.getShape().begin(), memrefTy.getShape().end());
+    if (strides.empty()) {
+      int64_t offset = ShapedType::kDynamic;
+      if (succeeded(getStridesAndOffset(memrefTy, strides, offset))) {
+        // strides populated — dynamic dims remain ShapedType::kDynamic.
+      }
+    }
+  }
+}
+
+static std::optional<OperandTypeInfo> buildOperandTypeInfo(Value value) {
+  Type ty = value.getType();
   // Tile operand — from TileBufType.
   if (auto tbTy = dyn_cast<pto::TileBufType>(ty)) {
     OperandTypeInfo info;
@@ -248,11 +345,15 @@ static std::optional<OperandTypeInfo> buildOperandTypeInfo(Type ty) {
     info.dtype = getDtypeString(mrTy.getElementType());
     if (info.dtype.empty())
       return std::nullopt;
-    info.viewShape.assign(mrTy.getShape().begin(), mrTy.getShape().end());
     info.viewMemorySpace = getMemorySpaceString(mrTy);
-    int64_t offset = ShapedType::kDynamic;
-    if (succeeded(getStridesAndOffset(mrTy, info.viewStrides, offset))) {
-      // strides populated — dynamic dims remain ShapedType::kDynamic.
+    populateViewShapeAndStrides(value, info.viewShape, info.viewStrides);
+    if (info.viewShape.empty())
+      info.viewShape.assign(mrTy.getShape().begin(), mrTy.getShape().end());
+    if (info.viewStrides.empty()) {
+      int64_t offset = ShapedType::kDynamic;
+      if (succeeded(getStridesAndOffset(mrTy, info.viewStrides, offset))) {
+        // strides populated — dynamic dims remain ShapedType::kDynamic.
+      }
     }
     return info;
   }
@@ -272,7 +373,7 @@ static std::optional<SpecKey> buildSpecKey(Operation *op) {
   key.targetArch = getTargetArchString(op->getParentOfType<ModuleOp>());
 
   for (unsigned i = 0; i < op->getNumOperands(); ++i) {
-    auto info = buildOperandTypeInfo(op->getOperand(i).getType());
+    auto info = buildOperandTypeInfo(op->getOperand(i));
     if (!info)
       return std::nullopt;
     key.operands.push_back(*info);
