@@ -3116,11 +3116,24 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             return None
 
         text = kernel.mlir_text()
-        self.assertIn("= arith.constant -inf : f16", text)
-        self.assertIn("= arith.constant inf : bf16", text)
-        self.assertIn("= arith.constant nan : f32", text)
-        self.assertIn("= arith.constant -inf : bf16", text)
-        self.assertIn("= arith.constant -inf : f32", text)
+        self.assertIn("= arith.constant 0xFC00 : f16", text)
+        self.assertIn("= arith.constant 0x7F80 : bf16", text)
+        self.assertIn("= arith.constant 0x7FC00000 : f32", text)
+        self.assertIn("= arith.constant 0xFF80 : bf16", text)
+        self.assertIn("= arith.constant 0xFF800000 : f32", text)
+
+    def test_scalar_constructor_emits_negative_zero_as_stable_bit_pattern(self) -> None:
+        @pto.vkernel(op="scalar_constructor_negative_zero_unique", dtypes=[(pto.f32,)])
+        def kernel(inp: pto.TensorView):
+            a = pto.f16(-0.0)
+            b = pto.bf16(-0.0)
+            c = pto.f32(-0.0)
+            return None
+
+        text = kernel.mlir_text()
+        self.assertIn("= arith.constant 0x8000 : f16", text)
+        self.assertIn("= arith.constant 0x8000 : bf16", text)
+        self.assertIn("= arith.constant 0x80000000 : f32", text)
 
     def test_scalar_constructor_rejects_bad_arity(self) -> None:
         @pto.vkernel(op="scalar_constructor_bad_arity_no_arg_unique", dtypes=[(pto.f32,)])
