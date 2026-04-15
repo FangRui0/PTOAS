@@ -599,32 +599,32 @@ def generic_store(src: pto.Tile, dst: pto.Tile):
             pto.vsts(vec, dst[i, j:], all_mask)  # No manual offset calculation
 ```
 
-#### `pto.psts(mask: MaskType, buf: ptr, offset: Index) -> None`  [Advanced Tier]
-#### `pto.psts(mask: MaskType, tile[row, col:]) -> None`  
-#### `pto.psts(mask: MaskType, tile[start:]) -> None`
+#### `pto.psts(mask: MaskType, buf: ptr, offset: Index, dist: PredicateDist = PredicateDist.NORM) -> None`  [Advanced Tier]
 
-**Description**: Predicate store to buffer. Supports both traditional byte-offset syntax and new element-indexing syntax.
+**Description**: Predicate store (`pto.psts`) writes the packed payload represented by
+`MaskType` to UB memory. This is the dynamic-offset form of the VPTO predicate-store
+family (`psts` vs `psti`): the payload semantics are identical, and only the offset
+delivery form differs.
 
-**Parameters (byte-offset syntax)**:
+**Parameters (advanced byte-offset syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `mask` | `MaskType` | Mask to store |
-| `buf` | `ptr` | Pointer to destination buffer (Advanced mode only - requires explicit pointer) |
-| `offset` | `Index` | Byte offset |
-
-**Parameters (element-indexing syntax)**:
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `mask` | `MaskType` | Mask to store |
-| `tile[row, col:]` | `Tile` with indexing | 2D tile with row index and starting column (vector-width range) |
-
-**Parameters (1D element-indexing syntax)**:
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `mask` | `MaskType` | Mask to store |
-| `tile[start:]` | `Tile` with indexing | 1D tile with starting element index (vector-width range) |
+| `mask` | `MaskType` | Predicate payload to store |
+| `buf` | `ptr` | Pointer to destination UB buffer (Advanced mode only - requires explicit pointer) |
+| `offset` | `Index` | Runtime offset (`index`) |
+| `dist` | `PredicateDist` | Predicate distribution mode. Use `PredicateDist.NORM` or `PredicateDist.PK` (default: `PredicateDist.NORM`). |
 
 **Returns**: None (side-effect operation)
+
+**DIST semantics (VPTO-aligned)**:
+- `"NORM"`: store packed predicate payload into a normal destination space of size `VL/8`.
+- `"PK"`: store packed predicate payload into a destination space of size `VL/16`, keeping one bit out of every two bits.
+
+**Notes**:
+- `pto.psts` is intentionally documented as explicit `buf + offset` surface in DSL v1.
+- Packed predicate payload layout is bit-level (`VL/8` or `VL/16`), so tile element-indexing is not part of the stable Basic Tier contract.
+- The pointer + offset form maps directly to explicit `base[offset]`.
+- Authoritative predicate-memory-family semantics are documented in `10-predicate-operations.md`.
 
 #### `pto.vsst(scalar: ScalarType, buf: ptr, offset: Index, mask: MaskType) -> None`  [Advanced Tier]
 #### `pto.vsst(scalar: ScalarType, tile[row, col:], mask: MaskType) -> None`  

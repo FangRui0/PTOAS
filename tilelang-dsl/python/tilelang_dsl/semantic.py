@@ -1649,37 +1649,28 @@ class _SemanticAnalyzer:
         allow_outer_lookup: bool,
     ) -> tuple[SemanticStmt, dict[str, SemanticBinding]]:
         if expr.name == "psts":
+            if len(expr.args) in {2, 3} and isinstance(expr.args[1], FrontendSubscriptExpr):
+                raise TypeError(
+                    "pto.psts does not support Tile element-indexing syntax in TileLang DSL v1; "
+                    "use explicit pointer form `pto.psts(mask, buf, offset[, dist])`"
+                )
+
+            args = tuple(
+                self._analyze_expr(arg, env, allow_outer_lookup=allow_outer_lookup)
+                for arg in expr.args
+            )
             dist_expr: SemanticExpr | None = None
-            if len(expr.args) == 2:
-                value = self._analyze_expr(expr.args[0], env, allow_outer_lookup=allow_outer_lookup)
-                destination, indices = self._analyze_tile_vector_access(
-                    expr.args[1],
-                    env,
-                    allow_outer_lookup=allow_outer_lookup,
-                    context="pto.psts destination",
-                )
-            elif len(expr.args) == 3 and isinstance(expr.args[1], FrontendSubscriptExpr):
-                value = self._analyze_expr(expr.args[0], env, allow_outer_lookup=allow_outer_lookup)
-                destination, indices = self._analyze_tile_vector_access(
-                    expr.args[1],
-                    env,
-                    allow_outer_lookup=allow_outer_lookup,
-                    context="pto.psts destination",
-                )
-                dist_expr = self._analyze_expr(expr.args[2], env, allow_outer_lookup=allow_outer_lookup)
+            if len(args) == 3:
+                value, destination, offset = args
+                indices = (offset,)
+            elif len(args) == 4:
+                value, destination, offset, dist_expr = args
+                indices = (offset,)
             else:
-                args = tuple(
-                    self._analyze_expr(arg, env, allow_outer_lookup=allow_outer_lookup)
-                    for arg in expr.args
+                raise TypeError(
+                    "pto.psts expects 3 or 4 positional arguments in TileLang DSL v1: "
+                    "`pto.psts(mask, buf, offset[, dist])`"
                 )
-                if len(args) == 3:
-                    value, destination, offset = args
-                    indices = (offset,)
-                elif len(args) == 4:
-                    value, destination, offset, dist_expr = args
-                    indices = (offset,)
-                else:
-                    raise TypeError("pto.psts expects Tile element-indexing syntax or 3/4 positional arguments")
             self._require_mask_expr(value, "pto.psts value")
             self._require_vector_pointer_expr(destination, "pto.psts destination")
             for index in indices:

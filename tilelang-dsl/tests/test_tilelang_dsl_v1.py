@@ -4437,6 +4437,25 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertNotIn("pto.vsst", text)
         self.assertNotIn("pto.vsta ", text)
 
+    def test_psts_rejects_tile_indexing_surface(self) -> None:
+        @pto.vkernel(
+            op="predicate_store_tile_indexing_reject",
+            dtypes=[(pto.ui32,)],
+            advanced=True,
+        )
+        def kernel(mask_dst: pto.Tile):
+            mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+            pto.psts(mask, mask_dst[0, 0:])
+            return None
+
+        specialized = kernel.specialize(
+            mask_dst=pto.TileSpecialization(shape=(16, 64), memory_space=pto.MemorySpace.UB),
+        )
+        with self.assertRaises(TypeError) as ctx:
+            analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        self.assertIn("does not support Tile element-indexing syntax", str(ctx.exception))
+        self.assertIn("pto.psts(mask, buf, offset", str(ctx.exception))
+
     def test_strict_vecscope_rejects_implicit_capture_during_semantic_analysis(self) -> None:
         @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f16, pto.i32)], advanced=True)
         def kernel(inp: pto.TensorView, tile: pto.Tile, scale: pto.i32):

@@ -412,22 +412,31 @@ mask = pto.pld(buf, offset, PredicateDist.NORM)
 mask = pto.pldi(buf, 0, PredicateDist.NORM)
 ```
 
-#### `pto.psts(mask: MaskType, buf: ptr, offset: Index) -> None`  [Advanced Tier]
+#### `pto.psts(mask: MaskType, buf: ptr, offset: Index, dist: PredicateDist = PredicateDist.NORM) -> None`  [Advanced Tier]
 
-**Description**: Stores a predicate mask to UB memory using scalar-offset form.
+**Description**: Stores a predicate mask to UB memory using the VPTO dynamic-offset
+`psts` form. This is the dynamic counterpart of `psti`: both encode the same
+predicate payload semantics, while offset delivery differs (runtime `index` vs
+constant immediate).
 
-**Parameters**:
+**Parameters (Advanced Tier: explicit pointer surface)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `mask` | `MaskType` | Predicate mask to store |
-| `buf` | `ptr` | Pointer to destination buffer |
-| `offset` | `Index` | Scalar/index-style offset |
+| `buf` | `ptr` | Pointer to destination UB buffer |
+| `offset` | `Index` | Runtime offset (`index`) |
+| `dist` | `PredicateDist` | Distribution mode. Use `PredicateDist.NORM` or `PredicateDist.PK` (default: `PredicateDist.NORM`). |
+
+**DIST semantics (VPTO-aligned)**:
+- `NORM`: stores packed predicate payload into destination space of size `VL/8`.
+- `PK`: stores packed predicate payload into destination space of size `VL/16`,
+  keeping one bit out of every two bits.
 
 **Returns**: None (side-effect operation)
 
 **Example**:
 ```python
-pto.psts(mask, buf, offset)
+pto.psts(mask, buf, offset, PredicateDist.NORM)
 ```
 
 #### `pto.pst(mask: MaskType, buf: ptr, offset: Index, dist: PredicateDist = PredicateDist.NORM) -> None`  [Advanced Tier]
