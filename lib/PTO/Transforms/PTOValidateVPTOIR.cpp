@@ -308,6 +308,45 @@ private:
            << formatExpectedMaskType(*expected);
   }
 
+  static std::optional<VPTOMaskGranularity>
+  inferVstsMaskGranularityOverride(Operation *op) {
+    Value value;
+    if (auto vsts = dyn_cast<VstsOp>(op))
+      value = vsts.getValue();
+    else if (auto vstsPost = dyn_cast<VstsPostOp>(op))
+      value = vstsPost.getValue();
+    else
+      return std::nullopt;
+
+    auto valueType = dyn_cast<VRegType>(value.getType());
+    if (!valueType)
+      return std::nullopt;
+
+    auto elementType = valueType.getElementType();
+    auto elementIntType = dyn_cast<IntegerType>(elementType);
+    if (!elementIntType)
+      return std::nullopt;
+
+    auto distAttr = op->getAttrOfType<StringAttr>("dist");
+    if (!distAttr)
+      return std::nullopt;
+
+    StringRef dist = distAttr.getValue();
+    unsigned width = elementIntType.getWidth();
+    if (dist == "MRG4CHN") {
+      if (width == 8)
+        return VPTOMaskGranularity::B32;
+      return std::nullopt;
+    }
+    if (dist == "MRG2CHN") {
+      if (width == 8)
+        return VPTOMaskGranularity::B16;
+      if (width == 16)
+        return VPTOMaskGranularity::B32;
+    }
+    return std::nullopt;
+  }
+
   static LogicalResult validateSameMaskGranularity(Operation *op, Type lhsType,
                                                    StringRef lhsRole,
                                                    Type rhsType,
@@ -338,9 +377,49 @@ private:
 
   template <typename OpTy>
   static LogicalResult validateValueMaskVectorConsumer(OpTy op) {
+    if constexpr (std::is_same_v<OpTy, VstsOp> ||
+                  std::is_same_v<OpTy, VstsPostOp>) {
+      if (std::optional<VPTOMaskGranularity> expected =
+              inferVstsMaskGranularityOverride(op.getOperation())) {
+        auto actual =
+            VPTOLegalityHelper::getMaskGranularity(op.getMask().getType());
+        if (!actual || *actual == *expected)
+          return success();
+        return op.emitOpError()
+               << "mask type " << op.getMask().getType()
+               << " does not match value vector type "
+               << op.getValue().getType() << "; expected "
+               << formatExpectedMaskType(*expected);
+      }
+    }
     return validateMaskMatchesVectorFamily(op, op.getMask().getType(),
                                            "mask type", op.getValue().getType(),
                                            "value vector type");
+  }
+
+  void emitHardwareSupportWarnings(Operation *op) const {
+    auto emitForStore = [&](auto storeOp) {
+      Operation *store = storeOp.getOperation();
+      auto distAttr = store->getAttrOfType<StringAttr>("dist");
+      if (!distAttr)
+        return;
+
+      StringRef dist = distAttr.getValue();
+      if (dist == "MRG4CHN" || dist == "MRG2CHN")
+        writeDiagnostic((Twine("warning: ") + store->getName().getStringRef() +
+                         " dist " + dist +
+                         " is not supported on the current hardware\n")
+                            .str());
+    };
+
+    if (auto vsts = dyn_cast<VstsOp>(op)) {
+      emitForStore(vsts);
+      return;
+    }
+    if (auto vstsPost = dyn_cast<VstsPostOp>(op)) {
+      emitForStore(vstsPost);
+      return;
+    }
   }
 
   template <typename OpTy>
@@ -607,11 +686,13 @@ private:
       if (!VPTOLegalityHelper::requiresVecScope(op))
         return WalkResult::advance();
 
-      if (VPTOLegalityHelper::getEnclosingVectorScopeCarrier(op))
-        return (failed(validateFamilySuffixMaskContracts(op)) ||
-                failed(validateMaskGranularityContracts(op)))
-                   ? WalkResult::interrupt()
-                   : WalkResult::advance();
+      if (VPTOLegalityHelper::getEnclosingVectorScopeCarrier(op)) {
+        if (failed(validateFamilySuffixMaskContracts(op)) ||
+            failed(validateMaskGranularityContracts(op)))
+          return WalkResult::interrupt();
+        emitHardwareSupportWarnings(op);
+        return WalkResult::advance();
+      }
 
       op->emitOpError()
           << "requires enclosing scf.for with '"

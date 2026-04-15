@@ -874,16 +874,32 @@ static LogicalResult verifyVstsDistWidth(Operation *op, StringRef dist,
     return *width == 32
                ? success()
                : op->emitOpError("dist PK4 only supports 32-bit elements");
-  if (dist == "MRG4CHN")
-    return *width == 8
-               ? success()
-               : op->emitOpError("dist MRG4CHN only supports 8-bit elements");
-  if (dist == "MRG2CHN")
-    return matchesWidthFamily(dist, *width, {8, 16})
-               ? success()
-               : op->emitOpError("dist MRG2CHN only supports 8/16-bit elements");
+  if (dist == "MRG4CHN") {
+    if (*width != 8)
+      return op->emitOpError("dist MRG4CHN only supports 8-bit elements");
+    return success();
+  }
+  if (dist == "MRG2CHN") {
+    if (!matchesWidthFamily(dist, *width, {8, 16}))
+      return op->emitOpError("dist MRG2CHN only supports 8/16-bit elements");
+    return success();
+  }
 
   return op->emitOpError("requires a supported store distribution token");
+}
+
+static std::optional<StringRef>
+getVstsMaskGranularityOverride(StringRef dist, Type elementType) {
+  auto width = getDistElementWidth(elementType);
+  if (!width)
+    return std::nullopt;
+
+  if (dist == "MRG4CHN")
+    return StringRef("b32");
+  if (dist == "MRG2CHN")
+    return *width == 8 ? StringRef("b16") : StringRef("b32");
+
+  return std::nullopt;
 }
 
 static LogicalResult verifyVstsx2DistWidth(Operation *op, StringRef dist,
@@ -2660,8 +2676,6 @@ template <typename StoreOp>
 static LogicalResult verifyVstsCommon(StoreOp op) {
   if (failed(verifyVRegTypeLike(op, op.getValue().getType(), "value type")))
     return failure();
-  if (failed(verifyMaskTypeLike(op, op.getMask().getType(), "mask type")))
-    return failure();
 
   if (!isBufferLike(op.getDestination().getType()))
     return op.emitOpError("requires a pointer-like destination");
@@ -2680,6 +2694,21 @@ static LogicalResult verifyVstsCommon(StoreOp op) {
           op.getOperation(), *dist,
           cast<VRegType>(op.getValue().getType()).getElementType())))
     return failure();
+
+  if (std::optional<StringRef> dist = op.getDist()) {
+    if (std::optional<StringRef> granularity = getVstsMaskGranularityOverride(
+            *dist, cast<VRegType>(op.getValue().getType()).getElementType())) {
+      if (failed(verifyMaskTypeWithGranularityLike(op, op.getMask().getType(),
+                                                   "mask type", *granularity)))
+        return failure();
+    } else if (failed(verifyMaskTypeLike(op, op.getMask().getType(),
+                                         "mask type"))) {
+      return failure();
+    }
+  } else if (failed(verifyMaskTypeLike(op, op.getMask().getType(),
+                                       "mask type"))) {
+    return failure();
+  }
 
   return success();
 }
