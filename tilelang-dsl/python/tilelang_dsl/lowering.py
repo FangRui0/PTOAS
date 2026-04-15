@@ -10,7 +10,9 @@
 
 from __future__ import annotations
 
+import math
 import re
+import struct
 from dataclasses import dataclass
 
 from .semantic import (
@@ -3546,10 +3548,62 @@ class _AuthoringRenderer:
         if isinstance(ty, SemanticIndexType):
             return str(value)
         if isinstance(ty, SemanticScalarType):
+            if ty.dtype.name in {"f16", "bf16", "f32"} and isinstance(
+                value, (bool, int, float)
+            ):
+                return self._format_float_constant(float(value), ty.dtype.name)
             if ty.dtype.name == "i1" and isinstance(value, bool):
                 return "1" if value else "0"
             return str(value)
         raise NotImplementedError(f"unsupported constant type {ty!r}")
+
+    def _format_float_constant(self, value: float, dtype_name: str) -> str:
+        # Emit stable bit-pattern literals for values that are parse-sensitive
+        # (`inf`/`nan`) or sign-sensitive (`-0.0`).
+        if math.isnan(value):
+            return self._float_nan_bit_pattern(dtype_name)
+        if math.isinf(value):
+            sign_bit = value < 0.0
+            return self._float_inf_bit_pattern(dtype_name, sign_bit=sign_bit)
+        if value == 0.0 and math.copysign(1.0, value) < 0.0:
+            return self._float_to_bit_pattern_literal(value, dtype_name)
+        return str(value)
+
+    def _float_nan_bit_pattern(self, dtype_name: str) -> str:
+        if dtype_name == "f16":
+            return "0x7E00"
+        if dtype_name == "bf16":
+            return "0x7FC0"
+        if dtype_name == "f32":
+            return "0x7FC00000"
+        raise NotImplementedError(
+            f"unsupported float dtype {dtype_name!r} for NaN constant emission"
+        )
+
+    def _float_inf_bit_pattern(self, dtype_name: str, *, sign_bit: bool) -> str:
+        if dtype_name == "f16":
+            return "0xFC00" if sign_bit else "0x7C00"
+        if dtype_name == "bf16":
+            return "0xFF80" if sign_bit else "0x7F80"
+        if dtype_name == "f32":
+            return "0xFF800000" if sign_bit else "0x7F800000"
+        raise NotImplementedError(
+            f"unsupported float dtype {dtype_name!r} for inf constant emission"
+        )
+
+    def _float_to_bit_pattern_literal(self, value: float, dtype_name: str) -> str:
+        if dtype_name == "f16":
+            bits = struct.unpack(">H", struct.pack(">e", value))[0]
+            return f"0x{bits:04X}"
+        if dtype_name == "bf16":
+            bits = struct.unpack(">I", struct.pack(">f", value))[0] >> 16
+            return f"0x{bits:04X}"
+        if dtype_name == "f32":
+            bits = struct.unpack(">I", struct.pack(">f", value))[0]
+            return f"0x{bits:08X}"
+        raise NotImplementedError(
+            f"unsupported float dtype {dtype_name!r} for bit-pattern emission"
+        )
 
     def _render_binary_op(self, op: str, ty: SemanticType) -> str:
         if isinstance(ty, SemanticIndexType):
