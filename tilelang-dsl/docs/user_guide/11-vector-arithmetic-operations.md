@@ -1312,20 +1312,32 @@ pto.vtranspose(dst_ub_ptr, src_ub_ptr, config_word)
 
 Type conversion and specialized operations.
 
-#### `pto.vtrc(vec: VRegType, mask: MaskType) -> VRegType`
+#### `pto.vtrc(vec: VRegType, mask: MaskType, rnd: pto.VcvtRoundMode | None = None) -> VRegType`
 
-**Description**: Truncate vector elements.
+**Description**: Truncate/round float to integer-valued float (stays in float type). This is the TileLang DSL surface for the VPTO `pto.vtrc` operation.
+
+**Attribute Enums**:
+- `pto.VcvtRoundMode`: `R`, `A`, `F`, `C`, `Z`, `O` (note: `vtrc` does not support `O`)
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `vec` | `VRegType` | Input vector |
 | `mask` | `MaskType` | Predicate mask |
+| `rnd` | `pto.VcvtRoundMode` \| `None` | Optional rounding-mode attribute lowered to VPTO `round_mode`. Defaults to `R` if not specified. |
 
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
-| `result` | `VRegType` | Truncated vector |
+| `result` | `VRegType` | Truncated vector with integer-valued float elements |
+
+**Constraints**:
+- Current TileLang DSL v1 accepts exactly two positional arguments: `pto.vtrc(vec, mask)`. Optional `rnd` attribute is exposed as keyword argument: `rnd=...`.
+- The underlying VPTO op syntax is `pto.vtrc %input, %mask, "RND"`.
+- Supported rounding modes are `R` (round to nearest), `A` (round away from zero), `F` (floor), `C` (ceil), `Z` (truncate toward zero).
+- The enum form is preferred. For compatibility, canonical strings such as `"R"`, `"A"`, `"F"`, `"C"`, `"Z"` are also accepted.
+- This op does not change the element type; input and output have the same vector type.
+- Only floating-point element types are supported: `f16`, `bf16`, `f32`.
 
 #### `pto.vcvt(vec: VRegType, to_type: Type, mask: MaskType, rnd: pto.VcvtRoundMode | None = None, sat: pto.VcvtSatMode | None = None, part: pto.VcvtPartMode | None = None) -> VRegType`
 

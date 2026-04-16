@@ -2893,6 +2893,75 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             r"= pto\.vcvt %[^,\s]+(?: \{[^}]+\})? : !pto\.vreg<[^>]+> -> !pto\.vreg<[^>]+>",
         )
 
+    def test_vtrc_defaults_to_round_nearest(self) -> None:
+        @pto.vkernel(
+            op="vtrc_default_rnd_unique",
+            dtypes=[(pto.f32, pto.f32)],
+            advanced=True,
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            all_mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+            vec = pto.vlds(src, 0)
+            out = pto.vtrc(vec, all_mask)
+            pto.vsts(out, dst, 0, all_mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn("pto.vtrc", text)
+        self.assertIn(', "R" :', text)
+        self.assertRegex(
+            text,
+            r"= pto\.vtrc %[^,\s]+, %[^,\s]+, \"R\" : !pto\.vreg<[^>]+>, !pto\.mask<[^>]+> -> !pto\.vreg<[^>]+>",
+        )
+
+    def test_vtrc_supports_keyword_rnd_with_enums(self) -> None:
+        @pto.vkernel(
+            op="vtrc_keyword_rnd_unique",
+            dtypes=[(pto.f32, pto.f32)],
+            advanced=True,
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            all_mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+            vec = pto.vlds(src, 0)
+            out = pto.vtrc(vec, all_mask, rnd=pto.VcvtRoundMode.F)
+            pto.vsts(out, dst, 0, all_mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn("pto.vtrc", text)
+        self.assertIn(', "F" :', text)
+
+    def test_vtrc_rejects_round_mode_o(self) -> None:
+        with self.assertRaises(TypeError) as ctx:
+            @pto.vkernel(
+                op="vtrc_round_mode_o_unique",
+                dtypes=[(pto.f32, pto.f32)],
+                advanced=True,
+            )
+            def kernel(dst: pto.Tile, src: pto.Tile):
+                all_mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+                vec = pto.vlds(src, 0)
+                out = pto.vtrc(vec, all_mask, rnd=pto.VcvtRoundMode.O)
+                pto.vsts(out, dst, 0, all_mask)
+                return None
+
+            kernel.specialize(
+                dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+                src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            ).mlir_text()
+
+        self.assertIn("pto.vtrc rnd must be one of", str(ctx.exception))
+
     def test_advanced_sort_memory_ops_surface_lower(self) -> None:
         @pto.vkernel(
             op="advanced_sort_memory_ops_unique",

@@ -2890,6 +2890,17 @@ class _AuthoringRenderer:
             )
             return _RenderedValue(name="__void_call__", type=SemanticMetaType(kind="void"))
 
+        if expr.name == "vtrc":
+            value = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+            mask = self._lower_expr(expr.args[1], env, indent=indent, into=into)
+            rnd = self._render_string_literal(expr.args[2])
+            into.append(
+                self._indent(indent)
+                + f"{result_name} = pto.vtrc {value.name}, {mask.name}, {rnd} : "
+                + f"{self._render_type(value.type)}, {self._render_type(mask.type)} -> {self._render_type(expr.type)}"
+            )
+            return _RenderedValue(name=result_name, type=expr.type)
+
         if expr.name in {
             "vabs",
             "vrelu",
@@ -2911,7 +2922,6 @@ class _AuthoringRenderer:
             "vusqz",
             "vsqz",
             "vexpdiff",
-            "vtrc",
             "vcgadd",
             "vcgmax",
             "vcgmin",

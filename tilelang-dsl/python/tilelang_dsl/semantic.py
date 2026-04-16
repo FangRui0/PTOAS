@@ -3053,6 +3053,12 @@ class _SemanticAnalyzer:
                     env,
                     allow_outer_lookup=allow_outer_lookup,
                 )
+            if expr.namespace == "pto" and expr.name == "vtrc":
+                return self._analyze_vtrc_frontend_call(
+                    expr,
+                    env,
+                    allow_outer_lookup=allow_outer_lookup,
+                )
             if expr.keywords:
                 raise TypeError(
                     f"call surface `{expr.namespace + '.' if expr.namespace else ''}{expr.name}` "
@@ -3761,6 +3767,8 @@ class _SemanticAnalyzer:
             return self._analyze_rearrangement_op(name, args)
         if name == "vcvt":
             return self._analyze_vcvt(args)
+        if name == "vtrc":
+            return self._analyze_vtrc(args)
         if name == "vbitsort":
             return self._analyze_vbitsort(args)
         if name == "vmrgsort4":
@@ -4537,6 +4545,39 @@ class _SemanticAnalyzer:
             part_explicit="part" in analyzed_keywords,
         )
 
+    def _analyze_vtrc_frontend_call(
+        self,
+        expr: FrontendCallExpr,
+        env: dict[str, SemanticBinding],
+        *,
+        allow_outer_lookup: bool,
+    ) -> SemanticExpr:
+        if len(expr.args) != 2:
+            raise TypeError(
+                "pto.vtrc expects exactly 2 positional operands `(vec, mask)` "
+                "before optional keyword attrs in TileLang DSL v1"
+            )
+        args = tuple(
+            self._analyze_expr(arg, env, allow_outer_lookup=allow_outer_lookup)
+            for arg in expr.args
+        )
+        analyzed_keywords = {
+            name: self._analyze_expr(value, env, allow_outer_lookup=allow_outer_lookup)
+            for name, value in expr.keywords
+        }
+        allowed_keywords = {"rnd"}
+        unexpected_keywords = sorted(set(analyzed_keywords) - allowed_keywords)
+        if unexpected_keywords:
+            keyword_text = ", ".join(unexpected_keywords)
+            raise TypeError(
+                "pto.vtrc only accepts keyword attr `rnd`; "
+                f"got unsupported keyword(s): {keyword_text}"
+            )
+        return self._analyze_vtrc(
+            args,
+            rnd=self._normalize_vtrc_round_mode(analyzed_keywords.get("rnd")),
+        )
+
     def _analyze_vcvt(
         self,
         args: tuple[SemanticExpr, ...],
@@ -4577,6 +4618,31 @@ class _SemanticAnalyzer:
                 part if part is not None else self._missing_optional_meta_expr(),
             ),
             type=self._vreg_type_for_dtype(target_dtype),
+        )
+
+    def _analyze_vtrc(
+        self,
+        args: tuple[SemanticExpr, ...],
+        *,
+        rnd: SemanticExpr | None = None,
+    ) -> SemanticExpr:
+        if len(args) != 2:
+            raise TypeError("pto.vtrc expects exactly 2 positional arguments in TileLang DSL v1")
+        vector = self._require_vreg_expr(args[0], "pto.vtrc vector")
+        self._require_mask_for_vreg(args[1], vector, "pto.vtrc")
+        if vector.element_dtype not in {f16, bf16, f32}:
+            raise TypeError("pto.vtrc only supports f16/bf16/f32 vector element types in TileLang DSL v1")
+        return SemanticCallExpr(
+            namespace="pto",
+            name="vtrc",
+            args=(
+                args[0],
+                args[1],
+                rnd
+                if rnd is not None
+                else SemanticLiteralExpr(value="R", type=SemanticMetaType(kind="string")),
+            ),
+            type=vector,
         )
 
     def _analyze_vbitsort(self, args: tuple[SemanticExpr, ...]) -> SemanticExpr:
@@ -4824,6 +4890,19 @@ class _SemanticAnalyzer:
                 "pto.vcvt rnd must be a VcvtRoundMode enum such as "
                 "`pto.VcvtRoundMode.R` or one of the canonical strings "
                 '`"R"`, `"A"`, `"F"`, `"C"`, `"Z"`, `"O"` in TileLang DSL v1'
+            )
+        return SemanticLiteralExpr(value=round_mode, type=SemanticMetaType(kind="string"))
+
+    def _normalize_vtrc_round_mode(self, expr: SemanticExpr | None) -> SemanticExpr | None:
+        normalized = self._normalize_vcvt_round_mode(expr)
+        if normalized is None:
+            return None
+        round_mode = self._require_string_expr(normalized, "pto.vtrc rnd")
+        if round_mode == VcvtRoundMode.O.value:
+            raise TypeError(
+                "pto.vtrc rnd must be one of "
+                '`"R"`, `"A"`, `"F"`, `"C"`, `"Z"` or a matching '
+                "VcvtRoundMode enum in TileLang DSL v1"
             )
         return SemanticLiteralExpr(value=round_mode, type=SemanticMetaType(kind="string"))
 
