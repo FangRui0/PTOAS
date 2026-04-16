@@ -586,38 +586,40 @@ static std::optional<uint64_t> parseLoadDistImmediate(StringRef dist,
     return 0;
   if (!width)
     return std::nullopt;
-  if (dist == "BRC")
-    return *width == 8   ? std::optional<uint64_t>(1)
-           : *width == 16 ? std::optional<uint64_t>(2)
-           : *width == 32 ? std::optional<uint64_t>(3)
-                          : std::nullopt;
-  if (dist == "US")
-    return *width == 8   ? std::optional<uint64_t>(6)
-           : *width == 16 ? std::optional<uint64_t>(7)
-                          : std::nullopt;
-  if (dist == "DS")
-    return *width == 8   ? std::optional<uint64_t>(8)
-           : *width == 16 ? std::optional<uint64_t>(9)
-                          : std::nullopt;
-  if (dist == "UNPK")
-    return *width == 8   ? std::optional<uint64_t>(13)
-           : *width == 16 ? std::optional<uint64_t>(14)
-           : *width == 32 ? std::optional<uint64_t>(18)
-                          : std::nullopt;
+  if (dist == "BRC_B8")
+    return std::optional<uint64_t>(1);
+  if (dist == "BRC_B16")
+    return std::optional<uint64_t>(2);
+  if (dist == "BRC_B32")
+    return std::optional<uint64_t>(3);
+  if (dist == "US_B8")
+    return std::optional<uint64_t>(6);
+  if (dist == "US_B16")
+    return std::optional<uint64_t>(7);
+  if (dist == "DS_B8")
+    return std::optional<uint64_t>(8);
+  if (dist == "DS_B16")
+    return std::optional<uint64_t>(9);
+  if (dist == "UNPK_B8")
+    return std::optional<uint64_t>(13);
+  if (dist == "UNPK_B16")
+    return std::optional<uint64_t>(14);
+  if (dist == "UNPK_B32")
+    return std::optional<uint64_t>(18);
   if (dist == "BRC_BLK")
     return 15;
-  if (dist == "E2B")
-    return *width == 16 ? std::optional<uint64_t>(16)
-           : *width == 32 ? std::optional<uint64_t>(17)
-                          : std::nullopt;
+  if (dist == "E2B_B16")
+    return std::optional<uint64_t>(16);
+  if (dist == "E2B_B32")
+    return std::optional<uint64_t>(17);
   if (dist == "UNPK4")
     return *width == 8 ? std::optional<uint64_t>(20) : std::nullopt;
   if (dist == "SPLT4CHN")
     return *width == 8 ? std::optional<uint64_t>(21) : std::nullopt;
-  if (dist == "SPLT2CHN")
-    return *width == 8   ? std::optional<uint64_t>(22)
-           : *width == 16 ? std::optional<uint64_t>(23)
-                          : std::nullopt;
+  if (dist == "SPLT2CHN_B8")
+    return std::optional<uint64_t>(22);
+  if (dist == "SPLT2CHN_B16")
+    return std::optional<uint64_t>(23);
   return std::nullopt;
 }
 
@@ -628,18 +630,19 @@ static std::optional<uint64_t> parseLoadX2DistImmediate(StringRef dist,
     return 10;
   if (!width)
     return std::nullopt;
-  if (dist == "DINTLV")
-    return *width == 8   ? std::optional<uint64_t>(11)
-           : *width == 16 ? std::optional<uint64_t>(12)
-           : *width == 32 ? std::optional<uint64_t>(19)
-                          : std::nullopt;
+  if (dist == "DINTLV_B8")
+    return std::optional<uint64_t>(11);
+  if (dist == "DINTLV_B16")
+    return std::optional<uint64_t>(12);
+  if (dist == "DINTLV_B32")
+    return std::optional<uint64_t>(19);
   return std::nullopt;
 }
 
 static std::optional<uint64_t> parseStoreDistImmediate(StringRef dist,
                                                        Type elementType) {
   auto width = getDistElementWidth(elementType);
-  if (dist.empty() || dist == "NORM") {
+  if (dist.empty()) {
     if (!width)
       return std::nullopt;
     if (*width == 8)
@@ -650,26 +653,32 @@ static std::optional<uint64_t> parseStoreDistImmediate(StringRef dist,
       return 2;
     return std::nullopt;
   }
-  if (!width)
-    return std::nullopt;
-  if (dist == "1PT")
-    return *width == 8   ? std::optional<uint64_t>(3)
-           : *width == 16 ? std::optional<uint64_t>(4)
-           : *width == 32 ? std::optional<uint64_t>(5)
-                          : std::nullopt;
-  if (dist == "PK")
-    return *width == 16 ? std::optional<uint64_t>(6)
-           : *width == 32 ? std::optional<uint64_t>(7)
-           : *width == 64 ? std::optional<uint64_t>(10)
-                          : std::nullopt;
-  if (dist == "PK4")
-    return *width == 32 ? std::optional<uint64_t>(12) : std::nullopt;
-  if (dist == "MRG4CHN")
-    return *width == 8 ? std::optional<uint64_t>(13) : std::nullopt;
-  if (dist == "MRG2CHN")
-    return *width == 8   ? std::optional<uint64_t>(14)
-           : *width == 16 ? std::optional<uint64_t>(15)
-                          : std::nullopt;
+  if (dist == "NORM_B8")
+    return std::optional<uint64_t>(0);
+  if (dist == "NORM_B16")
+    return std::optional<uint64_t>(1);
+  if (dist == "NORM_B32")
+    return std::optional<uint64_t>(2);
+  if (dist == "1PT_B8")
+    return std::optional<uint64_t>(3);
+  if (dist == "1PT_B16")
+    return std::optional<uint64_t>(4);
+  if (dist == "1PT_B32")
+    return std::optional<uint64_t>(5);
+  if (dist == "PK_B16")
+    return std::optional<uint64_t>(6);
+  if (dist == "PK_B32")
+    return std::optional<uint64_t>(7);
+  if (dist == "PK_B64")
+    return std::optional<uint64_t>(10);
+  if (dist == "PK4_B32")
+    return std::optional<uint64_t>(12);
+  if (dist == "MRG4CHN_B8")
+    return std::optional<uint64_t>(13);
+  if (dist == "MRG2CHN_B8")
+    return std::optional<uint64_t>(14);
+  if (dist == "MRG2CHN_B16")
+    return std::optional<uint64_t>(15);
   return std::nullopt;
 }
 
@@ -678,11 +687,12 @@ static std::optional<uint64_t> parseStoreX2DistImmediate(StringRef dist,
   auto width = getDistElementWidth(elementType);
   if (!width)
     return std::nullopt;
-  if (dist == "INTLV")
-    return *width == 8   ? std::optional<uint64_t>(8)
-           : *width == 16 ? std::optional<uint64_t>(9)
-           : *width == 32 ? std::optional<uint64_t>(11)
-                          : std::nullopt;
+  if (dist == "INTLV_B8")
+    return std::optional<uint64_t>(8);
+  if (dist == "INTLV_B16")
+    return std::optional<uint64_t>(9);
+  if (dist == "INTLV_B32")
+    return std::optional<uint64_t>(11);
   return std::nullopt;
 }
 
@@ -3236,7 +3246,7 @@ public:
         convertElementOffsetToBytes(op, adaptor.getOffset(), elementType);
     auto basePtr = dyn_cast<LLVM::LLVMPointerType>(adaptor.getDestination().getType());
     auto dist =
-        parseStoreDistImmediate(op.getDist().value_or("NORM"), elementType);
+        parseStoreDistImmediate(op.getDist().value_or(""), elementType);
     if (failed(offsetBytes) || !basePtr || !dist)
       return rewriter.notifyMatchFailure(op, "failed to materialize vsts operands");
 
@@ -3320,7 +3330,7 @@ public:
     auto basePtr =
         dyn_cast<LLVM::LLVMPointerType>(adaptor.getDestination().getType());
     auto dist =
-        parseStoreDistImmediate(op.getDist().value_or("NORM"), elementType);
+        parseStoreDistImmediate(op.getDist().value_or(""), elementType);
     if (failed(offsetBytes) || !basePtr || !dist) {
       return rewriter.notifyMatchFailure(op,
                                          "failed to materialize vsts_post operands");

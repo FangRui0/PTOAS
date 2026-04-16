@@ -333,14 +333,17 @@ private:
 
     StringRef dist = distAttr.getValue();
     unsigned width = elementIntType.getWidth();
-    if (dist == "MRG4CHN") {
+    if (dist == "MRG4CHN_B8") {
       if (width == 8)
         return VPTOMaskGranularity::B32;
       return std::nullopt;
     }
-    if (dist == "MRG2CHN") {
+    if (dist == "MRG2CHN_B8") {
       if (width == 8)
         return VPTOMaskGranularity::B16;
+      return std::nullopt;
+    }
+    if (dist == "MRG2CHN_B16") {
       if (width == 16)
         return VPTOMaskGranularity::B32;
     }
@@ -405,7 +408,7 @@ private:
         return;
 
       StringRef dist = distAttr.getValue();
-      if (dist == "MRG4CHN" || dist == "MRG2CHN")
+      if (dist == "MRG4CHN_B8" || dist == "MRG2CHN_B8" || dist == "MRG2CHN_B16")
         writeDiagnostic((Twine("warning: ") + store->getName().getStringRef() +
                          " dist " + dist +
                          " is not supported on the current hardware\n")

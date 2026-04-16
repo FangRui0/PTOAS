@@ -774,22 +774,29 @@ static bool matchesWidthFamily(StringRef dist, unsigned width,
 }
 
 static bool isSupportedVldx2DistToken(StringRef dist) {
-  return dist == "BDINTLV" || dist == "DINTLV";
+  return dist == "BDINTLV" || dist == "DINTLV_B8" || dist == "DINTLV_B16" ||
+         dist == "DINTLV_B32";
 }
 
 static bool isSupportedVldsDistToken(StringRef dist) {
-  return dist == "NORM" || dist == "BRC" || dist == "US" || dist == "DS" ||
-         dist == "UNPK" || dist == "BRC_BLK" || dist == "E2B" ||
-         dist == "UNPK4" || dist == "SPLT4CHN" || dist == "SPLT2CHN";
+  return dist == "NORM" || dist == "BRC_B8" || dist == "BRC_B16" ||
+         dist == "BRC_B32" || dist == "US_B8" || dist == "US_B16" ||
+         dist == "DS_B8" || dist == "DS_B16" || dist == "UNPK_B8" ||
+         dist == "UNPK_B16" || dist == "UNPK_B32" || dist == "BRC_BLK" ||
+         dist == "E2B_B16" || dist == "E2B_B32" || dist == "UNPK4" ||
+         dist == "SPLT4CHN" || dist == "SPLT2CHN_B8" || dist == "SPLT2CHN_B16";
 }
 
 static bool isSupportedVstsDistToken(StringRef dist) {
-  return dist == "NORM" || dist == "1PT" || dist == "PK" ||
-         dist == "PK4" || dist == "MRG4CHN" || dist == "MRG2CHN";
+  return dist == "NORM_B8" || dist == "NORM_B16" || dist == "NORM_B32" ||
+         dist == "1PT_B8" || dist == "1PT_B16" || dist == "1PT_B32" ||
+         dist == "PK_B16" || dist == "PK_B32" || dist == "PK_B64" ||
+         dist == "PK4_B32" || dist == "MRG4CHN_B8" || dist == "MRG2CHN_B8" ||
+         dist == "MRG2CHN_B16";
 }
 
 static bool isSupportedVstsx2DistToken(StringRef dist) {
-  return dist == "INTLV";
+  return dist == "INTLV_B8" || dist == "INTLV_B16" || dist == "INTLV_B32";
 }
 
 static LogicalResult verifyVldsDistWidth(Operation *op, StringRef dist,
@@ -800,26 +807,42 @@ static LogicalResult verifyVldsDistWidth(Operation *op, StringRef dist,
 
   if (dist == "NORM" || dist == "BRC_BLK")
     return success();
-  if (dist == "BRC")
-    return matchesWidthFamily(dist, *width, {8, 16, 32})
-               ? success()
-               : op->emitOpError("dist BRC only supports 8/16/32-bit elements");
-  if (dist == "US")
-    return matchesWidthFamily(dist, *width, {8, 16})
-               ? success()
-               : op->emitOpError("dist US only supports 8/16-bit elements");
-  if (dist == "DS")
-    return matchesWidthFamily(dist, *width, {8, 16})
-               ? success()
-               : op->emitOpError("dist DS only supports 8/16-bit elements");
-  if (dist == "UNPK")
-    return matchesWidthFamily(dist, *width, {8, 16, 32})
-               ? success()
-               : op->emitOpError("dist UNPK only supports 8/16/32-bit elements");
-  if (dist == "E2B")
-    return matchesWidthFamily(dist, *width, {16, 32})
-               ? success()
-               : op->emitOpError("dist E2B only supports 16/32-bit elements");
+  if (dist == "BRC_B8")
+    return *width == 8 ? success()
+                       : op->emitOpError("dist BRC_B8 only supports 8-bit elements");
+  if (dist == "BRC_B16")
+    return *width == 16 ? success()
+                        : op->emitOpError("dist BRC_B16 only supports 16-bit elements");
+  if (dist == "BRC_B32")
+    return *width == 32 ? success()
+                        : op->emitOpError("dist BRC_B32 only supports 32-bit elements");
+  if (dist == "US_B8")
+    return *width == 8 ? success()
+                       : op->emitOpError("dist US_B8 only supports 8-bit elements");
+  if (dist == "US_B16")
+    return *width == 16 ? success()
+                        : op->emitOpError("dist US_B16 only supports 16-bit elements");
+  if (dist == "DS_B8")
+    return *width == 8 ? success()
+                       : op->emitOpError("dist DS_B8 only supports 8-bit elements");
+  if (dist == "DS_B16")
+    return *width == 16 ? success()
+                        : op->emitOpError("dist DS_B16 only supports 16-bit elements");
+  if (dist == "UNPK_B8")
+    return *width == 8 ? success()
+                       : op->emitOpError("dist UNPK_B8 only supports 8-bit elements");
+  if (dist == "UNPK_B16")
+    return *width == 16 ? success()
+                        : op->emitOpError("dist UNPK_B16 only supports 16-bit elements");
+  if (dist == "UNPK_B32")
+    return *width == 32 ? success()
+                        : op->emitOpError("dist UNPK_B32 only supports 32-bit elements");
+  if (dist == "E2B_B16")
+    return *width == 16 ? success()
+                        : op->emitOpError("dist E2B_B16 only supports 16-bit elements");
+  if (dist == "E2B_B32")
+    return *width == 32 ? success()
+                        : op->emitOpError("dist E2B_B32 only supports 32-bit elements");
   if (dist == "UNPK4")
     return *width == 8
                ? success()
@@ -828,10 +851,14 @@ static LogicalResult verifyVldsDistWidth(Operation *op, StringRef dist,
     return *width == 8
                ? success()
                : op->emitOpError("dist SPLT4CHN only supports 8-bit elements");
-  if (dist == "SPLT2CHN")
-    return matchesWidthFamily(dist, *width, {8, 16})
+  if (dist == "SPLT2CHN_B8")
+    return *width == 8
                ? success()
-               : op->emitOpError("dist SPLT2CHN only supports 8/16-bit elements");
+               : op->emitOpError("dist SPLT2CHN_B8 only supports 8-bit elements");
+  if (dist == "SPLT2CHN_B16")
+    return *width == 16
+               ? success()
+               : op->emitOpError("dist SPLT2CHN_B16 only supports 16-bit elements");
 
   return op->emitOpError("requires a supported load distribution token");
 }
@@ -844,10 +871,15 @@ static LogicalResult verifyVldsx2DistWidth(Operation *op, StringRef dist,
         "requires x2 load element type with a concrete bit width");
   if (dist == "BDINTLV")
     return success();
-  if (dist == "DINTLV")
-    return matchesWidthFamily(dist, *width, {8, 16, 32})
-               ? success()
-               : op->emitOpError("dist DINTLV only supports 8/16/32-bit elements");
+  if (dist == "DINTLV_B8")
+    return *width == 8 ? success()
+                       : op->emitOpError("dist DINTLV_B8 only supports 8-bit elements");
+  if (dist == "DINTLV_B16")
+    return *width == 16 ? success()
+                        : op->emitOpError("dist DINTLV_B16 only supports 16-bit elements");
+  if (dist == "DINTLV_B32")
+    return *width == 32 ? success()
+                        : op->emitOpError("dist DINTLV_B32 only supports 32-bit elements");
   return op->emitOpError("requires a supported x2 load distribution token");
 }
 
@@ -858,30 +890,49 @@ static LogicalResult verifyVstsDistWidth(Operation *op, StringRef dist,
     return op->emitOpError(
         "requires store element type with a concrete bit width");
 
-  if (dist == "NORM")
-    return matchesWidthFamily(dist, *width, {8, 16, 32})
-               ? success()
-               : op->emitOpError("dist NORM only supports 8/16/32-bit elements");
-  if (dist == "1PT")
-    return matchesWidthFamily(dist, *width, {8, 16, 32})
-               ? success()
-               : op->emitOpError("dist 1PT only supports 8/16/32-bit elements");
-  if (dist == "PK")
-    return matchesWidthFamily(dist, *width, {16, 32, 64})
-               ? success()
-               : op->emitOpError("dist PK only supports 16/32/64-bit elements");
-  if (dist == "PK4")
-    return *width == 32
-               ? success()
-               : op->emitOpError("dist PK4 only supports 32-bit elements");
-  if (dist == "MRG4CHN") {
+  if (dist == "NORM_B8")
+    return *width == 8 ? success()
+                       : op->emitOpError("dist NORM_B8 only supports 8-bit elements");
+  if (dist == "NORM_B16")
+    return *width == 16 ? success()
+                        : op->emitOpError("dist NORM_B16 only supports 16-bit elements");
+  if (dist == "NORM_B32")
+    return *width == 32 ? success()
+                        : op->emitOpError("dist NORM_B32 only supports 32-bit elements");
+  if (dist == "1PT_B8")
+    return *width == 8 ? success()
+                       : op->emitOpError("dist 1PT_B8 only supports 8-bit elements");
+  if (dist == "1PT_B16")
+    return *width == 16 ? success()
+                        : op->emitOpError("dist 1PT_B16 only supports 16-bit elements");
+  if (dist == "1PT_B32")
+    return *width == 32 ? success()
+                        : op->emitOpError("dist 1PT_B32 only supports 32-bit elements");
+  if (dist == "PK_B16")
+    return *width == 16 ? success()
+                        : op->emitOpError("dist PK_B16 only supports 16-bit elements");
+  if (dist == "PK_B32")
+    return *width == 32 ? success()
+                        : op->emitOpError("dist PK_B32 only supports 32-bit elements");
+  if (dist == "PK_B64")
+    return *width == 64 ? success()
+                        : op->emitOpError("dist PK_B64 only supports 64-bit elements");
+  if (dist == "PK4_B32")
+    return *width == 32 ? success()
+                        : op->emitOpError("dist PK4_B32 only supports 32-bit elements");
+  if (dist == "MRG4CHN_B8") {
     if (*width != 8)
-      return op->emitOpError("dist MRG4CHN only supports 8-bit elements");
+      return op->emitOpError("dist MRG4CHN_B8 only supports 8-bit elements");
     return success();
   }
-  if (dist == "MRG2CHN") {
-    if (!matchesWidthFamily(dist, *width, {8, 16}))
-      return op->emitOpError("dist MRG2CHN only supports 8/16-bit elements");
+  if (dist == "MRG2CHN_B8") {
+    if (*width != 8)
+      return op->emitOpError("dist MRG2CHN_B8 only supports 8-bit elements");
+    return success();
+  }
+  if (dist == "MRG2CHN_B16") {
+    if (*width != 16)
+      return op->emitOpError("dist MRG2CHN_B16 only supports 16-bit elements");
     return success();
   }
 
@@ -894,10 +945,12 @@ getVstsMaskGranularityOverride(StringRef dist, Type elementType) {
   if (!width)
     return std::nullopt;
 
-  if (dist == "MRG4CHN")
+  if (dist == "MRG4CHN_B8")
     return StringRef("b32");
-  if (dist == "MRG2CHN")
-    return *width == 8 ? StringRef("b16") : StringRef("b32");
+  if (dist == "MRG2CHN_B8")
+    return StringRef("b16");
+  if (dist == "MRG2CHN_B16")
+    return StringRef("b32");
 
   return std::nullopt;
 }
@@ -908,10 +961,15 @@ static LogicalResult verifyVstsx2DistWidth(Operation *op, StringRef dist,
   if (!width)
     return op->emitOpError(
         "requires x2 store element type with a concrete bit width");
-  if (dist == "INTLV")
-    return matchesWidthFamily(dist, *width, {8, 16, 32})
-               ? success()
-               : op->emitOpError("dist INTLV only supports 8/16/32-bit elements");
+  if (dist == "INTLV_B8")
+    return *width == 8 ? success()
+                       : op->emitOpError("dist INTLV_B8 only supports 8-bit elements");
+  if (dist == "INTLV_B16")
+    return *width == 16 ? success()
+                        : op->emitOpError("dist INTLV_B16 only supports 16-bit elements");
+  if (dist == "INTLV_B32")
+    return *width == 32 ? success()
+                        : op->emitOpError("dist INTLV_B32 only supports 32-bit elements");
   return op->emitOpError("requires a supported x2 store distribution token");
 }
 
@@ -1462,8 +1520,9 @@ static LogicalResult verifyVldsCommon(LoadOp op) {
     StringRef dist = *op.getDist();
     if (!isSupportedVldsDistToken(dist))
       return op.emitOpError(
-          "supports only NORM, BRC, US, DS, UNPK, BRC_BLK, E2B, UNPK4, "
-          "and SPLT2CHN/SPLT4CHN load distributions");
+          "supports only NORM, BRC_B8/B16/B32, US_B8/B16, DS_B8/B16, "
+          "UNPK_B8/B16/B32, BRC_BLK, E2B_B16/B32, UNPK4, SPLT4CHN, and "
+          "SPLT2CHN_B8/B16 load distributions");
     if (failed(verifyVldsDistWidth(
             op.getOperation(), dist,
             cast<VRegType>(op.getResult().getType()).getElementType())))

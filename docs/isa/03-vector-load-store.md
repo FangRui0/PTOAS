@@ -36,7 +36,7 @@ Vector loads move data from Unified Buffer (UB) to vector registers (`vreg`). Ve
 |-------------|-------------|------------------------------|
 | `RV_VLD` | `dist:NORMAL` / `NORAML` | **9** |
 | `RV_VLDI` | `dist:DINTLV` (dual vreg) | **9** |
-| `RV_VST` / `RV_VSTI` | `dist:NORM` | **9** |
+| `RV_VST` / `RV_VSTI` | `dist:NORM_B8` / `NORM_B16` / `NORM_B32` | **9** |
 | `RV_VGATHER2` | `Dtype: B32` | **27–28** |
 | `RV_VGATHERB` | indexed byte gather | **~21** |
 | `RV_VSCATTER` | `Dtype: B16` | **~17** |
@@ -44,17 +44,17 @@ Vector loads move data from Unified Buffer (UB) to vector registers (`vreg`). Ve
 
 ### `dist:` tokens (issue→retire)
 
-Most **`dist:`** tokens are **9** issue→retire cycles. **`INTLV`** on **`RV_VSTI`** is **12** cycles.
+Most **`dist:`** tokens are **9** issue→retire cycles. **`INTLV_B8` / `INTLV_B16` / `INTLV_B32`** on **`RV_VSTI`** are **12** cycles.
 
 | `dist:` (as in log) | RV op | issue→retire (cycles) |
 |---------------------|-------|----------------------|
-| `DINTLV` | `RV_VLDI` | **9** |
-| `BRC` | `RV_VLD` | **9** |
+| `DINTLV_B8` / `DINTLV_B16` / `DINTLV_B32` | `RV_VLDI` | **9** |
+| `BRC_B8` / `BRC_B16` / `BRC_B32` | `RV_VLD` | **9** |
 | `BRC_BLK` | `RV_VLD` | **9** |
-| `INTLV` | `RV_VSTI` | **12** |
-| `UNPK` | `RV_VLD` | **9** |
-| `NORM` | `RV_VSTI` | **9** |
-| `PK` | `RV_VSTI` | **9** |
+| `INTLV_B8` / `INTLV_B16` / `INTLV_B32` | `RV_VSTI` | **12** |
+| `UNPK_B8` / `UNPK_B16` / `UNPK_B32` | `RV_VLD` | **9** |
+| `NORM_B8` / `NORM_B16` / `NORM_B32` | `RV_VSTI` | **9** |
+| `PK_B16` / `PK_B32` / `PK_B64` / `PK4_B32` | `RV_VSTI` | **9** |
 | `NORMAL` / `NORAML` | `RV_VLD` | **9** |
 
 **Note:** PTO intrinsic **`BRC_BLK`** matches the **`BRC_BLK`** `dist:` string on **`RV_VLD`** in simulator logs (block-replicate path; not a plain contiguous copy in the usual tiling use).
@@ -72,21 +72,21 @@ Most **`dist:`** tokens are **9** issue→retire cycles. **`INTLV`** on **`RV_VS
 | PTO `dist` (load) | Latency |
 |-------------------|-------------------|
 | `NORM` | **9** cycles |
-| `UNPK` | **9** cycles |
-| `DINTLV` | **9** cycles (`RV_VLDI`) |
-| `BRC` | **9** cycles (`RV_VLD`) |
+| `UNPK_B8` / `UNPK_B16` / `UNPK_B32` | **9** cycles |
+| `DINTLV_B8` / `DINTLV_B16` / `DINTLV_B32` | **9** cycles (`RV_VLDI`) |
+| `BRC_B8` / `BRC_B16` / `BRC_B32` | **9** cycles (`RV_VLD`) |
 | `BRC_BLK` | **9** cycles as **`dist:BRC_BLK`** on `RV_VLD` |
 | `BDINTLV` | **9** cycles |
-| `US`, `DS`, `SPLT4CHN`, `SPLT2CHN` | **9** cycles |
+| `US_B8` / `US_B16`, `DS_B8` / `DS_B16`, `SPLT4CHN`, `SPLT2CHN_B8` / `SPLT2CHN_B16` | **9** cycles |
 
 ### PTO `dist` summary (stores)
 
 | PTO `dist` (store) | Latency |
 |--------------------|-------------------|
-| `NORM` | **9** cycles (`RV_VSTI`) |
-| `PK` | **9** cycles |
-| `INTLV` (`pto.vstx2`) | **12** cycles |
-| `MRG4CHN`, `MRG2CHN` | **9** cycles (surface retained; current A5 hardware still reports them unsupported at validation time) |
+| `NORM_B8` / `NORM_B16` / `NORM_B32` | **9** cycles (`RV_VSTI`) |
+| `PK_B16` / `PK_B32` / `PK_B64` / `PK4_B32` | **9** cycles |
+| `INTLV_B8` / `INTLV_B16` / `INTLV_B32` (`pto.vstx2`) | **12** cycles |
+| `MRG4CHN_B8`, `MRG2CHN_B8`, `MRG2CHN_B16` | **9** cycles (surface retained; current A5 hardware still reports them unsupported at validation time) |
 
 ### Gather, scatter, and special addressing
 
@@ -131,20 +131,21 @@ DMA **`TLOAD` / `TSTORE`** (global memory ↔ UB) use **MTE** pipes, not `RV_VLD
 | Family | Allowed element widths | C semantics | Latency |
 |------|-------------|-------------|-------------|
 | `NORM` | width-agnostic | `dst[i] = UB[base + i * sizeof(T)]` | **9** cycles |
-| `BRC` | `b8`, `b16`, `b32` | `dst[i] = UB[base]` for all `i` | **9** cycles |
-| `US` | `b8`, `b16` | `dst[2*i] = dst[2*i+1] = UB[base + i]` | **9** cycles |
-| `DS` | `b8`, `b16` | `dst[i] = UB[base + 2*i]` | **9** cycles |
-| `UNPK` | `b8`, `b16`, `b32` | Expand packed source data into wider lanes | **9** cycles |
+| `BRC_B8` / `BRC_B16` / `BRC_B32` | `b8`, `b16`, `b32` | `dst[i] = UB[base]` for all `i` | **9** cycles |
+| `US_B8` / `US_B16` | `b8`, `b16` | `dst[2*i] = dst[2*i+1] = UB[base + i]` | **9** cycles |
+| `DS_B8` / `DS_B16` | `b8`, `b16` | `dst[i] = UB[base + 2*i]` | **9** cycles |
+| `UNPK_B8` / `UNPK_B16` / `UNPK_B32` | `b8`, `b16`, `b32` | Expand packed source data into wider lanes | **9** cycles |
 | `BRC_BLK` | width-agnostic | Block-replicate load path; simulator logs may print `dist:BRC_BLK` | **9** cycles |
-| `E2B` | `b16`, `b32` | Load element groups and expand them into byte-oriented lane layout | **9** cycles |
+| `E2B_B16` / `E2B_B32` | `b16`, `b32` | Load element groups and expand them into byte-oriented lane layout | **9** cycles |
 | `UNPK4` | `b8` | Unpack 4-way packed `b8` source groups into destination lanes | **9** cycles |
 | `SPLT4CHN` | `b8` | Split 4-channel interleaved source into one channel plane | **9** cycles |
-| `SPLT2CHN` | `b8`, `b16` | Split 2-channel interleaved source into one channel plane | **9** cycles |
+| `SPLT2CHN_B8` / `SPLT2CHN_B16` | `b8`, `b16` | Split 2-channel interleaved source into one channel plane | **9** cycles |
 
 `pto.vlds` currently covers only single-result load families. Dual-result
 deinterleave forms are modeled separately in PTO surface as
 [`pto.vldsx2`](#ptovldsx2): `BDINTLV` is the block-deinterleave family, while
-`DINTLV` is the element-width-sensitive deinterleave family.
+`DINTLV_B8` / `DINTLV_B16` / `DINTLV_B32` are the element-width-sensitive
+deinterleave forms.
 
 **Example — Contiguous load:**
 ```mlir
@@ -153,7 +154,7 @@ deinterleave forms are modeled separately in PTO surface as
 
 **Example — Broadcast scalar to all lanes:**
 ```mlir
-%v = pto.vlds %ub[%c0] {dist = "BRC"} : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
+%v = pto.vlds %ub[%c0] {dist = "BRC_B32"} : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
 ```
 
 ---
@@ -233,19 +234,21 @@ deinterleave forms are modeled separately in PTO surface as
   This family is only legal for interleave/deinterleave style distributions.
   The two outputs form an ordered pair, and that pairing MUST be preserved.
   PTO surface accepts deinterleave families. `BDINTLV` is element-width
-  agnostic, while `DINTLV` supports only the element widths listed in the
+  agnostic, while `DINTLV_B8` / `DINTLV_B16` / `DINTLV_B32` support only the
+  element widths listed in the
   table.
-- **latency:** `BDINTLV` / `DINTLV` are both **9** cycles.
+- **latency:** `BDINTLV` / `DINTLV_B8` / `DINTLV_B16` / `DINTLV_B32` are all
+  **9** cycles.
 
 **Distribution families:**
 
 | Family | Allowed element widths | C semantics | Latency |
 |------|-------------|-------------|-------------|
 | `BDINTLV` | width-agnostic | Block deinterleave into two destination vectors | **9** cycles |
-| `DINTLV` | `b8`, `b16`, `b32` | Deinterleave alternating elements into `%low` / `%high` | **9** cycles |
+| `DINTLV_B8` / `DINTLV_B16` / `DINTLV_B32` | `b8`, `b16`, `b32` | Deinterleave alternating elements into `%low` / `%high` | **9** cycles |
 
 ```c
-// DINTLV family on 32-bit elements: deinterleave 32-bit elements
+// DINTLV_B32 family on 32-bit elements: deinterleave 32-bit elements
 for (int i = 0; i < 64; i++) {
     low[i]  = UB[base + 8*i];       // even elements
     high[i] = UB[base + 8*i + 4];   // odd elements
@@ -254,7 +257,7 @@ for (int i = 0; i < 64; i++) {
 
 **Example — Load interleaved XY pairs into separate X/Y vectors:**
 ```mlir
-%x, %y = pto.vldsx2 %ub[%offset], "DINTLV" : !pto.ptr<f32, ub>, index -> !pto.vreg<64xf32>, !pto.vreg<64xf32>
+%x, %y = pto.vldsx2 %ub[%offset], "DINTLV_B32" : !pto.ptr<f32, ub>, index -> !pto.vreg<64xf32>, !pto.vreg<64xf32>
 ```
 
 ### `pto.vsldb`
@@ -382,16 +385,16 @@ for (int blk = 0; blk < VL / 32; ++blk) {
 
 | Family | Allowed element widths | C semantics | Latency |
 |------|-------------|-------------|-------------|
-| `NORM` | `b8`, `b16`, `b32` | `UB[base + i] = src[i]` | **9** cycles |
-| `1PT` | `b8`, `b16`, `b32` | Only element 0 is written to the destination footprint | **9** cycles |
-| `PK` | `b16`, `b32`, `b64` | Pack low half bits of each source element before store | **9** cycles |
-| `PK4` | `b32` | Pack low 8 bits of each `b32` element before store | **9** cycles |
-| `MRG4CHN` | `b8` | Merge 4 channel planes into an interleaved 4-channel layout. VPTO currently requires `!pto.mask<b32>` for this family and emits a hardware-unsupported warning on A5. | **9** cycles |
-| `MRG2CHN` | `b8`, `b16` | Merge 2 channel planes into an interleaved 2-channel layout. VPTO currently requires `!pto.mask<b16>` for `b8` input and `!pto.mask<b32>` for `b16` input, and emits a hardware-unsupported warning on A5. | **9** cycles |
+| `NORM_B8` / `NORM_B16` / `NORM_B32` | `b8`, `b16`, `b32` | `UB[base + i] = src[i]` | **9** cycles |
+| `1PT_B8` / `1PT_B16` / `1PT_B32` | `b8`, `b16`, `b32` | Only element 0 is written to the destination footprint | **9** cycles |
+| `PK_B16` / `PK_B32` / `PK_B64` | `b16`, `b32`, `b64` | Pack low half bits of each source element before store. | **9** cycles |
+| `PK4_B32` | `b32` | Pack low 8 bits of each `b32` element before store | **9** cycles |
+| `MRG4CHN_B8` | `b8` | Merge 4 channel planes into an interleaved 4-channel layout. VPTO currently requires `!pto.mask<b32>` for this family and emits a hardware-unsupported warning on A5. | **9** cycles |
+| `MRG2CHN_B8` / `MRG2CHN_B16` | `b8`, `b16` | Merge 2 channel planes into an interleaved 2-channel layout. VPTO currently requires `!pto.mask<b16>` for `MRG2CHN_B8` and `!pto.mask<b32>` for `MRG2CHN_B16`, and emits a hardware-unsupported warning on A5. | **9** cycles |
 
 **Example — Contiguous store:**
 ```mlir
-pto.vsts %v, %ub[%offset], %mask {dist = "NORM"} : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<G>
+pto.vsts %v, %ub[%offset], %mask {dist = "NORM_B32"} : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<G>
 ```
 
 ---

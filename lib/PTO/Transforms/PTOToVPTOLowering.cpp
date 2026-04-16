@@ -2355,9 +2355,9 @@ LogicalResult buildRowReduceVecScope(StringRef family,
 
   auto getRowReduceStoreDist = [&]() -> StringAttr {
     if (contract.elementType.isF16() || contract.elementType.isBF16())
-      return rewriter.getStringAttr("1PT");
+      return rewriter.getStringAttr("1PT_B16");
     if (contract.elementType.isF32())
-      return rewriter.getStringAttr("1PT");
+      return rewriter.getStringAttr("1PT_B32");
     return {};
   };
   StringAttr storeDist = getRowReduceStoreDist();
