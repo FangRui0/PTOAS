@@ -55,7 +55,6 @@ struct PipeInitInfo {
   Operation *op = nullptr;
   func::FuncOp funcOp;
   int8_t dirMask = 0;
-  bool inferredNoSplit = false;
 };
 
 template <typename InitOpT> static Value getLocalAddrOperand(InitOpT op) {
@@ -71,35 +70,6 @@ template <typename InitOpT> static IntegerAttr getFlagBaseAttr(InitOpT op) {
 template <typename InitOpT>
 static void setFlagBaseAttr(InitOpT op, IntegerAttr attr) {
   op->setAttr("flag_base", attr);
-}
-
-template <typename InitOpT>
-static void setNoSplitAttr(InitOpT op, BoolAttr attr) {
-  op->setAttr("nosplit", attr);
-}
-
-template <typename InitOpT> static Value getPipeResult(InitOpT op) {
-  return op.getPipe();
-}
-
-static bool inferNoSplitFromPipeUsers(Value pipe) {
-  for (Operation *user : pipe.getUsers()) {
-    if (auto pushOp = dyn_cast<TPushOp>(user)) {
-      if (pushOp.getSplit() == 0)
-        return true;
-      continue;
-    }
-    if (auto popOp = dyn_cast<TPopOp>(user)) {
-      if (popOp.getSplit() == 0)
-        return true;
-      continue;
-    }
-    if (auto freeOp = dyn_cast<TFreeOp>(user)) {
-      if (freeOp.getSplit() == 0)
-        return true;
-    }
-  }
-  return false;
 }
 
 static ReserveBufferOp findReserveBufferByName(func::FuncOp funcOp,
@@ -170,7 +140,6 @@ struct PTOResolveReservedBuffersPass
       info.op = initOp.getOperation();
       info.funcOp = initOp->template getParentOfType<func::FuncOp>();
       info.dirMask = initOp.getDirMask();
-      info.inferredNoSplit = inferNoSplitFromPipeUsers(getPipeResult(initOp));
 
       // Record one address into the keyed maps. Returns true when the
       // address comes from reserve_buffer / import_reserved_buffer.
@@ -218,7 +187,6 @@ struct PTOResolveReservedBuffersPass
     }
 
     OpBuilder builder(moduleOp.getContext());
-    std::set<Operation *> groupedNoSplitResolved;
     for (const auto &it : keyedInits) {
       const auto &inits = it.second;
       // flag_base is always 0: single-direction pipes use flag pair 0/1;
@@ -253,43 +221,17 @@ struct PTOResolveReservedBuffersPass
         chosenBase = desiredBase;
 
       auto flagBaseAttr = builder.getI32IntegerAttr(*chosenBase);
-      bool groupNoSplit = false;
-      for (const PipeInitInfo &info : inits) {
-        if (info.inferredNoSplit) {
-          groupNoSplit = true;
-          break;
-        }
-      }
       for (const PipeInitInfo &info : inits) {
         if (auto initOp = dyn_cast<InitializeL2LPipeOp>(info.op)) {
           if (!getFlagBaseAttr(initOp))
             setFlagBaseAttr(initOp, flagBaseAttr);
-          if (groupNoSplit)
-            setNoSplitAttr(initOp, builder.getBoolAttr(true));
-          groupedNoSplitResolved.insert(info.op);
           continue;
         }
         auto initOp = cast<InitializeL2G2LPipeOp>(info.op);
         if (!getFlagBaseAttr(initOp))
           setFlagBaseAttr(initOp, flagBaseAttr);
-        if (groupNoSplit)
-          setNoSplitAttr(initOp, builder.getBoolAttr(true));
-        groupedNoSplitResolved.insert(info.op);
       }
     }
-
-    moduleOp.walk([&](InitializeL2LPipeOp initOp) {
-      if (groupedNoSplitResolved.count(initOp.getOperation()))
-        return;
-      if (inferNoSplitFromPipeUsers(initOp.getPipe()))
-        setNoSplitAttr(initOp, builder.getBoolAttr(true));
-    });
-    moduleOp.walk([&](InitializeL2G2LPipeOp initOp) {
-      if (groupedNoSplitResolved.count(initOp.getOperation()))
-        return;
-      if (inferNoSplitFromPipeUsers(initOp.getPipe()))
-        setNoSplitAttr(initOp, builder.getBoolAttr(true));
-    });
 
     return success();
   }

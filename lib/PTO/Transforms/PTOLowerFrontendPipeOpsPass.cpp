@@ -51,11 +51,12 @@ static FailureOr<FrontendPipeHandles> lowerFrontendInitOp(InitOpT initOp,
     auto dirAttr = rewriter.getI8IntegerAttr(dirMask);
     auto slotSizeAttr = rewriter.getI32IntegerAttr(initOp.getSlotSize());
     auto slotNumAttr = rewriter.getI32IntegerAttr(slotNum);
+    auto noSplitAttr = initOp.getNosplitAttr();
 
     if (arch == PTOArch::A5) {
       auto pipe = rewriter.create<InitializeL2LPipeOp>(
           loc, pipeTy, dirAttr, slotSizeAttr, slotNumAttr, IntegerAttr{},
-          BoolAttr{},
+          noSplitAttr,
           localAddr, /*peer_local_addr=*/Value{});
       return pipe.getPipe();
     }
@@ -68,7 +69,7 @@ static FailureOr<FrontendPipeHandles> lowerFrontendInitOp(InitOpT initOp,
     auto localSlotNumAttr = rewriter.getI32IntegerAttr(slotNum);
     auto pipe = rewriter.create<InitializeL2G2LPipeOp>(
         loc, pipeTy, dirAttr, slotSizeAttr, slotNumAttr, localSlotNumAttr,
-        IntegerAttr{}, BoolAttr{}, initOp.getGmSlotBuffer(), localAddr,
+        IntegerAttr{}, noSplitAttr, initOp.getGmSlotBuffer(), localAddr,
         /*peer_local_addr=*/Value{});
     return pipe.getPipe();
   };
@@ -102,7 +103,7 @@ static FailureOr<FrontendPipeHandles> lowerFrontendInitOp(InitOpT initOp,
     if (arch == PTOArch::A5) {
       auto pipe = rewriter.create<InitializeL2LPipeOp>(
           loc, pipeTy, dirAttr, slotSizeAttr, slotNumAttr, IntegerAttr{},
-          BoolAttr{},
+          initOp.getNosplitAttr(),
           c2vAddr, v2cAddr);
       handles.c2vPipe = pipe.getPipe();
       handles.v2cPipe = pipe.getPipe();
@@ -115,7 +116,7 @@ static FailureOr<FrontendPipeHandles> lowerFrontendInitOp(InitOpT initOp,
       auto localSlotNumAttr = rewriter.getI32IntegerAttr(4);
       auto pipe = rewriter.create<InitializeL2G2LPipeOp>(
           loc, pipeTy, dirAttr, slotSizeAttr, slotNumAttr, localSlotNumAttr,
-          IntegerAttr{}, BoolAttr{}, initOp.getGmSlotBuffer(), c2vAddr,
+          IntegerAttr{}, initOp.getNosplitAttr(), initOp.getGmSlotBuffer(), c2vAddr,
           v2cAddr);
       handles.c2vPipe = pipe.getPipe();
       handles.v2cPipe = pipe.getPipe();

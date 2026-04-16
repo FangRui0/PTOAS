@@ -1187,6 +1187,7 @@ def AicInitializePipeOp : PTO_Op<"aic_initialize_pipe"> {
   let arguments = (ins
       I8Attr:$dir_mask,
       I32Attr:$slot_size,
+      OptionalAttr<BoolAttr>:$nosplit,
       Optional<PtrType>:$gm_slot_buffer,
       I32:$c2v_consumer_buf,
       I32:$v2c_consumer_buf
@@ -1197,7 +1198,9 @@ def AicInitializePipeOp : PTO_Op<"aic_initialize_pipe"> {
 
   let assemblyFormat = [{
     `{` `dir_mask` `=` $dir_mask `,`
-        `slot_size` `=` $slot_size `}`
+        `slot_size` `=` $slot_size
+        (`,` `nosplit` `=` $nosplit^)?
+        `}`
     `(`
       (`gm_slot_buffer` `=` $gm_slot_buffer^ `:` type($gm_slot_buffer) `,`)?
       `c2v_consumer_buf` `=` $c2v_consumer_buf `:` type($c2v_consumer_buf) `,`
@@ -1213,6 +1216,7 @@ def AivInitializePipeOp : PTO_Op<"aiv_initialize_pipe"> {
   let arguments = (ins
       I8Attr:$dir_mask,
       I32Attr:$slot_size,
+      OptionalAttr<BoolAttr>:$nosplit,
       Optional<PtrType>:$gm_slot_buffer,
       I32:$c2v_consumer_buf,
       I32:$v2c_consumer_buf
@@ -1223,7 +1227,9 @@ def AivInitializePipeOp : PTO_Op<"aiv_initialize_pipe"> {
 
   let assemblyFormat = [{
     `{` `dir_mask` `=` $dir_mask `,`
-        `slot_size` `=` $slot_size `}`
+        `slot_size` `=` $slot_size
+        (`,` `nosplit` `=` $nosplit^)?
+        `}`
     `(`
       (`gm_slot_buffer` `=` $gm_slot_buffer^ `:` type($gm_slot_buffer) `,`)?
       `c2v_consumer_buf` `=` $c2v_consumer_buf `:` type($c2v_consumer_buf) `,`

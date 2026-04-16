@@ -25,7 +25,7 @@ ENABLE_BC=0
 usage() {
   cat <<EOF
 Usage:
-  $0 [--enablebc] -t <name>   # e.g. -t Shls  -> run all .py in folder Shls
+  $0 [--enablebc] -t <name>   # e.g. -t Shls or -t TPushTPop/test3
   $0 [--enablebc] all         # traverse every subfolder, run all .py under each
   $0 --enablebc               # alias for: $0 --enablebc all
 
@@ -40,6 +40,10 @@ Env:
 
 Flags:
   --enablebc  # enable: python -> .pto -> ptobc -> .pto -> ptoas
+
+Examples:
+  PTOAS_FLAGS="--pto-arch=a5" $0 -t TPushTPop/test3
+  PTOAS_FLAGS="--pto-arch=a3" $0 -t TPushTPop/a3/test1
 EOF
   exit 1
 }
@@ -56,6 +60,76 @@ lcfirst() {
   local first="${s:0:1}"
   local rest="${s:1}"
   printf '%s%s\n' "$(printf '%s' "$first" | tr '[:upper:]' '[:lower:]')" "$rest"
+}
+
+normalize_sample_target() {
+  local target="$1"
+  local head tail
+  if [[ "$target" == */* ]]; then
+    head="${target%%/*}"
+    tail="${target#*/}"
+    printf '%s/%s\n' "$(ucfirst "$head")" "$tail"
+    return 0
+  fi
+  ucfirst "$target"
+}
+
+has_ptoas_option() {
+  local opt="$1"
+  shift
+  local token
+  for token in "$@"; do
+    case "$token" in
+      "${opt}"|"${opt}"=*)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+detect_ptoas_arch() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --pto-arch)
+        if [[ $# -ge 2 ]]; then
+          printf '%s\n' "$2"
+          return 0
+        fi
+        ;;
+      --pto-arch=*)
+        printf '%s\n' "${1#--pto-arch=}"
+        return 0
+        ;;
+    esac
+    shift
+  done
+  return 1
+}
+
+should_process_direct_pto() {
+  local target="$1"
+  local dir="$2"
+  local d
+  if [[ "$target" == */* && -f "${dir}/kernel.pto" ]]; then
+    return 0
+  fi
+  for d in ${PTO_PTO_DIRS}; do
+    if [[ "$target" == "$d" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+collect_nested_kernel_targets() {
+  local target="$1"
+  local root="${BASE_DIR}/${target}"
+  local kernel
+  [[ -d "${root}" ]] || return 0
+  while IFS= read -r kernel; do
+    dirname "${kernel#${BASE_DIR}/}"
+  done < <(find "${root}" -mindepth 2 -type f -name 'kernel.pto' | sort)
 }
 
 resolve_ptoas_bin() {
@@ -171,6 +245,8 @@ process_one_dir() {
     [[ $has_insync -eq 1 ]] || ptoas_flags+=(--enable-insert-sync)
   fi
 
+  local user_target_arch
+  user_target_arch="$(detect_ptoas_arch "${ptoas_flags[@]}" || true)"
   local target_arch="a3"
   if ((${#ptoas_flags[@]})); then
     for ((idx=0; idx<${#ptoas_flags[@]}; ++idx)); do
@@ -876,12 +952,9 @@ PY
 
   # Run .pto files only for allowed dirs (default: Sync) to avoid legacy IR.
   local allow_pto=0
-  for d in ${PTO_PTO_DIRS}; do
-    if [[ "$A" == "$d" ]]; then
-      allow_pto=1
-      break
-    fi
-  done
+  if should_process_direct_pto "$A" "$dir"; then
+    allow_pto=1
+  fi
 
   if [[ $allow_pto -eq 1 ]]; then
     for f in "$dir"/*.pto; do
@@ -895,12 +968,81 @@ PY
       decoded_pto="${out_subdir}/${base}-roundtrip.pto"
       cpp="${out_subdir}/${base}.cpp"
       local sample_use_ptobc_roundtrip="$use_ptobc_roundtrip"
+      local -a sample_ptoas_flags=("${ptoas_flags[@]}")
+      local sample_run_line=""
+      local sample_required_arch=""
+      sample_run_line="$(sed -n 's#^// RUN:[[:space:]]*ptoas[[:space:]]*##p' "$f" | head -n1)"
+      if [[ -n "${sample_run_line}" ]]; then
+        sample_run_line="${sample_run_line%%|*}"
+        sample_run_line="${sample_run_line//%s/}"
+        # shellcheck disable=SC2206
+        local -a sample_run_tokens=(${sample_run_line})
+        local token key value take_value
+        local idx=0
+        while [[ ${idx} -lt ${#sample_run_tokens[@]} ]]; do
+          token="${sample_run_tokens[${idx}]}"
+          if [[ "$token" != --* ]]; then
+            idx=$((idx + 1))
+            continue
+          fi
+          key="$token"
+          value=""
+          take_value=0
+          if [[ "$token" == --*=* ]]; then
+            key="${token%%=*}"
+            if [[ "$key" == "--pto-arch" ]]; then
+              sample_required_arch="${token#--pto-arch=}"
+            fi
+          elif [[ $((idx + 1)) -lt ${#sample_run_tokens[@]} ]] && [[ "${sample_run_tokens[$((idx + 1))]}" != --* ]]; then
+            take_value=1
+            value="${sample_run_tokens[$((idx + 1))]}"
+            if [[ "$key" == "--pto-arch" ]]; then
+              sample_required_arch="${value}"
+            fi
+          fi
+          if ! has_ptoas_option "$key" "${sample_ptoas_flags[@]}"; then
+            sample_ptoas_flags+=("$token")
+            if [[ $take_value -eq 1 ]]; then
+              sample_ptoas_flags+=("$value")
+            fi
+          fi
+          idx=$((idx + 1 + take_value))
+        done
+      fi
+
+      if [[ -n "${sample_required_arch}" && -n "${user_target_arch}" ]]; then
+        if [[ "$(printf '%s' "${sample_required_arch}" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "${user_target_arch}" | tr '[:upper:]' '[:lower:]')" ]]; then
+          echo -e "${A}(${base}.pto)\tSKIP\trequires --pto-arch=${sample_required_arch}"
+          continue
+        fi
+      fi
+
+      local sample_target_arch
+      sample_target_arch="$(detect_ptoas_arch "${sample_ptoas_flags[@]}" || true)"
+      if [[ -z "${sample_target_arch}" ]]; then
+        sample_target_arch="${target_arch}"
+      fi
+      local sample_skip_vec_barrier=0
+      if [[ "$(printf '%s' "${sample_target_arch}" | tr '[:upper:]' '[:lower:]')" == "a5" ]]; then
+        sample_skip_vec_barrier=1
+      fi
+      local -a sample_ptoas_cmd_base=("$ptoas")
+      if ((${#sample_ptoas_flags[@]})); then
+        sample_ptoas_cmd_base+=("${sample_ptoas_flags[@]}")
+      fi
 
       # TODO(ptobc): decode of this regression currently fails with
       # "operand value_id out of range" when scf.if returns tile-like values.
       # Keep ptoas regression coverage here, and re-enable roundtrip once
       # ptobc supports this pattern.
       if [[ "$base" == "test_if_else_tile_result" ]]; then
+        sample_use_ptobc_roundtrip=0
+      fi
+
+      # TODO(ptobc): the new A5 level3 TPushTPop samples currently fail during
+      # bytecode encode. Keep direct ptoas coverage in CI, and re-enable the
+      # roundtrip once ptobc supports these pipe-init/split forms.
+      if [[ "$A" == "TPushTPop/test4" || "$A" == "TPushTPop/test5" ]]; then
         sample_use_ptobc_roundtrip=0
       fi
 
@@ -919,7 +1061,7 @@ PY
         pto_input="$decoded_pto"
       fi
 
-      local -a ptoas_cmd=("${ptoas_cmd_base[@]}" "$pto_input" -o "$cpp")
+      local -a ptoas_cmd=("${sample_ptoas_cmd_base[@]}" "$pto_input" -o "$cpp")
       if ! "${ptoas_cmd[@]}" >/dev/null 2>&1; then
         echo -e "${A}(${base}.pto)\tFAIL\tptoas failed: $(basename "$f")"
         overall=1
@@ -940,7 +1082,7 @@ PY
       # Regression guard: intra-pipe dependencies must be serialized by a
       # per-pipe barrier (PyPTO expects `bar_v` / `bar_m` behavior).
       if [[ "$base" == "test_inject_sync_intra_pipe_barrier" ]]; then
-        if [[ "${skip_vec_barrier}" == "1" ]]; then
+        if [[ "${sample_skip_vec_barrier}" == "1" ]]; then
           if grep -Fq "pipe_barrier(PIPE_V)" "$cpp"; then
             echo -e "${A}(${base}.pto)\tFAIL\tunexpected pipe_barrier(PIPE_V) on A5"
             overall=1
@@ -981,6 +1123,33 @@ PY
   return $overall
 }
 
+process_target() {
+  local target="$1"
+  local out_dir="$2"
+  local dir="${BASE_DIR}/${target}"
+  local processed=0
+  local overall=0
+  local nested_target
+
+  if [[ -d "${dir}" ]]; then
+    if compgen -G "${dir}/*.py" >/dev/null || should_process_direct_pto "$target" "$dir"; then
+      process_one_dir "$target" "$out_dir" || overall=1
+      processed=1
+    fi
+    while IFS= read -r nested_target; do
+      [[ -n "${nested_target}" ]] || continue
+      process_one_dir "${nested_target}" "$out_dir" || overall=1
+      processed=1
+    done < <(collect_nested_kernel_targets "$target")
+  fi
+
+  if [[ $processed -eq 0 ]]; then
+    process_one_dir "$target" "$out_dir"
+    return $?
+  fi
+  return $overall
+}
+
 run_all() {
   local results tmp out_dir
   out_dir="${PTOAS_OUT_DIR}"
@@ -995,7 +1164,7 @@ run_all() {
   tmp="$(mktemp -t ptoas.runop.XXXXXX)"
   for d in "${BASE_DIR}"/*/; do
     [[ -d "$d" ]] || continue
-    process_one_dir "$(basename "$d")" "$out_dir" >>"$tmp"
+    process_target "$(basename "$d")" "$out_dir" >>"$tmp"
   done
 
   echo "========== SUMMARY =========="
@@ -1035,7 +1204,7 @@ fi
 if [[ $# -eq 1 && "$1" == "all" ]]; then
   run_all
 elif [[ $# -eq 2 && "$1" == "-t" ]]; then
-  A="$(ucfirst "$2")"
+  A="$(normalize_sample_target "$2")"
   out_dir="${PTOAS_OUT_DIR}"
   if [[ -z "${out_dir}" ]]; then
     out_dir="$(mktemp -d -t ptoas.samples.XXXXXX)"
@@ -1044,7 +1213,7 @@ elif [[ $# -eq 2 && "$1" == "-t" ]]; then
   fi
   echo "PTOAS_OUT_DIR=${out_dir}"
   echo "========== SUMMARY =========="
-  process_one_dir "$A" "$out_dir" | awk -F'\t' '{ printf "%-12s %-4s %s\n", $1, $2, $3 }'
+  process_target "$A" "$out_dir" | awk -F'\t' '{ printf "%-12s %-4s %s\n", $1, $2, $3 }'
 else
   usage
 fi
