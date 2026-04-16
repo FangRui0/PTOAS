@@ -24,6 +24,7 @@ from .semantic import (
     SemanticBindingRef,
     SemanticCallExpr,
     SemanticDmaConfigStmt,
+    SemanticDmaUnaryConfigStmt,
     SemanticDmaLoadStmt,
     SemanticDmaStoreStmt,
     SemanticExpr,
@@ -456,6 +457,8 @@ class _AuthoringRenderer:
             return self._render_i64_pair_stmt("wait_flag_dev", stmt.core_id, stmt.event_id, env, indent=indent)
         if isinstance(stmt, SemanticWaitIntraCoreStmt):
             return self._render_i64_pair_stmt("wait_intra_core", stmt.block_id, stmt.event_id, env, indent=indent)
+        if isinstance(stmt, SemanticDmaUnaryConfigStmt):
+            return self._render_dma_unary_config(stmt, env, indent=indent)
         if isinstance(stmt, SemanticDmaConfigStmt):
             return self._render_dma_config(stmt, env, indent=indent)
         if isinstance(stmt, SemanticLowLevelCopyStmt):
@@ -490,6 +493,21 @@ class _AuthoringRenderer:
         lines.append(
             self._indent(indent)
             + f"pto.{stmt.name} {first.name}, {second.name} : i64, i64"
+        )
+        return lines
+
+    def _render_dma_unary_config(
+        self,
+        stmt: SemanticDmaUnaryConfigStmt,
+        env: dict[str, _RenderedValue],
+        *,
+        indent: int,
+    ) -> list[str]:
+        lines: list[str] = []
+        value = self._lower_expr(stmt.value, env, indent=indent, into=lines)
+        lines.append(
+            self._indent(indent)
+            + f"pto.{stmt.name} {value.name} : {self._render_type(value.type)}"
         )
         return lines
 

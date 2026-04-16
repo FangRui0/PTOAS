@@ -778,6 +778,7 @@ _BOOL_OP_NAMES = {
 }
 
 _DMA_CALL_KEYWORDS: dict[str, frozenset[str]] = {
+    "set_mov_pad_val": frozenset({"pad_value"}),
     "set_loop2_stride_outtoub": frozenset({"src_stride", "dst_stride"}),
     "set_loop1_stride_outtoub": frozenset({"src_stride", "dst_stride"}),
     "set_loop_size_outtoub": frozenset({"loop1", "loop2"}),

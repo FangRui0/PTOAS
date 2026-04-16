@@ -268,6 +268,7 @@ _VECTOR_IMMEDIATE_OPS = {"vshift", "vslide"}
 _TERNARY_VECTOR_OPS = {"vaxpy", "vmula"}
 _MULTI_RESULT_VECTOR_OPS = {"vmull", "vldsx2", "vldus", "pstu"}
 _BROADCAST_VECTOR_OPS = {"vbr", "vdup", "vci"}
+_LOW_LEVEL_DMA_UNARY_CONFIG_OPS = {"set_mov_pad_val"}
 _LOW_LEVEL_DMA_CONFIG_OPS = {
     "set_loop2_stride_outtoub",
     "set_loop1_stride_outtoub",
@@ -281,6 +282,9 @@ _LOW_LEVEL_DMA_COPY_OPS = {
     "copy_ubuf_to_gm",
     "copy_ubuf_to_ubuf",
 }
+_MOV_PAD_SUPPORTED_SCALAR_DTYPES = frozenset(
+    dtype.name for dtype in (i8, i16, i32, f16, bf16, f32)
+)
 _COMPARE_SELECT_OPS = {"vcmp", "vcmps", "vsel", "vselr", "vselrv2"}
 _PREDICATE_MOVEMENT_OPS = {"pnot", "psel", "ppack", "punpack"}
 _CARRY_OPS = {"vaddc", "vsubc", "vaddcs", "vsubcs"}
@@ -653,6 +657,12 @@ class SemanticDmaConfigStmt(SemanticStmt):
     name: str
     first: SemanticExpr
     second: SemanticExpr
+
+
+@dataclass(frozen=True)
+class SemanticDmaUnaryConfigStmt(SemanticStmt):
+    name: str
+    value: SemanticExpr
 
 
 @dataclass(frozen=True)
@@ -1559,7 +1569,7 @@ class _SemanticAnalyzer:
         return (
             isinstance(expr, FrontendCallExpr)
             and expr.namespace == "pto"
-            and expr.name in _LOW_LEVEL_DMA_CONFIG_OPS | _LOW_LEVEL_DMA_COPY_OPS
+            and expr.name in _LOW_LEVEL_DMA_UNARY_CONFIG_OPS | _LOW_LEVEL_DMA_CONFIG_OPS | _LOW_LEVEL_DMA_COPY_OPS
         )
 
     def _analyze_dma_stmt(
@@ -1986,6 +1996,21 @@ class _SemanticAnalyzer:
             env,
             allow_outer_lookup=allow_outer_lookup,
         )
+        if expr.name in _LOW_LEVEL_DMA_UNARY_CONFIG_OPS:
+            if len(args) != 1:
+                raise TypeError(f"pto.{expr.name} expects exactly 1 positional argument in TileLang DSL")
+            scalar = self._require_scalar_expr(args[0], f"pto.{expr.name} pad_value")
+            if scalar.dtype.name not in _MOV_PAD_SUPPORTED_SCALAR_DTYPES:
+                raise TypeError(
+                    "pto.set_mov_pad_val pad_value must be one of i8, i16, i32, f16, bf16, or f32 in TileLang DSL v1"
+                )
+            return (
+                SemanticDmaUnaryConfigStmt(
+                    name=expr.name,
+                    value=args[0],
+                ),
+                dict(env),
+            )
         if expr.name in _LOW_LEVEL_DMA_CONFIG_OPS:
             if len(args) != 2:
                 raise TypeError(f"pto.{expr.name} expects exactly 2 positional arguments in TileLang DSL")
@@ -2103,6 +2128,8 @@ class _SemanticAnalyzer:
         def bool_literal(value: bool) -> SemanticLiteralExpr:
             return SemanticLiteralExpr(value=value, type=SemanticScalarType(dtype=i1))
 
+        if expr.name == "set_mov_pad_val":
+            return (analyzed_keywords["pad_value"],)
         if expr.name in {
             "set_loop2_stride_outtoub",
             "set_loop1_stride_outtoub",

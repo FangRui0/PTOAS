@@ -181,6 +181,7 @@ ADVANCED_TOPLEVEL_PTO_CALLS = frozenset(
     {
         "strict_vecscope",
         "store_scalar",
+        "set_mov_pad_val",
         "copy_gm_to_ubuf",
         "copy_ubuf_to_gm",
         "copy_ubuf_to_ubuf",
@@ -221,6 +222,7 @@ ADVANCED_RAW_POINTER_SURFACES = frozenset(
 )
 ADVANCED_LOW_LEVEL_DMA_SURFACES = frozenset(
     {
+        "pto.set_mov_pad_val",
         "pto.copy_gm_to_ubuf",
         "pto.copy_ubuf_to_gm",
         "pto.copy_ubuf_to_ubuf",

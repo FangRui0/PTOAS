@@ -883,7 +883,7 @@ This section provides a categorized overview of all PTO micro Instruction operat
 | # | Group | Description | Count | Details |
 |---|-------|-------------|-------|---------|
 | 1 | [Pipeline Sync](#isa-01-pipeline-sync) | Intra-core pipeline synchronization | 5 | `pto.set_flag`, `pto.wait_flag`, `pto.pipe_barrier`, `pto.get_buf`, `pto.rls_buf` |
-| 2 | [DMA Copy Programming](#isa-02-dma-copy) | DMA configuration and transfer between GM↔UB | 10 | `pto.set_loop*_stride_*`, `pto.set_loop_size_*`, `pto.set_mov_pad_val`, `pto.copy_gm_to_ubuf`, `pto.copy_ubuf_to_ubuf`, `pto.copy_ubuf_to_gm` |
+| 2 | [DMA Copy Programming](#isa-02-dma-copy) | DMA configuration and transfer between GM↔UB | 9 | `pto.set_loop*_stride_*`, `pto.set_loop_size_*`, `pto.copy_gm_to_ubuf`, `pto.copy_ubuf_to_ubuf`, `pto.copy_ubuf_to_gm` |
 | 3 | [Vector Load/Store](#isa-03-vector-load-store) | UB↔vreg data movement with various access patterns | ~20 | `pto.vlds`, `pto.vldsx2`, `pto.vgather2`, `pto.vsts`, `pto.vstsx2`, `pto.vscatter`, etc. |
 | 4 | [Predicate Load/Store](#isa-04-predicate-load-store) | UB↔mask register movement | 5 | `pto.plds`, `pto.pldi`, `pto.psts`, `pto.psti`, `pto.pstu` |
 | 5 | [Materialization & Predicate Ops](#isa-05-materialization-predicate) | Scalar broadcast, predicate generation and manipulation | ~17 | `pto.vbr`, `pto.vdup`, `pto.pset_b*`, `pto.pge_b*`, `pto.plt_b*`, `pto.ppack`, `pto.punpack`, `pto.pnot`, `pto.psel`, etc. |
@@ -1609,36 +1609,6 @@ Note: UB stride fields are 21 bits (sufficient for 256KB UB address space), GM s
 
 ---
 
-#### Pad Value Configuration
-
-##### `pto.set_mov_pad_val`
-
-- **syntax:** `pto.set_mov_pad_val %value : T`
-- **supported `T`:** `i8`, `i16`, `i32`, `f16`, `bf16`, `f32`
-- **semantics:** Configure the pad fill value used by GM→UB DMA when `data_select_bit = true`.
-
-This op programs the hardware pad register consumed by `pto.copy_gm_to_ubuf`. The operand is a typed scalar. Its raw bit pattern is encoded into the underlying hardware configuration payload:
-
-- integer inputs use their zero-extended bit pattern
-- floating-point inputs use their bitcast-to-integer bit pattern, then zero-extend to `i64`
-
-This configuration affects only the GM→UB padding path. UB→GM DMA ignores the pad value.
-
-**Parameter Table:**
-
-| Parameter | Description |
-|-----------|-------------|
-| `%value` | Pad fill scalar. Must be one of `i8/i16/i32/f16/bf16/f32`. |
-
-**Example:**
-
-```mlir
-%pad = arith.constant 0 : i16
-pto.set_mov_pad_val %pad : i16
-```
-
----
-
 #### DMA Transfer Execution
 
 ##### `pto.copy_gm_to_ubuf`
@@ -1977,8 +1947,6 @@ UB (128 cols wide, 32B-aligned, padded):
 ```
 
 ```mlir
-%pad = arith.constant 0 : i16
-pto.set_mov_pad_val %pad : i16
 pto.set_loop_size_outtoub %c1_i64, %c1_i64 : i64, i64
 pto.set_loop1_stride_outtoub %c0_i64, %c0_i64 : i64, i64
 pto.set_loop2_stride_outtoub %c0_i64, %c0_i64 : i64, i64

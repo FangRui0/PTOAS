@@ -336,6 +336,7 @@ Notes:
 - `PadValue.text` exposes the standard textual spelling for built-ins such as `null` and `zero`.
 - Custom pad values currently model an `f32` payload. In DSL v1, materializing a custom pad into a scalar is only supported for floating tile element dtypes.
 - `PadValue.NULL` does not denote a usable scalar fill constant. Calling `tile.pad_value.eval()` or `tile.config.pad_value.eval()` when the enum is `NULL` is a frontend error.
+- **DMA padding**: When performing GM→UB DMA transfers with padding enabled (via `enable_ub_pad=True` in `pto.copy_gm_to_ubuf`), the pad value must be configured explicitly using `pto.set_mov_pad_val`. Tile `PadValue` descriptors are not automatically translated to hardware register configurations in TileLang DSL v1. See [Pad Fill Semantics](08-sync-dma-operations.md#pad-fill-semantics) for usage details.
 
 #### Tile Shape Concepts
 

@@ -15,7 +15,7 @@ The DSL surface is organized into multiple maturity tiers, reflecting the stabil
 | Base vector ops (`make_mask`, `vlds`, `vsts`, `vadd`, `vmuls`, etc.) | `basic` | Default compute skeleton for starter kernels. |
 | `strict_vecscope` | `advanced` | Explicit vector-scope management for expert authoring. |
 | Raw pointer family (`ptr(...)`, `castptr`, `addptr`) | `advanced` | For expert authoring and migration; not required for Quick Start. |
-| DMA family (`copy_*`, `set_loop*_stride_*`, `set_loop_size_*`) | `advanced` | Direct DMA engine control for expert authoring. |
+| DMA family (`copy_*`, `set_loop*_stride_*`, `set_loop_size_*`, pad-fill control) | `advanced` | Direct DMA engine control for expert authoring, including GM→UB padding behavior. |
 | Tile pointer helper (`tile.as_ptr()`) | `advanced` | Expert-only helper when advanced authoring needs explicit typed pointers. |
 
 For the authoritative tier classification, consult `tilelang-dsl/python/tilelang_dsl/support_matrix.py`. For known implementation gaps, refer to `tilelang-dsl/docs/unsupported-features.md`.
@@ -35,7 +35,7 @@ The TileLang DSL provides two distinct authoring modes:
 - Uses **raw pointer semantics** for explicit memory management  
 - Direct pointer operations correspond to `pto.ptr` types in MLIR
 - Explicit pointer arithmetic: `ptr(...)`, `castptr`, `addptr`
-- Manual DMA engine control with low-level copy operations
+- Manual DMA engine control with low-level copy operations and explicit GM→UB padding behavior
 - Requires explicit buffer management and pointer arithmetic
 - Intended for expert users and performance-critical optimizations
 

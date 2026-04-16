@@ -38,6 +38,7 @@ from tilelang_dsl.semantic import (
     SemanticBinaryExpr,
     SemanticCallExpr,
     SemanticDmaConfigStmt,
+    SemanticDmaUnaryConfigStmt,
     SemanticExprStmt,
     SemanticForStmt,
     SemanticGetBufStmt,
@@ -431,6 +432,7 @@ class TileLangDSLSupportMatrixTests(unittest.TestCase):
         self.assertIn("pto.strict_vecscope", ADVANCED_EXPLICIT_VECSCOPE_SURFACES)
         self.assertIn("pto.ptr", ADVANCED_RAW_POINTER_SURFACES)
         self.assertIn("pto.castptr", ADVANCED_RAW_POINTER_SURFACES)
+        self.assertIn("pto.set_mov_pad_val", ADVANCED_LOW_LEVEL_DMA_SURFACES)
         self.assertIn("pto.copy_ubuf_to_ubuf", ADVANCED_LOW_LEVEL_DMA_SURFACES)
         self.assertIn("pto.tile_with_strides", ADVANCED_TILE_HELPER_SURFACES)
 
@@ -440,6 +442,7 @@ class TileLangDSLSupportMatrixTests(unittest.TestCase):
         self.assertEqual(get_feature_tier("pto.castptr"), ADVANCED_TIER)
         self.assertEqual(get_feature_tier("pto.load_scalar"), ADVANCED_TIER)
         self.assertEqual(get_feature_tier("pto.store_scalar"), ADVANCED_TIER)
+        self.assertEqual(get_feature_tier("pto.set_mov_pad_val"), ADVANCED_TIER)
         self.assertEqual(get_feature_tier("pto.copy_ubuf_to_ubuf"), ADVANCED_TIER)
         self.assertEqual(get_feature_tier("pto.tile_with_strides"), ADVANCED_TIER)
 
@@ -3870,6 +3873,41 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             r"pto\.copy_gm_to_ubuf %gm_ptr_\d+, %ub_ptr_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+, %false, %tmp_\d+, %tmp_\d+, %tmp_\d+",
         )
 
+    def test_set_mov_pad_val_lowers_in_advanced_mode(self) -> None:
+        @pto.vkernel(op="set_mov_pad_val_dma_unique", dtypes=[(pto.f32, pto.f32)], advanced=True)
+        def kernel(inp: pto.TensorView, dst: pto.Tile):
+            gm_ptr = inp.as_ptr()
+            ub_ptr = dst.as_ptr()
+
+            pto.set_mov_pad_val(pad_value=pto.f32(0.0))
+            pto.set_loop2_stride_outtoub(src_stride=4096, dst_stride=2048)
+            pto.set_loop1_stride_outtoub(src_stride=1024, dst_stride=512)
+            pto.set_loop_size_outtoub(loop1=1, loop2=1)
+            pto.copy_gm_to_ubuf(
+                src=gm_ptr,
+                dst=ub_ptr,
+                n_burst=1,
+                len_burst=64,
+                gm_stride=128,
+                ub_stride=128,
+                enable_ub_pad=True,
+            )
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        self.assertTrue(any(isinstance(stmt, SemanticDmaUnaryConfigStmt) for stmt in semantic_kernel.body))
+
+        text = specialized.mlir_text()
+        self.assertRegex(text, r"pto\.set_mov_pad_val %[^ ]+ : f32")
+        self.assertRegex(
+            text,
+            r"pto\.copy_gm_to_ubuf %gm_ptr_\d+, %ub_ptr_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+, %true, %tmp_\d+, %tmp_\d+, %tmp_\d+",
+        )
+
     def test_copy_ubuf_to_gm_keyword_surface_lowers_in_advanced_mode(self) -> None:
         @pto.vkernel(op="tile_to_tensorview_dma_unique", dtypes=[(pto.f32, pto.f32)], advanced=True)
         def kernel(src: pto.Tile, dst: pto.TensorView):
@@ -4918,6 +4956,23 @@ class TileLangDSLDiagnosticsTests(unittest.TestCase):
                 return None
 
         self.assertIn("advanced family surface `pto.vreduce`", str(ctx.exception))
+
+    def test_set_mov_pad_val_rejects_unsupported_scalar_dtype(self) -> None:
+        with self.assertRaises(TypeError) as ctx:
+
+            @pto.vkernel(op="set_mov_pad_val_bad_dtype_unique", dtypes=[(pto.f32,)], advanced=True)
+            def kernel(dst: pto.Tile):
+                pto.set_mov_pad_val(pto.i64(0))
+                return None
+
+            kernel.specialize(
+                dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB)
+            ).mlir_text()
+
+        self.assertIn(
+            "pto.set_mov_pad_val pad_value must be one of i8, i16, i32, f16, bf16, or f32",
+            str(ctx.exception),
+        )
 
     def test_unsupported_python_syntax_reports_source_location(self) -> None:
         with self.assertRaises(pto.TileLangFrontendError) as ctx:
