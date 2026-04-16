@@ -1493,6 +1493,30 @@ struct PTOViewToMemrefPass
       }
 
       // ------------------------------------------------------------------
+      // Stage 1.3: Lower pto.partition_view -> memref.subview
+      // ------------------------------------------------------------------
+      if (failed(lowerPartitionViewOps(func, ctx))) {
+        signalPassFailure();
+        return;
+      }
+
+      // ------------------------------------------------------------------
+      // Stage 1.35: Lower pto.subset -> memref.subview + pto.bind_tile
+      // ------------------------------------------------------------------
+      if (failed(lowerSubsetOps(func, ctx))) {
+        signalPassFailure();
+        return;
+      }
+
+      // ------------------------------------------------------------------
+      // Stage 1.4: Lower tile_buf view-like ops (treshape/bitcast)
+      // ------------------------------------------------------------------
+      if (failed(lowerTileBufViewLikeOps(func, ctx))) {
+        signalPassFailure();
+        return;
+      }
+
+      // ------------------------------------------------------------------
       // Stage 1.5: Fold pto.addptr chains into load/store_scalar.
       // ------------------------------------------------------------------
       SmallVector<mlir::pto::LoadScalarOp, 8> loadScalars;
