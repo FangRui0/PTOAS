@@ -9,7 +9,9 @@
 // Test the first regular tcvt paths through ExpandTileOp.
 // Current scope is intentionally narrow:
 //   - f32 -> i32: regular vcvt with rnd + sat
+//   - f32 -> f16: cast32to16_2D_NoPostUpdate-style vcvt(part=EVEN) + PK_B32 store
 //   - i32 -> f32: regular vcvt with rnd only
+//   - f16 -> f32: cast16to32-style UNPK_B16 load + vcvt(part=EVEN)
 //   - round_mode must reach the template so different rmode values materialize
 //     different vcvt attrs
 //
@@ -30,8 +32,14 @@
 // CHECK-LABEL: func.func @TCVT_F16_TO_F32
 // CHECK-NOT: pto.tcvt ins
 // CHECK: pto.vecscope
-// CHECK: pto.vlds {{.*}} {dist = "UNPK"} : {{.*}} -> !pto.vreg<128xf16>
+// CHECK: pto.vlds {{.*}} {dist = "UNPK_B16"} : {{.*}} -> !pto.vreg<128xf16>
 // CHECK: pto.vcvt {{.*}} {part = "EVEN"} : !pto.vreg<128xf16> -> !pto.vreg<64xf32>
+
+// CHECK-LABEL: func.func @TCVT_F32_TO_F16
+// CHECK-NOT: pto.tcvt ins
+// CHECK: pto.vecscope
+// CHECK: pto.vcvt {{.*}} {part = "EVEN", rnd = "R", sat = "SAT"} : !pto.vreg<64xf32> -> !pto.vreg<128xf16>
+// CHECK: pto.vsts {{.*}} {dist = "PK_B32"} : !pto.vreg<128xf16>, {{.*}}, !pto.mask<b32>
 
 module {
   func.func @TCVT_F32_TO_I32() {
@@ -91,6 +99,21 @@ module {
     pto.tcvt ins(%src : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=64, v_row=16, v_col=64,
                                         blayout=row_major, slayout=none_box, fractal=512, pad=0>)
              outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
+                                       blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    return
+  }
+
+  func.func @TCVT_F32_TO_F16() {
+    %src = pto.alloc_tile
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %dst = pto.alloc_tile
+      : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=64, v_row=16, v_col=64,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    pto.tcvt ins(%src : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
+                                        blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+             outs(%dst : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=64, v_row=16, v_col=64,
                                        blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     return
   }

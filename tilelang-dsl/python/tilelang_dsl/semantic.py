@@ -544,6 +544,7 @@ class SemanticVectorStoreStmt(SemanticStmt):
     value: SemanticExpr
     destination: SemanticExpr
     indices: tuple[SemanticExpr, ...]
+    dist: SemanticExpr | None
     mask: SemanticExpr
 
 
@@ -1830,6 +1831,18 @@ class _SemanticAnalyzer:
             )
 
         if expr.name == "vsts":
+            analyzed_keywords = {
+                name: self._analyze_expr(value, env, allow_outer_lookup=allow_outer_lookup)
+                for name, value in expr.keywords
+            }
+            unexpected_keywords = sorted(set(analyzed_keywords) - {"dist"})
+            if unexpected_keywords:
+                keyword_text = ", ".join(unexpected_keywords)
+                raise TypeError(
+                    "pto.vsts only accepts keyword attr `dist`; "
+                    f"got unsupported keyword(s): {keyword_text}"
+                )
+            dist = self._normalize_vsts_dist(analyzed_keywords.get("dist"), "pto.vsts dist")
             if len(expr.args) == 3:
                 value = self._analyze_expr(expr.args[0], env, allow_outer_lookup=allow_outer_lookup)
                 destination, indices = self._analyze_tile_vector_access(
@@ -1852,13 +1865,14 @@ class _SemanticAnalyzer:
             self._require_vector_pointer_expr(destination, "pto.vsts destination")
             for index in indices:
                 self._require_index_typed_expr(index)
-            self._require_mask_for_vreg(mask, value.type, "pto.vsts")
+            self._require_mask_for_vsts(mask, value.type, dist, "pto.vsts")
             self._require_matching_vector_pointer(value.type, destination.type, "pto.vsts")
             return (
                 SemanticVectorStoreStmt(
                     value=value,
                     destination=destination,
                     indices=indices,
+                    dist=dist,
                     mask=mask,
                 ),
                 dict(env),
@@ -5160,37 +5174,67 @@ class _SemanticAnalyzer:
         if expr is None:
             return None
         dist = self._require_string_expr(expr, context)
-        legacy_map = {
-            "BRC_B8": "BRC",
-            "BRC_B16": "BRC",
-            "BRC_B32": "BRC",
-            "US_B8": "US",
-            "US_B16": "US",
-            "DS_B8": "DS",
-            "DS_B16": "DS",
-            "UNPK_B8": "UNPK",
-            "UNPK_B16": "UNPK",
-            "UNPK_B32": "UNPK",
-            "E2B_B16": "E2B",
-            "E2B_B32": "E2B",
-        }
-        normalized = legacy_map.get(dist, dist)
+        normalized = dist
         if normalized not in {
             "NORM",
-            "BRC",
-            "US",
-            "DS",
-            "UNPK",
+            "BRC_B8",
+            "BRC_B16",
+            "BRC_B32",
+            "US_B8",
+            "US_B16",
+            "DS_B8",
+            "DS_B16",
+            "UNPK_B8",
+            "UNPK_B16",
+            "UNPK_B32",
             "BRC_BLK",
-            "E2B",
+            "E2B_B16",
+            "E2B_B32",
             "UNPK4",
             "SPLT4CHN",
-            "SPLT2CHN",
+            "SPLT2CHN_B8",
+            "SPLT2CHN_B16",
         }:
             raise TypeError(
                 "pto.vlds dist must be one of "
-                "\"NORM\", \"BRC\", \"US\", \"DS\", \"UNPK\", \"BRC_BLK\", "
-                "\"E2B\", \"UNPK4\", \"SPLT4CHN\", or \"SPLT2CHN\" in TileLang DSL v1"
+                "\"NORM\", \"BRC_B8\", \"BRC_B16\", \"BRC_B32\", "
+                "\"US_B8\", \"US_B16\", \"DS_B8\", \"DS_B16\", "
+                "\"UNPK_B8\", \"UNPK_B16\", \"UNPK_B32\", \"BRC_BLK\", "
+                "\"E2B_B16\", \"E2B_B32\", \"UNPK4\", \"SPLT4CHN\", "
+                "\"SPLT2CHN_B8\", or \"SPLT2CHN_B16\" in TileLang DSL v1"
+            )
+        return SemanticLiteralExpr(value=normalized, type=SemanticMetaType(kind="string"))
+
+    def _normalize_vsts_dist(
+        self,
+        expr: SemanticExpr | None,
+        context: str,
+    ) -> SemanticExpr | None:
+        if expr is None:
+            return None
+        dist = self._require_string_expr(expr, context)
+        normalized = dist
+        if normalized not in {
+            "NORM_B8",
+            "NORM_B16",
+            "NORM_B32",
+            "1PT_B8",
+            "1PT_B16",
+            "1PT_B32",
+            "PK_B16",
+            "PK_B32",
+            "PK_B64",
+            "PK4_B32",
+            "MRG4CHN_B8",
+            "MRG2CHN_B8",
+            "MRG2CHN_B16",
+        }:
+            raise TypeError(
+                "pto.vsts dist must be one of "
+                "\"NORM_B8\", \"NORM_B16\", \"NORM_B32\", "
+                "\"1PT_B8\", \"1PT_B16\", \"1PT_B32\", "
+                "\"PK_B16\", \"PK_B32\", \"PK_B64\", \"PK4_B32\", "
+                "\"MRG4CHN_B8\", \"MRG2CHN_B8\", or \"MRG2CHN_B16\" in TileLang DSL v1"
             )
         return SemanticLiteralExpr(value=normalized, type=SemanticMetaType(kind="string"))
 
@@ -5232,6 +5276,34 @@ class _SemanticAnalyzer:
         if mask_expr.type.granularity != expected:
             raise TypeError(
                 f"{context} requires mask granularity {expected} for vector dtype {vreg_type.element_dtype!r}"
+            )
+
+    def _require_mask_for_vsts(
+        self,
+        mask_expr: SemanticExpr,
+        vreg_type: SemanticVRegType,
+        dist_expr: SemanticExpr | None,
+        context: str,
+    ) -> None:
+        if not isinstance(mask_expr.type, SemanticMaskType):
+            raise TypeError(f"{context} requires a mask operand in TileLang DSL v1")
+        expected = self._mask_granularity_for_dtype(vreg_type.element_dtype)
+        if dist_expr is not None:
+            dist = self._require_string_expr(dist_expr, f"{context} dist")
+            if dist == "PK_B16":
+                expected = "b16"
+            elif dist == "PK_B32":
+                expected = "b32"
+            elif dist == "PK_B64":
+                expected = "b32"
+            elif dist == "MRG4CHN_B8":
+                expected = "b32"
+            elif dist in {"MRG2CHN_B8", "MRG2CHN_B16"}:
+                expected = "b16" if dist == "MRG2CHN_B8" else "b32"
+        if mask_expr.type.granularity != expected:
+            raise TypeError(
+                f"{context} requires mask granularity {expected} for store dist "
+                f"{self._require_string_expr(dist_expr, f'{context} dist') if dist_expr is not None else 'default'}"
             )
 
     def _require_matching_vector_pointer(

@@ -322,17 +322,35 @@ private:
     if (!valueType)
       return std::nullopt;
 
-    auto elementType = valueType.getElementType();
-    auto elementIntType = dyn_cast<IntegerType>(elementType);
-    if (!elementIntType)
-      return std::nullopt;
-
     auto distAttr = op->getAttrOfType<StringAttr>("dist");
     if (!distAttr)
       return std::nullopt;
 
     StringRef dist = distAttr.getValue();
-    unsigned width = elementIntType.getWidth();
+    auto elementType = valueType.getElementType();
+    unsigned width = 0;
+    if (auto elementIntType = dyn_cast<IntegerType>(elementType)) {
+      width = elementIntType.getWidth();
+    } else if (elementType.isF16() || elementType.isBF16()) {
+      width = 16;
+    } else if (elementType.isF32()) {
+      width = 32;
+    } else if (elementType.isF64()) {
+      width = 64;
+    } else {
+      return std::nullopt;
+    }
+
+    if (dist == "PK_B16") {
+      if (width == 8)
+        return VPTOMaskGranularity::B16;
+      return std::nullopt;
+    }
+    if (dist == "PK_B32") {
+      if (width == 16)
+        return VPTOMaskGranularity::B32;
+      return std::nullopt;
+    }
     if (dist == "MRG4CHN_B8") {
       if (width == 8)
         return VPTOMaskGranularity::B32;

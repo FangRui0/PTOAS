@@ -83,10 +83,13 @@ def generate_golden(case):
     shape = case["shape"]
     vr, vc = case["valid_shape"]
 
-    if src_dtype is np.float32:
+    if src_dtype is np.float32 and dst_dtype is np.int32:
         input_arr = make_f32_input(shape).astype(src_dtype)
         rounded = apply_round_mode(input_arr[:vr, :vc], case["round_mode"])
         converted = convert_with_default_saturation(rounded, src_dtype, dst_dtype)
+    elif src_dtype is np.float32 and dst_dtype is np.float16:
+        input_arr = make_f32_input(shape).astype(src_dtype)
+        converted = convert_with_default_saturation(input_arr[:vr, :vc], src_dtype, dst_dtype)
     elif src_dtype is np.int32:
         input_arr = make_i32_input(shape).astype(src_dtype)
         converted = convert_with_default_saturation(input_arr[:vr, :vc], src_dtype, dst_dtype)

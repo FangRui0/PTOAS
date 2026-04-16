@@ -991,10 +991,14 @@ class _AuthoringRenderer:
         else:
             rendered_indices = self._render_index_list(stmt.indices, env, indent=indent, into=lines)
         mask = self._lower_expr(stmt.mask, env, indent=indent, into=lines)
+        attrs = ""
+        if stmt.dist is not None:
+            dist = self._render_string_literal(stmt.dist)
+            attrs = f" {{dist = {dist}}}"
         lines.append(
             self._indent(indent)
             + "pto.vsts "
-            + f"{value.name}, {destination.name}[{rendered_indices}], {mask.name} : "
+            + f"{value.name}, {destination.name}[{rendered_indices}], {mask.name}{attrs} : "
             + f"{self._render_type(value.type)}, {self._render_type(destination.type)}, {self._render_type(mask.type)}"
         )
         return lines

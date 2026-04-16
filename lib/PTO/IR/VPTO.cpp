@@ -909,14 +909,14 @@ static LogicalResult verifyVstsDistWidth(Operation *op, StringRef dist,
     return *width == 32 ? success()
                         : op->emitOpError("dist 1PT_B32 only supports 32-bit elements");
   if (dist == "PK_B16")
-    return *width == 16 ? success()
-                        : op->emitOpError("dist PK_B16 only supports 16-bit elements");
+    return *width == 8 ? success()
+                       : op->emitOpError("dist PK_B16 only supports 8-bit packed elements");
   if (dist == "PK_B32")
-    return *width == 32 ? success()
-                        : op->emitOpError("dist PK_B32 only supports 32-bit elements");
+    return *width == 16 ? success()
+                        : op->emitOpError("dist PK_B32 only supports 16-bit packed elements");
   if (dist == "PK_B64")
-    return *width == 64 ? success()
-                        : op->emitOpError("dist PK_B64 only supports 64-bit elements");
+    return *width == 32 ? success()
+                        : op->emitOpError("dist PK_B64 only supports 32-bit packed elements");
   if (dist == "PK4_B32")
     return *width == 32 ? success()
                         : op->emitOpError("dist PK4_B32 only supports 32-bit elements");
@@ -950,6 +950,10 @@ getVstsMaskGranularityOverride(StringRef dist, Type elementType) {
   if (dist == "MRG2CHN_B8")
     return StringRef("b16");
   if (dist == "MRG2CHN_B16")
+    return StringRef("b32");
+  if (dist == "PK_B16")
+    return StringRef("b16");
+  if (dist == "PK_B32")
     return StringRef("b32");
 
   return std::nullopt;
