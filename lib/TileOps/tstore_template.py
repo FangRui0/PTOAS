@@ -54,6 +54,7 @@ def _tstore_preconditions_nz(src, dst) -> bool:
         src, dst, logical_rows=logical_rows, logical_cols=logical_cols
     )
 
+
 @pto.vkernel(
     target="a5",
     op="pto.tstore",

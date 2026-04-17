@@ -1700,7 +1700,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
                 return None
 
         self.assertIn(
-            "unsupported keyword `offset` for `pto.vlds` in TileLang DSL v1",
+            "`pto.vlds` does not support keyword arguments in TileLang DSL v1",
             str(ctx.exception),
         )
         self.assertIn(f"{__file__}:", str(ctx.exception))
@@ -3443,11 +3443,11 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertNotIn('position = "POS_LOWEST"', text)
         self.assertRegex(
             text,
-            r'pto\.vci\s+%[^\s]+\s+\{order = "ORDER_ASC"\}\s+:',
+            r'pto\.vci\s+%[^\s]+\s+\{order = "ASC"\}\s+:',
         )
         self.assertNotRegex(
             text,
-            r'pto\.vci\s+%[^\s]+,\s*"ORDER_ASC"\s+:',
+            r'pto\.vci\s+%[^\s]+,\s*"ASC"\s+:',
         )
 
     def test_vdup_scalar_input_rejects_position_argument(self) -> None:

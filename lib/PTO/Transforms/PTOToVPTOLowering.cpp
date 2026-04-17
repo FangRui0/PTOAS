@@ -5252,7 +5252,7 @@ LogicalResult lowerTTRANS(TTransOp op, PatternRewriter &rewriter) {
       rewriter.create<arith::IndexCastOp>(op.getLoc(), indexElemType, chunkBase);
   auto indices =
       rewriter.create<pto::VciOp>(op.getLoc(), indexVecType, chunkBaseI32,
-                                   rewriter.getStringAttr("INC_ORDER"));
+                                   rewriter.getStringAttr("ASC"));
   Value fullMask = buildAllPredicateMask(rewriter, op.getLoc(), indexElemType);
   auto scaled = rewriter.create<pto::VmulsOp>(op.getLoc(), indexVecType,
                                                indices.getResult(), srcStrideI32, fullMask);
