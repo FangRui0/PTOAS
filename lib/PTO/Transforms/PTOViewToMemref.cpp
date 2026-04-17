@@ -1590,7 +1590,7 @@ struct PTOViewToMemrefPass
           bool eligible = !op->use_empty();
           for (Operation *user : op->getUsers()) {
             auto init = dyn_cast<mlir::pto::InitializeL2G2LPipeOp>(user);
-            if (!init || init.getGmAddr() != op.getResult()) {
+            if (!init || init.getGmAddr() != op->getResult(0)) {
               eligible = false;
               break;
             }
@@ -1604,12 +1604,12 @@ struct PTOViewToMemrefPass
           rewriter.setInsertionPoint(op);
           Location loc = op.getLoc();
 
-          Value base = op.getPtr();
-          Value totalOffset = ensureIndex(rewriter, loc, op.getOffset(), op);
+          Value base = op->getOperand(0);
+          Value totalOffset = ensureIndex(rewriter, loc, op->getOperand(1), op);
           while (auto add = base.getDefiningOp<mlir::pto::AddPtrOp>()) {
-            Value off = ensureIndex(rewriter, loc, add.getOffset(), add);
+            Value off = ensureIndex(rewriter, loc, add->getOperand(1), add);
             totalOffset = rewriter.create<arith::AddIOp>(loc, totalOffset, off);
-            base = add.getPtr();
+            base = add->getOperand(0);
           }
 
           auto baseMrTy = dyn_cast<MemRefType>(base.getType());

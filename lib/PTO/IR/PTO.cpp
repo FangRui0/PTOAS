@@ -1180,11 +1180,14 @@ LogicalResult mlir::pto::PartitionViewOp::verify() {
 }
 
 LogicalResult mlir::pto::AddPtrOp::verify() {
-  auto ptrTy = dyn_cast<mlir::pto::PtrType>(getPtr().getType());
+  Value ptr = getOperation()->getOperand(0);
+  Value result = getOperation()->getResult(0);
+
+  auto ptrTy = dyn_cast<mlir::pto::PtrType>(ptr.getType());
   if (!ptrTy)
     return emitOpError("ptr operand must be !pto.ptr<...>");
 
-  auto resTy = dyn_cast<mlir::pto::PtrType>(getResult().getType());
+  auto resTy = dyn_cast<mlir::pto::PtrType>(result.getType());
   if (!resTy)
     return emitOpError("result must be !pto.ptr<...>");
 
