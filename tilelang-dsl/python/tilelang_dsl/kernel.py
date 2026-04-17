@@ -423,6 +423,19 @@ class _KernelBodyValidator(ast.NodeVisitor):
                     node,
                     "surface `as_ptr` requires advanced=True in TileLang DSL v1",
                 )
+            if node.func.attr == "astype":
+                if node.keywords:
+                    raise self.source_info.error(
+                        node,
+                        "`astype` does not support keyword arguments in TileLang DSL v1",
+                    )
+                if len(node.args) != 1:
+                    raise self.source_info.error(
+                        node,
+                        "`astype()` expects exactly 1 positional argument (target dtype) in TileLang DSL v1",
+                    )
+                # Type checking will be done during semantic analysis
+                return
             if node.func.value.id == "pto" and node.func.attr == "tpl":
                 self._validate_call_keywords(node)
                 return

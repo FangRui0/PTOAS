@@ -935,6 +935,19 @@ def PTO_VcvtOp : PTO_Op<"vcvt", [Pure]> {
   let hasCustomAssemblyFormat = 1;
 }
 
+def PTO_VbitcastOp : PTO_Op<"vbitcast", [Pure]> {
+  let arguments = (ins
+    PTO_VectorType:$input
+  );
+  let results = (outs PTO_VectorType:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $input attr-dict `:` type($input) `->` type($result)
+  }];
+}
+
 def PTO_VciOp : PTO_Op<"vci", [Pure]> {
   let arguments = (ins
     AnyInteger:$index,

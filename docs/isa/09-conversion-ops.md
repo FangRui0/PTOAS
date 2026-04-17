@@ -250,3 +250,57 @@ for (int i = 0; i < N; i++)
 %int_div = pto.vcvt %floored, %mask {rnd = "Z"}
     : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xi32>
 ```
+
+---
+
+## `pto.vbitcast`
+
+- **syntax:** `%result = pto.vbitcast %input : !pto.vreg<NxT0> -> !pto.vreg<MxT1>`
+- **semantics:** Bitwise reinterpretation of a vreg vector without changing the underlying bit pattern. This operation performs a pure type cast that preserves the exact bits of each element, changing only their interpretation (e.g., from floating-point to integer).
+
+- **inputs:**
+  `%input` is the source vector register value.
+- **outputs:**
+  `%result` is the reinterpreted vector register value.
+- **constraints and limitations:**
+  1. Both source and result must be `!pto.vreg<...>` types.
+  2. Source and result vectors must have the same total bit width (currently 2048 bits).
+  3. Only integer and floating-point element types are supported.
+
+**Element bit-width equality examples:**
+- `f32<64>` → `i32<64>`  (both 32-bit elements, total 2048 bits)
+- `f16<128>` → `i16<128>` (both 16-bit elements, total 2048 bits)
+- `bf16<128>` → `ui16<128>` (both 16-bit elements, total 2048 bits)
+- `si32<64>` → `ui32<64>` (both 32-bit elements, total 2048 bits)
+- `f32<64>` → `i16<128>` (32-bit/16-bit elements, total 2048 bits)
+
+**Verification:** The operation verifies that:
+1. Both input and result are `!pto.vreg<...>` types.
+2. Total bit width equals 2048 (the fixed vreg size).
+
+**Comparison with `pto.vcvt`:**
+- `pto.vcvt` performs value conversion with rounding, saturation, and lane placement control.
+- `pto.vbitcast` performs bitwise reinterpretation without changing the underlying bit pattern.
+
+**Example: Reinterpreting float as integer for bit manipulation**
+```mlir
+// Prepare a vector of float values
+%fvec = pto.vlds %ub[%lane] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
+
+// Reinterpret as integer for bitwise operations
+%ivec = pto.vbitcast %fvec : !pto.vreg<64xf32> -> !pto.vreg<64xi32>
+
+// Extract sign bit (bit 31)
+%sign_bits = pto.vand %ivec, %sign_mask, %mask : !pto.vreg<64xi32>, !pto.vreg<64xi32>, !pto.mask<b32> -> !pto.vreg<64xi32>
+
+// Reinterpret back to float
+%fvec_without_sign = pto.vbitcast %sign_bits : !pto.vreg<64xi32> -> !pto.vreg<64xf32>
+```
+
+**Example: Type punning between signed and unsigned integer**
+```mlir
+// Convert signed to unsigned without changing bits
+%signed = pto.vlds %ub[%lane] : !pto.ptr<si32, ub> -> !pto.vreg<64xsi32>
+%unsigned = pto.vbitcast %signed : !pto.vreg<64xsi32> -> !pto.vreg<64xui32>
+// Bits are identical; interpretation changes from signed to unsigned
+```

@@ -2916,6 +2916,15 @@ class _AuthoringRenderer:
             )
             return _RenderedValue(name=result_name, type=expr.type)
 
+        if expr.name == "vbitcast":
+            value = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+            into.append(
+                self._indent(indent)
+                + f"{result_name} = pto.vbitcast {value.name} : "
+                + f"{self._render_type(value.type)} -> {self._render_type(expr.type)}"
+            )
+            return _RenderedValue(name=result_name, type=expr.type)
+
         if expr.name == "vbitsort":
             destination = self._lower_expr(expr.args[0], env, indent=indent, into=into)
             source = self._lower_expr(expr.args[1], env, indent=indent, into=into)

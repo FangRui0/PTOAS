@@ -3089,6 +3089,17 @@ class _SemanticAnalyzer:
                     for arg in expr.args[1:]
                 )
                 return self._analyze_eval_method(base, args)
+            if expr.namespace is None and expr.name == "astype":
+                if expr.keywords:
+                    raise TypeError("method call `astype` does not support keyword arguments in TileLang DSL v1")
+                if not expr.args:
+                    raise TypeError("`astype()` expects a receiver in TileLang DSL v1")
+                base = self._analyze_expr(expr.args[0], env, allow_outer_lookup=allow_outer_lookup)
+                args = tuple(
+                    self._analyze_expr(arg, env, allow_outer_lookup=allow_outer_lookup)
+                    for arg in expr.args[1:]
+                )
+                return self._analyze_astype_method(base, args)
             if expr.namespace not in {None, "pto"} and expr.name == "eval":
                 if expr.keywords:
                     raise TypeError("method call `eval` does not support keyword arguments in TileLang DSL v1")
@@ -3117,6 +3128,22 @@ class _SemanticAnalyzer:
                     )
                 base = SemanticBindingRef(binding=binding, type=binding.type)
                 return self._analyze_as_ptr_method(base)
+            if expr.namespace not in {None, "pto"} and expr.name == "astype":
+                if expr.keywords:
+                    raise TypeError("method call `astype` does not support keyword arguments in TileLang DSL v1")
+                binding = env.get(expr.namespace)
+                if binding is None:
+                    if allow_outer_lookup:
+                        raise ValueError(f"unknown name '{expr.namespace}'")
+                    raise ValueError(
+                        f"implicit capture of '{expr.namespace}' is not allowed in pto.strict_vecscope"
+                    )
+                base = SemanticBindingRef(binding=binding, type=binding.type)
+                args = tuple(
+                    self._analyze_expr(arg, env, allow_outer_lookup=allow_outer_lookup)
+                    for arg in expr.args
+                )
+                return self._analyze_astype_method(base, args)
             if expr.namespace == "pto" and expr.name == "vlds":
                 return self._analyze_vlds_frontend_call(
                     expr,
@@ -3545,6 +3572,23 @@ class _SemanticAnalyzer:
             )
         raise TypeError("`as_ptr()` expects a TensorView/PartitionTensorView or Tile value in TileLang DSL v1")
 
+    def _analyze_astype_method(self, base: SemanticExpr, args: tuple[SemanticExpr, ...]) -> SemanticExpr:
+        """Analyze vreg.astype(dtype) method call."""
+        if len(args) != 1:
+            raise TypeError("`astype()` expects exactly 1 positional argument (target dtype) in TileLang DSL v1")
+        # Verify target dtype is a valid dtype symbol
+        target_dtype = self._require_dtype_symbol(args[0], "astype target dtype")
+        # Verify base is a vector register
+        if not isinstance(base.type, SemanticVRegType):
+            raise TypeError("`astype()` expects a vector register value in TileLang DSL v1")
+        # Convert to pto.vbitcast call, pass original dtype expression as second argument
+        return SemanticCallExpr(
+            namespace="pto",
+            name="vbitcast",
+            args=(base, args[0]),
+            type=self._vreg_type_for_dtype(target_dtype),
+        )
+
     def _valid_shape_expr(self, base: SemanticExpr) -> SemanticExpr:
         base_type = base.type
         if not isinstance(base_type, (SemanticTensorViewType, SemanticPartitionTensorViewType, SemanticTileType)):
@@ -3898,6 +3942,8 @@ class _SemanticAnalyzer:
             return self._analyze_rearrangement_op(name, args)
         if name == "vcvt":
             return self._analyze_vcvt(args)
+        if name == "vbitcast":
+            return self._analyze_vbitcast(args)
         if name == "vtrc":
             return self._analyze_vtrc(args)
         if name == "vbitsort":
@@ -4977,6 +5023,22 @@ class _SemanticAnalyzer:
                 else SemanticLiteralExpr(value="R", type=SemanticMetaType(kind="string")),
             ),
             type=vector,
+        )
+
+    def _analyze_vbitcast(self, args: tuple[SemanticExpr, ...]) -> SemanticExpr:
+        if len(args) != 2:
+            raise TypeError("pto.vbitcast expects exactly 2 positional arguments in TileLang DSL")
+        vector = self._require_vreg_expr(args[0], "pto.vbitcast vector")
+        target_dtype = self._require_dtype_symbol(args[1], "pto.vbitcast to_type")
+        # No mask for vbitcast (pure type conversion)
+        return SemanticCallExpr(
+            namespace="pto",
+            name="vbitcast",
+            args=(
+                args[0],
+                args[1],
+            ),
+            type=self._vreg_type_for_dtype(target_dtype),
         )
 
     def _analyze_vbitsort(self, args: tuple[SemanticExpr, ...]) -> SemanticExpr:

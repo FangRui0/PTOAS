@@ -820,6 +820,7 @@ _DMA_CALL_KEYWORDS: dict[str, frozenset[str]] = {
     "vtrc": frozenset({"rnd"}),
     "vlds": frozenset({"dist"}),
     "vsts": frozenset({"dist"}),
+    "vbitcast": frozenset(),
 }
 
 

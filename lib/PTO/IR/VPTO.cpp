@@ -2331,6 +2331,34 @@ LogicalResult VcvtOp::verify() {
   return success();
 }
 
+LogicalResult VbitcastOp::verify() {
+  auto inputType = dyn_cast<VRegType>(getInput().getType());
+  auto resultType = dyn_cast<VRegType>(getResult().getType());
+  if (!inputType || !resultType)
+    return emitOpError("input and result must be !pto.vreg<...>");
+
+  auto getStorageBits = [](VRegType type) -> std::optional<int64_t> {
+    Type elementType = type.getElementType();
+    if (auto intType = dyn_cast<IntegerType>(elementType))
+      return type.getElementCount() * static_cast<int64_t>(intType.getWidth());
+    if (auto floatType = dyn_cast<FloatType>(elementType))
+      return type.getElementCount() *
+             static_cast<int64_t>(floatType.getWidth());
+    return std::nullopt;
+  };
+
+  auto inputBits = getStorageBits(inputType);
+  auto resultBits = getStorageBits(resultType);
+  if (!inputBits || !resultBits)
+    return emitOpError("requires integer or floating-point vreg element type");
+  if (*inputBits != *resultBits) {
+    return emitOpError("requires source and result vectors to carry the same "
+                       "total number of bits");
+  }
+
+  return success();
+}
+
 LogicalResult PdintlvB8Op::verify() {
   if (failed(verifyMaskTypeWithGranularityLike(*this, getLhs().getType(),
                                                "lhs type", "b8")) ||

@@ -102,6 +102,56 @@ lanes1 = pto.elements_per_vreg(pto.f32)  # 64
 Current TileLang DSL v1 vector lowering supports the 8/16/32-bit integer
 families (`i*`, `si*`, `ui*`) plus `f16`, `bf16`, and `f32` element types.
 
+### Vector Type Reinterpretation (vbitcast)
+
+Vector registers support bitwise type reinterpretation via `pto.vbitcast`:
+
+```python
+result = pto.vbitcast(vector, to_type)
+```
+
+Interface summary:
+- `vector`: a vector register value of type `!pto.vreg<NxT0>`
+- `to_type`: target element dtype such as `pto.i32`, `pto.ui32`, `pto.f16`, `pto.bf16`, `pto.f32`
+- return: a new vector register `!pto.vreg<MxT1>` whose element count is inferred from the fixed 256-byte vreg width
+
+Constraints:
+- `vector` must be a vreg value; scalar values, pointers, `Tile`, and `TensorView` are rejected
+- `to_type` must be a DSL-supported vreg element dtype
+- `vbitcast` preserves the total register storage size, so only reinterpretations with the same total bit count are allowed
+- the operation has no mask, rounding, saturation, or lane-placement parameters
+
+Lane count is recomputed from `to_type`:
+- `!pto.vreg<64xf32> + pto.i32 -> !pto.vreg<64xi32>`
+- `!pto.vreg<64xf32> + pto.f16 -> !pto.vreg<128xf16>`
+- `!pto.vreg<128xbf16> + pto.ui16 -> !pto.vreg<128xui16>`
+
+```python
+# Float to integer bitwise reinterpretation
+fvec = pto.vlds(ub_ptr, lane)  # !pto.vreg<64xf32>
+ivec = pto.vbitcast(fvec, pto.i32)      # !pto.vreg<64xi32>
+
+# Signed to unsigned integer reinterpretation
+signed_vec = pto.vlds(ptr, lane)     # !pto.vreg<64xsi32>
+unsigned_vec = pto.vbitcast(signed_vec, pto.ui32)  # !pto.vreg<64xui32>
+
+# Element size change (32-bit to 16-bit)
+f32_vec = pto.vlds(ptr, lane)    # !pto.vreg<64xf32>
+f16_vec = pto.vbitcast(f32_vec, pto.f16)  # !pto.vreg<128xf16>
+```
+
+Pythonic syntax sugar via `astype()` method:
+
+```python
+ivec = fvec.astype(pto.i32)          # Float to integer
+unsigned_vec = signed_vec.astype(pto.ui32)  # Signed to unsigned
+f16_vec = f32_vec.astype(pto.f16)    # 32-bit to 16-bit
+```
+
+`astype()` on a vector register is syntax sugar for `pto.vbitcast(...)`. In other words, it is a bit reinterpretation API, not a numeric conversion API.
+
+**Note**: `vbitcast` preserves the exact bit pattern (type punning), unlike `vcvt` which performs value conversion with rounding/saturation. Use `vcvt` when you want numeric conversion semantics; use `vbitcast` when you want the bits to stay unchanged.
+
 ### Typed Masks
 
 Masks are typed by their bit granularity:

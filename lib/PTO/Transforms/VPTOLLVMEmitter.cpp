@@ -4117,6 +4117,27 @@ private:
   LoweringState &state;
 };
 
+class LowerVbitcastOpPattern final
+    : public OpConversionPattern<pto::VbitcastOp> {
+public:
+  explicit LowerVbitcastOpPattern(TypeConverter &typeConverter,
+                                  MLIRContext *context, LoweringState &state)
+      : OpConversionPattern<pto::VbitcastOp>(typeConverter, context) {}
+
+  LogicalResult
+  matchAndRewrite(pto::VbitcastOp op, pto::VbitcastOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Type resultType =
+        this->getTypeConverter()->convertType(op.getResult().getType());
+    if (!resultType)
+      return rewriter.notifyMatchFailure(op,
+                                         "failed to convert vbitcast result type");
+    rewriter.replaceOpWithNewOp<LLVM::BitcastOp>(op, resultType,
+                                                 adaptor.getInput());
+    return success();
+  }
+};
+
 class LowerVtrcOpPattern final : public OpConversionPattern<pto::VtrcOp> {
 public:
   explicit LowerVtrcOpPattern(TypeConverter &typeConverter, MLIRContext *context,
@@ -4872,6 +4893,7 @@ static void populateVPTOOpLoweringPatterns(VPTOTypeConverter &typeConverter,
                LowerVpreluOpPattern, LowerVaxpyOpPattern,
                LowerVciOpPattern, LowerVexpdiffOpPattern,
                LowerVbitsortOpPattern, LowerVtrcOpPattern, LowerVcvtOpPattern,
+               LowerVbitcastOpPattern,
                LowerPredicateLoadOpPattern<pto::PldiOp>,
                LowerPredicateLoadOpPattern<pto::PldsOp>,
                LowerPredicateStoreOpPattern<pto::PstiOp>,
@@ -4930,6 +4952,7 @@ static void configureVPTOOpLoweringTarget(ConversionTarget &target,
                       pto::VintlvOp, pto::VdintlvOp, pto::VpreluOp,
                       pto::VaxpyOp, pto::VciOp, pto::VexpdiffOp,
                       pto::VbitsortOp, pto::VtrcOp, pto::VcvtOp,
+                      pto::VbitcastOp,
                       pto::VcmpOp, pto::VcmpsOp,
                       pto::CopyGmToUbufOp, pto::CopyUbufToGmOp>();
   target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });

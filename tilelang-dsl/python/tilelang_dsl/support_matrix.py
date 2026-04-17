@@ -142,6 +142,7 @@ SUPPORTED_VECSCOPE_PTO_CALLS = frozenset(
         "vsort32",
         "vmrgsort",
         "vcvt",
+        "vbitcast",
         "vci",
     }
 )
