@@ -1,0 +1,25 @@
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --vpto-emit-hivm-llvm %s -o - | FileCheck %s
+
+module attributes {pto.target_arch = "a5"} {
+  func.func @kernel() attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c0_i64 = arith.constant 0 : i64
+
+    %ub = pto.castptr %c0_i64 : i64 -> !pto.ptr<f32, ub>
+    pto.vecscope {
+      %mask = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
+      %brc = pto.vlds %ub[%c0] {dist = "BRC_B8"} : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
+      %low, %high = pto.vldsx2 %ub[%c0], "DINTLV_B8" : !pto.ptr<f32, ub>, index -> !pto.vreg<64xf32>, !pto.vreg<64xf32>
+      pto.vsts %brc, %ub[%c0], %mask {dist = "NORM_B8"} : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
+      pto.vstsx2 %low, %high, %ub[%c0], "INTLV_B8", %mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.ptr<f32, ub>, index, !pto.mask<b32>
+    }
+    return
+  }
+}
+
+// CHECK-LABEL: define void @kernel()
+// CHECK: call <256 x i1> @llvm.hivm.pset.b32(i32 0)
+// CHECK: call <64 x float> @llvm.hivm.vldsx1.v64f32(ptr addrspace(6) null, i32 0, i32 1, i32 0)
+// CHECK: call { <64 x float>, <64 x float> } @llvm.hivm.vldsx2.v64f32(ptr addrspace(6) null, i32 0, i32 11, i32 0)
+// CHECK: call void @llvm.hivm.vstsx1.v64f32(<64 x float> {{.*}}, ptr addrspace(6) null, i32 0, i32 0, i32 0, <256 x i1> {{.*}})
+// CHECK: call void @llvm.hivm.vstsx2.v64f32(<64 x float> {{.*}}, <64 x float> {{.*}}, ptr addrspace(6) null, i32 0, i32 8, i32 0, <256 x i1> {{.*}})

@@ -85,7 +85,7 @@ Most **`dist:`** tokens are **9** issue→retire cycles. **`INTLV_B8` / `INTLV_B
 |--------------------|-------------------|
 | `NORM_B8` / `NORM_B16` / `NORM_B32` | **9** cycles (`RV_VSTI`) |
 | `PK_B16` / `PK_B32` / `PK_B64` / `PK4_B32` | **9** cycles |
-| `INTLV_B8` / `INTLV_B16` / `INTLV_B32` (`pto.vstx2`) | **12** cycles |
+| `INTLV_B8` / `INTLV_B16` / `INTLV_B32` (`pto.vstsx2`) | **12** cycles |
 | `MRG4CHN_B8`, `MRG2CHN_B8`, `MRG2CHN_B16` | **9** cycles (surface retained; current A5 hardware still reports them unsupported at validation time) |
 
 ### Gather, scatter, and special addressing
@@ -369,7 +369,7 @@ for (int blk = 0; blk < VL / 32; ++blk) {
 - **semantics:** Vector store with distribution mode.
 - **inputs:**
   `%value` is the source vector, `%dest` is the UB base pointer, `%offset` is
-  the displacement, `%mask` selects the active lanes or sub-elements, and
+  the displacement, `%mask` is the predicate operand, and
   `DIST` selects the store distribution.
 - **outputs:**
   This op has no SSA result; it writes to UB memory.
@@ -386,11 +386,13 @@ for (int blk = 0; blk < VL / 32; ++blk) {
 | Family | Allowed element widths | C semantics | Latency |
 |------|-------------|-------------|-------------|
 | `NORM_B8` / `NORM_B16` / `NORM_B32` | `b8`, `b16`, `b32` | `UB[base + i] = src[i]` | **9** cycles |
-| `1PT_B8` / `1PT_B16` / `1PT_B32` | `b8`, `b16`, `b32` | Only element 0 is written to the destination footprint | **9** cycles |
-| `PK_B16` / `PK_B32` / `PK_B64` | `b16`, `b32`, `b64` | Pack low half bits of each source element before store. | **9** cycles |
-| `PK4_B32` | `b32` | Pack low 8 bits of each `b32` element before store | **9** cycles |
-| `MRG4CHN_B8` | `b8` | Merge 4 channel planes into an interleaved 4-channel layout. VPTO currently requires `!pto.mask<b32>` for this family and emits a hardware-unsupported warning on A5. | **9** cycles |
-| `MRG2CHN_B8` / `MRG2CHN_B16` | `b8`, `b16` | Merge 2 channel planes into an interleaved 2-channel layout. VPTO currently requires `!pto.mask<b16>` for `MRG2CHN_B8` and `!pto.mask<b32>` for `MRG2CHN_B16`, and emits a hardware-unsupported warning on A5. | **9** cycles |
+| `1PT_B8` / `1PT_B16` / `1PT_B32` | `b8`, `b16`, `b32` | Only element 0 is written to the destination footprint; the predicate register is ignored. | **9** cycles |
+| `PK_B16` | `b16` | Pack the source vector, extract the lower half bits of all elements, and only store the active elements. The predicate is interpreted for 16-bit data. | **9** cycles |
+| `PK_B32` | `b32` | Pack the source vector, extract the lower half bits of all elements, and only store the active elements. The predicate is interpreted for 32-bit data. | **9** cycles |
+| `PK_B64` | `b64` | Pack the source vector, extract the lower half bits of all elements, and only store the active elements. The predicate is interpreted for 64-bit data. | **9** cycles |
+| `PK4_B32` | `b32` | Pack the source vector, extract the lower 8 bits of all elements, and only store the active elements. The predicate is interpreted for 32-bit data. | **9** cycles |
+| `MRG4CHN_B8` | `b8` | Merge 4 interleaved 8-bit channels within each 32B block; the predicate is interpreted for 32-bit data and applies after channel merge. | **9** cycles |
+| `MRG2CHN_B8` / `MRG2CHN_B16` | `b8`, `b16` | Merge 2 interleaved channels within each 32B block; for `MRG2CHN_B8` the predicate is interpreted for 16-bit data, and for `MRG2CHN_B16` it is interpreted for 32-bit data; in both cases it applies after channel merge. | **9** cycles |
 
 **Example — Contiguous store:**
 ```mlir
@@ -408,16 +410,15 @@ pto.vsts %v, %ub[%offset], %mask {dist = "NORM_B32"} : !pto.vreg<64xf32>, !pto.p
 - **inputs:**
   `%low` and `%high` are the two source vectors, `%dest` is the UB base pointer,
   `%offset` is the displacement, `DIST` selects the interleave layout, and
-  `%mask` gates the participating elements.
+  `%mask` is the predicate operand.
 - **outputs:**
   This op has no SSA result; it writes an interleaved stream to UB.
 - **constraints and limitations:**
   This family is only legal for interleave distributions. The two source
   vectors form an ordered pair, and the interleave semantics of that pair MUST
   be preserved. PTO surface accepts the `INTLV` family, which only supports the
-  element widths listed below.
-  be preserved. PTO surface accepts the `INTLV` family, which only supports the
-  element widths listed below.
+  element widths listed below. For all `INTLV_*` distributions, the predicate
+  register is ignored.
 - **latency:** `INTLV` is **12** cycles。
 
 **Distribution families:**
@@ -425,7 +426,6 @@ pto.vsts %v, %ub[%offset], %mask {dist = "NORM_B32"} : !pto.vreg<64xf32>, !pto.p
 | Family | Allowed element widths | C semantics | Latency |
 |------|-------------|-------------|-------------|
 | `INTLV` | `b8`, `b16`, `b32` | Interleave `%low` / `%high` into one destination stream | **12** cycles |
-| `INTLV` | `b8`, `b16`, `b32` |
 
 ```c
 // INTLV family on 32-bit elements:
