@@ -2438,6 +2438,7 @@ struct PTOViewToMemrefPass
 
         Value src = op.getSrc();
         Value dst = op.getDst();
+        Value tmp = op.getTmp();
 
         auto srcTy = dyn_cast<MemRefType>(src.getType());
         auto dstTy = dyn_cast<MemRefType>(dst.getType());
@@ -2446,19 +2447,25 @@ struct PTOViewToMemrefPass
           signalPassFailure();
           return;
         }
+        if (tmp && !dyn_cast<MemRefType>(tmp.getType())) {
+          op.emitError("tmp is not memref yet");
+          signalPassFailure();
+          return;
+        }
 
         auto rmodeAttr = op.getRmodeAttr(); // PTO_RoundModeAttr
+        auto satModeAttr = op.getSatModeAttr();
 
         auto newOp = rewriter.create<pto::TCvtOp>(
             op.getLoc(),
             TypeRange{},
             src,
-            dst);
+            dst,
+            tmp,
+            rmodeAttr,
+            satModeAttr);
 
-       if (rmodeAttr)
-         newOp->setAttr("rmode", rmodeAttr);
- 
-         rewriter.replaceOp(op, newOp->getResults());
+        rewriter.replaceOp(op, newOp->getResults());
       }
 
       SmallVector<mlir::pto::TDivOp, 8> divops;
@@ -3097,6 +3104,7 @@ struct PTOViewToMemrefPass
               ValueRange{src},
               blockLenVal,
               ValueRange{dst},
+              Value() /*tmp*/,
               Value() /*excuted*/,
               op.getExhaustedAttr());
         } else if (op.isFormat2()) {
@@ -3108,8 +3116,8 @@ struct PTOViewToMemrefPass
             signalPassFailure();
             return;
           }
-          if (op.getDsts().size() != 2u) {
-            op.emitError("format2 expects outs(dst, tmp) tile buffers");
+          if (op.getDsts().size() != 1u || !op.getTmp()) {
+            op.emitError("format2 expects outs(dst) and ins(tmp)");
             signalPassFailure();
             return;
           }
@@ -3118,7 +3126,7 @@ struct PTOViewToMemrefPass
           Value tmp = op.getTmp();
           Value excuted = op.getExcuted();
           if (!dyn_cast<MemRefType>(dst.getType()) || !dyn_cast<MemRefType>(tmp.getType())) {
-            op.emitError("format2 outs(dst/tmp) must be memref");
+            op.emitError("format2 dst/tmp must be memref");
             signalPassFailure();
             return;
           }
@@ -3133,7 +3141,8 @@ struct PTOViewToMemrefPass
               TypeRange{},
               op.getSrcs(),
               Value() /*blockLen*/,
-              ValueRange{dst, tmp},
+              ValueRange{dst},
+              tmp,
               excuted,
               op.getExhaustedAttr());
         } else {

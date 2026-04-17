@@ -770,7 +770,7 @@ def TMatmulMxAccOp : PTO_TOp<"tmatmul.mx.acc", [
   }];
 
   let extraClassDeclaration = [{
-    static StringRef getIntrinsicName() { return "TMATMUL_MX_ACC"; }
+    static StringRef getIntrinsicName() { return "TMATMUL_MX"; }
     ::mlir::pto::PIPE getPipe() {
       return ::mlir::pto::PIPE::PIPE_M;
     }
@@ -807,7 +807,7 @@ def TMatmulMxBiasOp : PTO_TOp<"tmatmul.mx.bias",[
   }];
 
   let extraClassDeclaration = [{
-    static StringRef getIntrinsicName() { return "TMATMUL_MX_BIAS"; }
+    static StringRef getIntrinsicName() { return "TMATMUL_MX"; }
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_M; }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
@@ -3159,27 +3159,57 @@ def TCvtOp : PTO_TOp<"tcvt", [
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
-  let summary = "Elementwise type conversion with rounding mode (tilebuf, DPS)";
+  let summary = "Elementwise type conversion with optional tmp tile and saturation mode (tilebuf, DPS)";
 
   let arguments = (ins
     PTODpsType:$src,
     PTODpsType:$dst,
-    DefaultValuedAttr<PTO_RoundModeAttr, "::mlir::pto::RoundMode::CAST_RINT">:$rmode
+    Optional<PTODpsType>:$tmp,
+    DefaultValuedAttr<PTO_RoundModeAttr, "::mlir::pto::RoundMode::CAST_RINT">:$rmode,
+    OptionalAttr<PTO_SaturationModeAttr>:$sat_mode
   );
 
   let results = (outs);
   let hasVerifier = 1;
+  let hasCustomAssemblyFormat = 1;
 
   let extraClassDeclaration = [{
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
+}
+
+def TRandomOp : PTO_TOp<"trandom", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Generate random values into dst tile using key/counter words.";
+
+  let arguments = (ins
+    AnySignlessInteger:$key0,
+    AnySignlessInteger:$key1,
+    AnySignlessInteger:$counter0,
+    AnySignlessInteger:$counter1,
+    AnySignlessInteger:$counter2,
+    AnySignlessInteger:$counter3,
+    PTODpsType:$dst,
+    DefaultValuedAttr<I32Attr, "10">:$rounds
+  );
+
+  let results = (outs);
+  let hasVerifier = 1;
 
   let assemblyFormat = [{
-    `ins` `(` $src 
+    `ins` `(` $key0 `,` $key1 `,` $counter0 `,` $counter1 `,` $counter2 `,` $counter3
     attr-dict
-    `:` qualified(type($src)) `)`
+    `:` type($key0) `,` type($key1) `,` type($counter0) `,` type($counter1) `,` type($counter2) `,` type($counter3) `)`
     `outs` `(` $dst `:` qualified(type($dst) ) `)`
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
 }
 
@@ -3955,6 +3985,7 @@ def TMrgSortOp: PTO_TOp<"tmrgsort", [
     Variadic<PTODpsType>:$srcs,
     Optional<AnyInteger>:$blockLen,
     Variadic<PTODpsType>:$dsts,
+    Optional<PTODpsType>:$tmp,
     Optional<AnyType>:$excuted,
     DefaultValuedAttr<BoolAttr, "false">:$exhausted
   );
@@ -3965,10 +3996,9 @@ def TMrgSortOp: PTO_TOp<"tmrgsort", [
 
   let extraClassDeclaration = [{
     bool isFormat1() { return getSrcs().size() == 1u && getBlockLen() && getDsts().size() == 1u; }
-    bool isFormat2() { return getSrcs().size() >= 2u && getSrcs().size() <= 4u && getDsts().size() == 2u && getExcuted(); }
+    bool isFormat2() { return getSrcs().size() >= 2u && getSrcs().size() <= 4u && getTmp() && getDsts().size() == 1u && getExcuted(); }
     Value getSrc() { return getSrcs().front(); }
     Value getDst() { return getDsts().front(); }
-    Value getTmp() { return getDsts()[1]; }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstsMutable(); }
     void print(::mlir::OpAsmPrinter &p);
     static ::mlir::ParseResult parse(::mlir::OpAsmParser &parser, ::mlir::OperationState &result);
