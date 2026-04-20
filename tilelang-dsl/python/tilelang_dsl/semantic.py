@@ -52,6 +52,7 @@ from .types import (
     AlignType,
     BarrierType,
     BLayout,
+    CmpMode,
     DeinterleaveDist,
     Event,
     InterleaveDist,
@@ -62,6 +63,7 @@ from .types import (
     PadMode,
     PadValue,
     PredicateDist,
+    PredicatePart,
     Pipe,
     PostUpdateMode,
     PositionMode,
@@ -134,6 +136,8 @@ _PAD_VALUE_SYMBOLS = {
     for pad_value in (PadValue.NULL, PadValue.ZERO, PadValue.MAX, PadValue.MIN)
 }
 _PREDICATE_DIST_SYMBOLS = {dist.name: dist for dist in PredicateDist}
+_PREDICATE_PART_SYMBOLS = {part.name: part for part in PredicatePart}
+_CMP_MODE_SYMBOLS = {mode.name: mode for mode in CmpMode}
 _DEINTERLEAVE_DIST_SYMBOLS = dict(DeinterleaveDist.__members__)
 _INTERLEAVE_DIST_SYMBOLS = dict(InterleaveDist.__members__)
 _POSITION_MODE_SYMBOLS = {position_mode.name: position_mode for position_mode in PositionMode}
@@ -3336,6 +3340,24 @@ class _SemanticAnalyzer:
                     value=predicate_dist,
                     type=SemanticMetaType(kind="predicate_dist"),
                 )
+        if expr.namespace in {"PredicatePart", "pto.PredicatePart"}:
+            predicate_part = _PREDICATE_PART_SYMBOLS.get(expr.name)
+            if predicate_part is not None:
+                return SemanticSymbolExpr(
+                    namespace=expr.namespace,
+                    name=expr.name,
+                    value=predicate_part,
+                    type=SemanticMetaType(kind="predicate_part"),
+                )
+        if expr.namespace in {"CmpMode", "pto.CmpMode"}:
+            cmp_mode = _CMP_MODE_SYMBOLS.get(expr.name)
+            if cmp_mode is not None:
+                return SemanticSymbolExpr(
+                    namespace=expr.namespace,
+                    name=expr.name,
+                    value=cmp_mode,
+                    type=SemanticMetaType(kind="cmp_mode"),
+                )
         if expr.namespace in {"DeinterleaveDist", "pto.DeinterleaveDist"}:
             dist = _DEINTERLEAVE_DIST_SYMBOLS.get(expr.name)
             if dist is not None:
@@ -4054,6 +4076,20 @@ class _SemanticAnalyzer:
                 value=value,
                 type=SemanticMetaType(kind="memory_space"),
             )
+        if isinstance(value, CmpMode):
+            return SemanticSymbolExpr(
+                namespace="pto",
+                name=value.name,
+                value=value,
+                type=SemanticMetaType(kind="cmp_mode"),
+            )
+        if isinstance(value, PredicatePart):
+            return SemanticSymbolExpr(
+                namespace="pto",
+                name=value.name,
+                value=value,
+                type=SemanticMetaType(kind="predicate_part"),
+            )
         raise TypeError(
             f"{context} resolved to unsupported static value {value!r} in TileLang DSL v1"
         )
@@ -4700,8 +4736,8 @@ class _SemanticAnalyzer:
         if len(args) != 2:
             raise TypeError(f"pto.{name} expects exactly 2 positional arguments in TileLang DSL")
         mask = self._require_mask_expr(args[0], f"pto.{name} mask")
-        self._require_string_expr(args[1], f"pto.{name} part")
-        return SemanticCallExpr(namespace="pto", name=name, args=args, type=mask)
+        part = self._normalize_predicate_part(args[1], f"pto.{name} part")
+        return SemanticCallExpr(namespace="pto", name=name, args=(args[0], part), type=mask)
 
     def _analyze_mask_logic_op(
         self,
@@ -4771,11 +4807,11 @@ class _SemanticAnalyzer:
                 raise TypeError("pto.vcmp requires lhs/rhs vector types to match")
             seed = self._require_mask_expr(args[2], "pto.vcmp seed mask")
             self._require_mask_for_vreg(args[2], lhs, "pto.vcmp")
-            self._require_string_expr(args[3], "pto.vcmp compare mode")
+            cmp_mode = self._normalize_cmp_mode(args[3], "pto.vcmp compare mode")
             return SemanticCallExpr(
                 namespace="pto",
                 name=name,
-                args=args,
+                args=(args[0], args[1], args[2], cmp_mode),
                 type=SemanticMaskType(granularity=seed.granularity),
             )
 
@@ -4787,11 +4823,11 @@ class _SemanticAnalyzer:
             raise TypeError("pto.vcmps scalar dtype must match vector element dtype")
         seed = self._require_mask_expr(args[2], "pto.vcmps seed mask")
         self._require_mask_for_vreg(args[2], vector, "pto.vcmps")
-        self._require_string_expr(args[3], "pto.vcmps compare mode")
+        cmp_mode = self._normalize_cmp_mode(args[3], "pto.vcmps compare mode")
         return SemanticCallExpr(
             namespace="pto",
             name=name,
-            args=args,
+            args=(args[0], args[1], args[2], cmp_mode),
             type=SemanticMaskType(granularity=seed.granularity),
         )
 
@@ -5420,6 +5456,53 @@ class _SemanticAnalyzer:
         ):
             return expr.binding.value
         raise TypeError(f"{context} must be a string literal in TileLang DSL")
+
+    def _normalize_cmp_mode(self, expr: SemanticExpr, context: str) -> SemanticExpr:
+        if (
+            isinstance(expr, SemanticSymbolExpr)
+            and isinstance(expr.type, SemanticMetaType)
+            and expr.type.kind == "cmp_mode"
+            and isinstance(expr.value, CmpMode)
+        ):
+            return SemanticLiteralExpr(value=expr.value.value, type=SemanticMetaType(kind="string"))
+        if (
+            isinstance(expr, SemanticBindingRef)
+            and isinstance(expr.type, SemanticMetaType)
+            and expr.type.kind == "cmp_mode"
+            and isinstance(expr.binding.value, CmpMode)
+        ):
+            return SemanticLiteralExpr(value=expr.binding.value.value, type=SemanticMetaType(kind="string"))
+        cmp_mode = self._require_string_expr(expr, context)
+        if cmp_mode not in {mode.value for mode in CmpMode}:
+            raise TypeError(
+                f"{context} must be a CmpMode enum such as `pto.CmpMode.LT`, "
+                'or one of the canonical strings `"eq"`, `"ne"`, `"lt"`, `"le"`, `"gt"`, `"ge"` '
+                "in TileLang DSL v1"
+            )
+        return SemanticLiteralExpr(value=cmp_mode, type=SemanticMetaType(kind="string"))
+
+    def _normalize_predicate_part(self, expr: SemanticExpr, context: str) -> SemanticExpr:
+        if (
+            isinstance(expr, SemanticSymbolExpr)
+            and isinstance(expr.type, SemanticMetaType)
+            and expr.type.kind == "predicate_part"
+            and isinstance(expr.value, PredicatePart)
+        ):
+            return SemanticLiteralExpr(value=expr.value.value, type=SemanticMetaType(kind="string"))
+        if (
+            isinstance(expr, SemanticBindingRef)
+            and isinstance(expr.type, SemanticMetaType)
+            and expr.type.kind == "predicate_part"
+            and isinstance(expr.binding.value, PredicatePart)
+        ):
+            return SemanticLiteralExpr(value=expr.binding.value.value, type=SemanticMetaType(kind="string"))
+        part = self._require_string_expr(expr, context)
+        if part not in {token.value for token in PredicatePart}:
+            raise TypeError(
+                f"{context} must be a PredicatePart enum such as `pto.PredicatePart.LOWER`, "
+                'or one of the canonical strings `"LOWER"`, `"HIGHER"` in TileLang DSL v1'
+            )
+        return SemanticLiteralExpr(value=part, type=SemanticMetaType(kind="string"))
 
     def _normalize_post_update_mode(
         self,

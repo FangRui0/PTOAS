@@ -196,6 +196,20 @@ class PredicateDist(str, Enum):
     PK = "PK"
 
 
+class PredicatePart(str, Enum):
+    LOWER = "LOWER"
+    HIGHER = "HIGHER"
+
+
+class CmpMode(str, Enum):
+    EQ = "eq"
+    NE = "ne"
+    LT = "lt"
+    LE = "le"
+    GT = "gt"
+    GE = "ge"
+
+
 class PadMode(str, Enum):
     PadNull = "PadNull"
     PadFirstElem = "PadFirstElem"
@@ -682,6 +696,8 @@ __all__ = [
     "EVENT",
     "MaskPattern",
     "PredicateDist",
+    "PredicatePart",
+    "CmpMode",
     "PAT",
     "BarrierType",
     "PadMode",
