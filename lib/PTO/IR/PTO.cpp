@@ -3443,10 +3443,11 @@ LogicalResult pto::TColExpandAddOp::verify() {
 }
 LogicalResult pto::TColExpandDivOp::verify() {
   auto verifyByArch = [&](PTOArch targetArch) -> LogicalResult {
+    bool allowIntegerTypes = (targetArch == PTOArch::A5);
     return verifyTColExpandBinaryLikeOp(getOperation(), getSrc0().getType(),
                                         getSrc1().getType(), getDst().getType(),
                                         targetArch, "tcolexpanddiv",
-                                        /*allowIntegerTypes=*/false);
+                                        /*allowIntegerTypes=*/allowIntegerTypes);
   };
   auto verifyA2A3 = [&]() -> LogicalResult { return verifyByArch(PTOArch::A3); };
   auto verifyA5 = [&]() -> LogicalResult { return verifyByArch(PTOArch::A5); };
@@ -8004,7 +8005,7 @@ void mlir::pto::TRowExpandMinOp::print(OpAsmPrinter &p) {
 }
 
 mlir::LogicalResult mlir::pto::TRowExpandDivOp::verify() {
-  auto verifyCommon = [&]() -> LogicalResult {
+  auto verifyByArch = [&](PTOArch targetArch) -> LogicalResult {
     Type src0Ty = getSrc0().getType();
     Type src1Ty = getSrc1().getType();
     Type dstTy = getDst().getType();
@@ -8021,15 +8022,21 @@ mlir::LogicalResult mlir::pto::TRowExpandDivOp::verify() {
       return emitOpError("expects src0 and src1 to have the same element type");
     if (!isRowMajorTileBuf(dstTy))
       return emitOpError("expects dst to use row-major layout");
-    auto elemTy = getElemTy(src0Ty).dyn_cast<mlir::FloatType>();
-    if (!elemTy || (!elemTy.isF16() && !elemTy.isF32()))
+    Type elem = getElemTy(src0Ty);
+    bool supported =
+        elem.isF16() || elem.isF32() ||
+        (targetArch == PTOArch::A5 &&
+         (elem.isInteger(8) || elem.isInteger(16) || elem.isInteger(32)));
+    if (!supported) {
+      if (targetArch == PTOArch::A5)
+        return emitOpError(
+            "expects A5 trowexpanddiv element type to be i8/i16/i32/f16/f32");
       return emitOpError("expects element type to be f16 or f32");
+    }
     return mlir::success();
   };
-  auto verifyA2A3 = [&]() -> LogicalResult {
-    return verifyCommon();
-  };
-  auto verifyA5 = [&]() -> LogicalResult { return verifyCommon(); };
+  auto verifyA2A3 = [&]() -> LogicalResult { return verifyByArch(PTOArch::A3); };
+  auto verifyA5 = [&]() -> LogicalResult { return verifyByArch(PTOArch::A5); };
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 
