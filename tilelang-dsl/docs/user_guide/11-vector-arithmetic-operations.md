@@ -117,18 +117,24 @@ abs_vec = pto.vabs(vec_f32, mask32)
 
 #### `pto.vcadd(vec: VRegType, mask: MaskType) -> VRegType`
 
-**Description**: Complex addition of vector elements (treating pairs as complex numbers).
+**Description**: Reduction add of vector elements.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `vec` | `VRegType` | Input vector (interpreted as complex pairs) |
+| `vec` | `VRegType` | Input vector |
 | `mask` | `MaskType` | Predicate mask |
 
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
-| `result` | `VRegType` | Complex addition result |
+| `result` | `VRegType` | Reduction result vector |
+
+**Type Rules**:
+- For floating-point inputs and `i32/ui32`, the result vector type matches the input vector type.
+- For `i8/ui8` inputs, `pto.vcadd` returns a widened `i16/ui16` vector.
+- For `i16/ui16` inputs, `pto.vcadd` returns a widened `i32/ui32` vector.
+- The result mask granularity follows the result vector element type.
 
 #### `pto.vcmax(vec: VRegType, mask: MaskType) -> VRegType`
 
