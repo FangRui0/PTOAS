@@ -289,9 +289,14 @@ _LOW_LEVEL_DMA_COPY_OPS = {
     "copy_ubuf_to_gm",
     "copy_ubuf_to_ubuf",
 }
-_MOV_PAD_SUPPORTED_SCALAR_DTYPES = frozenset(
-    dtype.name for dtype in (i8, i16, i32, f16, bf16, f32)
-)
+
+
+def _is_supported_mov_pad_scalar_dtype(dtype: ScalarType) -> bool:
+    if is_integer_dtype(dtype):
+        return integer_bitwidth(dtype) in {8, 16, 32}
+    return dtype.name in {"f16", "bf16", "f32"}
+
+
 _COMPARE_SELECT_OPS = {"vcmp", "vcmps", "vsel", "vselr", "vselrv2"}
 _PREDICATE_MOVEMENT_OPS = {
     "pset_b8",
@@ -2126,9 +2131,9 @@ class _SemanticAnalyzer:
             if len(args) != 1:
                 raise TypeError(f"pto.{expr.name} expects exactly 1 positional argument in TileLang DSL")
             scalar = self._require_scalar_expr(args[0], f"pto.{expr.name} pad_value")
-            if scalar.dtype.name not in _MOV_PAD_SUPPORTED_SCALAR_DTYPES:
+            if not _is_supported_mov_pad_scalar_dtype(scalar.dtype):
                 raise TypeError(
-                    "pto.set_mov_pad_val pad_value must be one of i8, i16, i32, f16, bf16, or f32 in TileLang DSL v1"
+                    "pto.set_mov_pad_val pad_value must be an 8/16/32-bit integer or f16/bf16/f32 in TileLang DSL v1"
                 )
             return (
                 SemanticDmaUnaryConfigStmt(

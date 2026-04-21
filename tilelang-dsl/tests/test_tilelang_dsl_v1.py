@@ -4745,6 +4745,32 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             r"pto\.copy_gm_to_ubuf %gm_ptr_\d+, %ub_ptr_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+, %true, %tmp_\d+, %tmp_\d+, %tmp_\d+",
         )
 
+    def test_set_mov_pad_val_automatically_bitcasts_unsigned_tile_pad_value_to_signless_scalar(self) -> None:
+        @pto.vkernel(op="set_mov_pad_val_tile_pad_bitcast_unique", dtypes=[(pto.ui16,)], advanced=True)
+        def kernel(dst: pto.Tile):
+            pto.set_mov_pad_val(dst.pad_value.eval())
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(
+                shape=(260, 32),
+                memory_space=pto.MemorySpace.UB,
+                config=pto.TileConfig.from_mapping(
+                    {
+                        "b_layout": "row_major",
+                        "s_layout": "none_box",
+                        "s_fractal_size": 512,
+                        "pad_value": "0x2",
+                    }
+                ),
+                valid_shape=(260, 7),
+            )
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn("arith.bitcast", text)
+        self.assertRegex(text, r"pto\.set_mov_pad_val %[^ ]+ : i16")
+
     def test_copy_ubuf_to_gm_keyword_surface_lowers_in_advanced_mode(self) -> None:
         @pto.vkernel(op="tile_to_tensorview_dma_unique", dtypes=[(pto.f32, pto.f32)], advanced=True)
         def kernel(src: pto.Tile, dst: pto.TensorView):
@@ -5945,7 +5971,7 @@ class TileLangDSLDiagnosticsTests(unittest.TestCase):
             ).mlir_text()
 
         self.assertIn(
-            "pto.set_mov_pad_val pad_value must be one of i8, i16, i32, f16, bf16, or f32",
+            "pto.set_mov_pad_val pad_value must be an 8/16/32-bit integer or f16/bf16/f32",
             str(ctx.exception),
         )
 

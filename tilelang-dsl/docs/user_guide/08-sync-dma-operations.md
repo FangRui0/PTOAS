@@ -335,7 +335,7 @@ pto.set_mov_pad_val(pad_value: ScalarType) -> None
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `pad_value` | `ScalarType` | Scalar value used for padding. Supported types: `pto.i8`, `pto.i16`, `pto.i32`, `pto.f16`, `pto.bf16`, `pto.f32`. The value's bit pattern is encoded into the hardware pad register. For standard pad values, use `PadValue.eval(...)` to obtain the appropriate scalar: `0` or `0.0` for `PadValue.ZERO`, dtype-aware maximum for `PadValue.MAX`, dtype-aware minimum for `PadValue.MIN`. |
+| `pad_value` | `ScalarType` | Scalar value used for padding. Supported types: any 8/16/32-bit integer scalar (`pto.i8`, `pto.si8`, `pto.ui8`, `pto.i16`, `pto.si16`, `pto.ui16`, `pto.i32`, `pto.si32`, `pto.ui32`) plus `pto.f16`, `pto.bf16`, and `pto.f32`. The value's bit pattern is encoded into the hardware pad register. Integer inputs are automatically normalized to the corresponding signless hardware operand width during lowering, so no manual cast is required before calling `pto.set_mov_pad_val`. For standard pad values, use `PadValue.eval(...)` to obtain the appropriate scalar: `0` or `0.0` for `PadValue.ZERO`, dtype-aware maximum for `PadValue.MAX`, dtype-aware minimum for `PadValue.MIN`. |
 
 **Returns**: None (side-effect operation)
 
@@ -384,8 +384,10 @@ if pto.constexpr(pad_desc != pto.PadValue.NULL):
 Using a standalone `PadValue` with an explicit dtype:
 ```python
 pad_scalar = pto.PadValue.MAX.eval(pto.f32)
-pto.set_mov_pad_val(pto.f32(pad_scalar))
+pto.set_mov_pad_val(pad_scalar)
 ```
+
+For integer tile dtypes such as `pto.ui16` or `pto.si32`, `pad_desc.eval()` can be passed directly to `pto.set_mov_pad_val`. TileLang DSL v1 will automatically insert the required same-width bitcast to the signless hardware operand type during lowering.
 
 **Important**: You are responsible for ensuring the pad register is properly configured before any `pto.copy_gm_to_ubuf` operation with `enable_ub_pad=True`. The pad register configuration persists until changed by another `pto.set_mov_pad_val` call.
 

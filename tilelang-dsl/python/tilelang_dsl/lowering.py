@@ -91,6 +91,17 @@ _I32_TYPE = SemanticScalarType(dtype=ScalarType("i32"))
 _I64_TYPE = SemanticScalarType(dtype=ScalarType("i64"))
 
 
+def _signless_mov_pad_scalar_type(dtype: ScalarType) -> SemanticScalarType | None:
+    bitwidth = integer_bitwidth(dtype)
+    if bitwidth == 8:
+        return SemanticScalarType(dtype=ScalarType("i8"))
+    if bitwidth == 16:
+        return SemanticScalarType(dtype=ScalarType("i16"))
+    if bitwidth == 32:
+        return SemanticScalarType(dtype=ScalarType("i32"))
+    return None
+
+
 def _format_symbol_name(symbol_name: str) -> str:
     if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$.]*", symbol_name):
         return f"@{symbol_name}"
@@ -505,6 +516,19 @@ class _AuthoringRenderer:
     ) -> list[str]:
         lines: list[str] = []
         value = self._lower_expr(stmt.value, env, indent=indent, into=lines)
+        if (
+            stmt.name == "set_mov_pad_val"
+            and isinstance(value.type, SemanticScalarType)
+            and is_integer_dtype(value.type.dtype)
+        ):
+            signless_type = _signless_mov_pad_scalar_type(value.type.dtype)
+            if signless_type is not None:
+                value = self._coerce_rendered_value(
+                    value,
+                    signless_type,
+                    indent=indent,
+                    into=lines,
+                )
         lines.append(
             self._indent(indent)
             + f"pto.{stmt.name} {value.name} : {self._render_type(value.type)}"
