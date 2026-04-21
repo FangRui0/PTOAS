@@ -264,6 +264,181 @@ jobs:
           path: ${{ env.PAYLOAD_TGZ }}
           if-no-files-found: error
 
+  vpto-sim-validation:
+    runs-on: [self-hosted, Linux, X64, label-1]
+    timeout-minutes: 120
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' ||
+        github.event_name == 'schedule' ||
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name == github.repository)
+      }}
+    env:
+      LLVM_COMMIT: cd708029e0b2869e80abe31ddb175f7c35361f90
+      LLVM_DIR: ${{ github.workspace }}/llvm-project/llvm/build-shared
+      MLIR_PYTHONPATH: ${{ github.workspace }}/llvm-project/llvm/build-shared/tools/mlir/python_packages/mlir_core
+      VPTO_SIM_WORKSPACE: ${{ github.workspace }}/.work/vpto-sim-ci
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Ensure runner dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing_tools=()
+          for tool in python3 git cmake ninja; do
+            if ! command -v "${tool}" >/dev/null 2>&1; then
+              missing_tools+=("${tool}")
+            fi
+          done
+
+          if [[ "${#missing_tools[@]}" -gt 0 ]]; then
+            if command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y python3 python3-pip git cmake ninja-build
+            else
+              echo "ERROR: missing required tools on self-hosted runner: ${missing_tools[*]}" >&2
+              echo "ERROR: automatic installation requires sudo + apt-get" >&2
+              exit 1
+            fi
+          fi
+
+          python3 -m pip --version >/dev/null 2>&1 || {
+            if command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y python3-pip
+            else
+              echo "ERROR: python3-pip is required on self-hosted runner" >&2
+              exit 1
+            fi
+          }
+
+          need_pip_install=0
+          python3 -c "import numpy" >/dev/null 2>&1 || need_pip_install=1
+          python3 -m pybind11 --cmakedir >/dev/null 2>&1 || need_pip_install=1
+
+          if [[ "${need_pip_install}" -eq 1 ]]; then
+            python3 -m pip install --upgrade pip
+            python3 -m pip install 'pybind11<3' numpy
+          fi
+
+      - name: Detect reusable LLVM build
+        id: detect-llvm-build
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f "${LLVM_DIR}/lib/cmake/llvm/LLVMConfig.cmake" && \
+                -f "${LLVM_DIR}/lib/cmake/mlir/MLIRConfig.cmake" ]]; then
+            echo "ready=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "ready=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Prepare LLVM source (no rebuild)
+        if: steps.detect-llvm-build.outputs.ready != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p llvm-project
+          cd llvm-project
+
+          if [ ! -d .git ]; then
+            git init
+            git remote add origin https://github.com/llvm/llvm-project.git
+          fi
+
+          git fetch --depth 1 origin tag llvmorg-19.1.7
+          git checkout "${LLVM_COMMIT}"
+
+      - name: Build LLVM/MLIR (only if cache miss)
+        if: steps.detect-llvm-build.outputs.ready != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd llvm-project
+          cmake -G Ninja -S llvm -B llvm/build-shared \
+            -DLLVM_ENABLE_PROJECTS="mlir;clang" \
+            -DBUILD_SHARED_LIBS=ON \
+            -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
+            -DPython3_EXECUTABLE=python3 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_TARGETS_TO_BUILD="host"
+
+          ninja -C llvm/build-shared
+
+      - name: Build PTOAS
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYBIND11_CMAKE_DIR="$(python3 -m pybind11 --cmakedir)"
+          cmake -G Ninja -S . -B build \
+            -DLLVM_DIR="${LLVM_DIR}/lib/cmake/llvm" \
+            -DMLIR_DIR="${LLVM_DIR}/lib/cmake/mlir" \
+            -DPython3_EXECUTABLE=python3 \
+            -DPython3_FIND_STRATEGY=LOCATION \
+            -Dpybind11_DIR="${PYBIND11_CMAKE_DIR}" \
+            -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
+            -DMLIR_PYTHON_PACKAGE_DIR="${LLVM_DIR}/tools/mlir/python_packages/mlir_core" \
+            -DCMAKE_BUILD_TYPE=Release
+          ninja -C build ptoas
+
+      - name: Resolve simulator environment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          detect_ascend_home() {
+            for d in \
+              "${ASCEND_HOME_PATH:-}" \
+              /usr/local/Ascend/cann \
+              /usr/local/Ascend/cann-* \
+              /usr/local/Ascend/ascend-toolkit/latest
+            do
+              [[ -n "${d}" && -d "${d}" ]] || continue
+              printf '%s\n' "${d}"
+              return 0
+            done
+            return 1
+          }
+
+          ASCEND_HOME_PATH_DETECTED="$(detect_ascend_home || true)"
+          if [[ -z "${ASCEND_HOME_PATH_DETECTED}" ]]; then
+            echo "ERROR: failed to detect ASCEND_HOME_PATH on self-hosted runner" >&2
+            exit 1
+          fi
+
+          echo "ASCEND_HOME_PATH=${ASCEND_HOME_PATH_DETECTED}" >> "${GITHUB_ENV}"
+          echo "PTOAS_BIN=${GITHUB_WORKSPACE}/build/tools/ptoas/ptoas" >> "${GITHUB_ENV}"
+
+      - name: Run VPTO SIM validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${VPTO_SIM_WORKSPACE}"
+          WORK_SPACE="${VPTO_SIM_WORKSPACE}" \
+          ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" \
+          PTOAS_BIN="${PTOAS_BIN}" \
+          DEVICE=SIM \
+          JOBS="${JOBS:-32}" \
+          bash test/vpto/scripts/run_host_vpto_validation_parallel.sh
+
+      - name: Upload VPTO SIM logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vpto-sim-validation-${{ github.run_id }}
+          path: |
+            ${{ env.VPTO_SIM_WORKSPACE }}/parallel-runner.log
+            ${{ env.VPTO_SIM_WORKSPACE }}/parallel-summary.tsv
+          if-no-files-found: warn
+
   remote-npu-validation:
     needs: build-and-test
     runs-on: ubuntu-22.04
