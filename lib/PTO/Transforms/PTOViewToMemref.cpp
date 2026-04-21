@@ -150,40 +150,29 @@ static int64_t getElemBytes(Type elemTy) {
   return -1;
 }
 
-static bool readBLayoutI32(Attribute attr, int32_t &out) {
-  if (auto a = dyn_cast<BLayoutAttr>(attr)) {
-    out = (int32_t)a.getValue();
+template <typename EnumAttrTy>
+static bool readEnumAttrOrIntegerI32(Attribute attr, int32_t &out) {
+  if (auto enumAttr = dyn_cast<EnumAttrTy>(attr)) {
+    out = static_cast<int32_t>(enumAttr.getValue());
     return true;
   }
-  if (auto a = dyn_cast<IntegerAttr>(attr)) {
-    out = (int32_t)a.getInt();
+  if (auto intAttr = dyn_cast<IntegerAttr>(attr)) {
+    out = static_cast<int32_t>(intAttr.getInt());
     return true;
   }
   return false;
+}
+
+static bool readBLayoutI32(Attribute attr, int32_t &out) {
+  return readEnumAttrOrIntegerI32<BLayoutAttr>(attr, out);
 }
 
 static bool readSLayoutI32(Attribute attr, int32_t &out) {
-  if (auto a = dyn_cast<SLayoutAttr>(attr)) {
-    out = (int32_t)a.getValue();
-    return true;
-  }
-  if (auto a = dyn_cast<IntegerAttr>(attr)) {
-    out = (int32_t)a.getInt();
-    return true;
-  }
-  return false;
+  return readEnumAttrOrIntegerI32<SLayoutAttr>(attr, out);
 }
 
 static bool readCompactModeI32(Attribute attr, int32_t &out) {
-  if (auto a = dyn_cast<CompactModeAttr>(attr)) {
-    out = (int32_t)a.getValue();
-    return true;
-  }
-  if (auto a = dyn_cast<IntegerAttr>(attr)) {
-    out = (int32_t)a.getInt();
-    return true;
-  }
-  return false;
+  return readEnumAttrOrIntegerI32<CompactModeAttr>(attr, out);
 }
 
 static Value peelIndexLikeCast(Value value) {
@@ -237,6 +226,31 @@ static TileLayoutConfig getTileLayoutConfig(mlir::pto::TileBufConfigAttr cfg) {
   return config;
 }
 
+static bool getFractal512InnerExtent(int64_t elemBytes, int64_t &extent) {
+  switch (elemBytes) {
+  case 1:
+    extent = 32;
+    return true;
+  case 2:
+    extent = 16;
+    return true;
+  case 4:
+    extent = 8;
+    return true;
+  case 8:
+    extent = 4;
+    return true;
+  case 16:
+    extent = 2;
+    return true;
+  case 32:
+    extent = 1;
+    return true;
+  default:
+    return false;
+  }
+}
+
 static bool computeBoxInnerShape(const TileLayoutConfig &config, Type elemTy,
                                  TileLayoutInfo &info) {
   info.boxed = config.sLayout != 0;
@@ -262,11 +276,11 @@ static bool computeBoxInnerShape(const TileLayoutConfig &config, Type elemTy,
   case 512:
     if (config.sLayout == 1) {
       info.innerRows = 16;
-      info.innerCols = 32 / elemBytes;
-      return true;
+      return getFractal512InnerExtent(elemBytes, info.innerCols);
     }
     if (config.sLayout == 2) {
-      info.innerRows = 32 / elemBytes;
+      if (!getFractal512InnerExtent(elemBytes, info.innerRows))
+        return false;
       info.innerCols = 16;
       return true;
     }
@@ -456,6 +470,23 @@ static void dumpPretty(Operation *op, llvm::raw_ostream &os) {
 // Type Converter Logic
 // =============================================================================
 
+static SmallVector<int64_t> buildTileMemRefStrides(mlir::pto::TileBufType tbTy) {
+  TileLayoutInfo info;
+  if (computeTileLayoutInfo(tbTy.getConfigAttr(), tbTy.getElementType(),
+                            tbTy.getShape(), info)) {
+    return {info.rowStride, info.colStride};
+  }
+  return computeCompactStrides(tbTy.getShape());
+}
+
+static Type convertTileBufTypeToMemRef(mlir::pto::TileBufType tbTy) {
+  auto layoutAttr = StridedLayoutAttr::get(tbTy.getContext(),
+                                           ShapedType::kDynamic,
+                                           buildTileMemRefStrides(tbTy));
+  return MemRefType::get(tbTy.getShape(), tbTy.getElementType(), layoutAttr,
+                         tbTy.getMemorySpace());
+}
+
 static Type convertPTOTypeToMemRef(Type t) {
   // 1. 处理 !pto.ptr<T>
   if (auto pty = dyn_cast<mlir::pto::PtrType>(t)) {
@@ -464,47 +495,8 @@ static Type convertPTOTypeToMemRef(Type t) {
   }
   
   // 2. 处理 !pto.tile_buf<...>
-  if (auto tbTy = dyn_cast<mlir::pto::TileBufType>(t)) {
-    SmallVector<int64_t> strides;
-    
-    // Try layout-aware strides first (BLayout/SLayout-aware).
-    auto shape = tbTy.getShape();
-    TileLayoutInfo info;
-    bool gotLayout = false;
-    if (computeTileLayoutInfo(tbTy.getConfigAttr(), tbTy.getElementType(), shape,
-                              info)) {
-      strides = {info.rowStride, info.colStride};
-      gotLayout = true;
-    }
-
-    // Fallback: Row-Major contiguous strides.
-    if (!gotLayout) {
-      strides.resize(shape.size());
-      int64_t s = 1;
-      for (int i = (int)shape.size() - 1; i >= 0; --i) {
-        strides[i] = s;
-        if (shape[i] != ShapedType::kDynamic)
-          s *= shape[i];
-        else
-          s = ShapedType::kDynamic;
-      }
-    }
-
-    // 构造归一化的 Strided Layout
-    // 【关键】Offset 设为 Dynamic (?)。
-    // 这对于 Subview 出来的 MemRef 和 Alloc 出来的 MemRef 都必须一致，
-    // 否则 TAdd 的两个输入类型不匹配会报错。
-    auto layoutAttr = StridedLayoutAttr::get(t.getContext(), 
-                                             ShapedType::kDynamic, // offset: ?
-                                             strides);
-
-    return MemRefType::get(
-        tbTy.getShape(), 
-        tbTy.getElementType(), 
-        layoutAttr,
-        tbTy.getMemorySpace()
-    );
-  }
+  if (auto tbTy = dyn_cast<mlir::pto::TileBufType>(t))
+    return convertTileBufTypeToMemRef(tbTy);
   // 其他类型透传
   return t;
 }
@@ -611,15 +603,10 @@ static LogicalResult lowerAllocTileOps(func::FuncOp func, MLIRContext *ctx) {
     if (!tbTy)
       continue;
 
-    SmallVector<int64_t, 4> shape(tbTy.getShape().begin(), tbTy.getShape().end());
+    SmallVector<int64_t, 4> shape(tbTy.getShape().begin(),
+                                  tbTy.getShape().end());
     Type elemTy = tbTy.getElementType();
-
-    SmallVector<int64_t> strides;
-    TileLayoutInfo info;
-    if (computeTileLayoutInfo(tbTy.getConfigAttr(), elemTy, shape, info))
-      strides = {info.rowStride, info.colStride};
-    else
-      strides = computeCompactStrides(shape);
+    SmallVector<int64_t> strides = buildTileMemRefStrides(tbTy);
 
     auto targetLayout =
         StridedLayoutAttr::get(ctx, ShapedType::kDynamic, strides);
