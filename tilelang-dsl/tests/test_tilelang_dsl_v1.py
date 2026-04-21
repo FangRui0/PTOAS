@@ -4007,6 +4007,17 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
 
         self.assertIn("pto.i32 value must be a scalar or index value", str(ctx.exception))
 
+    def test_scalar_constructor_accepts_integer_string_literals(self) -> None:
+        @pto.vkernel(op="scalar_constructor_integer_string_literals_unique", dtypes=[(pto.f32,)])
+        def kernel(inp: pto.TensorView):
+            x = pto.i16("0x7FFF")
+            y = pto.i32("0x7FFFFFFF")
+            return None
+
+        text = kernel.mlir_text()
+        self.assertIn("= arith.constant 32767 : i16", text)
+        self.assertIn("= arith.constant 2147483647 : i32", text)
+
     def test_scalar_constructor_rejects_out_of_range_integer_literal(self) -> None:
         @pto.vkernel(op="scalar_constructor_oob_int_unique", dtypes=[(pto.f32,)])
         def kernel(inp: pto.TensorView):
@@ -4017,6 +4028,17 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             kernel.mlir_text()
 
         self.assertIn("out of range for i8", str(ctx.exception))
+
+    def test_scalar_constructor_rejects_out_of_range_integer_string_literal(self) -> None:
+        @pto.vkernel(op="scalar_constructor_oob_integer_string_unique", dtypes=[(pto.f32,)])
+        def kernel(inp: pto.TensorView):
+            x = pto.i16("0x8000")
+            return None
+
+        with self.assertRaises(TypeError) as ctx:
+            kernel.mlir_text()
+
+        self.assertIn("out of range for i16", str(ctx.exception))
 
     def test_inferred_vecscope_propagates_bindings_to_constexpr_if(self) -> None:
         @pto.vkernel(

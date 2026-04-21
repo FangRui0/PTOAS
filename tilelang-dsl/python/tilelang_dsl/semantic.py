@@ -4147,6 +4147,17 @@ class _SemanticAnalyzer:
                 value=parsed,
                 type=SemanticScalarType(dtype=target_dtype),
             )
+        if (
+            is_integer_dtype(target_dtype)
+            and isinstance(args[0], SemanticLiteralExpr)
+            and isinstance(args[0].type, SemanticMetaType)
+            and args[0].type.kind == "string"
+        ):
+            parsed = self._parse_integer_literal_string(args[0].value, target_dtype, f"pto.{name} value")
+            return SemanticLiteralExpr(
+                value=parsed,
+                type=SemanticScalarType(dtype=target_dtype),
+            )
 
         value = self._require_scalar_or_index_expr(args[0], f"pto.{name} value")
 
@@ -4170,20 +4181,8 @@ class _SemanticAnalyzer:
                 else:
                     casted = None
                 if casted is not None:
-                    bits = integer_bitwidth(target_dtype)
-                    signedness = integer_signedness(target_dtype)
-                    assert bits is not None
-                    if signedness == "unsigned":
-                        min_value = 0
-                        max_value = (1 << bits) - 1
-                    else:
-                        min_value = -(1 << (bits - 1))
-                        max_value = (1 << (bits - 1)) - 1
-                    if casted < min_value or casted > max_value:
-                        raise TypeError(
-                            f"pto.{name} value {casted} is out of range for {target_dtype.name} in TileLang DSL v1"
-                        )
-                    return SemanticLiteralExpr(value=casted, type=SemanticScalarType(dtype=target_dtype))
+                    checked = self._check_integer_literal_range(casted, target_dtype, f"pto.{name} value")
+                    return SemanticLiteralExpr(value=checked, type=SemanticScalarType(dtype=target_dtype))
             else:
                 if isinstance(literal_value, (bool, int, float)):
                     return SemanticLiteralExpr(
@@ -4227,6 +4226,42 @@ class _SemanticAnalyzer:
             raise TypeError(
                 f"{context} string literal {literal!r} is not a valid float literal"
             ) from exc
+
+    def _parse_integer_literal_string(
+        self,
+        literal: str,
+        target_dtype: ScalarType,
+        context: str,
+    ) -> int:
+        text = literal.strip().lower()
+        try:
+            parsed = int(text, 0)
+        except ValueError as exc:
+            raise TypeError(
+                f"{context} string literal {literal!r} is not a valid integer literal"
+            ) from exc
+        return self._check_integer_literal_range(parsed, target_dtype, context)
+
+    def _check_integer_literal_range(
+        self,
+        value: int,
+        target_dtype: ScalarType,
+        context: str,
+    ) -> int:
+        bits = integer_bitwidth(target_dtype)
+        signedness = integer_signedness(target_dtype)
+        assert bits is not None
+        if signedness == "unsigned":
+            min_value = 0
+            max_value = (1 << bits) - 1
+        else:
+            min_value = -(1 << (bits - 1))
+            max_value = (1 << (bits - 1)) - 1
+        if value < min_value or value > max_value:
+            raise TypeError(
+                f"{context} {value} is out of range for {target_dtype.name} in TileLang DSL v1"
+            )
+        return value
 
     def _float_from_bit_pattern(
         self,
