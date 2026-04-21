@@ -21,6 +21,8 @@ PTOAS_BIN="${PTOAS_BIN:-${ROOT_DIR}/build/tools/ptoas/ptoas}"
 PTOAS_FLAGS="${PTOAS_FLAGS:---pto-arch a5}"
 VPTO_FLAGS="${VPTO_FLAGS:---pto-backend=vpto --vpto-emit-hivm-llvm}"
 AICORE_ARCH="${AICORE_ARCH:-dav-c310-vec}"
+CUBE_AICORE_ARCH="${CUBE_AICORE_ARCH:-dav-c310-cube}"
+CUBE_CASES="${CUBE_CASES:-mad_mx mad_f16f16f32 mad_f32f32f32 mad_bf16bf16f32}"
 # set he HOST_RUNNER to "ssh root@localhost" if must change user to root to access the device 
 HOST_RUNNER="${HOST_RUNNER:-}"
 CASE_NAME="${CASE_NAME:-}"
@@ -28,6 +30,11 @@ MODULE_ID="${MODULE_ID:-a5d60abf67864aa0}"
 DEVICE="${DEVICE:-SIM}"
 SIM_LIB_DIR="${SIM_LIB_DIR:-}"
 COMPILE_ONLY="${COMPILE_ONLY:-0}"
+
+declare -a CUBE_CASE_LIST=()
+if [[ -n "${CUBE_CASES}" ]]; then
+  read -r -a CUBE_CASE_LIST <<< "${CUBE_CASES//,/ }"
+fi
 
 log() {
   echo "[$(date +'%F %T')] $*"
@@ -196,9 +203,33 @@ discover_cases() {
 readarray -t CASES < <(discover_cases)
 [[ "${#CASES[@]}" -gt 0 ]] || die "no cases found under ${CASES_ROOT}"
 
+case_uses_cube_mode() {
+  local case_name="$1"
+  local case_base="${case_name##*/}"
+  for item in "${CUBE_CASE_LIST[@]}"; do
+    [[ -n "${item}" ]] || continue
+    if [[ "${case_name}" == "${item}" || "${case_name}" == */"${item}" ||
+          "${case_base}" == "${item}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+build_case_vpto_flags() {
+  local case_name="$1"
+  local base_flags="$2"
+  if case_uses_cube_mode "${case_name}"; then
+    echo "${base_flags} --vpto-march ${CUBE_AICORE_ARCH} --vpto-cce-aicore-arch ${CUBE_AICORE_ARCH}"
+    return
+  fi
+  echo "${base_flags}"
+}
+
 build_launch_object() {
   local case_dir="$1"
   local out_obj="$2"
+  local case_arch="$3"
 
   "${BISHENG_BIN}" \
     -c -fPIC -xcce -fenable-matrix --cce-aicore-enable-tl \
@@ -208,7 +239,7 @@ build_launch_object() {
     -mllvm -cce-aicore-record-overflow=true \
     -mllvm -cce-aicore-addr-transform \
     -mllvm -cce-aicore-dcci-insert-for-scalar=false \
-    --cce-aicore-arch="${AICORE_ARCH}" \
+    --cce-aicore-arch="${case_arch}" \
     -DREGISTER_BASE \
     -std=c++17 \
     -Wno-macro-redefined -Wno-ignored-attributes \
@@ -225,6 +256,7 @@ build_host_stub() {
   local device_obj="$2"
   local stub_obj="$3"
   local module_id="$4"
+  local case_arch="$5"
   local host_target_args=(
     -triple "${HOST_TRIPLE}"
     -target-cpu "${HOST_TARGET_CPU}"
@@ -241,7 +273,7 @@ build_host_stub() {
     -fcce-aicpu-legacy-launch \
     -fcce-is-host \
     -cce-launch-with-flagv2-impl \
-    -fcce-aicore-arch "${AICORE_ARCH}" \
+    -fcce-aicore-arch "${case_arch}" \
     -fcce-fatobj-compile \
     -emit-obj \
     --mrelax-relocations \
@@ -308,6 +340,7 @@ link_kernel_so() {
   local repack_obj="$4"
   local repack_so="$5"
   local module_id="$6"
+  local case_arch="$7"
   local extra_lib_dirs=()
   local extra_link_libs=()
 
@@ -315,7 +348,7 @@ link_kernel_so() {
     "${LD_LLD_BIN}" \
     -x \
     -cce-lite-bin-module-id "${module_id}" \
-    -cce-aicore-arch="${AICORE_ARCH}" \
+    -cce-aicore-arch="${case_arch}" \
     -r \
     -o "${repack_obj}" \
     -cce-stub-dir "${CCE_STUB_DIR}" \
@@ -390,6 +423,12 @@ build_one_impl() {
   local host_stub_obj="${out_dir}/kernel_host_from_llvm.o"
   local repack_obj="${out_dir}/${case_token}_stub.cpp.o"
   local repack_so="${out_dir}/lib${case_token}_kernel.so"
+  local case_arch="${AICORE_ARCH}"
+  if case_uses_cube_mode "${case_name}"; then
+    case_arch="${CUBE_AICORE_ARCH}"
+  fi
+  local case_vpto_flags
+  case_vpto_flags="$(build_case_vpto_flags "${case_name}" "${VPTO_FLAGS}")"
 
   [[ -f "${case_dir}/kernel.pto" ]] || die "missing kernel.pto for ${case_name}"
   [[ -f "${case_dir}/stub.cpp" ]] || die "missing stub.cpp for ${case_name}"
@@ -398,26 +437,27 @@ build_one_impl() {
   [[ -f "${case_dir}/golden.py" ]] || die "missing golden.py for ${case_name}"
   [[ -f "${case_dir}/compare.py" ]] || die "missing compare.py for ${case_name}"
 
+  log "[$case_name] mode: $(case_uses_cube_mode "${case_name}" && echo cube || echo vec) (aicore_arch=${case_arch})"
   log "[$case_name] step 1/6: lower VPTO MLIR to LLVM IR"
-  "${PTOAS_BIN}" ${PTOAS_FLAGS} ${VPTO_FLAGS} \
+  "${PTOAS_BIN}" ${PTOAS_FLAGS} ${case_vpto_flags} \
     "${case_dir}/kernel.pto" -o "${llvm_ir}"
 
   log "[$case_name] step 2/6: compile LLVM IR to device object"
   "${BISHENG_BIN}" \
     --target=hiipu64-hisilicon-cce \
-    -march="${AICORE_ARCH}" \
-    --cce-aicore-arch="${AICORE_ARCH}" \
+    -march="${case_arch}" \
+    --cce-aicore-arch="${case_arch}" \
     --cce-aicore-only \
     -O2 \
     -c -x ir "${llvm_ir}" \
     -o "${device_obj}"
 
   log "[$case_name] step 3/6: build launch object and host fatobj stub"
-  build_launch_object "${case_dir}" "${launch_obj}"
-  build_host_stub "${case_dir}" "${device_obj}" "${host_stub_obj}" "${case_module_id}"
+  build_launch_object "${case_dir}" "${launch_obj}" "${case_arch}"
+  build_host_stub "${case_dir}" "${device_obj}" "${host_stub_obj}" "${case_module_id}" "${case_arch}"
 
   log "[$case_name] step 4/6: link kernel shared library"
-  link_kernel_so "${case_token}" "${host_stub_obj}" "${launch_obj}" "${repack_obj}" "${repack_so}" "${case_module_id}"
+  link_kernel_so "${case_token}" "${host_stub_obj}" "${launch_obj}" "${repack_obj}" "${repack_so}" "${case_module_id}" "${case_arch}"
 
   if [[ "${COMPILE_ONLY}" == "1" ]]; then
     log "[$case_name] compile-only mode: stop after kernel shared library"
@@ -486,6 +526,9 @@ log "ASCEND_HOME_PATH=${ASCEND_HOME_PATH}"
 log "PTOAS_BIN=${PTOAS_BIN}"
 log "PTOAS_FLAGS=${PTOAS_FLAGS}"
 log "VPTO_FLAGS=${VPTO_FLAGS}"
+log "AICORE_ARCH(default)=${AICORE_ARCH}"
+log "CUBE_AICORE_ARCH=${CUBE_AICORE_ARCH}"
+log "CUBE_CASES=${CUBE_CASES:-<none>}"
 log "COMPILE_ONLY=${COMPILE_ONLY}"
 log "CASE_NAME=${CASE_NAME:-<all>}"
 

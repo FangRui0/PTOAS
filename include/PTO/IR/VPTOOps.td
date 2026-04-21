@@ -183,6 +183,12 @@ class PTO_NullaryI64PureOp<string mnemonic> : PTO_Op<mnemonic, [Pure]> {
   }];
 }
 
+class PTO_NullaryConfigOp<string mnemonic> : PTO_Op<mnemonic> {
+  let arguments = (ins);
+  let results = (outs);
+  let assemblyFormat = [{ attr-dict }];
+}
+
 def PTO_SetMovPadValOp : PTO_Op<"set_mov_pad_val"> {
   let arguments = (ins AnyTypeOf<[AnyInteger, AnyFloat],
                                 "integer/float scalar">:$value);
@@ -197,13 +203,24 @@ def PTO_SetMovPadValOp : PTO_Op<"set_mov_pad_val"> {
 def PTO_SetLoop2StrideOutToUbOp : PTO_BinaryI64ConfigOp<"set_loop2_stride_outtoub">;
 def PTO_SetLoop1StrideOutToUbOp : PTO_BinaryI64ConfigOp<"set_loop1_stride_outtoub">;
 def PTO_SetLoopSizeOutToUbOp : PTO_BinaryI64ConfigOp<"set_loop_size_outtoub">;
+def PTO_SetLoop2StrideOutToL1Op : PTO_UnaryI64ConfigOp<"set_loop2_stride_outtol1">;
+def PTO_SetLoop1StrideOutToL1Op : PTO_UnaryI64ConfigOp<"set_loop1_stride_outtol1">;
+def PTO_SetLoopSizeOutToL1Op : PTO_UnaryI64ConfigOp<"set_loop_size_outtol1">;
 def PTO_SetLoop2StrideUbToOutOp : PTO_BinaryI64ConfigOp<"set_loop2_stride_ubtoout">;
 def PTO_SetLoop1StrideUbToOutOp : PTO_BinaryI64ConfigOp<"set_loop1_stride_ubtoout">;
 def PTO_SetLoopSizeUbToOutOp : PTO_BinaryI64ConfigOp<"set_loop_size_ubtoout">;
+def PTO_SetLoop3ParaOp : PTO_BinaryI64ConfigOp<"set_loop3_para">;
+def PTO_SetChannelParaOp : PTO_BinaryI64ConfigOp<"set_channel_para">;
+def PTO_SetMte2NzParaOp : PTO_UnaryI64ConfigOp<"set_mte2_nz_para">;
+def PTO_SetPadValOutToL1Op : PTO_UnaryI64ConfigOp<"set_pad_val_outtol1">;
 def PTO_GetCtrlOp : PTO_NullaryI64PureOp<"get_ctrl">;
 def PTO_SetCtrlOp : PTO_UnaryI64ConfigOp<"set_ctrl">;
 def PTO_Sbitset0Op : PTO_BinaryI64PureOp<"sbitset0">;
 def PTO_Sbitset1Op : PTO_BinaryI64PureOp<"sbitset1">;
+def PTO_SetQuantPreOp : PTO_UnaryI64ConfigOp<"set_quant_pre">;
+def PTO_SetFpcOp : PTO_UnaryI64ConfigOp<"set_fpc">;
+def PTO_SetAtomicS32Op : PTO_NullaryConfigOp<"set_atomic_s32">;
+def PTO_SetAtomicS8Op : PTO_NullaryConfigOp<"set_atomic_s8">;
 
 def PTO_CopyGmToUbufOp : PTO_Op<"copy_gm_to_ubuf", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -325,6 +342,266 @@ def PTO_DmaCopyOp : PTO_Op<"dma_copy", [
     attr-dict `:` type($source) `,` type($destination) `,` type($sid) `,`
     type($n_burst) `,` type($len_burst) `,` type($src_stride) `,`
     type($dst_stride)
+  }];
+}
+
+def PTO_CopyGmToCbufOp : PTO_Op<"copy_gm_to_cbuf"> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I64:$n_burst,
+    I64:$len_burst,
+    I64:$src_stride,
+    I64:$dst_stride
+  );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $source `,` $destination `,` $n_burst `,` $len_burst `,` $src_stride `,` $dst_stride
+    attr-dict `:` type($source) `,` type($destination) `,` type($n_burst) `,` type($len_burst) `,` type($src_stride) `,` type($dst_stride)
+  }];
+}
+
+def PTO_CopyGmToCbufMultiNd2NzOp : PTO_Op<"copy_gm_to_cbuf_multi_nd2nz"> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I64:$sid,
+    I64:$loop1_src_stride,
+    I64:$l2_cache_ctrl,
+    I64:$n_value,
+    I64:$d_value,
+    I64:$loop4_src_stride,
+    I1:$smallc0_en
+  );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $source `,` $destination `,` $sid `,` $loop1_src_stride `,` $l2_cache_ctrl `,`
+    $n_value `,` $d_value `,` $loop4_src_stride `,` $smallc0_en
+    attr-dict `:` type($source) `,` type($destination) `,` type($sid) `,`
+    type($loop1_src_stride) `,` type($l2_cache_ctrl) `,` type($n_value) `,`
+    type($d_value) `,` type($loop4_src_stride) `,` type($smallc0_en)
+  }];
+}
+
+def PTO_CopyGmToCbufMultiDn2NzOp : PTO_Op<"copy_gm_to_cbuf_multi_dn2nz"> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I64:$sid,
+    I64:$loop1_src_stride,
+    I64:$l2_cache_ctrl,
+    I64:$n_value,
+    I64:$d_value,
+    I64:$loop4_src_stride,
+    I1:$smallc0_en
+  );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $source `,` $destination `,` $sid `,` $loop1_src_stride `,` $l2_cache_ctrl `,`
+    $n_value `,` $d_value `,` $loop4_src_stride `,` $smallc0_en
+    attr-dict `:` type($source) `,` type($destination) `,` type($sid) `,`
+    type($loop1_src_stride) `,` type($l2_cache_ctrl) `,` type($n_value) `,`
+    type($d_value) `,` type($loop4_src_stride) `,` type($smallc0_en)
+  }];
+}
+
+def PTO_CopyCbufToBtOp : PTO_Op<"copy_cbuf_to_bt"> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I1:$conv_control,
+    I64:$n_burst,
+    I64:$len_burst,
+    I64:$source_gap,
+    I64:$dst_gap
+  );
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $source `,` $destination `,` $conv_control `,` $n_burst `,` $len_burst `,`
+    $source_gap `,` $dst_gap
+    attr-dict `:` type($source) `,` type($destination) `,` type($conv_control) `,`
+    type($n_burst) `,` type($len_burst) `,` type($source_gap) `,` type($dst_gap)
+  }];
+}
+
+def PTO_CopyCbufToFbufOp : PTO_Op<"copy_cbuf_to_fbuf"> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I64:$n_burst,
+    I64:$len_burst,
+    I64:$source_gap,
+    I64:$dst_gap
+  );
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $source `,` $destination `,` $n_burst `,` $len_burst `,`
+    $source_gap `,` $dst_gap
+    attr-dict `:` type($source) `,` type($destination) `,` type($n_burst) `,`
+    type($len_burst) `,` type($source_gap) `,` type($dst_gap)
+  }];
+}
+
+def PTO_LoadCbufToCaOp : PTO_Op<"load_cbuf_to_ca"> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I64:$m,
+    I64:$k
+  );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $source `,` $destination `,` $m `,` $k attr-dict `:` type($source) `,` type($destination) `,` type($m) `,` type($k)
+  }];
+}
+
+def PTO_LoadCbufToCaS4Op : PTO_Op<"load_cbuf_to_ca_s4"> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I64:$m_start,
+    I64:$k_start,
+    I64:$m_step,
+    I64:$k_step,
+    I64:$src_stride,
+    I64:$dst_stride,
+    I64:$transpose
+  );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $source `,` $destination `,` $m_start `,` $k_start `,` $m_step `,`
+    $k_step `,` $src_stride `,` $dst_stride `,` $transpose
+    attr-dict `:` type($source) `,` type($destination) `,` type($m_start) `,`
+    type($k_start) `,` type($m_step) `,` type($k_step) `,` type($src_stride) `,`
+    type($dst_stride) `,` type($transpose)
+  }];
+}
+
+def PTO_LoadCbufToCbOp : PTO_Op<"load_cbuf_to_cb"> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I64:$k,
+    I64:$n
+  );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $source `,` $destination `,` $k `,` $n attr-dict `:` type($source) `,` type($destination) `,` type($k) `,` type($n)
+  }];
+}
+
+def PTO_LoadCbufToCbS4Op : PTO_Op<"load_cbuf_to_cb_s4"> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I64:$m_start,
+    I64:$k_start,
+    I64:$m_step,
+    I64:$k_step,
+    I64:$src_stride,
+    I64:$dst_stride,
+    I64:$transpose
+  );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $source `,` $destination `,` $m_start `,` $k_start `,` $m_step `,`
+    $k_step `,` $src_stride `,` $dst_stride `,` $transpose
+    attr-dict `:` type($source) `,` type($destination) `,` type($m_start) `,`
+    type($k_start) `,` type($m_step) `,` type($k_step) `,` type($src_stride) `,`
+    type($dst_stride) `,` type($transpose)
+  }];
+}
+
+def PTO_LoadCbufToCaMxOp : PTO_Op<"load_cbuf_to_ca_mx"> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I64:$m,
+    I64:$k
+  );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $source `,` $destination `,` $m `,` $k attr-dict `:` type($source) `,` type($destination) `,` type($m) `,` type($k)
+  }];
+}
+
+def PTO_LoadCbufToCbMxOp : PTO_Op<"load_cbuf_to_cb_mx"> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I64:$k,
+    I64:$n
+  );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $source `,` $destination `,` $k `,` $n attr-dict `:` type($source) `,` type($destination) `,` type($k) `,` type($n)
+  }];
+}
+
+def PTO_CopyMatrixCcToGmOp : PTO_Op<"copy_matrix_cc_to_gm"> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I64:$m,
+    I64:$n
+  );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $source `,` $destination `,` $m `,` $n attr-dict `:` type($source) `,` type($destination) `,` type($m) `,` type($n)
+  }];
+}
+
+def PTO_CopyMatrixCcToCbufOp : PTO_Op<"copy_matrix_cc_to_cbuf"> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I64:$config0,
+    I64:$config1
+  );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $source `,` $destination `,` $config0 `,` $config1 attr-dict `:` type($source) `,`
+    type($destination) `,` type($config0) `,` type($config1)
+  }];
+}
+
+def PTO_CopyMatrixCcToUbOp : PTO_Op<"copy_matrix_cc_to_ub"> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I64:$config0,
+    I64:$config1
+  );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $source `,` $destination `,` $config0 `,` $config1 attr-dict `:` type($source) `,`
+    type($destination) `,` type($config0) `,` type($config1)
   }];
 }
 
@@ -776,6 +1053,47 @@ def PTO_VnegOp : PTO_UnaryVecOp<"vneg">;
 def PTO_VreluOp : PTO_UnaryVecOp<"vrelu">;
 def PTO_VnotOp : PTO_UnaryVecOp<"vnot">;
 def PTO_VcaddOp : PTO_UnaryVecOp<"vcadd">;
+
+def PTO_MadOp : PTO_Op<"mad", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    PTO_BufferType:$lhs,
+    PTO_BufferType:$rhs,
+    PTO_BufferType:$dst,
+    I64:$m,
+    I64:$n,
+    I64:$k
+  );
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs `,` $dst `,` $m `,` $n `,` $k attr-dict `:` type($lhs) `,` type($rhs) `,` type($dst) `,` type($m) `,` type($n) `,` type($k)
+  }];
+}
+
+def PTO_MadMxOp : PTO_Op<"mad_mx", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    PTO_BufferType:$lhs,
+    PTO_BufferType:$rhs,
+    PTO_BufferType:$dst,
+    I64:$m,
+    I64:$n,
+    I64:$k
+  );
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs `,` $dst `,` $m `,` $n `,` $k attr-dict `:` type($lhs) `,` type($rhs) `,` type($dst) `,` type($m) `,` type($n) `,` type($k)
+  }];
+}
+
 def PTO_VcmaxOp : PTO_UnaryVecOp<"vcmax">;
 def PTO_VcminOp : PTO_UnaryVecOp<"vcmin">;
 def PTO_VcgaddOp : PTO_UnaryVecOp<"vcgadd">;
@@ -1292,7 +1610,6 @@ def PTO_DmaStoreOp : PTO_Op<"dma_store", [
       "::std::optional<::mlir::pto::DmaLoopConfig>":$loop2
     )>
   ];
-
 }
 
 // NOTE: Unvalidated new x2 / pair / align-store-family abstractions. Added to

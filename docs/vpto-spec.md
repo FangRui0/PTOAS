@@ -900,6 +900,7 @@ This section provides a categorized overview of all PTO micro Instruction operat
 | 13 | [DSA/SFU Ops](isa/13-dsa-sfu-ops.md) | Specialized ops, index generation, and sorting helpers | 9 | `pto.vlrelu`, `pto.vprelu`, `pto.vexpdif`, `pto.vaxpy`, `pto.vmull`, `pto.vmula`, `pto.vci`, `pto.vbitsort`, `pto.vmrgsort4` |
 | 14 | [Arith (Shared MLIR Dialect)](isa/14-shared-arith.md) | Full scalar `arith` surface used around PTO ops; the companion page lists categories and representative examples | all scalar ops | `arith.constant`, `arith.addi`, `arith.addf`, `arith.cmpi`, `arith.cmpf`, `arith.select`, `arith.index_cast`, `arith.extsi`, `arith.trunci`, `arith.andi`, `arith.shli`, etc. |
 | 15 | [SCF (Shared MLIR Dialect)](isa/15-shared-scf.md) | Structured loops, branches, and loop-carried state around PTO regions | 5 | `scf.for`, `scf.if`, `scf.while`, `scf.condition`, `scf.yield` |
+| 16 | [Cube Matrix Multiply (MAT)](isa/16-cube-matmul.md) | GM↔L1 cube staging, L0A/L0B loads, L0C matmul, and L0C/L1 side-buffer moves | 10+ | `pto.copy_gm_to_cbuf`, `pto.copy_gm_to_cbuf_multi_nd2nz`, `pto.copy_gm_to_cbuf_multi_dn2nz`, `pto.load_cbuf_to_ca`, `pto.load_cbuf_to_cb`, `pto.mad`, `pto.copy_matrix_cc_to_gm`, `pto.copy_matrix_cc_to_cbuf`, `pto.copy_matrix_cc_to_ub`, `pto.copy_cbuf_to_bt`, `pto.copy_cbuf_to_fbuf` |
 
 ---
 
@@ -911,6 +912,12 @@ This section provides a categorized overview of all PTO micro Instruction operat
 |-----------|-------|-------------|
 | GM→UB DMA | 2 | `pto.dma_load` |
 | UB→GM DMA | 2 | `pto.dma_store` |
+| GM→L1 (cube staging) | 16 | `pto.copy_gm_to_cbuf` |
+| GM→L1 (multi layout staging) | 16 | `pto.copy_gm_to_cbuf_multi_nd2nz`, `pto.copy_gm_to_cbuf_multi_dn2nz` |
+| L1→L0A / L1→L0B | 16 | `pto.load_cbuf_to_ca`, `pto.load_cbuf_to_cb` |
+| L0C→GM (cube writeback) | 16 | `pto.copy_matrix_cc_to_gm` |
+| L0C→L1 / L0C→UB | 16 | `pto.copy_matrix_cc_to_cbuf`, `pto.copy_matrix_cc_to_ub` |
+| L1→BT / L1→FB | 16 | `pto.copy_cbuf_to_bt`, `pto.copy_cbuf_to_fbuf` |
 | Contiguous Load | 3 | `pto.vlds` with `NORM` dist |
 | Broadcast Load | 3 | `pto.vlds` with `BRC` family dist |
 | Gather | 3 | `pto.vgather2`, `pto.vgatherb` |
@@ -925,6 +932,7 @@ This section provides a categorized overview of all PTO micro Instruction operat
 | Scalar Operations | 8 | `pto.vadds`, `pto.vmuls`, etc. |
 | Transcendental | 6 | `pto.vexp`, `pto.vln`, `pto.vsqrt`, etc. |
 | Reduction | 10 | `pto.vcadd`, `pto.vcmax`, `pto.vcmin` |
+| Cube matmul (L0A×L0B→L0C) | 16 | `pto.mad` |
 | Comparison | 11 | `pto.vcmp`, `pto.vcmps` |
 | Selection | 11 | `pto.vsel`, `pto.vselr` |
 
@@ -958,6 +966,42 @@ Group 14 covers the full scalar `arith` surface. The rows below list common PTO 
 | Counted Loops | 15 | `scf.for` |
 | Conditional Regions | 15 | `scf.if`, `scf.yield` |
 | Break-like Structured Loops | 15 | `scf.while`, `scf.condition`, `scf.yield` |
+
+### Recent A5 Additions (Implemented)
+
+- `pto.set_quant_pre` (lowered to `llvm.hivm.SET.QUANT.PRE.v300`)
+- `pto.set_atomic_s32`, `pto.set_atomic_s8` (A5-selectable atomic mode controls)
+- Cube-side movement additions:
+  - `pto.copy_gm_to_cbuf_multi_nd2nz`
+  - `pto.copy_gm_to_cbuf_multi_dn2nz`
+  - `pto.copy_matrix_cc_to_cbuf`
+  - `pto.copy_matrix_cc_to_ub`
+  - `pto.copy_cbuf_to_bt`
+  - `pto.copy_cbuf_to_fbuf`
+
+### Verified Op List (Current Batch)
+
+- `pto.copy_cbuf_to_bt`
+- `pto.copy_cbuf_to_fbuf`
+- `pto.copy_gm_to_cbuf_multi_dn2nz`
+- `pto.copy_gm_to_cbuf_multi_nd2nz`
+- `pto.copy_matrix_cc_to_cbuf`
+- `pto.copy_matrix_cc_to_ub`
+- `pto.load_cbuf_to_ca_mx`
+- `pto.load_cbuf_to_ca_s4`
+- `pto.load_cbuf_to_cb_mx`
+- `pto.load_cbuf_to_cb_s4`
+- `pto.set_atomic_s32`
+- `pto.set_atomic_s8`
+- `pto.set_channel_para`
+- `pto.set_fpc`
+- `pto.set_loop1_stride_outtol1`
+- `pto.set_loop2_stride_outtol1`
+- `pto.set_loop3_para`
+- `pto.set_loop_size_outtol1`
+- `pto.set_mte2_nz_para`
+- `pto.set_pad_val_outtol1`
+- `pto.set_quant_pre`
 
 ---
 

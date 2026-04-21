@@ -144,6 +144,8 @@ static bool isSupportedMovPadScalarType(Type type) {
   return false;
 }
 
+static bool isMxElementType(Type type) { return isa<Float8E4M3FNType>(type); }
+
 static std::optional<StringRef> getVdupMaskGranularity(Type elementType) {
   if (auto intType = dyn_cast<IntegerType>(elementType)) {
     switch (intType.getWidth()) {
@@ -1538,6 +1540,73 @@ LogicalResult SetMovPadValOp::verify() {
   return emitOpError()
          << "expects i8/i16/i32 or f16/bf16/f32 scalar operand, but got "
          << valueType;
+}
+void MadOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getLhsMutable());
+  effects.emplace_back(MemoryEffects::Read::get(), &getRhsMutable());
+  effects.emplace_back(MemoryEffects::Write::get(), &getDstMutable());
+}
+
+LogicalResult MadOp::verify() {
+  auto lhsType = dyn_cast<pto::PtrType>(getLhs().getType());
+  auto rhsType = dyn_cast<pto::PtrType>(getRhs().getType());
+  auto dstType = dyn_cast<pto::PtrType>(getDst().getType());
+  if (!lhsType || !rhsType || !dstType)
+    return emitOpError("requires typed !pto.ptr lhs/rhs/dst operands");
+
+  const auto lhsAS = lhsType.getMemorySpace().getAddressSpace();
+  const auto rhsAS = rhsType.getMemorySpace().getAddressSpace();
+  const auto dstAS = dstType.getMemorySpace().getAddressSpace();
+
+  // Keep legacy low-level VPTO syntax working (ub/vec for all operands), while
+  // also accepting strong cube spaces used by matmul pipelines.
+  const bool isLegacyUB =
+      lhsAS == pto::AddressSpace::VEC && rhsAS == pto::AddressSpace::VEC &&
+      dstAS == pto::AddressSpace::VEC;
+  const bool isStrongCube =
+      lhsAS == pto::AddressSpace::LEFT && rhsAS == pto::AddressSpace::RIGHT &&
+      dstAS == pto::AddressSpace::ACC;
+  if (!isLegacyUB && !isStrongCube) {
+    return emitOpError(
+        "requires either UB-backed lhs/rhs/dst pointers or "
+        "left/right/acc-typed lhs/rhs/dst pointers");
+  }
+
+  return success();
+}
+
+void MadMxOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getLhsMutable());
+  effects.emplace_back(MemoryEffects::Read::get(), &getRhsMutable());
+  effects.emplace_back(MemoryEffects::Write::get(), &getDstMutable());
+}
+
+LogicalResult MadMxOp::verify() {
+  auto lhsType = dyn_cast<pto::PtrType>(getLhs().getType());
+  auto rhsType = dyn_cast<pto::PtrType>(getRhs().getType());
+  auto dstType = dyn_cast<pto::PtrType>(getDst().getType());
+  if (!lhsType || !rhsType || !dstType)
+    return emitOpError("requires typed !pto.ptr lhs/rhs/dst operands");
+
+  const auto lhsAS = lhsType.getMemorySpace().getAddressSpace();
+  const auto rhsAS = rhsType.getMemorySpace().getAddressSpace();
+  const auto dstAS = dstType.getMemorySpace().getAddressSpace();
+  const bool isStrongCube =
+      lhsAS == pto::AddressSpace::LEFT && rhsAS == pto::AddressSpace::RIGHT &&
+      dstAS == pto::AddressSpace::ACC;
+  if (!isStrongCube)
+    return emitOpError("requires left/right/acc-typed lhs/rhs/dst pointers");
+
+  if (!isMxElementType(lhsType.getElementType()) ||
+      !isMxElementType(rhsType.getElementType())) {
+    return emitOpError(
+        "requires MX lhs/rhs element types (currently f8E4M3FN)");
+  }
+  return success();
 }
 
 static bool isCompatibleScalarForSemanticType(Type semanticType,

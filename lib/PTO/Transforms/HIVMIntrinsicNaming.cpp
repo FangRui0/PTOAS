@@ -82,32 +82,143 @@ static std::string getCopyElementFragment(Type type) {
   if (!ptrType)
     return {};
   Type elementType = ptrType.getElementType();
-  if (auto floatType = dyn_cast<FloatType>(elementType)) {
-    switch ((floatType.getWidth() + 7) / 8) {
-    case 1:
-      return "u8";
-    case 2:
-      return "u16";
-    case 4:
-    case 8:
-      return "u32";
-    default:
-      return {};
-    }
-  }
+  if (elementType.isF16())
+    return "f16";
+  if (elementType.isBF16())
+    return "bf16";
+  if (elementType.isF32())
+    return "f32";
+  std::string typeText;
+  llvm::raw_string_ostream os(typeText);
+  elementType.print(os);
+  os.flush();
+  std::string lower = StringRef(typeText).lower();
+  if (StringRef(lower).contains("e4m3"))
+    return "e4m3";
+  if (StringRef(lower).contains("e5m2"))
+    return "e5m2";
+  if (StringRef(lower).contains("e8m0"))
+    return "e8m0";
+  if (StringRef(lower).contains("hif8"))
+    return "hif8";
   if (auto intType = dyn_cast<IntegerType>(elementType)) {
-    switch ((intType.getWidth() + 7) / 8) {
-    case 1:
-      return "u8";
-    case 2:
-      return "u16";
-    case 4:
+    switch (intType.getWidth()) {
     case 8:
+      return "u8";
+    case 16:
+      return "u16";
+    case 32:
       return "u32";
     default:
       return {};
     }
   }
+  return {};
+}
+
+static bool isMxElementType(Type type) {
+  if (auto floatType = dyn_cast<FloatType>(type))
+    return floatType.getWidth() == 8;
+  std::string typeText;
+  llvm::raw_string_ostream os(typeText);
+  type.print(os);
+  os.flush();
+  return StringRef(typeText).starts_with("f8");
+}
+
+static std::string getMadMxElementFragment(Type type) {
+  if (type.isF16())
+    return "f16";
+  if (type.isBF16())
+    return "bf16";
+
+  std::string typeText;
+  llvm::raw_string_ostream os(typeText);
+  type.print(os);
+  os.flush();
+
+  std::string lower = StringRef(typeText).lower();
+  if (StringRef(lower).contains("e4m3"))
+    return "e4m3";
+  if (StringRef(lower).contains("e5m2"))
+    return "e5m2";
+  if (StringRef(lower).contains("hif4"))
+    return "hif4";
+  if (StringRef(lower).contains("e2m1x2"))
+    return "e2m1x2";
+  if (StringRef(lower).contains("e1m2x2"))
+    return "e1m2x2";
+  return {};
+}
+
+static std::string buildMadMxIntrinsicName(Type lhsType, Type rhsType) {
+  std::string lhs = getMadMxElementFragment(lhsType);
+  std::string rhs = getMadMxElementFragment(rhsType);
+  if (lhs.empty() || rhs.empty())
+    return {};
+  return "llvm.hivm.MMAD.MX." + lhs + rhs;
+}
+
+static std::string getMadRhsFragment(Type type) {
+  if (type.isF16())
+    return "f16";
+  if (type.isBF16())
+    return "bf16";
+  if (type.isF32())
+    return "f32";
+  if (auto intType = dyn_cast<IntegerType>(type)) {
+    if (intType.isSigned() && intType.getWidth() == 4)
+      return "s4";
+    if (intType.isSigned() && intType.getWidth() == 8)
+      return "s8";
+    if (intType.isUnsigned() && intType.getWidth() == 2)
+      return "u2";
+  }
+
+  std::string typeText;
+  llvm::raw_string_ostream os(typeText);
+  type.print(os);
+  os.flush();
+  std::string lower = StringRef(typeText).lower();
+  if (StringRef(lower).contains("e8m0"))
+    return "e8m0";
+  return {};
+}
+
+static std::string getMadDstFragment(Type type) {
+  if (type.isF16())
+    return "f16";
+  if (type.isF32())
+    return "f32";
+  if (auto intType = dyn_cast<IntegerType>(type)) {
+    if (intType.isSigned() && intType.getWidth() == 32)
+      return "s32";
+  }
+  return {};
+}
+
+static std::string buildMadIntrinsicName(Type lhsType, Type rhsType,
+                                         Type dstType) {
+  std::string rhs = getMadRhsFragment(rhsType);
+  std::string dst = getMadDstFragment(dstType);
+  if (lhsType.isF16() && rhs == "f16" && dst == "f32")
+    return "llvm.hivm.MAD.f162f32.c310";
+  if (lhsType.isF16() && rhs == "f16" && dst == "f16")
+    return "llvm.hivm.MAD.f162f16";
+  if (lhsType.isF16() && rhs == "f16" && dst == "s32")
+    return "llvm.hivm.MAD.f162s32.1952";
+  if (lhsType.isBF16() && rhs == "bf16" && dst == "f32")
+    return "llvm.hivm.MAD.bf162f32.c310";
+  if (lhsType.isF32() && rhs == "f32" && dst == "f32")
+    return "llvm.hivm.MAD.f322f32.c310";
+  if (lhsType.isF16() && rhs == "s4")
+    return "llvm.hivm.MAD.f16s4.c310";
+  if (lhsType.isF16() && rhs == "s8")
+    return "llvm.hivm.MAD.f16s8.c310";
+  if (lhsType.isF16() && rhs == "u2")
+    return "llvm.hivm.MAD.f16u2";
+  if (lhsType.isF16() && rhs == "e8m0")
+    return "llvm.hivm.MAD.f16e8m0.c310";
   return {};
 }
 
@@ -229,6 +340,14 @@ static FailureOr<IntrinsicSelection> selectConfigLike(Operation *op) {
                         usedFields, "");
   if (isa<pto::SetLoopSizeOutToUbOp>(op))
     return makeResolved(op, "llvm.hivm.SET.LOOP.SIZE.OUTTOUB", usedFields, "");
+  if (isa<pto::SetLoop2StrideOutToL1Op>(op))
+    return makeResolved(op, "llvm.hivm.SET.LOOP2.STRIDE.OUTTOL1", usedFields,
+                        "");
+  if (isa<pto::SetLoop1StrideOutToL1Op>(op))
+    return makeResolved(op, "llvm.hivm.SET.LOOP1.STRIDE.OUTTOL1", usedFields,
+                        "");
+  if (isa<pto::SetLoopSizeOutToL1Op>(op))
+    return makeResolved(op, "llvm.hivm.SET.LOOP.SIZE.OUTTOL1", usedFields, "");
   if (isa<pto::SetLoop2StrideUbToOutOp>(op))
     return makeResolved(op, "llvm.hivm.SET.LOOP2.STRIDE.UBTOOUT", usedFields,
                         "");
@@ -237,8 +356,18 @@ static FailureOr<IntrinsicSelection> selectConfigLike(Operation *op) {
                         "");
   if (isa<pto::SetLoopSizeUbToOutOp>(op))
     return makeResolved(op, "llvm.hivm.SET.LOOP.SIZE.UBTOOUT", usedFields, "");
+  if (isa<pto::SetMte2NzParaOp>(op))
+    return makeResolved(op, "llvm.hivm.SET.MTE2.NZ.PARA", usedFields, "");
   if (isa<pto::SetMovPadValOp>(op))
     return makeResolved(op, "llvm.hivm.SET.MOV.PAD.VAL", usedFields, "");
+  if (isa<pto::SetPadValOutToL1Op>(op))
+    return makeResolved(op, "llvm.hivm.SET.PAD.VAL.OUTTOL1", usedFields, "");
+  if (isa<pto::SetFpcOp>(op))
+    return makeResolved(op, "llvm.hivm.SET.FPC", usedFields, "");
+  if (isa<pto::SetAtomicS32Op>(op))
+    return makeResolved(op, "llvm.hivm.SET.ATOMIC.S32", usedFields, "");
+  if (isa<pto::SetAtomicS8Op>(op))
+    return makeResolved(op, "llvm.hivm.SET.ATOMIC.S8", usedFields, "");
 
   llvm::SmallVector<std::string, 2> missingFields = {"confirmed_hivm_name"};
   return makeUnresolved(op, getOpMnemonic(op), "", usedFields, missingFields,
@@ -567,6 +696,178 @@ FailureOr<IntrinsicSelection> selectStoreIntrinsic(Operation *op) {
                           missingFields, "");
   }
 
+  if (auto copy = dyn_cast<pto::CopyGmToCbufMultiNd2NzOp>(op)) {
+    usedFields = {"family=copy_gm_to_cbuf_multi_nd2nz"};
+    return makeResolved(op, "llvm.hivm.MOV.OUT.TO.L1.MULTI.ND2NZ", usedFields,
+                        "");
+  }
+
+  if (auto copy = dyn_cast<pto::CopyGmToCbufMultiDn2NzOp>(op)) {
+    usedFields = {"family=copy_gm_to_cbuf_multi_dn2nz"};
+    return makeResolved(op, "llvm.hivm.MOV.OUT.TO.L1.MULTI.DN2NZ", usedFields,
+                        "");
+  }
+
+  if (auto matmul = dyn_cast<pto::MadOp>(op)) {
+    std::string lhsElem = getElementTypeFragment(
+        cast<pto::PtrType>(matmul.getLhs().getType()).getElementType());
+    std::string rhsElem = getElementTypeFragment(
+        cast<pto::PtrType>(matmul.getRhs().getType()).getElementType());
+    std::string dstElem = getElementTypeFragment(
+        cast<pto::PtrType>(matmul.getDst().getType()).getElementType());
+    usedFields = {"family=mad", "lhs=" + lhsElem, "rhs=" + rhsElem,
+                  "dst=" + dstElem, "shape=i64xm_n_k"};
+    Type lhsType = cast<pto::PtrType>(matmul.getLhs().getType()).getElementType();
+    Type rhsType = cast<pto::PtrType>(matmul.getRhs().getType()).getElementType();
+    Type dstType = cast<pto::PtrType>(matmul.getDst().getType()).getElementType();
+    std::string madName = buildMadIntrinsicName(lhsType, rhsType, dstType);
+    if (!madName.empty())
+      return makeResolved(op, madName, usedFields, "");
+    if (isMxElementType(lhsType) && isMxElementType(rhsType)) {
+      std::string mxName = buildMadMxIntrinsicName(lhsType, rhsType);
+      if (!mxName.empty())
+        return makeResolved(op, mxName, usedFields, "");
+    }
+    missingFields.push_back("lhs/rhs_element_type_mapping");
+    return makeUnresolved(op, "mad", "llvm.hivm.MAD/llvm.hivm.MMAD.MX.*",
+                          usedFields,
+                          missingFields, "");
+  }
+
+  if (auto matmulMx = dyn_cast<pto::MadMxOp>(op)) {
+    std::string lhsElem = getElementTypeFragment(
+        cast<pto::PtrType>(matmulMx.getLhs().getType()).getElementType());
+    std::string rhsElem = getElementTypeFragment(
+        cast<pto::PtrType>(matmulMx.getRhs().getType()).getElementType());
+    std::string dstElem = getElementTypeFragment(
+        cast<pto::PtrType>(matmulMx.getDst().getType()).getElementType());
+    usedFields = {"family=mad_mx", "lhs=" + lhsElem, "rhs=" + rhsElem,
+                  "dst=" + dstElem, "shape=i64xm_n_k"};
+    Type lhsType =
+        cast<pto::PtrType>(matmulMx.getLhs().getType()).getElementType();
+    Type rhsType =
+        cast<pto::PtrType>(matmulMx.getRhs().getType()).getElementType();
+    if (isMxElementType(lhsType) && isMxElementType(rhsType)) {
+      std::string mxName = buildMadMxIntrinsicName(lhsType, rhsType);
+      if (!mxName.empty())
+        return makeResolved(op, mxName, usedFields, "");
+    }
+    missingFields.push_back("lhs/rhs_mx_element_type");
+    return makeUnresolved(op, "mad_mx", "llvm.hivm.MMAD.MX.*", usedFields,
+                          missingFields, "");
+  }
+
+  if (auto copy = dyn_cast<pto::CopyGmToCbufOp>(op)) {
+    std::string elemFragment = getCopyElementFragment(copy.getSource().getType());
+    usedFields = {"family=copy_gm_to_cbuf"};
+    if (!elemFragment.empty())
+      usedFields.push_back("element=" + elemFragment);
+    if (elemFragment.empty()) {
+      missingFields.push_back("element_type_mapping");
+      return makeUnresolved(op, "copy_gm_to_cbuf",
+                            "llvm.hivm.MOV.OUT.TO.L1.ALIGN.V2.<elem>.DV",
+                            usedFields, missingFields, "");
+    }
+    return makeResolved(op, "llvm.hivm.MOV.OUT.TO.L1.ALIGN.V2." + elemFragment +
+                                ".DV",
+                        usedFields, "");
+  }
+
+  if (auto load = dyn_cast<pto::LoadCbufToCaOp>(op)) {
+    std::string srcElem = getElementTypeFragment(
+        cast<pto::PtrType>(load.getSource().getType()).getElementType());
+    std::string dstElem = getElementTypeFragment(
+        cast<pto::PtrType>(load.getDestination().getType()).getElementType());
+    usedFields = {"family=load_cbuf_to_ca", "src=" + srcElem, "dst=" + dstElem,
+                  "shape=i64xm_k"};
+    if (srcElem.empty()) {
+      missingFields.push_back("src_element_type_mapping");
+      return makeUnresolved(op, "load_cbuf_to_ca",
+                            "llvm.hivm.LOAD.L1.TO.L0A.2Dv2.<elem>", usedFields,
+                            missingFields, "");
+    }
+    return makeResolved(op, "llvm.hivm.LOAD.L1.TO.L0A.2Dv2." + srcElem,
+                        usedFields, "");
+  }
+
+  if (auto load = dyn_cast<pto::LoadCbufToCbOp>(op)) {
+    std::string srcElem = getElementTypeFragment(
+        cast<pto::PtrType>(load.getSource().getType()).getElementType());
+    std::string dstElem = getElementTypeFragment(
+        cast<pto::PtrType>(load.getDestination().getType()).getElementType());
+    usedFields = {"family=load_cbuf_to_cb", "src=" + srcElem, "dst=" + dstElem,
+                  "shape=i64xk_n"};
+    if (srcElem.empty()) {
+      missingFields.push_back("src_element_type_mapping");
+      return makeUnresolved(op, "load_cbuf_to_cb",
+                            "llvm.hivm.LOAD.L1.TO.L0B.2Dv2.<elem>", usedFields,
+                            missingFields, "");
+    }
+    return makeResolved(op, "llvm.hivm.LOAD.L1.TO.L0B.2Dv2." + srcElem,
+                        usedFields, "");
+  }
+
+  if (auto copy = dyn_cast<pto::CopyMatrixCcToGmOp>(op)) {
+    std::string srcElem = getElementTypeFragment(
+        cast<pto::PtrType>(copy.getSource().getType()).getElementType());
+    std::string dstElem = getElementTypeFragment(
+        cast<pto::PtrType>(copy.getDestination().getType()).getElementType());
+    usedFields = {"family=copy_matrix_cc_to_gm", "src=" + srcElem,
+                  "dst=" + dstElem, "shape=i64xm_n"};
+    return makeResolved(op, "llvm.hivm.FIX.L0C.TO.OUT.f32.EXT", usedFields, "");
+  }
+
+  if (auto copy = dyn_cast<pto::CopyMatrixCcToCbufOp>(op)) {
+    std::string srcElem = getElementTypeFragment(
+        cast<pto::PtrType>(copy.getSource().getType()).getElementType());
+    std::string dstElem = getElementTypeFragment(
+        cast<pto::PtrType>(copy.getDestination().getType()).getElementType());
+    usedFields = {"family=copy_matrix_cc_to_cbuf", "src=" + srcElem,
+                  "dst=" + dstElem};
+    return makeResolved(op, "llvm.hivm.FIX.L0C.TO.L1.f32.EXT", usedFields, "");
+  }
+
+  if (auto copy = dyn_cast<pto::CopyMatrixCcToUbOp>(op)) {
+    std::string srcElem = getElementTypeFragment(
+        cast<pto::PtrType>(copy.getSource().getType()).getElementType());
+    std::string dstElem = getElementTypeFragment(
+        cast<pto::PtrType>(copy.getDestination().getType()).getElementType());
+    usedFields = {"family=copy_matrix_cc_to_ub", "src=" + srcElem,
+                  "dst=" + dstElem};
+    if (dstElem == "f16")
+      return makeResolved(op, "llvm.hivm.MOV.L0CDPF32.TO.UB.f322f16",
+                          usedFields, "");
+    if (dstElem == "f32")
+      return makeResolved(op, "llvm.hivm.MOV.L0CDPF32.TO.UB.f322f32",
+                          usedFields, "");
+    missingFields.push_back("dst_element_type_mapping");
+    return makeUnresolved(op, "copy_matrix_cc_to_ub",
+                          "llvm.hivm.MOV.L0CDPF32.TO.UB.f322f{16|32}",
+                          usedFields, missingFields, "");
+  }
+
+  if (auto copy = dyn_cast<pto::CopyCbufToBtOp>(op)) {
+    usedFields = {"family=copy_cbuf_to_bt", "src=f16"};
+    return makeResolved(op, "llvm.hivm.MOV.L1.TO.BT.f16", usedFields, "");
+  }
+
+  if (auto copy = dyn_cast<pto::CopyCbufToFbufOp>(op)) {
+    usedFields = {"family=copy_cbuf_to_fbuf"};
+    return makeResolved(op, "llvm.hivm.MOV.L1.TO.FB.V2", usedFields, "");
+  }
+
+  if (auto load = dyn_cast<pto::LoadCbufToCaS4Op>(op)) {
+    usedFields = {"family=load_cbuf_to_ca_s4"};
+    return makeResolved(op, "llvm.hivm.LOAD.L1.TO.L0A.2Dv2.s4", usedFields,
+                        "");
+  }
+
+  if (auto load = dyn_cast<pto::LoadCbufToCbS4Op>(op)) {
+    usedFields = {"family=load_cbuf_to_cb_s4"};
+    return makeResolved(op, "llvm.hivm.LOAD.L1.TO.L0B.2Dv2.s4", usedFields,
+                        "");
+  }
+
   if (auto copy = dyn_cast<pto::CopyUbufToGmOp>(op)) {
     std::string elemFragment = getCopyElementFragment(copy.getSource().getType());
     usedFields = {"family=copy_ubuf_to_gm"};
@@ -590,9 +891,12 @@ FailureOr<IntrinsicSelection> selectIntrinsic(Operation *op) {
     return selectSyncLike(op);
 
   if (isa<pto::SetLoop2StrideOutToUbOp, pto::SetLoop1StrideOutToUbOp,
-          pto::SetLoopSizeOutToUbOp, pto::SetLoop2StrideUbToOutOp,
-          pto::SetLoop1StrideUbToOutOp, pto::SetLoopSizeUbToOutOp,
-          pto::SetMovPadValOp>(op))
+          pto::SetLoopSizeOutToUbOp, pto::SetLoop2StrideOutToL1Op,
+          pto::SetLoop1StrideOutToL1Op, pto::SetLoopSizeOutToL1Op,
+          pto::SetLoop2StrideUbToOutOp, pto::SetLoop1StrideUbToOutOp,
+          pto::SetLoopSizeUbToOutOp, pto::SetMte2NzParaOp,
+          pto::SetMovPadValOp, pto::SetPadValOutToL1Op, pto::SetFpcOp,
+          pto::SetAtomicS32Op, pto::SetAtomicS8Op>(op))
     return selectConfigLike(op);
 
   if (succeeded(selectLoadIntrinsic(op)))

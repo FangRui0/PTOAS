@@ -198,8 +198,9 @@ public:
     if (isa<CopyGmToUbufOp, CopyUbufToUbufOp, CopyUbufToGmOp>(op))
       return VPTOBufferAddressFamily::Copy;
 
-    if (isa<VldsPostOp, VstsPostOp, VldasOp, VldusOp, PstuOp, VstusOp,
-            VsturOp>(op))
+    if (isa<VldsPostOp, VstsPostOp, VldasOp, VldusOp, PstuOp, VstusOp, VsturOp,
+            MadOp, MadMxOp, CopyGmToCbufOp, LoadCbufToCaOp,
+            LoadCbufToCbOp, CopyMatrixCcToGmOp>(op))
       return VPTOBufferAddressFamily::PtrOnly;
 
     if (isa<VldsOp, UvldOp, PldsOp, PldiOp, VstsOp, PstiOp, PstsOp,
