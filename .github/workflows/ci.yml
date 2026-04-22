@@ -265,6 +265,9 @@ jobs:
   vpto-sim-validation:
     runs-on: [self-hosted, Linux, X64, label-1]
     timeout-minutes: 120
+    concurrency:
+      group: vpto-sim-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
     if: >-
       ${{
         github.event_name == 'workflow_dispatch' ||
@@ -275,6 +278,7 @@ jobs:
       LLVM_COMMIT: cd708029e0b2869e80abe31ddb175f7c35361f90
       VPTO_SIM_WORKSPACE: ${{ github.workspace }}/.work/vpto-sim-ci
       TILELANG_DSL_WORKSPACE: ${{ github.workspace }}/.work/tilelang-dsl-ci
+      TILELANG_DSL_UT_WORKSPACE: ${{ github.workspace }}/.work/tilelang-dsl-ut-ci
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -458,6 +462,24 @@ jobs:
           name: tilelang-dsl-ci-${{ github.run_id }}
           path: |
             ${{ env.TILELANG_DSL_WORKSPACE }}/run_ci.log
+          if-no-files-found: warn
+
+      - name: Run TileLang DSL unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${TILELANG_DSL_UT_WORKSPACE}"
+          cd tilelang-dsl
+          PYTHONPATH=python python3 -m unittest discover -s tests -p 'test_*.py' \
+            2>&1 | tee "${TILELANG_DSL_UT_WORKSPACE}/unittest.log"
+
+      - name: Upload TileLang DSL unit test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tilelang-dsl-ut-ci-${{ github.run_id }}
+          path: |
+            ${{ env.TILELANG_DSL_UT_WORKSPACE }}/unittest.log
           if-no-files-found: warn
 
       - name: Upload VPTO SIM logs
