@@ -51,24 +51,32 @@ fi
 
 remove_rpath() {
   local path="$1"
-  if ! readelf -d "$path" 2>/dev/null | grep -Eq '(RPATH|RUNPATH)'; then
-    return
-  fi
-  if command -v patchelf >/dev/null 2>&1; then
-    patchelf --remove-rpath "$path"
+  if ! has_rpath "$path"; then
     return
   fi
   if command -v chrpath >/dev/null 2>&1; then
-    chrpath -d "$path"
-    return
+    chrpath -d "$path" >/dev/null 2>&1 || true
   fi
-  echo "Error: neither patchelf nor chrpath is available to scrub RPATH from ${path}" >&2
-  exit 1
+  if has_rpath "$path" && command -v patchelf >/dev/null 2>&1; then
+    patchelf --remove-rpath "$path"
+  fi
+  if has_rpath "$path" && command -v chrpath >/dev/null 2>&1; then
+    chrpath -d "$path"
+  fi
+  if has_rpath "$path"; then
+    echo "Error: failed to scrub RPATH/RUNPATH from ${path}" >&2
+    exit 1
+  fi
 }
 
 strip_symbols() {
   local path="$1"
   strip --strip-unneeded "$path"
+}
+
+has_rpath() {
+  local path="$1"
+  readelf -d "$path" 2>/dev/null | grep -Eq '(RPATH|RUNPATH)'
 }
 
 assert_relro() {
@@ -93,7 +101,7 @@ assert_no_symtab() {
 
 assert_no_rpath() {
   local path="$1"
-  if readelf -d "$path" 2>/dev/null | grep -Eq '(RPATH|RUNPATH)'; then
+  if has_rpath "$path"; then
     echo "Error: runtime search path still present in ${path}" >&2
     exit 1
   fi
@@ -124,7 +132,7 @@ copy_so() {
   local name
   name=$(basename "$f")
   [[ -f "${PTOAS_DEPS_DIR}/${name}" ]] && return 0
-  cp -n "$f" "${PTOAS_DEPS_DIR}/" 2>/dev/null || true
+  cp -L -n "$f" "${PTOAS_DEPS_DIR}/" 2>/dev/null || true
   harden_elf "${PTOAS_DEPS_DIR}/${name}"
   while read -r res; do
     copy_so "$res"
@@ -134,6 +142,10 @@ copy_so() {
 while read -r res; do
   copy_so "$res"
 done < <(ldd "$PTOAS_BIN" 2>/dev/null | awk '/=> \/llvm-workspace\// {print $3}')
+
+while read -r packaged; do
+  harden_elf "$packaged"
+done < <(find "${PTOAS_DIST_DIR}/bin" "${PTOAS_DEPS_DIR}" -type f | sort)
 
 # Create wrapper script
 echo "Creating wrapper script..."
