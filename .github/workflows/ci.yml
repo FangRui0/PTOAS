@@ -269,13 +269,10 @@ jobs:
       ${{
         github.event_name == 'workflow_dispatch' ||
         github.event_name == 'schedule' ||
-        (github.event_name == 'pull_request' &&
-         github.event.pull_request.head.repo.full_name == github.repository)
+        github.event_name == 'pull_request'
       }}
     env:
       LLVM_COMMIT: cd708029e0b2869e80abe31ddb175f7c35361f90
-      LLVM_DIR: ${{ github.workspace }}/llvm-project/llvm/build-shared
-      MLIR_PYTHONPATH: ${{ github.workspace }}/llvm-project/llvm/build-shared/tools/mlir/python_packages/mlir_core
       VPTO_SIM_WORKSPACE: ${{ github.workspace }}/.work/vpto-sim-ci
       TILELANG_DSL_WORKSPACE: ${{ github.workspace }}/.work/tilelang-dsl-ci
     steps:
@@ -284,6 +281,16 @@ jobs:
         with:
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Resolve LLVM directories
+        shell: bash
+        env:
+          TOOL_CACHE: ${{ runner.tool_cache }}
+        run: |
+          set -euo pipefail
+          echo "LLVM_ROOT=${TOOL_CACHE}/llvm-project" >> "${GITHUB_ENV}"
+          echo "LLVM_DIR=${TOOL_CACHE}/llvm-project/llvm/build-shared" >> "${GITHUB_ENV}"
+          echo "MLIR_PYTHONPATH=${TOOL_CACHE}/llvm-project/llvm/build-shared/tools/mlir/python_packages/mlir_core" >> "${GITHUB_ENV}"
 
       - name: Ensure runner dependencies
         shell: bash
@@ -351,8 +358,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p llvm-project
-          cd llvm-project
+          mkdir -p "${LLVM_ROOT}"
+          cd "${LLVM_ROOT}"
 
           if [ ! -d .git ]; then
             git init
@@ -367,7 +374,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cd llvm-project
+          cd "${LLVM_ROOT}"
           cmake -G Ninja -S llvm -B llvm/build-shared \
             -DLLVM_ENABLE_PROJECTS="mlir;clang" \
             -DBUILD_SHARED_LIBS=ON \
