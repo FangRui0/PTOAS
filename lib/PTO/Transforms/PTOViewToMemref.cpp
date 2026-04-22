@@ -440,6 +440,43 @@ static Value ensureIndex(IRRewriter &rewriter, Location loc, Value v,
   return Value();
 }
 
+static bool tryGetIndexAttrFromValue(IRRewriter &rewriter, Value v,
+                                     IntegerAttr &constAttr) {
+  if (auto cOp = v.getDefiningOp<arith::ConstantIndexOp>()) {
+    constAttr = rewriter.getIndexAttr(cOp.value());
+    return true;
+  }
+  if (auto cInt = v.getDefiningOp<arith::ConstantIntOp>()) {
+    constAttr = rewriter.getIndexAttr(cInt.value());
+    return true;
+  }
+  return false;
+}
+
+static void appendMixedIndex(IRRewriter &rewriter, Location loc, Value v,
+                             Operation *anchorOp,
+                             SmallVectorImpl<OpFoldResult> &mixedVals) {
+  IntegerAttr constAttr;
+  if (tryGetIndexAttrFromValue(rewriter, v, constAttr)) {
+    mixedVals.push_back(constAttr);
+    return;
+  }
+  mixedVals.push_back(ensureIndex(rewriter, loc, v, anchorOp));
+}
+
+static bool foldAddPtrChainIntoOffset(IRRewriter &rewriter, Location loc,
+                                      Value &base, Value &totalOffset) {
+  bool folded = false;
+  while (auto add = base.getDefiningOp<mlir::pto::AddPtrOp>()) {
+    folded = true;
+    Value off = ensureIndex(rewriter, loc, add.getOperand(1), add);
+    totalOffset =
+        totalOffset ? rewriter.create<arith::AddIOp>(loc, totalOffset, off) : off;
+    base = add.getOperand(0);
+  }
+  return folded;
+}
+
 static Value clampSubViewValidDim(IRRewriter &rewriter, Location loc,
                                   Value explicitValid, int64_t size,
                                   Operation *anchorOp) {
@@ -775,14 +812,7 @@ static LogicalResult foldAddPtrIntoScalarOps(func::FuncOp func, MLIRContext *ctx
 
     Value base = op.getPtr();
     Value totalOffset = ensureIndex(rewriter, loc, op.getOffset(), op);
-    bool foldedAddPtr = false;
-    while (auto add = base.getDefiningOp<mlir::pto::AddPtrOp>()) {
-      foldedAddPtr = true;
-      Value off = ensureIndex(rewriter, loc, add.getOperand(1), add);
-      totalOffset = totalOffset ? rewriter.create<arith::AddIOp>(loc, totalOffset, off)
-                                : off;
-      base = add.getOperand(0);
-    }
+    bool foldedAddPtr = foldAddPtrChainIntoOffset(rewriter, loc, base, totalOffset);
     if (foldedAddPtr) {
       auto newOp =
           rewriter.create<pto::LoadScalarOp>(loc, op.getValue().getType(), base,
@@ -800,14 +830,7 @@ static LogicalResult foldAddPtrIntoScalarOps(func::FuncOp func, MLIRContext *ctx
 
     Value base = op.getPtr();
     Value totalOffset = ensureIndex(rewriter, loc, op.getOffset(), op);
-    bool foldedAddPtr = false;
-    while (auto add = base.getDefiningOp<mlir::pto::AddPtrOp>()) {
-      foldedAddPtr = true;
-      Value off = ensureIndex(rewriter, loc, add.getOperand(1), add);
-      totalOffset = totalOffset ? rewriter.create<arith::AddIOp>(loc, totalOffset, off)
-                                : off;
-      base = add.getOperand(0);
-    }
+    bool foldedAddPtr = foldAddPtrChainIntoOffset(rewriter, loc, base, totalOffset);
     if (foldedAddPtr) {
       rewriter.create<pto::StoreScalarOp>(loc, base, totalOffset, op.getValue());
       rewriter.eraseOp(op);
@@ -875,18 +898,7 @@ static LogicalResult lowerPartitionViewOps(func::FuncOp func, MLIRContext *ctx) 
 
     SmallVector<OpFoldResult> mixedOffsets;
     for (Value offset : op.getOffsets()) {
-      IntegerAttr constAttr;
-      bool isStatic = false;
-      if (auto cOp = offset.getDefiningOp<arith::ConstantIndexOp>()) {
-        constAttr = rewriter.getIndexAttr(cOp.value());
-        isStatic = true;
-      } else if (auto cInt = offset.getDefiningOp<arith::ConstantIntOp>()) {
-        constAttr = rewriter.getIndexAttr(cInt.value());
-        isStatic = true;
-      }
-      mixedOffsets.push_back(isStatic ? OpFoldResult(constAttr)
-                                      : OpFoldResult(ensureIndex(rewriter, loc,
-                                                                 offset, op)));
+      appendMixedIndex(rewriter, loc, offset, op, mixedOffsets);
     }
 
     int64_t dyn = ShapedType::kDynamic;
@@ -935,18 +947,7 @@ static LogicalResult lowerSubViewOps(func::FuncOp func, MLIRContext *ctx) {
 
     SmallVector<OpFoldResult> mixedOffsets;
     for (Value offset : op.getOffsets()) {
-      IntegerAttr constAttr;
-      bool isStatic = false;
-      if (auto cOp = offset.getDefiningOp<arith::ConstantIndexOp>()) {
-        constAttr = rewriter.getIndexAttr(cOp.value());
-        isStatic = true;
-      } else if (auto cInt = offset.getDefiningOp<arith::ConstantIntOp>()) {
-        constAttr = rewriter.getIndexAttr(cInt.value());
-        isStatic = true;
-      }
-      mixedOffsets.push_back(isStatic ? OpFoldResult(constAttr)
-                                      : OpFoldResult(ensureIndex(rewriter, loc,
-                                                                 offset, op)));
+      appendMixedIndex(rewriter, loc, offset, op, mixedOffsets);
     }
 
     auto configAttr = lookupConfig(src);
