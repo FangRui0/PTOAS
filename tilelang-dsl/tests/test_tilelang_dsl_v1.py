@@ -4093,16 +4093,33 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
 
         self.assertIn("pto.i32 value must be a scalar or index value", str(ctx.exception))
 
-    def test_scalar_constructor_accepts_integer_string_literals(self) -> None:
-        @pto.vkernel(op="scalar_constructor_integer_string_literals_unique", dtypes=[(pto.f32,)])
+    def test_scalar_constructor_accepts_integer_hex_bit_pattern_strings(self) -> None:
+        @pto.vkernel(op="scalar_constructor_integer_hex_bit_patterns_unique", dtypes=[(pto.f32,)])
         def kernel(inp: pto.TensorView):
             x = pto.i16("0x7FFF")
             y = pto.i32("0x7FFFFFFF")
+            z = pto.i16("0x8000")
+            a = pto.i32("0x80000000")
+            b = pto.ui16("0x8000")
             return None
 
         text = kernel.mlir_text()
         self.assertIn("= arith.constant 32767 : i16", text)
         self.assertIn("= arith.constant 2147483647 : i32", text)
+        self.assertIn("= arith.constant -32768 : i16", text)
+        self.assertIn("= arith.constant -2147483648 : i32", text)
+        self.assertIn("= arith.constant 32768 : i16", text)
+
+    def test_scalar_constructor_rejects_non_hex_integer_string_literals(self) -> None:
+        @pto.vkernel(op="scalar_constructor_non_hex_integer_strings_unique", dtypes=[(pto.f32,)])
+        def kernel(inp: pto.TensorView):
+            x = pto.i32("1024")
+            return None
+
+        with self.assertRaises(TypeError) as ctx:
+            kernel.mlir_text()
+
+        self.assertIn("string literals must use hex bit-pattern form", str(ctx.exception))
 
     def test_scalar_constructor_rejects_out_of_range_integer_literal(self) -> None:
         @pto.vkernel(op="scalar_constructor_oob_int_unique", dtypes=[(pto.f32,)])
@@ -4118,13 +4135,13 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
     def test_scalar_constructor_rejects_out_of_range_integer_string_literal(self) -> None:
         @pto.vkernel(op="scalar_constructor_oob_integer_string_unique", dtypes=[(pto.f32,)])
         def kernel(inp: pto.TensorView):
-            x = pto.i16("0x8000")
+            x = pto.i16("0x10000")
             return None
 
         with self.assertRaises(TypeError) as ctx:
             kernel.mlir_text()
 
-        self.assertIn("out of range for i16", str(ctx.exception))
+        self.assertIn("exceeds 16-bit width for i16", str(ctx.exception))
 
     def test_inferred_vecscope_propagates_bindings_to_constexpr_if(self) -> None:
         @pto.vkernel(

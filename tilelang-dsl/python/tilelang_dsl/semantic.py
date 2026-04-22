@@ -4275,12 +4275,26 @@ class _SemanticAnalyzer:
         context: str,
     ) -> int:
         text = literal.strip().lower()
+        bits = integer_bitwidth(target_dtype)
+        signedness = integer_signedness(target_dtype)
+        assert bits is not None
+        signless_or_signed = signedness != "unsigned"
+        if not text.startswith("0x"):
+            raise TypeError(
+                f"{context} string literals must use hex bit-pattern form like \"0xFF\" in TileLang DSL v1"
+            )
         try:
-            parsed = int(text, 0)
+            parsed = int(text, 16)
         except ValueError as exc:
             raise TypeError(
-                f"{context} string literal {literal!r} is not a valid integer literal"
+                f"{context} string literal {literal!r} is not a valid hex bit-pattern"
             ) from exc
+        if parsed >= (1 << bits):
+            raise TypeError(
+                f"{context} bit-pattern literal {literal!r} exceeds {bits}-bit width for {target_dtype.name}"
+            )
+        if signless_or_signed and parsed >= (1 << (bits - 1)):
+            parsed -= 1 << bits
         return self._check_integer_literal_range(parsed, target_dtype, context)
 
     def _check_integer_literal_range(
