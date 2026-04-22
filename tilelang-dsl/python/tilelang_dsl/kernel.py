@@ -61,6 +61,27 @@ _SUPPORTED_TEMPLATE_PTO_CALLS = frozenset(
     | ADVANCED_TOPLEVEL_PTO_CALLS
 )
 
+_DSL_DTYPE_NAMES = frozenset(
+    {
+        "i1",
+        "i8",
+        "si8",
+        "ui8",
+        "i16",
+        "si16",
+        "ui16",
+        "i32",
+        "si32",
+        "ui32",
+        "i64",
+        "si64",
+        "ui64",
+        "f16",
+        "bf16",
+        "f32",
+    }
+)
+
 
 _INLINE_PROC_REGISTRY: dict[tuple[str, str], "InlineProcDescriptor"] = {}
 
@@ -242,6 +263,7 @@ class _KernelBodyValidator(ast.NodeVisitor):
         self.advanced_enabled = advanced_enabled
         self.module_name = module_name
         self._vecscope_depth = 0
+        self._static_dtype_bindings: set[str] = set()
 
     def validate(self) -> None:
         for stmt in self.source_info.function_def.body:
@@ -294,6 +316,22 @@ class _KernelBodyValidator(ast.NodeVisitor):
             self.visit(stmt)
         for stmt in node.orelse:
             self.visit(stmt)
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self.visit(node.value)
+        is_static_dtype = self._expr_is_static_dtype_expr(node.value)
+        for target in node.targets:
+            self._update_static_dtype_bindings(target, is_static_dtype=is_static_dtype)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if node.value is not None:
+            self.visit(node.value)
+        is_static_dtype = node.value is not None and self._expr_is_static_dtype_expr(node.value)
+        self._update_static_dtype_bindings(node.target, is_static_dtype=is_static_dtype)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        self.visit(node.value)
+        self._update_static_dtype_bindings(node.target, is_static_dtype=False)
 
     def visit_With(self, node: ast.With) -> None:
         if len(node.items) != 1:
@@ -484,6 +522,9 @@ class _KernelBodyValidator(ast.NodeVisitor):
             if node.func.id == "range":
                 self._validate_call_keywords(node)
                 return
+            if node.func.id in self._static_dtype_bindings:
+                self._validate_call_keywords(node)
+                return
             inline_proc = _find_inline_proc(node.func.id, module_name=self.module_name)
             if inline_proc is not None:
                 _validate_inline_proc_call_surface(self.source_info, node, inline_proc)
@@ -497,6 +538,31 @@ class _KernelBodyValidator(ast.NodeVisitor):
             node,
             "unsupported call surface in TileLang DSL v1",
         )
+
+    def _expr_is_static_dtype_expr(self, node: ast.AST) -> bool:
+        if isinstance(node, ast.Name):
+            return node.id in self._static_dtype_bindings
+        if isinstance(node, ast.Attribute):
+            if (
+                isinstance(node.value, ast.Name)
+                and node.value.id == "pto"
+                and node.attr in _DSL_DTYPE_NAMES
+            ):
+                return True
+            if node.attr == "element_type":
+                return True
+        return False
+
+    def _update_static_dtype_bindings(self, target: ast.expr, *, is_static_dtype: bool) -> None:
+        if isinstance(target, ast.Name):
+            if is_static_dtype:
+                self._static_dtype_bindings.add(target.id)
+            else:
+                self._static_dtype_bindings.discard(target.id)
+            return
+        if isinstance(target, (ast.Tuple, ast.List)):
+            for element in target.elts:
+                self._update_static_dtype_bindings(element, is_static_dtype=False)
 
 
 def _load_function_source_info(py_fn: Callable[..., Any]) -> _FunctionSourceInfo | None:

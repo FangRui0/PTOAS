@@ -43,6 +43,15 @@ y: pto.i32 = 1024      # Type annotation
 z = pto.ui16(7)        # Explicit unsigned 16-bit constant
 ```
 
+Static dtype bindings can also be called like constructors. This is useful when
+the dtype comes from compile-time metadata such as `element_type`:
+
+```python
+idx_dtype = tile.element_type
+zero_idx = idx_dtype(0)
+v_col = idx_dtype(col)
+```
+
 Integer sign semantics are part of the DSL type surface. `pto.si16`,
 `pto.ui16`, and `pto.i16` are distinct scalar dtypes and lower to `si16`,
 `ui16`, and `i16` respectively in VPTO IR.
