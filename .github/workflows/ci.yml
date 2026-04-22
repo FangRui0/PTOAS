@@ -144,7 +144,7 @@ jobs:
         with:
           path: |
             llvm-project/llvm/build-shared
-          key: llvm-${{ runner.os }}-${{ env.LLVM_COMMIT }}-shared-mlirpy-hardening-v1
+          key: llvm-${{ runner.os }}-${{ env.LLVM_COMMIT }}-shared-mlirpy-hardening-v2
 
       - name: Prepare LLVM source (no rebuild)
         run: |
@@ -182,7 +182,7 @@ jobs:
         with:
           path: |
             llvm-project/llvm/build-shared
-          key: llvm-${{ runner.os }}-${{ env.LLVM_COMMIT }}-shared-mlirpy-hardening-v1
+          key: llvm-${{ runner.os }}-${{ env.LLVM_COMMIT }}-shared-mlirpy-hardening-v2
 
       - name: Build PTOAS
         run: |

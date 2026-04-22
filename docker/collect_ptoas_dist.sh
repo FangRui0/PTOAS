@@ -71,6 +71,26 @@ strip_symbols() {
   strip --strip-unneeded "$path"
 }
 
+assert_relro() {
+  local path="$1"
+  if ! readelf -l "$path" 2>/dev/null | grep -q 'GNU_RELRO'; then
+    echo "Error: RELRO segment missing in ${path}" >&2
+    exit 1
+  fi
+  if ! readelf -d "$path" 2>/dev/null | grep -Eq '(BIND_NOW|FLAGS.*NOW|FLAGS_1.*NOW)'; then
+    echo "Error: NOW binding missing in ${path}" >&2
+    exit 1
+  fi
+}
+
+assert_no_symtab() {
+  local path="$1"
+  if readelf -S "$path" 2>/dev/null | grep -Eq '[[:space:]]\\.symtab[[:space:]]'; then
+    echo "Error: symbol table still present in ${path}" >&2
+    exit 1
+  fi
+}
+
 assert_no_rpath() {
   local path="$1"
   if readelf -d "$path" 2>/dev/null | grep -Eq '(RPATH|RUNPATH)'; then
@@ -83,6 +103,8 @@ harden_elf() {
   local path="$1"
   remove_rpath "$path"
   strip_symbols "$path"
+  assert_relro "$path"
+  assert_no_symtab "$path"
   assert_no_rpath "$path"
 }
 

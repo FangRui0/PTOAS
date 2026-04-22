@@ -95,7 +95,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: /llvm-workspace/llvm-project/build-shared
-          key: llvm-${{ env.LLVM_TAG }}-manylinux_2_34-${{ matrix.arch }}-${{ matrix.python }}-hardening-v1
+          key: llvm-${{ env.LLVM_TAG }}-manylinux_2_34-${{ matrix.arch }}-${{ matrix.python }}-hardening-v2
 
       - name: Prepare LLVM source
         run: |
@@ -114,7 +114,7 @@ jobs:
           echo "LLVM cache miss while running on PR/release."
           echo "PR/release runs are cache-consumers only and should reuse cache generated on the default branch."
           echo "Please run this workflow on the default branch first to populate cache key:"
-          echo "llvm-${{ env.LLVM_TAG }}-manylinux_2_34-${{ matrix.arch }}-${{ matrix.python }}-hardening-v1"
+          echo "llvm-${{ env.LLVM_TAG }}-manylinux_2_34-${{ matrix.arch }}-${{ matrix.python }}-hardening-v2"
 
       - name: Build LLVM/MLIR
         if: steps.cache-llvm.outputs.cache-hit != 'true'
@@ -137,7 +137,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: /llvm-workspace/llvm-project/build-shared
-          key: llvm-${{ env.LLVM_TAG }}-manylinux_2_34-${{ matrix.arch }}-${{ matrix.python }}-hardening-v1
+          key: llvm-${{ env.LLVM_TAG }}-manylinux_2_34-${{ matrix.arch }}-${{ matrix.python }}-hardening-v2
 
       - name: Build PTOAS
         run: |

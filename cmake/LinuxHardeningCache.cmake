@@ -23,3 +23,19 @@ foreach(_flag_var CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
   string(STRIP "${_flag_value}" _flag_value)
   set(${_flag_var} "${_flag_value}" CACHE STRING "Linux hardening flags" FORCE)
 endforeach()
+
+foreach(_flag_var
+    CMAKE_EXE_LINKER_FLAGS
+    CMAKE_SHARED_LINKER_FLAGS
+    CMAKE_MODULE_LINKER_FLAGS)
+  set(_flag_value "${${_flag_var}}")
+  foreach(_hardening_flag
+      -Wl,-z,relro
+      -Wl,-z,now)
+    if(NOT " ${_flag_value} " MATCHES "(^| )${_hardening_flag}( |$)")
+      string(APPEND _flag_value " ${_hardening_flag}")
+    endif()
+  endforeach()
+  string(STRIP "${_flag_value}" _flag_value)
+  set(${_flag_var} "${_flag_value}" CACHE STRING "Linux hardening linker flags" FORCE)
+endforeach()
