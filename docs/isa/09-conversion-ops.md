@@ -94,13 +94,26 @@ for (int i = 0; i < min(N, M); i++)
 ### Part Modes
 
 Use `part` when a width-changing conversion writes only one half of each wider
-destination lane group. This is typically used in even/odd placement forms such
-as `32 -> 16` or `16 -> 32` style conversions.
+destination lane group.
+
+- `Part` (`PART_EVEN`, `PART_ODD`)
+  - Used by ordinary width-changing conversions.
+  - Typical cases include `32 -> 16`, `16 -> 32`, and other even/odd packing
+    or unpacking forms.
+- `Part_T` (`PART_P0`, `PART_P1`, `PART_P2`, `PART_P3`)
+  - Used by lower-level packed placement forms.
+  - Typical cases include `32 -> 8`, packed fp8/fp4 conversion paths, and
+    other flows where the result is written into one of four sub-parts before a
+    later merge or compact step.
 
 | Mode | Description |
 |------|-------------|
 | `EVEN` | Output to even-indexed lanes |
 | `ODD` | Output to odd-indexed lanes |
+| `P0` | Output to sub-part 0 in 4-way packed placement forms |
+| `P1` | Output to sub-part 1 in 4-way packed placement forms |
+| `P2` | Output to sub-part 2 in 4-way packed placement forms |
+| `P3` | Output to sub-part 3 in 4-way packed placement forms |
 
 ---
 

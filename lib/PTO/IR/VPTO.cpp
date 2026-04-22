@@ -560,6 +560,24 @@ static std::optional<StringRef> normalizeEvenOddPartToken(StringRef token) {
   return std::nullopt;
 }
 
+static std::optional<StringRef> normalizePacked4PartToken(StringRef token) {
+  if (token == "P0" || token == "PART_P0")
+    return StringRef("P0");
+  if (token == "P1" || token == "PART_P1")
+    return StringRef("P1");
+  if (token == "P2" || token == "PART_P2")
+    return StringRef("P2");
+  if (token == "P3" || token == "PART_P3")
+    return StringRef("P3");
+  return std::nullopt;
+}
+
+static std::optional<StringRef> normalizeVcvtPartToken(StringRef token) {
+  if (auto normalized = normalizeEvenOddPartToken(token))
+    return normalized;
+  return normalizePacked4PartToken(token);
+}
+
 namespace {
 
 enum class VcvtElemKind {
@@ -580,6 +598,11 @@ struct VcvtContract {
   bool requiresRnd;
   bool requiresSat;
   bool requiresPart;
+};
+
+enum class VcvtPartFamily {
+  EvenOdd,
+  Packed4,
 };
 
 static VcvtElemKind classifyVcvtElemType(Type type) {
@@ -626,6 +649,27 @@ static std::optional<unsigned> getVcvtElemBitWidth(VcvtElemKind kind) {
     return std::nullopt;
   }
   return std::nullopt;
+}
+
+static std::optional<VcvtPartFamily> classifyVcvtPartFamily(unsigned srcBits,
+                                                            unsigned dstBits) {
+  unsigned largerBits = std::max(srcBits, dstBits);
+  unsigned smallerBits = std::min(srcBits, dstBits);
+  if (largerBits == smallerBits * 2)
+    return VcvtPartFamily::EvenOdd;
+  if (largerBits == smallerBits * 4)
+    return VcvtPartFamily::Packed4;
+  return std::nullopt;
+}
+
+static bool isValidVcvtPartForFamily(StringRef part, VcvtPartFamily family) {
+  switch (family) {
+  case VcvtPartFamily::EvenOdd:
+    return part == "EVEN" || part == "ODD";
+  case VcvtPartFamily::Packed4:
+    return part == "P0" || part == "P1" || part == "P2" || part == "P3";
+  }
+  return false;
 }
 
 static std::optional<VcvtContract> lookupVcvtContract(VcvtElemKind src,
@@ -2652,8 +2696,7 @@ ParseResult VcvtOp::parse(OpAsmParser &parser, OperationState &result) {
                                       normalizeRoundModeToken)) ||
       failed(normalizeNamedStringAttr("rnd", "rnd", normalizeRoundModeToken)) ||
       failed(normalizeNamedStringAttr("sat", "sat", normalizeSaturationToken)) ||
-      failed(
-          normalizeNamedStringAttr("part", "part", normalizeEvenOddPartToken)))
+      failed(normalizeNamedStringAttr("part", "part", normalizeVcvtPartToken)))
     return failure();
 
   result.addAttributes(attrs);
@@ -2713,8 +2756,20 @@ LogicalResult VcvtOp::verify() {
 
   if (getPartAttr()) {
     StringRef part = *getPart();
-    if (!normalizeEvenOddPartToken(part))
-      return emitOpError("part must be EVEN or ODD");
+    auto normalizedPart = normalizeVcvtPartToken(part);
+    if (!normalizedPart)
+      return emitOpError("part must be one of EVEN/ODD/P0/P1/P2/P3");
+    auto partFamily = classifyVcvtPartFamily(*inputElemBits, *resultElemBits);
+    if (!partFamily)
+      return emitOpError("part attr is not supported for this vcvt width relation");
+    if (!isValidVcvtPartForFamily(*normalizedPart, *partFamily)) {
+      switch (*partFamily) {
+      case VcvtPartFamily::EvenOdd:
+        return emitOpError("part must be EVEN or ODD for 8/16 and 16/32 vcvt forms");
+      case VcvtPartFamily::Packed4:
+        return emitOpError("part must be P0, P1, P2, or P3 for 8/32 vcvt forms");
+      }
+    }
   }
   if (static_cast<bool>(getPartAttr()) != contract->requiresPart) {
     return contract->requiresPart ? emitOpError("requires part attr for this vcvt type pair")

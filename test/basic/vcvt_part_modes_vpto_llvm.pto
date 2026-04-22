@@ -1,0 +1,34 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --vpto-emit-hivm-llvm %s -o - | FileCheck %s
+
+module attributes {pto.target_arch = "a5"} {
+  func.func @vcvt_u32_to_u8_packed_parts(%seed: ui32, %dst: !pto.ptr<ui8, ub>) attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    pto.vecscope {
+      %mask = pto.pset_b8 "PAT_ALL" : !pto.mask<b8>
+      %src = pto.vbr %seed : ui32 -> !pto.vreg<64xui32>
+      %p0 = pto.vcvt %src {sat = "SAT", part = "P0"} : !pto.vreg<64xui32> -> !pto.vreg<256xui8>
+      %p1 = pto.vcvt %src {sat = "SAT", part = "P1"} : !pto.vreg<64xui32> -> !pto.vreg<256xui8>
+      %p2 = pto.vcvt %src {sat = "SAT", part = "P2"} : !pto.vreg<64xui32> -> !pto.vreg<256xui8>
+      %p3 = pto.vcvt %src {sat = "SAT", part = "P3"} : !pto.vreg<64xui32> -> !pto.vreg<256xui8>
+      %m01 = pto.vor %p0, %p1, %mask : !pto.vreg<256xui8>, !pto.vreg<256xui8>, !pto.mask<b8> -> !pto.vreg<256xui8>
+      %m23 = pto.vor %p2, %p3, %mask : !pto.vreg<256xui8>, !pto.vreg<256xui8>, !pto.mask<b8> -> !pto.vreg<256xui8>
+      %out = pto.vor %m01, %m23, %mask : !pto.vreg<256xui8>, !pto.vreg<256xui8>, !pto.mask<b8> -> !pto.vreg<256xui8>
+      pto.vsts %out, %dst[%c0], %mask : !pto.vreg<256xui8>, !pto.ptr<ui8, ub>, !pto.mask<b8>
+    }
+    return
+  }
+}
+
+// CHECK-LABEL: define void @vcvt_u32_to_u8_packed_parts(
+// CHECK: call <256 x i8> @llvm.hivm.vcvtii.u322u8.x({{.*}} i32 0, i32 0)
+// CHECK: call <256 x i8> @llvm.hivm.vcvtii.u322u8.x({{.*}} i32 0, i32 1)
+// CHECK: call <256 x i8> @llvm.hivm.vcvtii.u322u8.x({{.*}} i32 0, i32 2)
+// CHECK: call <256 x i8> @llvm.hivm.vcvtii.u322u8.x({{.*}} i32 0, i32 3)

@@ -376,6 +376,20 @@ static std::optional<uint64_t> parsePartImmediate(StringRef part) {
   return std::nullopt;
 }
 
+static std::optional<uint64_t> parseVcvtPartImmediate(StringRef part) {
+  if (part == "EVEN" || part == "PART_EVEN" || part == "P0" ||
+      part == "PART_P0")
+    return 0;
+  if (part == "ODD" || part == "PART_ODD" || part == "P1" ||
+      part == "PART_P1")
+    return 1;
+  if (part == "P2" || part == "PART_P2")
+    return 2;
+  if (part == "P3" || part == "PART_P3")
+    return 3;
+  return std::nullopt;
+}
+
 static std::optional<uint64_t> parsePredicateStoreDistImmediate(StringRef dist) {
   if (dist == "NORM")
     return 0;
@@ -4241,7 +4255,8 @@ public:
     }
 
     if ((*contract).requiresPart) {
-      auto part = op.getPartAttr() ? parsePartImmediate(*op.getPart()) : std::nullopt;
+      auto part =
+          op.getPartAttr() ? parseVcvtPartImmediate(*op.getPart()) : std::nullopt;
       if (!part)
         return rewriter.notifyMatchFailure(op, "vcvt requires valid part attr");
       Value partValue = getI32Constant(rewriter, op.getLoc(), *part);
