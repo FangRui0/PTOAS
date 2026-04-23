@@ -19,8 +19,7 @@ add_mlir_dialect_library(PTOTransforms
   VPTOPtrCastCleanup.cpp
   PTOVPTOExpandBridgeOps.cpp
   PTOVPTOPtrBoundary.cpp
-  PTOToVPTO.cpp
-  PTOToVPTOLowering.cpp
+  VPTOBufferMaterialization.cpp
   PTOValidateVPTOIR.cpp
 
   InsertSync/PTOInsertSync.cpp

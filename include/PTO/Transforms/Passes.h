@@ -69,8 +69,6 @@ std::unique_ptr<Pass> createVPTOPtrNormalizePass();
 std::unique_ptr<Pass> createVPTOPtrCastCleanupPass();
 std::unique_ptr<Pass> createPTOValidateVPTOIRPass();
 std::unique_ptr<Pass> createPTOValidateVPTOEmissionIRPass();
-std::unique_ptr<Pass> createLowerPTOToVPTOPass();
-std::unique_ptr<Pass> createLowerPTOToVPTOPass(StringRef loweringStrategy);
 void registerPTOViewToMemrefPass();
 
 std::unique_ptr<Pass> createMemrefToTileBufPass();

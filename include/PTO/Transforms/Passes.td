@@ -429,28 +429,4 @@ def VPTOPtrCastCleanup
                            "mlir::memref::MemRefDialect"];
 }
 
-def PTOToVPTO : Pass<"pto-to-vpto", "ModuleOp"> {
-  let summary = "Lower PTO tile ops to VPTO backend ops";
-  let description = [{
-    Lowers PTO tile ops to VPTO backend ops. For already-planned fusion groups,
-    the pass rewrites the `pto.fusion_region` body in place and preserves the
-    wrapper until explicit flatten. Residual non-fused PTO ops may continue to
-    be lowered directly in their parent block and are not wrapped into
-    synthetic `pto.fusion_region` containers solely for backend lowering.
-  }];
-  let constructor = "mlir::pto::createLowerPTOToVPTOPass()";
-  let options = [
-    Option<"loweringStrategy", "pto-lowering-strategy", "std::string",
-           "\"post-update\"",
-           "vector lowering strategy: post-update or no-post-update">
-  ];
-  let dependentDialects = [
-    "pto::PTODialect",
-    "func::FuncDialect",
-    "arith::ArithDialect",
-    "memref::MemRefDialect",
-    "scf::SCFDialect"
-  ];
-}
-
 #endif // MLIR_DIALECT_PTO_PASSES
