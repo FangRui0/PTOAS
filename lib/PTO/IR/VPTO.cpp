@@ -2117,6 +2117,13 @@ LogicalResult PunpackOp::verify() {
   return success();
 }
 
+LogicalResult PbitcastOp::verify() {
+  if (failed(verifyMaskTypeLike(*this, getInput().getType(), "input type")) ||
+      failed(verifyMaskTypeLike(*this, getResult().getType(), "result type")))
+    return failure();
+  return success();
+}
+
 LogicalResult PnotOp::verify() {
   if (failed(verifyMaskTypeLike(*this, getInput().getType(), "input type")) ||
       failed(verifyMaskTypeLike(*this, getMask().getType(), "mask type")) ||

@@ -4300,6 +4300,30 @@ public:
   }
 };
 
+class LowerPbitcastOpPattern final
+    : public OpConversionPattern<pto::PbitcastOp> {
+public:
+  explicit LowerPbitcastOpPattern(TypeConverter &typeConverter,
+                                  MLIRContext *context, LoweringState &state)
+      : OpConversionPattern<pto::PbitcastOp>(typeConverter, context) {}
+
+  LogicalResult
+  matchAndRewrite(pto::PbitcastOp op, pto::PbitcastOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Type resultType =
+        this->getTypeConverter()->convertType(op.getResult().getType());
+    if (!resultType)
+      return rewriter.notifyMatchFailure(op,
+                                         "failed to convert pbitcast result type");
+    if (adaptor.getInput().getType() != resultType) {
+      return rewriter.notifyMatchFailure(
+          op, "pbitcast expects identical lowered input/result types");
+    }
+    rewriter.replaceOp(op, adaptor.getInput());
+    return success();
+  }
+};
+
 class LowerVtrcOpPattern final : public OpConversionPattern<pto::VtrcOp> {
 public:
   explicit LowerVtrcOpPattern(TypeConverter &typeConverter, MLIRContext *context,
@@ -5055,7 +5079,7 @@ static void populateVPTOOpLoweringPatterns(VPTOTypeConverter &typeConverter,
                LowerVpreluOpPattern, LowerVaxpyOpPattern,
                LowerVciOpPattern, LowerVexpdifOpPattern,
                LowerVbitsortOpPattern, LowerVtrcOpPattern, LowerVcvtOpPattern,
-               LowerVbitcastOpPattern,
+               LowerVbitcastOpPattern, LowerPbitcastOpPattern,
                LowerPredicateLoadOpPattern<pto::PldiOp>,
                LowerPredicateLoadOpPattern<pto::PldsOp>,
                LowerPredicateStoreOpPattern<pto::PstiOp>,
@@ -5106,7 +5130,8 @@ static void configureVPTOOpLoweringTarget(ConversionTarget &target,
                       pto::VcaddOp, pto::VcmaxOp, pto::VcminOp,
                       pto::VcgaddOp, pto::VcgmaxOp, pto::VcgminOp, pto::VcpaddOp,
                       pto::VdupOp, pto::VbrOp,
-                      pto::PpackOp, pto::PunpackOp, pto::VselOp, pto::VselrOp,
+                      pto::PpackOp, pto::PunpackOp, pto::PbitcastOp,
+                      pto::VselOp, pto::VselrOp,
                       pto::PnotOp, pto::PselOp, pto::PandOp, pto::PorOp, pto::PxorOp,
                       pto::PdintlvB8Op, pto::PdintlvB16Op, pto::PdintlvB32Op,
                       pto::PintlvB8Op, pto::PintlvB16Op, pto::PintlvB32Op,

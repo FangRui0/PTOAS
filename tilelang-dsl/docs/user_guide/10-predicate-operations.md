@@ -318,6 +318,36 @@ packed = pto.ppack(mask, pto.PredicatePart.LOWER)
 unpacked = pto.punpack(mask, pto.PredicatePart.HIGHER)
 ```
 
+#### `pto.pbitcast(mask: MaskType, to_type: MaskType) -> MaskType`
+
+**Description**: Reinterprets a typed predicate mask as another typed mask granularity without changing the underlying predicate bit image.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `mask` | `MaskType` | Input mask (`mask_b8`, `mask_b16`, or `mask_b32`) |
+| `to_type` | `MaskType` | Target mask type marker such as `pto.mask_b16` or `pto.mask_b32` |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `MaskType` | Reinterpreted mask with the requested target granularity |
+
+**Constraints**:
+- `mask` must already be a typed predicate value
+- `to_type` must be one of the DSL mask type markers: `pto.mask_b8`, `pto.mask_b16`, `pto.mask_b32`
+- this is a bit reinterpretation helper, not a logical predicate transform; it does not insert packing, unpacking, interleaving, or deinterleaving by itself
+- use `pto.ppack`, `pto.punpack`, `pto.pdintlv_b8`, or `pto.pintlv_b16` when the predicate image itself must be rearranged
+
+**Example**:
+```python
+mask_b8 = pto.plds(mask_ptr, offset, pto.PredicateDist.US)
+mask_b16 = pto.pbitcast(mask_b8, pto.mask_b16)
+
+mask0_b16, mask1_b16 = pto.pintlv_b16(mask_b16, pto.pset_b16(PAT.ALL))
+mask0_b32 = pto.pbitcast(mask0_b16, pto.mask_b32)
+```
+
 #### `pto.pnot(mask: MaskType, gate: MaskType) -> MaskType`
 
 **Description**: Predicate negation under a same-granularity mask gate.

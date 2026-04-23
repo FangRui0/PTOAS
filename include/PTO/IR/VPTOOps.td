@@ -584,6 +584,8 @@ def PTO_PunpackOp : PTO_MaskUnaryOp<"punpack"> {
   }];
 }
 
+def PTO_PbitcastOp : PTO_MaskUnaryOp<"pbitcast">;
+
 def PTO_PnotOp : PTO_Op<"pnot", [Pure]> {
   let arguments = (ins
     PTO_MaskTypeConstraint:$input,

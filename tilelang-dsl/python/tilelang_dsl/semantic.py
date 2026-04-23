@@ -3655,21 +3655,25 @@ class _SemanticAnalyzer:
         raise TypeError("`as_ptr()` expects a TensorView/PartitionTensorView or Tile value in TileLang DSL v1")
 
     def _analyze_astype_method(self, base: SemanticExpr, args: tuple[SemanticExpr, ...]) -> SemanticExpr:
-        """Analyze vreg.astype(dtype) method call."""
         if len(args) != 1:
             raise TypeError("`astype()` expects exactly 1 positional argument (target dtype) in TileLang DSL v1")
-        # Verify target dtype is a valid dtype symbol
-        target_dtype = self._require_dtype_symbol(args[0], "astype target dtype")
-        # Verify base is a vector register
-        if not isinstance(base.type, SemanticVRegType):
-            raise TypeError("`astype()` expects a vector register value in TileLang DSL v1")
-        # Convert to pto.vbitcast call, pass original dtype expression as second argument
-        return SemanticCallExpr(
-            namespace="pto",
-            name="vbitcast",
-            args=(base, args[0]),
-            type=self._vreg_type_for_dtype(target_dtype),
-        )
+        if isinstance(base.type, SemanticVRegType):
+            target_dtype = self._require_dtype_symbol(args[0], "astype target dtype")
+            return SemanticCallExpr(
+                namespace="pto",
+                name="vbitcast",
+                args=(base, args[0]),
+                type=self._vreg_type_for_dtype(target_dtype),
+            )
+        if isinstance(base.type, SemanticMaskType):
+            target_mask_type = self._require_mask_type_expr(args[0], "astype target dtype")
+            return SemanticCallExpr(
+                namespace="pto",
+                name="pbitcast",
+                args=(base, args[0]),
+                type=SemanticMaskType(granularity=target_mask_type.granularity),
+            )
+        raise TypeError("`astype()` expects a vector register or mask value in TileLang DSL v1")
 
     def _valid_shape_expr(self, base: SemanticExpr) -> SemanticExpr:
         base_type = base.type
@@ -4026,6 +4030,8 @@ class _SemanticAnalyzer:
             return self._analyze_vcvt(args)
         if name == "vbitcast":
             return self._analyze_vbitcast(args)
+        if name == "pbitcast":
+            return self._analyze_pbitcast(args)
         if name == "vtrc":
             return self._analyze_vtrc(args)
         if name == "vbitsort":
@@ -5209,6 +5215,21 @@ class _SemanticAnalyzer:
                 args[1],
             ),
             type=self._vreg_type_for_dtype(target_dtype),
+        )
+
+    def _analyze_pbitcast(self, args: tuple[SemanticExpr, ...]) -> SemanticExpr:
+        if len(args) != 2:
+            raise TypeError("pto.pbitcast expects exactly 2 positional arguments in TileLang DSL")
+        self._require_mask_expr(args[0], "pto.pbitcast mask")
+        target_mask_type = self._require_mask_type_expr(args[1], "pto.pbitcast to_type")
+        return SemanticCallExpr(
+            namespace="pto",
+            name="pbitcast",
+            args=(
+                args[0],
+                args[1],
+            ),
+            type=SemanticMaskType(granularity=target_mask_type.granularity),
         )
 
     def _analyze_vbitsort(self, args: tuple[SemanticExpr, ...]) -> SemanticExpr:
