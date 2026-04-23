@@ -2782,9 +2782,14 @@ static LogicalResult verifyTColArgReductionOpCommon(Operation *op, Type srcTy,
   if (failed(verifyColReductionValidRegion(op, srcTy, dstTy,
                                            /*requireNonZeroSrc=*/true)))
     return failure();
-  auto srcElem = getElemTy(srcTy).dyn_cast<mlir::FloatType>();
-  if (!srcElem || (!srcElem.isF16() && !srcElem.isF32()))
-    return op->emitOpError("expects src element type to be f16 or f32");
+  Type srcElem = getElemTy(srcTy);
+  if (!srcElem.isIntOrFloat())
+    return op->emitOpError(
+        "expects src element type to be an integer or floating type");
+  unsigned srcElemBits = srcElem.getIntOrFloatBitWidth();
+  if (srcElemBits != 8 && srcElemBits != 16 && srcElemBits != 32)
+    return op->emitOpError(
+        "expects src element size to be 1, 2, or 4 bytes");
   auto dstInt = dyn_cast<IntegerType>(getElemTy(dstTy));
   if (!dstInt || dstInt.getWidth() != 32)
     return op->emitOpError("expects dst element type to be i32 or ui32");
