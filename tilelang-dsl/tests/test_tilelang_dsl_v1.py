@@ -4115,7 +4115,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             )
             specialized.mlir_text()
 
-        self.assertIn("vector register value", str(ctx.exception))
+        self.assertIn("vector register or mask value", str(ctx.exception))
 
     def test_vbitcast_supports_element_size_change(self) -> None:
         @pto.vkernel(
@@ -4145,6 +4145,95 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn("pto.vbitcast", text)
         self.assertRegex(text, r"= pto\.vbitcast %[^:]+ : !pto\.vreg<64xf32> -> !pto\.vreg<128xf16>")
         self.assertRegex(text, r"= pto\.vbitcast %[^:]+ : !pto\.vreg<128xf16> -> !pto\.vreg<64xf32>")
+
+    def test_pbitcast_supports_direct_interface(self) -> None:
+        @pto.vkernel(
+            op="pbitcast_direct_unique",
+            dtypes=[(pto.f32, pto.f32)],
+            advanced=True,
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            src_mask = pto.make_mask(pto.f16, pto.PAT.ALL)
+            dst_mask = pto.pbitcast(src_mask, pto.mask_b32)
+            vec = pto.vlds(src, 0)
+            pto.vsts(vec, dst, 0, dst_mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn("pto.pbitcast", text)
+        self.assertRegex(text, r'%src_mask_\d+ = pto\.pset_b16 "PAT_ALL" : !pto\.mask<b16>')
+        self.assertRegex(text, r'= pto\.pbitcast %[^:]+ : !pto\.mask<b16> -> !pto\.mask<b32>')
+
+    def test_pbitcast_rejects_non_mask_input(self) -> None:
+        with self.assertRaises(TypeError) as ctx:
+            @pto.vkernel(
+                op="pbitcast_non_mask_input_unique",
+                dtypes=[(pto.f32, pto.f32)],
+                advanced=True,
+            )
+            def kernel(dst: pto.Tile, src: pto.Tile):
+                vec = pto.vlds(src, 0)
+                mask = pto.pbitcast(vec, pto.mask_b32)
+                pto.vsts(vec, dst, 0, mask)
+                return None
+
+            specialized = kernel.specialize(
+                dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+                src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            )
+            specialized.mlir_text()
+
+        self.assertIn("mask value", str(ctx.exception))
+
+    def test_mask_astype_lowers_to_pbitcast(self) -> None:
+        @pto.vkernel(
+            op="mask_astype_unique",
+            dtypes=[(pto.f32, pto.f32)],
+            advanced=True,
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            src_mask = pto.make_mask(pto.f16, pto.PAT.ALL)
+            dst_mask = src_mask.astype(pto.mask_b32)
+            vec = pto.vlds(src, 0)
+            pto.vsts(vec, dst, 0, dst_mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn("pto.pbitcast", text)
+        self.assertRegex(text, r'%src_mask_\d+ = pto\.pset_b16 "PAT_ALL" : !pto\.mask<b16>')
+        self.assertRegex(text, r'= pto\.pbitcast %[^:]+ : !pto\.mask<b16> -> !pto\.mask<b32>')
+
+    def test_astype_rejects_non_vreg_or_mask_receiver(self) -> None:
+        with self.assertRaises(TypeError) as ctx:
+            @pto.vkernel(
+                op="astype_invalid_receiver_unique",
+                dtypes=[(pto.f32, pto.f32)],
+                advanced=True,
+            )
+            def kernel(dst: pto.Tile, src: pto.Tile):
+                scalar = pto.f32(1.0)
+                mask = scalar.astype(pto.mask_b32)
+                vec = pto.vlds(src, 0)
+                pto.vsts(vec, dst, 0, mask)
+                return None
+
+            specialized = kernel.specialize(
+                dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+                src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            )
+            specialized.mlir_text()
+
+        self.assertIn("vector register or mask value", str(ctx.exception))
 
     def test_index_to_float_scalar_cast_lowers_via_integer_bridge(self) -> None:
         @pto.vkernel(

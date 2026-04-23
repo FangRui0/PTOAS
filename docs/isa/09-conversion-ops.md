@@ -318,3 +318,28 @@ for (int i = 0; i < N; i++)
 %unsigned = pto.vbitcast %signed : !pto.vreg<64xsi32> -> !pto.vreg<64xui32>
 // Bits are identical; interpretation changes from signed to unsigned
 ```
+
+## `pto.pbitcast`
+
+- **syntax:** `%result = pto.pbitcast %input : !pto.mask<G0> -> !pto.mask<G1>`
+- **semantics:** Bitwise reinterpretation of a predicate register without
+  changing the underlying predicate-register image. This op makes mask-family
+  reinterpretation explicit in VPTO IR when a producer and consumer expect
+  different `!pto.mask<...>` views of the same hardware predicate state.
+
+- **inputs:**
+  `%input` is the source predicate register value.
+- **outputs:**
+  `%result` is the reinterpreted predicate register value.
+- **constraints and limitations:**
+  1. Both source and result must be `!pto.mask<...>` types.
+  2. `pto.pbitcast` does not materialize or normalize predicate contents; it
+     only changes which mask granularity the surrounding VPTO IR uses to
+     interpret the same predicate bits.
+
+**Example: Reinterpret a b16 predicate as b32 before a consumer**
+```mlir
+%m16 = pto.pintlv_b16 %lhs, %rhs : !pto.mask<b16>, !pto.mask<b16> -> !pto.mask<b16>, !pto.mask<b16>
+%m32 = pto.pbitcast %m16#0 : !pto.mask<b16> -> !pto.mask<b32>
+%result = pto.vsel %a, %b, %m32 : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
+```
