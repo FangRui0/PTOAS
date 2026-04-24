@@ -1794,7 +1794,7 @@ def TPushOp : PTO_TOp<"tpush", [
   }];
 }
 
-def DeclareTileOp : PTO_Op<"declare_tile", [Pure]> {
+def DeclareTileOp : PTO_Op<"declare_tile"> {
   let summary = "Declare a tile value whose address will be assigned later";
 
   let results = (outs PTODpsType:$tile);
@@ -1871,7 +1871,7 @@ def EventIdArraySetOp : PTO_Op<"eventid_array_set"> {
   }];
 }
 
-def DeclareTileMemRefOp : PTO_Op<"declare_tile_memref", [Pure]> {
+def DeclareTileMemRefOp : PTO_Op<"declare_tile_memref"> {
   let summary = "Internal memref placeholder for a tile whose address is assigned later";
   let description = [{
     Internal lowering op used by PTOViewToMemref. This op does not allocate
