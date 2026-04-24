@@ -17,6 +17,29 @@
 
 namespace ptobc::v0 {
 
+inline constexpr uint8_t kVariantDefault = 0;
+inline constexpr uint8_t kVariantAcc = 1;
+inline constexpr uint8_t kVariantBias = 2;
+inline constexpr uint8_t kVariantMx = 3;
+inline constexpr uint8_t kVariantMxAcc = 4;
+inline constexpr uint8_t kVariantMxBias = 5;
+inline constexpr uint8_t kSectionCubeVariant = 0;
+inline constexpr uint8_t kSectionVectorVariant = 1;
+inline constexpr uint8_t kHasVariant = 1;
+
+inline constexpr int kTgemvOperandCount = 3;
+inline constexpr int kTgemvAccOperandCount = 4;
+inline constexpr int kTgemvBiasOperandCount = 4;
+inline constexpr int kTgemvMxOperandCount = 5;
+inline constexpr int kTgemvMxAccOperandCount = 6;
+inline constexpr int kTgemvMxBiasOperandCount = 6;
+inline constexpr int kTmatmulOperandCount = 3;
+inline constexpr int kTmatmulAccOperandCount = 4;
+inline constexpr int kTmatmulBiasOperandCount = 4;
+inline constexpr int kTmatmulMxOperandCount = 5;
+inline constexpr int kTmatmulMxAccOperandCount = 6;
+inline constexpr int kTmatmulMxBiasOperandCount = 6;
+
 struct OpInfo {
   uint16_t opcode;
   const char *name;
@@ -530,20 +553,34 @@ inline std::optional<OpcodeAndVariant> lookupOpcodeAndVariantByFullName(llvm::St
     .Case("scf.for", OpcodeAndVariant{0x4000, 0, 0})
     .Case("scf.if", OpcodeAndVariant{0x4001, 0, 0})
     .Case("scf.yield", OpcodeAndVariant{0x4002, 0, 0})
-    .Case("pto.section.cube", OpcodeAndVariant{0x0006, 1, 0})
-    .Case("pto.section.vector", OpcodeAndVariant{0x0006, 1, 1})
-    .Case("pto.tgemv", OpcodeAndVariant{0x102A, 1, 0})
-    .Case("pto.tgemv.acc", OpcodeAndVariant{0x102A, 1, 1})
-    .Case("pto.tgemv.bias", OpcodeAndVariant{0x102A, 1, 2})
-    .Case("pto.tgemv.mx", OpcodeAndVariant{0x102A, 1, 3})
-    .Case("pto.tgemv.mx.acc", OpcodeAndVariant{0x102A, 1, 4})
-    .Case("pto.tgemv.mx.bias", OpcodeAndVariant{0x102A, 1, 5})
-    .Case("pto.tmatmul", OpcodeAndVariant{0x1032, 1, 0})
-    .Case("pto.tmatmul.acc", OpcodeAndVariant{0x1032, 1, 1})
-    .Case("pto.tmatmul.bias", OpcodeAndVariant{0x1032, 1, 2})
-    .Case("pto.tmatmul.mx", OpcodeAndVariant{0x1033, 1, 0})
-    .Case("pto.tmatmul.mx.acc", OpcodeAndVariant{0x1033, 1, 1})
-    .Case("pto.tmatmul.mx.bias", OpcodeAndVariant{0x1033, 1, 2})
+    .Case("pto.section.cube",
+          OpcodeAndVariant{0x0006, kHasVariant, kSectionCubeVariant})
+    .Case("pto.section.vector",
+          OpcodeAndVariant{0x0006, kHasVariant, kSectionVectorVariant})
+    .Case("pto.tgemv",
+          OpcodeAndVariant{0x102A, kHasVariant, kVariantDefault})
+    .Case("pto.tgemv.acc",
+          OpcodeAndVariant{0x102A, kHasVariant, kVariantAcc})
+    .Case("pto.tgemv.bias",
+          OpcodeAndVariant{0x102A, kHasVariant, kVariantBias})
+    .Case("pto.tgemv.mx",
+          OpcodeAndVariant{0x102A, kHasVariant, kVariantMx})
+    .Case("pto.tgemv.mx.acc",
+          OpcodeAndVariant{0x102A, kHasVariant, kVariantMxAcc})
+    .Case("pto.tgemv.mx.bias",
+          OpcodeAndVariant{0x102A, kHasVariant, kVariantMxBias})
+    .Case("pto.tmatmul",
+          OpcodeAndVariant{0x1032, kHasVariant, kVariantDefault})
+    .Case("pto.tmatmul.acc",
+          OpcodeAndVariant{0x1032, kHasVariant, kVariantAcc})
+    .Case("pto.tmatmul.bias",
+          OpcodeAndVariant{0x1032, kHasVariant, kVariantBias})
+    .Case("pto.tmatmul.mx",
+          OpcodeAndVariant{0x1033, kHasVariant, kVariantDefault})
+    .Case("pto.tmatmul.mx.acc",
+          OpcodeAndVariant{0x1033, kHasVariant, kVariantAcc})
+    .Case("pto.tmatmul.mx.bias",
+          OpcodeAndVariant{0x1033, kHasVariant, kVariantBias})
     .Default(std::nullopt);
 }
 
@@ -554,32 +591,32 @@ inline const char *fullNameFromOpcodeVariant(uint16_t opcode, uint8_t variant) {
   switch (opcode) {
   case 0x0006:
     switch (variant) {
-    case 0: return "pto.section.cube";
-    case 1: return "pto.section.vector";
+    case kSectionCubeVariant: return "pto.section.cube";
+    case kSectionVectorVariant: return "pto.section.vector";
     default: return info->name;
     }
   case 0x102A:
     switch (variant) {
-    case 0: return "pto.tgemv";
-    case 1: return "pto.tgemv.acc";
-    case 2: return "pto.tgemv.bias";
-    case 3: return "pto.tgemv.mx";
-    case 4: return "pto.tgemv.mx.acc";
-    case 5: return "pto.tgemv.mx.bias";
+    case kVariantDefault: return "pto.tgemv";
+    case kVariantAcc: return "pto.tgemv.acc";
+    case kVariantBias: return "pto.tgemv.bias";
+    case kVariantMx: return "pto.tgemv.mx";
+    case kVariantMxAcc: return "pto.tgemv.mx.acc";
+    case kVariantMxBias: return "pto.tgemv.mx.bias";
     default: return info->name;
     }
   case 0x1032:
     switch (variant) {
-    case 0: return "pto.tmatmul";
-    case 1: return "pto.tmatmul.acc";
-    case 2: return "pto.tmatmul.bias";
+    case kVariantDefault: return "pto.tmatmul";
+    case kVariantAcc: return "pto.tmatmul.acc";
+    case kVariantBias: return "pto.tmatmul.bias";
     default: return info->name;
     }
   case 0x1033:
     switch (variant) {
-    case 0: return "pto.tmatmul.mx";
-    case 1: return "pto.tmatmul.mx.acc";
-    case 2: return "pto.tmatmul.mx.bias";
+    case kVariantDefault: return "pto.tmatmul.mx";
+    case kVariantAcc: return "pto.tmatmul.mx.acc";
+    case kVariantBias: return "pto.tmatmul.mx.bias";
     default: return info->name;
     }
   default: return info->name;
@@ -590,26 +627,26 @@ inline std::optional<int> lookupOperandsByVariant(uint16_t opcode, uint8_t varia
   switch (opcode) {
   case 0x102A:
     switch (variant) {
-    case 0: return 3;
-    case 1: return 4;
-    case 2: return 4;
-    case 3: return 5;
-    case 4: return 6;
-    case 5: return 6;
+    case kVariantDefault: return kTgemvOperandCount;
+    case kVariantAcc: return kTgemvAccOperandCount;
+    case kVariantBias: return kTgemvBiasOperandCount;
+    case kVariantMx: return kTgemvMxOperandCount;
+    case kVariantMxAcc: return kTgemvMxAccOperandCount;
+    case kVariantMxBias: return kTgemvMxBiasOperandCount;
     default: return std::nullopt;
     }
   case 0x1032:
     switch (variant) {
-    case 0: return 3;
-    case 1: return 4;
-    case 2: return 4;
+    case kVariantDefault: return kTmatmulOperandCount;
+    case kVariantAcc: return kTmatmulAccOperandCount;
+    case kVariantBias: return kTmatmulBiasOperandCount;
     default: return std::nullopt;
     }
   case 0x1033:
     switch (variant) {
-    case 0: return 5;
-    case 1: return 6;
-    case 2: return 6;
+    case kVariantDefault: return kTmatmulMxOperandCount;
+    case kVariantAcc: return kTmatmulMxAccOperandCount;
+    case kVariantBias: return kTmatmulMxBiasOperandCount;
     default: return std::nullopt;
     }
   default: return std::nullopt;
