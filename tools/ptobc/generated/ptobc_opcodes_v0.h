@@ -189,7 +189,8 @@ inline constexpr OpInfo kOpTable[] = {
   {0x4001, "scf.if", 0, 0x00, 0x00, 1, 0, 2, 0x00},
   {0x4002, "scf.yield", 0, 0x00, 0x02, 0, 0, 0, 0x00},
   {0x6000, "func.func", 0, 0x00, 0x00, 0, 0, 0, 0x00},
-  {0x6001, "func.return", 0, 0x00, 0x00, 0, 0, 0, 0x00},
+  {0x6001, "func.return", 0, 0x00, 0x02, 0, 0, 0, 0x00},
+  {0x6002, "func.call", 0, 0x02, 0x02, 0, 0, 0, 0x00},
 };
 
 inline const OpInfo *lookupByOpcode(uint16_t opcode) {
@@ -217,6 +218,7 @@ inline std::optional<uint16_t> lookupOpcodeByName(llvm::StringRef name) {
     .Case("arith.subi", 0x2008)
     .Case("func.func", 0x6000)
     .Case("func.return", 0x6001)
+    .Case("func.call", 0x6002)
     .Case("pto.addptr", 0x1000)
     .Case("pto.alloc_tile", 0x1001)
     .Case("pto.barrier", 0x1002)
@@ -394,6 +396,7 @@ inline std::optional<OpcodeAndVariant> lookupOpcodeAndVariantByFullName(llvm::St
     .Case("arith.subi", OpcodeAndVariant{0x2008, 0, 0})
     .Case("func.func", OpcodeAndVariant{0x6000, 0, 0})
     .Case("func.return", OpcodeAndVariant{0x6001, 0, 0})
+    .Case("func.call", OpcodeAndVariant{0x6002, 0, 0})
     .Case("pto.addptr", OpcodeAndVariant{0x1000, 0, 0})
     .Case("pto.alloc_tile", OpcodeAndVariant{0x1001, 0, 0})
     .Case("pto.barrier", OpcodeAndVariant{0x1002, 0, 0})
