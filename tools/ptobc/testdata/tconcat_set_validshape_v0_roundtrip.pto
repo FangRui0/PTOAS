@@ -18,6 +18,9 @@ module {
     %dyn = pto.alloc_tile valid_row = %c32 valid_col = %c32
       : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?,
                       blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %reduce_src = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %reduce_tmp = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %reduce_dst = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1, v_row=16, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>
 
     pto.tconcat ins(%src0, %src1
       : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=16, v_row=32, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
@@ -28,6 +31,11 @@ module {
     pto.set_validshape %dyn, %c16, %c24
       : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?,
                       blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    pto.trowprod ins(%reduce_src, %reduce_tmp
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+        !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+      outs(%reduce_dst
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1, v_row=16, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>)
     return
   }
 }

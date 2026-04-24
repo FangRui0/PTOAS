@@ -33,3 +33,4 @@ ROUNDTRIP="${OUT_DIR}/tconcat_set_validshape_v0_roundtrip.roundtrip.pto"
 
 grep -F "pto.tconcat ins(" "${ROUNDTRIP}" >/dev/null
 grep -F "pto.set_validshape " "${ROUNDTRIP}" >/dev/null
+grep -F "pto.trowprod ins(" "${ROUNDTRIP}" >/dev/null

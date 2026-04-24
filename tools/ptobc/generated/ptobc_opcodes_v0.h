@@ -175,6 +175,7 @@ inline constexpr OpInfo kOpTable[] = {
   {0x1087, "pto.tfree_from_aiv", 0, 0x00, 0x00, 0, 0, 0, 0x00},
   {0x1088, "pto.set_validshape", 0, 0x00, 0x00, 3, 0, 0, 0x00},
   {0x1089, "pto.tconcat", 0, 0x00, 0x00, 3, 0, 0, 0x00},
+  {0x108A, "pto.trowprod", 0, 0x00, 0x00, 3, 0, 0, 0x00},
   {0x2000, "arith.addi", 0, 0x01, 0x00, 2, 1, 0, 0x00},
   {0x2001, "arith.ceildivsi", 0, 0x01, 0x00, 2, 1, 0, 0x00},
   {0x2002, "arith.cmpi", 0, 0x01, 0x00, 2, 1, 0, 0x01},
@@ -361,6 +362,7 @@ inline std::optional<uint16_t> lookupOpcodeByName(llvm::StringRef name) {
     .Case("pto.tfree_from_aiv", 0x1087)
     .Case("pto.set_validshape", 0x1088)
     .Case("pto.tconcat", 0x1089)
+    .Case("pto.trowprod", 0x108A)
     .Case("scf.for", 0x4000)
     .Case("scf.if", 0x4001)
     .Case("scf.yield", 0x4002)
@@ -533,6 +535,7 @@ inline std::optional<OpcodeAndVariant> lookupOpcodeAndVariantByFullName(llvm::St
     .Case("pto.tfree_from_aiv", OpcodeAndVariant{0x1087, 0, 0})
     .Case("pto.set_validshape", OpcodeAndVariant{0x1088, 0, 0})
     .Case("pto.tconcat", OpcodeAndVariant{0x1089, 0, 0})
+    .Case("pto.trowprod", OpcodeAndVariant{0x108A, 0, 0})
     .Case("scf.for", OpcodeAndVariant{0x4000, 0, 0})
     .Case("scf.if", OpcodeAndVariant{0x4001, 0, 0})
     .Case("scf.yield", OpcodeAndVariant{0x4002, 0, 0})
