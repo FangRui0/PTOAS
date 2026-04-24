@@ -247,6 +247,10 @@ static std::optional<std::string> getTCvtRoundModeString(pto::TCvtOp op) {
   return std::nullopt;
 }
 
+static std::string getTRandomRoundsString(pto::TRandomOp op) {
+  return std::to_string(op.getRounds());
+}
+
 static void appendOpContextAttrs(
     Operation *op,
     SmallVectorImpl<std::pair<std::string, std::string>> &attrs) {
@@ -255,6 +259,8 @@ static void appendOpContextAttrs(
     if (roundMode)
       attrs.emplace_back("round_mode", *roundMode);
   }
+  if (auto trandom = dyn_cast<pto::TRandomOp>(op))
+    attrs.emplace_back("rounds", getTRandomRoundsString(trandom));
   if (auto tcmp = dyn_cast<pto::TCmpOp>(op)) {
     if (auto cmpModeAttr = tcmp.getCmpModeAttr()) {
       attrs.emplace_back("cmp_mode",
