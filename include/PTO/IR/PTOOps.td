@@ -163,7 +163,10 @@ def MakeTensorViewOp : PTO_Op<"make_tensor_view", [AttrSizedOperandSegments]> {
 // =============================================================================
 // PartitionViewOp
 // =============================================================================
-def PartitionViewOp : PTO_Op<"partition_view", [AttrSizedOperandSegments]> {
+def PartitionViewOp : PTO_Op<"partition_view", [
+    AttrSizedOperandSegments,
+    DeclareOpInterfaceMethods<InferTypeOpInterface>
+  ]> {
   let summary = "Partition a tensor view into a smaller logical view (logical slicing).";
   let description = [{
     Captures a specific calculation region from a large view.
@@ -183,11 +186,7 @@ def PartitionViewOp : PTO_Op<"partition_view", [AttrSizedOperandSegments]> {
   let results = (outs PartitionTensorViewType:$result); // 输出: 逻辑切片
 
   let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    $source `,` `offsets` `=` `[` $offsets `]` `,` `sizes` `=` `[` $sizes `]`
-    attr-dict `:` qualified(type($source)) `->` qualified(type($result))
-  }];
+  let hasCustomAssemblyFormat = 1;
 }
 
 // Helper: tensor_view or memref (after lowering tensor_view to memref).

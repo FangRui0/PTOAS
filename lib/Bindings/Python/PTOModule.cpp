@@ -36,6 +36,17 @@ static std::vector<int64_t> toInt64Vector(const py::sequence &seq) {
   return out;
 }
 
+static std::vector<int64_t> toShapeVectorOrDynamicRank(py::object shapeOrRank) {
+  if (py::isinstance<py::int_>(shapeOrRank)) {
+    auto rank = shapeOrRank.cast<int64_t>();
+    if (rank < 0)
+      throw py::value_error("rank must be non-negative");
+    return std::vector<int64_t>(static_cast<size_t>(rank),
+                                mlir::ShapedType::kDynamic);
+  }
+  return toInt64Vector(shapeOrRank.cast<py::sequence>());
+}
+
 static py::list shapeToPyList(const int64_t *data, intptr_t n) {
   py::list lst;
   for (intptr_t i = 0; i < n; ++i)
@@ -627,13 +638,7 @@ static void bindPTOModule(pybind11::module &m) {
         .def_classmethod(
             "get",
             [](py::object cls, py::object shape_or_rank, MlirType elementType, MlirContext context) -> py::object {
-                std::vector<int64_t> shp;
-                if (py::isinstance<py::int_>(shape_or_rank)) {
-                    auto rank = shape_or_rank.cast<int64_t>();
-                    shp.assign(static_cast<size_t>(rank), mlir::ShapedType::kDynamic);
-                } else {
-                    shp = toInt64Vector(shape_or_rank.cast<py::sequence>());
-                }
+                std::vector<int64_t> shp = toShapeVectorOrDynamicRank(shape_or_rank);
                 MlirType t = mlirPTOTensorViewTypeGet(
                     context, (intptr_t)shp.size(), shp.data(), elementType);
                 return cls.attr("__call__")(t);
@@ -663,15 +668,15 @@ static void bindPTOModule(pybind11::module &m) {
         [](MlirType t) -> bool { return mlirPTOTypeIsAPartitionTensorViewType(t); })
     .def_classmethod(
         "get",
-        [](py::object cls, py::sequence shape, MlirType elementType, MlirContext context) -> py::object {
-        auto shp = toInt64Vector(shape);
+        [](py::object cls, py::object shape_or_rank, MlirType elementType, MlirContext context) -> py::object {
+        std::vector<int64_t> shp = toShapeVectorOrDynamicRank(shape_or_rank);
         MlirType t = mlirPTOPartitionTensorViewTypeGet(context,
                                             (intptr_t)shp.size(),
                                             shp.data(),
                                             elementType);
         return cls.attr("__call__")(t);
         },
-        py::arg("cls"), py::arg("shape"), py::arg("element_type"),
+        py::arg("cls"), py::arg("shape_or_rank"), py::arg("element_type"),
         py::arg("context") = py::none())
     .def_property_readonly(
         "rank",

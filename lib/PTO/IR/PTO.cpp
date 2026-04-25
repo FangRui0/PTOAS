@@ -880,6 +880,148 @@ static std::optional<int64_t> getConstIndexValue(Value v) {
   return std::nullopt;
 }
 
+static FailureOr<mlir::pto::PartitionTensorViewType>
+inferPartitionViewResultTypeFromSizes(mlir::pto::TensorViewType sourceType,
+                                      ValueRange sizes) {
+  if (!sourceType)
+    return failure();
+
+  if ((int64_t)sizes.size() != sourceType.getRank())
+    return failure();
+
+  SmallVector<int64_t, 4> shape;
+  shape.reserve(sizes.size());
+  for (Value size : sizes) {
+    auto constSize = getConstIndexValue(size);
+    if (constSize && *constSize >= 0)
+      shape.push_back(*constSize);
+    else
+      shape.push_back(ShapedType::kDynamic);
+  }
+
+  return mlir::pto::PartitionTensorViewType::get(
+      sourceType.getContext(), shape, sourceType.getElementType());
+}
+
+ParseResult mlir::pto::PartitionViewOp::parse(OpAsmParser &parser,
+                                              OperationState &result) {
+  OpAsmParser::UnresolvedOperand source;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> offsets;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> sizes;
+  Type sourceTy;
+  Type resultTy;
+  bool hasExplicitResultTy = false;
+
+  if (parser.parseOperand(source) || parser.parseComma() ||
+      parser.parseKeyword("offsets") || parser.parseEqual() ||
+      parser.parseLSquare() || parser.parseOperandList(offsets) ||
+      parser.parseRSquare() || parser.parseComma() ||
+      parser.parseKeyword("sizes") || parser.parseEqual() ||
+      parser.parseLSquare() || parser.parseOperandList(sizes) ||
+      parser.parseRSquare() || parser.parseOptionalAttrDict(result.attributes) ||
+      parser.parseColonType(sourceTy))
+    return failure();
+
+  if (succeeded(parser.parseOptionalArrow())) {
+    if (parser.parseType(resultTy))
+      return failure();
+    hasExplicitResultTy = true;
+  }
+
+  if (parser.resolveOperand(source, sourceTy, result.operands))
+    return failure();
+
+  Type indexTy = parser.getBuilder().getIndexType();
+  if (parser.resolveOperands(offsets, indexTy, result.operands) ||
+      parser.resolveOperands(sizes, indexTy, result.operands))
+    return failure();
+
+  auto &properties = result.getOrAddProperties<PartitionViewOp::Properties>();
+  llvm::copy(ArrayRef<int32_t>(
+                 {1, static_cast<int32_t>(offsets.size()),
+                  static_cast<int32_t>(sizes.size())}),
+             properties.operandSegmentSizes.begin());
+
+  if (hasExplicitResultTy) {
+    result.addTypes(resultTy);
+    return success();
+  }
+
+  SmallVector<Type> inferredReturnTypes;
+  DictionaryAttr attrs = result.attributes.getDictionary(parser.getContext());
+  if (failed(PartitionViewOp::inferReturnTypes(
+          parser.getContext(), std::nullopt, result.operands, attrs,
+          result.getRawProperties(),
+          RegionRange(), inferredReturnTypes))) {
+    return parser.emitError(parser.getCurrentLocation(),
+                            "failed to infer pto.partition_view result type");
+  }
+
+  result.addTypes(inferredReturnTypes);
+  return success();
+}
+
+void mlir::pto::PartitionViewOp::print(OpAsmPrinter &printer) {
+  printer << " " << getSource() << ", offsets = [";
+  printer.printOperands(getOffsets());
+  printer << "], sizes = [";
+  printer.printOperands(getSizes());
+  printer << "]";
+  printer.printOptionalAttrDict((*this)->getAttrs(),
+                                /*elidedAttrs=*/{"operandSegmentSizes"});
+  printer << " : " << getSource().getType();
+
+  auto inferredResultType = inferPartitionViewResultTypeFromSizes(
+      dyn_cast<mlir::pto::TensorViewType>(getSource().getType()), getSizes());
+  if (succeeded(inferredResultType) && *inferredResultType == getResult().getType())
+    return;
+
+  printer << " -> " << getResult().getType();
+}
+
+LogicalResult mlir::pto::PartitionViewOp::inferReturnTypes(
+    MLIRContext *context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
+  if (operands.empty())
+    return failure();
+
+  auto sourceType = dyn_cast<mlir::pto::TensorViewType>(operands.front().getType());
+  if (!sourceType)
+    return failure();
+
+  DenseI32ArrayAttr segmentSizes;
+  if (attributes)
+    segmentSizes = attributes.getAs<DenseI32ArrayAttr>("operandSegmentSizes");
+  ArrayRef<int32_t> segments;
+  if (properties) {
+    const auto *prop = properties.as<PartitionViewOp::Properties *>();
+    if (prop)
+      segments = prop->operandSegmentSizes;
+  }
+  if (segments.empty() && segmentSizes)
+    segments = segmentSizes.asArrayRef();
+  if (segments.empty())
+    return failure();
+
+  if (segments.size() != 3 || segments[0] != 1 || segments[1] < 0 ||
+      segments[2] < 0)
+    return failure();
+
+  size_t sizeStart = static_cast<size_t>(segments[0] + segments[1]);
+  size_t sizeCount = static_cast<size_t>(segments[2]);
+  if (sizeStart + sizeCount > operands.size())
+    return failure();
+
+  auto inferredResultType = inferPartitionViewResultTypeFromSizes(
+      sourceType, operands.slice(sizeStart, sizeCount));
+  if (failed(inferredResultType))
+    return failure();
+
+  inferredReturnTypes.push_back(*inferredResultType);
+  return success();
+}
+
 static std::optional<int64_t> getConstantIntegerValueEx(
     Value v, bool includeIndexAndIntOpsInConstFold) {
   if (includeIndexAndIntOpsInConstFold) {
