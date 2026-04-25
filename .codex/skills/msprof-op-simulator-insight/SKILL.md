@@ -1,49 +1,38 @@
 ---
 name: msprof-op-simulator-insight
-description: Use when you need to compile a PTOAS-generated kernel source in this repo with a host runner that launches the kernel, run `msprof op simulator` on A3 `dav_2201`, and export MindStudio Insight visualization files such as `trace.json` and `visualize_data.bin`. Supports arbitrary generated kernel source files, resolves mangled kernel symbols for arbitrary kernel entry names, and uses direct WSL commands.
+description: Compile and profile PTOAS-generated kernel sources with `msprof op simulator`, then export MindStudio Insight files. Use when Codex needs to build a host runner, run A3 `dav_2201` op simulator collection, resolve mangled kernel symbols, export `trace.json` or `visualize_data.bin`, or troubleshoot simulator dump/export paths.
 ---
 
 # Msprof Op Simulator Insight
 
 Use this skill from WSL and run commands from the repo root. Execute the build, collect, and export commands directly.
 
-## When to use
-
-- You need the full `build -> collect -> export` workflow for `msprof op simulator`.
-- You need MindStudio Insight files like `trace.json` and `visualize_data.bin`, not just raw `*.dump`.
-- You want the exact exported kernel symbol instead of guessing the mangled name by hand.
-
 ## Workflow
 
 1. Run from WSL after `source /usr/local/Ascend/cann/set_env.sh`.
-2. Run the commands from the repo root when possible so source paths can stay relative.
+2. Run commands from the repo root when possible so source paths can stay relative.
 3. Prefer a Linux-local run directory under `~/...`; do not run the produced binary from `/mnt/...`.
-4. Build a host runner executable that launches your kernel and points at the generated source.
-5. Locate the resulting application binary and shared library that contain the kernel symbol.
+4. Build a host runner executable that launches the target kernel and points at the generated source.
+5. Locate the application binary and shared library that contain the kernel symbol.
 6. Resolve the real mangled kernel symbol from that shared library.
 7. Collect raw data with `msprof op simulator`.
 8. Export from `.../device0/tmp_dump` to generate Insight files.
 
-## Important details
+## Important Details
 
-- `msprof op simulator` collection does not create `trace.json` by itself. You must run the export step.
+- `msprof op simulator` collection does not create `trace.json` by itself. Always run the export step.
 - `--export` must target `.../device0/tmp_dump`, not the top-level `out/` directory.
-- `msprof op simulator --kernel-name` must match the exact exported mangled symbol. Passing only the bare kernel base name is often not enough and may be filtered.
-- If multiple exported symbols demangle to the same base name, choose the one whose full demangled signature matches the kernel entry you intend to profile, or set `KERNEL_SYMBOL` manually.
-- `RUN_ROOT` is just the working directory for one profiling session. It is where build artifacts, raw collect output, logs, and exported Insight files are stored.
-- `APPLICATION` is the host runner executable you actually built. `msprof` does not generate this path for you.
-- `APPLICATION` does not have to be named `msprof_native_a3`. Any executable is fine as long as it initializes runtime, launches the target kernel, and can run under the simulator.
-- Large generated kernels can take a long time on `dav_2201`; use a generous `--timeout-minutes`.
-- Exported files usually include:
-  - `simulator/trace.json`
-  - `simulator/visualize_data.bin`
-  - `simulator/core*.*/trace.json`
-  - `simulator/core*.*/core*_instr_exe_*.csv`
+- `--kernel-name` must match the exact exported mangled symbol. A bare kernel base name is often filtered out.
+- If multiple exported symbols demangle to the same base name, choose the one whose full demangled signature matches the intended kernel entry, or set `KERNEL_SYMBOL` manually.
+- `RUN_ROOT` is the working directory for one profiling session. It holds build artifacts, raw collect output, logs, and exported Insight files.
+- `APPLICATION` is the host runner executable you built. `msprof` does not generate this path for you.
+- Large generated kernels can take a long time on `dav_2201`; use a generous `--timeout`.
+- Exported files usually include `simulator/trace.json`, `simulator/visualize_data.bin`, `simulator/core*.*/trace.json`, and `simulator/core*.*/core*_instr_exe_*.csv`.
 - If export warns that `tmp_dump` lacks `pc_start_addr.txt`, copy it from `.../device0/<kernel>/0/dump/pc_start_addr.txt` into `tmp_dump` first.
 
 ## Full Run Template
 
-Run this from the repo root and adjust `SOURCE_CPP`, `KERNEL_BASE_NAME`, `RUN_ROOT`, and the runner build variables as needed:
+Adjust `SOURCE_CPP`, `KERNEL_BASE_NAME`, `RUN_ROOT`, and runner build variables:
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"
@@ -116,34 +105,15 @@ msprof op simulator \
   2>&1 | tee "$COLLECT_DIR/msprof_collect.log"
 ```
 
-This creates a directory layout like:
-
-```text
-~/msprof-op-simulator-runs/<run-tag>/
-  build/
-    <application-relative-path>
-    <kernel-lib-relative-path>
-  msprof_run_<timestamp>/
-    msprof_collect.log
-    out/
-```
-
 The important alignment is:
 
-- `RUNNER_TARGET` is the build target you ask CMake to compile.
-- `APPLICATION_RELATIVE_PATH` is where that target's executable lands under `BUILD_DIR`.
+- `RUNNER_TARGET` is the build target CMake compiles.
+- `APPLICATION_RELATIVE_PATH` is where that executable lands under `BUILD_DIR`.
 - `KERNEL_LIB_RELATIVE_PATH` is the shared library under `BUILD_DIR` that exports the kernel symbol.
 
-If your runner is not built by CMake, replace the `cmake ...` lines with your actual build command, then set:
+If the runner is not built by CMake, replace the `cmake` lines with the actual build command, then set `APPLICATION` and `KERNEL_LIB` directly before running `nm` and `msprof`.
 
-```bash
-APPLICATION=/absolute/or/build-relative/path/to/your_runner
-KERNEL_LIB=/absolute/or/build-relative/path/to/your_kernel_library.so
-```
-
-before running `nm` and `msprof`.
-
-If the first-match resolution is too loose for your kernel, inspect all candidates first:
+Inspect all matching symbols when the first match is too loose:
 
 ```bash
 nm -D "$KERNEL_LIB" | awk '/ [TW] / {print $3}' | while read -r candidate; do
@@ -154,17 +124,15 @@ nm -D "$KERNEL_LIB" | awk '/ [TW] / {print $3}' | while read -r candidate; do
 done
 ```
 
-Then set:
+Then set the chosen symbol:
 
 ```bash
 KERNEL_SYMBOL=<exact_mangled_symbol>
 ```
 
-and use that symbol directly in the collect command.
-
 ## Export Existing Collect Data
 
-Use this when you already have raw `msprof op simulator` output and only need Insight files:
+Use this when raw `msprof op simulator` output already exists and only Insight files are needed:
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"
@@ -206,8 +174,6 @@ find "$EXPORT_ROOT" \
 ## Quick Checks
 
 - Confirm collect produced an `OPPROF_*` directory under `out/`.
-- Confirm export produced:
-  - `simulator/trace.json`
-  - `simulator/visualize_data.bin`
-- If export fails with `Failed to get any available dump file to parse`, the `--export` path is wrong. Point it to `tmp_dump`.
-- If export warns about missing `debug_line`, that only means there is no source-level call stack. The trace can still be valid.
+- Confirm export produced `simulator/trace.json` and `simulator/visualize_data.bin`.
+- If export fails with `Failed to get any available dump file to parse`, point `--export` to `tmp_dump`.
+- If export warns about missing `debug_line`, the trace can still be valid; it only lacks source-level call stack data.

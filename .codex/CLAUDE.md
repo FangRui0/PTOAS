@@ -1,26 +1,12 @@
-# AI Assistant Rules for PTOAS
+# PTOAS Codex Skill Index
 
-This directory contains project-specific rules for AI-assisted development.
+This repository keeps AI-assistant project knowledge in Codex skill format under `.codex/skills/`.
 
-## Scope
+Primary skills:
 
-When you change any user-visible behavior, keep these layers synchronized:
+- `ptoas-project-development`: project-wide development rules, cross-layer sync, tests, examples, and file headers.
+- `build-ptoas-wsl`: WSL build, install, runtime environment, and smoke-test workflow.
+- `camodel-isa-verification`: PTO-ISA CA model ST tests, instruction logs, latency checks, and UB dump verification.
+- `msprof-op-simulator-insight`: `msprof op simulator` collection and MindStudio Insight export workflow.
 
-1. **ODS / Dialect definitions**: `include/PTO/IR/*.td`
-2. **C++ implementation & verifiers**: `lib/PTO/IR`, `lib/PTO/Transforms`
-3. **CLI / tool behavior**: `tools/ptoas`
-4. **Python bindings / samples** (if affected): `python/`, `test/samples`
-5. **Docs**: `README.md`, `docs/`
-6. **Tests**: `test/`
-
-## Rules
-
-See `.claude/rules/` for specific guidance:
-
-- `cross-layer-sync.md`
-- `testing-and-examples.md`
-
-## File headers
-
-- New source or script files must include the PR386 OAT.3 license header at the top of the file.
-- When touching an existing source/script file that still lacks that header, add it in the same change.
+The old `.codex/rules/` and `.codex/skill/` entries have been migrated into standard `SKILL.md` files so Codex can discover and invoke them directly.
