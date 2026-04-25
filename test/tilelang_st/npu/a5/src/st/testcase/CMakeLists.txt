@@ -132,6 +132,10 @@ set(ALL_TESTCASES
     tadd
     tcvt
     tload
+    tcolmax
+    tcolmin
+    tcolsum
+    tcolprod
     softmax
     tabs
     texp
