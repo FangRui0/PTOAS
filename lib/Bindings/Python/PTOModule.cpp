@@ -47,6 +47,15 @@ static std::vector<int64_t> toShapeVectorOrDynamicRank(py::object shapeOrRank) {
   return toInt64Vector(shapeOrRank.cast<py::sequence>());
 }
 
+static MlirContext inferContextFromElementType(MlirContext context,
+                                               MlirType elementType) {
+  if (!mlirContextIsNull(context))
+    return context;
+  if (mlirTypeIsNull(elementType))
+    throw py::value_error("context is required when element_type is null");
+  return mlirTypeGetContext(elementType);
+}
+
 static py::list shapeToPyList(const int64_t *data, intptr_t n) {
   py::list lst;
   for (intptr_t i = 0; i < n; ++i)
@@ -639,6 +648,7 @@ static void bindPTOModule(pybind11::module &m) {
             "get",
             [](py::object cls, py::object shape_or_rank, MlirType elementType, MlirContext context) -> py::object {
                 std::vector<int64_t> shp = toShapeVectorOrDynamicRank(shape_or_rank);
+                context = inferContextFromElementType(context, elementType);
                 MlirType t = mlirPTOTensorViewTypeGet(
                     context, (intptr_t)shp.size(), shp.data(), elementType);
                 return cls.attr("__call__")(t);
@@ -670,6 +680,7 @@ static void bindPTOModule(pybind11::module &m) {
         "get",
         [](py::object cls, py::object shape_or_rank, MlirType elementType, MlirContext context) -> py::object {
         std::vector<int64_t> shp = toShapeVectorOrDynamicRank(shape_or_rank);
+        context = inferContextFromElementType(context, elementType);
         MlirType t = mlirPTOPartitionTensorViewTypeGet(context,
                                             (intptr_t)shp.size(),
                                             shp.data(),
