@@ -1,3 +1,11 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
 
@@ -152,6 +160,64 @@ static Value materializeSubviewInputPtr(Value source, PatternRewriter &rewriter,
   auto ptrType = pto::PtrType::get(rewriter.getContext(),
                                    memrefType.getElementType(), memorySpace);
   return rewriter.create<pto::CastPtrOp>(loc, ptrType, source);
+}
+
+static Value materializeScalarAccessPtr(Value source, PatternRewriter &rewriter,
+                                        Location loc) {
+  if (!source)
+    return {};
+  if (isa<pto::PtrType>(source.getType()))
+    return source;
+
+  if (auto cast = source.getDefiningOp<UnrealizedConversionCastOp>()) {
+    if (cast->getNumOperands() != 1 || cast->getNumResults() != 1)
+      return {};
+    Value input = cast.getOperands().front();
+    if (isa<pto::PtrType>(input.getType()))
+      return input;
+    return materializeScalarAccessPtr(input, rewriter, loc);
+  }
+
+  if (auto cast = source.getDefiningOp<memref::CastOp>())
+    return materializeScalarAccessPtr(cast.getSource(), rewriter, loc);
+
+  if (auto subview = source.getDefiningOp<memref::SubViewOp>()) {
+    if (!needsSubviewPtrConversion(subview))
+      return {};
+
+    Value basePtr =
+        materializeScalarAccessPtr(subview.getSource(), rewriter, loc);
+    if (!basePtr)
+      return {};
+
+    Value offset;
+    if (failed(computeSubviewElementOffset(subview, rewriter, offset)))
+      return {};
+
+    auto ptrType = dyn_cast<pto::PtrType>(convertSubviewResultType(source.getType()));
+    if (!ptrType)
+      return {};
+    if (basePtr.getType() != ptrType)
+      basePtr = rewriter.create<pto::CastPtrOp>(loc, ptrType, basePtr);
+    return rewriter.create<pto::AddPtrOp>(loc, ptrType, basePtr, offset);
+  }
+
+  if (auto bind = source.getDefiningOp<pto::BindTileOp>())
+    return materializeScalarAccessPtr(bind.getSource(), rewriter, loc);
+
+  if (auto pointerCast = source.getDefiningOp<pto::PointerCastOp>()) {
+    if (pointerCast.getAddrs().empty())
+      return {};
+    Value addr = pointerCast.getAddrs().front();
+    if (isa<pto::PtrType>(addr.getType()))
+      return addr;
+    return materializeScalarAccessPtr(addr, rewriter, loc);
+  }
+
+  // Restrict normalization to memref views that already sit on top of a ptr-like
+  // boundary bridge. Materializing fresh memref -> ptr casts here would leave
+  // illegal pto.castptr(memref) behind in this pass.
+  return {};
 }
 
 struct ConvertTileBufAddrToPtrPattern
@@ -320,6 +386,47 @@ struct ConvertVstsSubviewOperandPattern : public OpConversionPattern<pto::VstsOp
   }
 };
 
+struct ConvertLoadScalarOperandToPtrPattern
+    : public OpConversionPattern<pto::LoadScalarOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(pto::LoadScalarOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Value ptr = materializeScalarAccessPtr(adaptor.getPtr(), rewriter, op.getLoc());
+    if (!ptr)
+      return rewriter.notifyMatchFailure(op,
+                                         "failed to materialize load_scalar ptr");
+    if (!isa<pto::PtrType>(ptr.getType()))
+      return rewriter.notifyMatchFailure(op, "expected ptr-form load_scalar input");
+
+    rewriter.replaceOpWithNewOp<pto::LoadScalarOp>(op, op.getValue().getType(),
+                                                   ptr, adaptor.getOffset());
+    return success();
+  }
+};
+
+struct ConvertStoreScalarOperandToPtrPattern
+    : public OpConversionPattern<pto::StoreScalarOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(pto::StoreScalarOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Value ptr = materializeScalarAccessPtr(adaptor.getPtr(), rewriter, op.getLoc());
+    if (!ptr)
+      return rewriter.notifyMatchFailure(op,
+                                         "failed to materialize store_scalar ptr");
+    if (!isa<pto::PtrType>(ptr.getType()))
+      return rewriter.notifyMatchFailure(op, "expected ptr-form store_scalar input");
+
+    rewriter.replaceOpWithNewOp<pto::StoreScalarOp>(op, ptr,
+                                                    adaptor.getOffset(),
+                                                    adaptor.getValue());
+    return success();
+  }
+};
+
 struct ConvertPtrNormalizeUnrealizedCastOp final
     : public OpConversionPattern<UnrealizedConversionCastOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -403,6 +510,10 @@ struct VPTOPtrNormalizePass
     target.addDynamicallyLegalOp<pto::VstsOp>([](pto::VstsOp op) {
       return isa<pto::PtrType>(op.getDestination().getType());
     });
+    target.addDynamicallyLegalOp<pto::LoadScalarOp>(
+        [](pto::LoadScalarOp op) { return isa<pto::PtrType>(op.getPtr().getType()); });
+    target.addDynamicallyLegalOp<pto::StoreScalarOp>(
+        [](pto::StoreScalarOp op) { return isa<pto::PtrType>(op.getPtr().getType()); });
     target.addDynamicallyLegalOp<memref::SubViewOp>(
         [](memref::SubViewOp op) { return !needsSubviewPtrConversion(op); });
 
@@ -416,6 +527,8 @@ struct VPTOPtrNormalizePass
                  ConvertBindTileToPtrPattern,
                  ConvertSubviewToAddPtrPattern, ConvertVldsSubviewOperandPattern,
                  ConvertVstsSubviewOperandPattern,
+                 ConvertLoadScalarOperandToPtrPattern,
+                 ConvertStoreScalarOperandToPtrPattern,
                  ConvertPtrNormalizeUnrealizedCastOp>(
         typeConverter, context);
 

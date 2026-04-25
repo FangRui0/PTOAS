@@ -6576,6 +6576,12 @@ public:
     if (!llvmPtrType)
       return rewriter.notifyMatchFailure(op, "expected LLVM pointer operand");
 
+    Type convertedValueType =
+        getTypeConverter()->convertType(op.getValue().getType());
+    if (!convertedValueType)
+      return rewriter.notifyMatchFailure(op,
+                                         "could not convert load_scalar result type");
+
     Value offset = adaptor.getOffset();
     if (offset.getType().isIndex())
       offset = rewriter.create<arith::IndexCastUIOp>(op.getLoc(),
@@ -6584,7 +6590,7 @@ public:
     Value elemPtr = adaptor.getPtr();
     if (!matchPattern(offset, m_Zero())) {
       elemPtr = rewriter.create<LLVM::GEPOp>(op.getLoc(), llvmPtrType,
-                                             op.getValue().getType(), adaptor.getPtr(),
+                                             convertedValueType, adaptor.getPtr(),
                                              ValueRange{offset});
     }
 
@@ -6602,8 +6608,8 @@ public:
     };
 
     rewriter.replaceOpWithNewOp<LLVM::LoadOp>(
-        op, op.getValue().getType(), elemPtr,
-        getNaturalAlignment(op.getValue().getType()));
+        op, convertedValueType, elemPtr,
+        getNaturalAlignment(convertedValueType));
     return success();
   }
 };
