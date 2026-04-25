@@ -9368,21 +9368,10 @@ mlir::LogicalResult mlir::pto::SubViewOp::verify() {
       return emitOpError("boxed layout subview offsets must be multiples of inner shape");
   }
 
-  if (srcShape.size() == 2 &&
-      srcShape[0] != ShapedType::kDynamic &&
-      srcShape[1] != ShapedType::kDynamic) {
-    if (bl == 0) {
-      if (sizeC != srcShape[1])
-        return emitOpError("boxed RowMajor subview must keep full cols");
-      if (!offCConst || offC != 0)
-        return emitOpError("boxed RowMajor subview requires static col offset = 0");
-    } else if (bl == 1) {
-      if (sizeR != srcShape[0])
-        return emitOpError("boxed ColMajor subview must keep full rows");
-      if (!offRConst || offR != 0)
-        return emitOpError("boxed ColMajor subview requires static row offset = 0");
-    }
-  } else {
+  (void)bl;
+  if (srcShape.size() != 2 ||
+      srcShape[0] == ShapedType::kDynamic ||
+      srcShape[1] == ShapedType::kDynamic) {
     return emitOpError("boxed layout subview requires static source shape");
   }
 

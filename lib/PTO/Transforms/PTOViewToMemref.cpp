@@ -984,30 +984,6 @@ static LogicalResult lowerSubViewOps(func::FuncOp func, MLIRContext *ctx) {
         return failure();
       }
 
-      int32_t bl = 0;
-      (void)readBLayoutI32(configAttr.getBLayout(), bl);
-      auto srcShape = srcMrTy.getShape();
-      if (srcShape.size() == 2) {
-        if (bl == 0) {
-          if (staticSizes[1] != srcShape[1]) {
-            op.emitError("boxed RowMajor subview must keep full cols");
-            return failure();
-          }
-          if (!off1Const || off1 != 0) {
-            op.emitError("boxed RowMajor subview requires static col offset = 0");
-            return failure();
-          }
-        } else {
-          if (staticSizes[0] != srcShape[0]) {
-            op.emitError("boxed ColMajor subview must keep full rows");
-            return failure();
-          }
-          if (!off0Const || off0 != 0) {
-            op.emitError("boxed ColMajor subview requires static row offset = 0");
-            return failure();
-          }
-        }
-      }
     }
 
     SmallVector<int64_t> srcStrides;
