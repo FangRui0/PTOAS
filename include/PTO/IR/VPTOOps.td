@@ -468,6 +468,21 @@ def PTO_LoadCbufToCaOp : PTO_Op<"load_cbuf_to_ca"> {
   }];
 }
 
+def PTO_LoadCbufToCaTransposeOp : PTO_Op<"load_cbuf_to_ca_transpose"> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I64:$m,
+    I64:$k
+  );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $source `,` $destination `,` $m `,` $k attr-dict `:` type($source) `,` type($destination) `,` type($m) `,` type($k)
+  }];
+}
+
 def PTO_LoadCbufToCaS4Op : PTO_Op<"load_cbuf_to_ca_s4"> {
   let arguments = (ins
     PTO_BufferType:$source,
@@ -493,6 +508,21 @@ def PTO_LoadCbufToCaS4Op : PTO_Op<"load_cbuf_to_ca_s4"> {
 }
 
 def PTO_LoadCbufToCbOp : PTO_Op<"load_cbuf_to_cb"> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I64:$k,
+    I64:$n
+  );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $source `,` $destination `,` $k `,` $n attr-dict `:` type($source) `,` type($destination) `,` type($k) `,` type($n)
+  }];
+}
+
+def PTO_LoadCbufToCbTransposeOp : PTO_Op<"load_cbuf_to_cb_transpose"> {
   let arguments = (ins
     PTO_BufferType:$source,
     PTO_BufferType:$destination,

@@ -3554,6 +3554,74 @@ private:
   LoweringState &state;
 };
 
+class LowerLoadCbufToCaTransposeOpPattern final
+    : public OpConversionPattern<pto::LoadCbufToCaTransposeOp> {
+public:
+  explicit LowerLoadCbufToCaTransposeOpPattern(TypeConverter &typeConverter,
+                                               MLIRContext *context,
+                                               LoweringState &state)
+      : OpConversionPattern<pto::LoadCbufToCaTransposeOp>(typeConverter, context),
+        state(state) {}
+
+  LogicalResult
+  matchAndRewrite(pto::LoadCbufToCaTransposeOp op,
+                  pto::LoadCbufToCaTransposeOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Value sourceRaw = adaptor.getSource();
+    Value destinationRaw = adaptor.getDestination();
+    Value m = adaptor.getM();
+    Value k = adaptor.getK();
+    if (!sourceRaw || !destinationRaw || !m || !k)
+      return rewriter.notifyMatchFailure(op, "expected converted operands");
+
+    if (!isa<LLVM::LLVMPointerType>(sourceRaw.getType()) ||
+        !isa<LLVM::LLVMPointerType>(destinationRaw.getType())) {
+      return rewriter.notifyMatchFailure(op, "expected LLVM pointer src/dst");
+    }
+
+    Type i64Ty = rewriter.getI64Type();
+
+    constexpr unsigned cbufAddressSpace =
+        static_cast<unsigned>(pto::AddressSpace::MAT);
+    constexpr unsigned caAddressSpace =
+        static_cast<unsigned>(pto::AddressSpace::LEFT);
+    FailureOr<Value> source =
+        reinterpretPointerToAddrSpace(op, sourceRaw, cbufAddressSpace);
+    FailureOr<Value> destination =
+        reinterpretPointerToAddrSpace(op, destinationRaw, caAddressSpace);
+    if (failed(source) || failed(destination))
+      return rewriter.notifyMatchFailure(op, "failed to map cbuf/ca pointer spaces");
+
+    FailureOr<Value> config0 = packLoadCbufToCaConfig0(op, m, k);
+    FailureOr<Value> config1 = packLoadCbufToCaConfig1(op, k);
+    if (failed(config0) || failed(config1)) {
+      return rewriter.notifyMatchFailure(
+          op, "failed to pack load_cbuf_to_ca_transpose config");
+    }
+    Value transpose = getI64Constant(rewriter, op.getLoc(), 1);
+
+    FailureOr<StringRef> calleeName =
+        buildLoadCbufToCaCallee(op.getContext(), op.getSource().getType());
+    if (failed(calleeName)) {
+      return rewriter.notifyMatchFailure(
+          op, "unsupported load_cbuf_to_ca_transpose element type");
+    }
+    auto funcType = rewriter.getFunctionType(
+        TypeRange{destination->getType(), source->getType(), i64Ty, i64Ty,
+                  i64Ty},
+        TypeRange{});
+    rewriter.create<func::CallOp>(op.getLoc(), *calleeName, TypeRange{},
+                                  ValueRange{*destination, *source, *config0,
+                                             *config1, transpose});
+    state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  LoweringState &state;
+};
+
 template <typename LoadOp>
 class LowerLoadCbufToS4OpPattern final : public OpConversionPattern<LoadOp> {
 public:
@@ -3667,6 +3735,74 @@ public:
     if (failed(calleeName))
       return rewriter.notifyMatchFailure(op,
                                          "unsupported load_cbuf_to_cb element type");
+    auto funcType = rewriter.getFunctionType(
+        TypeRange{destination->getType(), source->getType(), i64Ty, i64Ty,
+                  i64Ty},
+        TypeRange{});
+    rewriter.create<func::CallOp>(op.getLoc(), *calleeName, TypeRange{},
+                                  ValueRange{*destination, *source, *config0,
+                                             *config1, transpose});
+    state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  LoweringState &state;
+};
+
+class LowerLoadCbufToCbTransposeOpPattern final
+    : public OpConversionPattern<pto::LoadCbufToCbTransposeOp> {
+public:
+  explicit LowerLoadCbufToCbTransposeOpPattern(TypeConverter &typeConverter,
+                                               MLIRContext *context,
+                                               LoweringState &state)
+      : OpConversionPattern<pto::LoadCbufToCbTransposeOp>(typeConverter, context),
+        state(state) {}
+
+  LogicalResult
+  matchAndRewrite(pto::LoadCbufToCbTransposeOp op,
+                  pto::LoadCbufToCbTransposeOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Value sourceRaw = adaptor.getSource();
+    Value destinationRaw = adaptor.getDestination();
+    Value k = adaptor.getK();
+    Value n = adaptor.getN();
+    if (!sourceRaw || !destinationRaw || !k || !n)
+      return rewriter.notifyMatchFailure(op, "expected converted operands");
+
+    if (!isa<LLVM::LLVMPointerType>(sourceRaw.getType()) ||
+        !isa<LLVM::LLVMPointerType>(destinationRaw.getType())) {
+      return rewriter.notifyMatchFailure(op, "expected LLVM pointer src/dst");
+    }
+
+    Type i64Ty = rewriter.getI64Type();
+
+    constexpr unsigned cbufAddressSpace =
+        static_cast<unsigned>(pto::AddressSpace::MAT);
+    constexpr unsigned cbAddressSpace =
+        static_cast<unsigned>(pto::AddressSpace::RIGHT);
+    FailureOr<Value> source =
+        reinterpretPointerToAddrSpace(op, sourceRaw, cbufAddressSpace);
+    FailureOr<Value> destination =
+        reinterpretPointerToAddrSpace(op, destinationRaw, cbAddressSpace);
+    if (failed(source) || failed(destination))
+      return rewriter.notifyMatchFailure(op, "failed to map cbuf/cb pointer spaces");
+
+    FailureOr<Value> config0 = packLoadCbufToCbConfig0(op, k, n);
+    FailureOr<Value> config1 = packLoadCbufToCbConfig1(op, n);
+    if (failed(config0) || failed(config1)) {
+      return rewriter.notifyMatchFailure(
+          op, "failed to pack load_cbuf_to_cb_transpose config");
+    }
+    Value transpose = getI64Constant(rewriter, op.getLoc(), 1);
+
+    FailureOr<StringRef> calleeName =
+        buildLoadCbufToCbCallee(op.getContext(), op.getSource().getType());
+    if (failed(calleeName)) {
+      return rewriter.notifyMatchFailure(
+          op, "unsupported load_cbuf_to_cb_transpose element type");
+    }
     auto funcType = rewriter.getFunctionType(
         TypeRange{destination->getType(), source->getType(), i64Ty, i64Ty,
                   i64Ty},
@@ -6805,7 +6941,8 @@ static void populateVPTOOpLoweringPatterns(VPTOTypeConverter &typeConverter,
                LowerPredicateStoreOpPattern<pto::PstsOp>,
                LowerPstuOpPattern, LowerVstusOpPattern, LowerVsturOpPattern,
                LowerCopyGmToCbufOpPattern, LowerLoadCbufToCaOpPattern,
-               LowerLoadCbufToCbOpPattern,
+               LowerLoadCbufToCaTransposeOpPattern,
+               LowerLoadCbufToCbOpPattern, LowerLoadCbufToCbTransposeOpPattern,
                LowerLoadCbufToS4OpPattern<pto::LoadCbufToCaS4Op>,
                LowerLoadCbufToS4OpPattern<pto::LoadCbufToCbS4Op>,
                LowerLoadCbufToCaMxOpPattern,
@@ -6881,7 +7018,8 @@ static void configureVPTOOpLoweringTarget(ConversionTarget &target,
                       pto::CopyGmToUbufOp, pto::CopyUbufToGmOp,
                       pto::CopyUbufToUbufOp,
                       pto::CopyGmToCbufOp, pto::LoadCbufToCaOp,
-                      pto::LoadCbufToCbOp, pto::LoadCbufToCaS4Op,
+                      pto::LoadCbufToCaTransposeOp, pto::LoadCbufToCbOp,
+                      pto::LoadCbufToCbTransposeOp, pto::LoadCbufToCaS4Op,
                       pto::LoadCbufToCbS4Op, pto::LoadCbufToCaMxOp,
                       pto::LoadCbufToCbMxOp, pto::CopyMatrixCcToGmOp,
                       pto::CopyMatrixCcToCbufOp, pto::CopyMatrixCcToUbOp,

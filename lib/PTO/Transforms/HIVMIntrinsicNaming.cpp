@@ -790,6 +790,23 @@ FailureOr<IntrinsicSelection> selectStoreIntrinsic(Operation *op) {
                         usedFields, "");
   }
 
+  if (auto load = dyn_cast<pto::LoadCbufToCaTransposeOp>(op)) {
+    std::string srcElem = getElementTypeFragment(
+        cast<pto::PtrType>(load.getSource().getType()).getElementType());
+    std::string dstElem = getElementTypeFragment(
+        cast<pto::PtrType>(load.getDestination().getType()).getElementType());
+    usedFields = {"family=load_cbuf_to_ca_transpose", "src=" + srcElem,
+                  "dst=" + dstElem, "shape=i64xm_k", "transpose=1"};
+    if (srcElem.empty()) {
+      missingFields.push_back("src_element_type_mapping");
+      return makeUnresolved(op, "load_cbuf_to_ca_transpose",
+                            "llvm.hivm.LOAD.L1.TO.L0A.2Dv2.<elem>", usedFields,
+                            missingFields, "");
+    }
+    return makeResolved(op, "llvm.hivm.LOAD.L1.TO.L0A.2Dv2." + srcElem,
+                        usedFields, "");
+  }
+
   if (auto load = dyn_cast<pto::LoadCbufToCbOp>(op)) {
     std::string srcElem = getElementTypeFragment(
         cast<pto::PtrType>(load.getSource().getType()).getElementType());
@@ -800,6 +817,23 @@ FailureOr<IntrinsicSelection> selectStoreIntrinsic(Operation *op) {
     if (srcElem.empty()) {
       missingFields.push_back("src_element_type_mapping");
       return makeUnresolved(op, "load_cbuf_to_cb",
+                            "llvm.hivm.LOAD.L1.TO.L0B.2Dv2.<elem>", usedFields,
+                            missingFields, "");
+    }
+    return makeResolved(op, "llvm.hivm.LOAD.L1.TO.L0B.2Dv2." + srcElem,
+                        usedFields, "");
+  }
+
+  if (auto load = dyn_cast<pto::LoadCbufToCbTransposeOp>(op)) {
+    std::string srcElem = getElementTypeFragment(
+        cast<pto::PtrType>(load.getSource().getType()).getElementType());
+    std::string dstElem = getElementTypeFragment(
+        cast<pto::PtrType>(load.getDestination().getType()).getElementType());
+    usedFields = {"family=load_cbuf_to_cb_transpose", "src=" + srcElem,
+                  "dst=" + dstElem, "shape=i64xk_n", "transpose=1"};
+    if (srcElem.empty()) {
+      missingFields.push_back("src_element_type_mapping");
+      return makeUnresolved(op, "load_cbuf_to_cb_transpose",
                             "llvm.hivm.LOAD.L1.TO.L0B.2Dv2.<elem>", usedFields,
                             missingFields, "");
     }

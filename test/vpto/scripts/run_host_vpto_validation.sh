@@ -22,7 +22,7 @@ PTOAS_FLAGS="${PTOAS_FLAGS:---pto-arch a5}"
 VPTO_FLAGS="${VPTO_FLAGS:---pto-backend=vpto --vpto-emit-hivm-llvm}"
 AICORE_ARCH="${AICORE_ARCH:-dav-c310-vec}"
 CUBE_AICORE_ARCH="${CUBE_AICORE_ARCH:-dav-c310-cube}"
-CUBE_CASES="${CUBE_CASES:-mad_mx mad_f16f16f32 mad_f32f32f32 mad_bf16bf16f32}"
+CUBE_CASES="${CUBE_CASES:-mad_mx mad_f16f16f32 mad_f32f32f32 mad_bf16bf16f32 load_cbuf_to_ca_transpose load_cbuf_to_cb_transpose}"
 # set he HOST_RUNNER to "ssh root@localhost" if must change user to root to access the device 
 HOST_RUNNER="${HOST_RUNNER:-}"
 CASE_NAME="${CASE_NAME:-}"

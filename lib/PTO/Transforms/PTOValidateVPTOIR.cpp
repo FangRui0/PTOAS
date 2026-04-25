@@ -200,7 +200,8 @@ public:
 
     if (isa<VldsPostOp, VstsPostOp, VldasOp, VldusOp, PstuOp, VstusOp, VsturOp,
             MadOp, MadMxOp, CopyGmToCbufOp, LoadCbufToCaOp,
-            LoadCbufToCbOp, CopyMatrixCcToGmOp>(op))
+            LoadCbufToCaTransposeOp, LoadCbufToCbOp,
+            LoadCbufToCbTransposeOp, CopyMatrixCcToGmOp>(op))
       return VPTOBufferAddressFamily::PtrOnly;
 
     if (isa<VldsOp, UvldOp, PldsOp, PldiOp, VstsOp, PstiOp, PstsOp,
