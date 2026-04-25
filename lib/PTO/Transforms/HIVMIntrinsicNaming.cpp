@@ -697,15 +697,42 @@ FailureOr<IntrinsicSelection> selectStoreIntrinsic(Operation *op) {
   }
 
   if (auto copy = dyn_cast<pto::CopyGmToCbufMultiNd2NzOp>(op)) {
+    std::string elemFragment = getCopyElementFragment(copy.getSource().getType());
     usedFields = {"family=copy_gm_to_cbuf_multi_nd2nz"};
-    return makeResolved(op, "llvm.hivm.MOV.OUT.TO.L1.MULTI.ND2NZ", usedFields,
-                        "");
+    if (!elemFragment.empty())
+      usedFields.push_back("element=" + elemFragment);
+    if (elemFragment == "f16")
+      return makeResolved(op, "llvm.hivm.MOV.OUT.TO.L1.MULTI.ND2NZ.F16.V310",
+                          usedFields, "");
+    if (elemFragment == "bf16")
+      return makeResolved(op, "llvm.hivm.MOV.OUT.TO.L1.MULTI.ND2NZ.BF16.V310",
+                          usedFields, "");
+    if (elemFragment == "s16")
+      return makeResolved(op, "llvm.hivm.MOV.OUT.TO.L1.MULTI.ND2NZ.S16.V310",
+                          usedFields, "");
+    if (elemFragment == "f32")
+      return makeResolved(op, "llvm.hivm.MOV.OUT.TO.L1.MULTI.ND2NZ.F32.V310",
+                          usedFields, "");
+    missingFields.push_back("element_type_mapping");
+    return makeUnresolved(op, "copy_gm_to_cbuf_multi_nd2nz",
+                          "llvm.hivm.MOV.OUT.TO.L1.MULTI.ND2NZ.<TYPE>.V310",
+                          usedFields, missingFields, "");
   }
 
   if (auto copy = dyn_cast<pto::CopyGmToCbufMultiDn2NzOp>(op)) {
+    std::string elemFragment = getCopyElementFragment(copy.getSource().getType());
     usedFields = {"family=copy_gm_to_cbuf_multi_dn2nz"};
-    return makeResolved(op, "llvm.hivm.MOV.OUT.TO.L1.MULTI.DN2NZ", usedFields,
-                        "");
+    if (!elemFragment.empty())
+      usedFields.push_back("element=" + elemFragment);
+    if (elemFragment == "f16" || elemFragment == "bf16" ||
+        elemFragment == "f32" || elemFragment == "u32")
+      return makeResolved(op,
+                          "llvm.hivm.MOV.OUT.TO.L1.MULTI.DN2NZ." + elemFragment,
+                          usedFields, "");
+    missingFields.push_back("element_type_mapping");
+    return makeUnresolved(op, "copy_gm_to_cbuf_multi_dn2nz",
+                          "llvm.hivm.MOV.OUT.TO.L1.MULTI.DN2NZ.<elem>",
+                          usedFields, missingFields, "");
   }
 
   if (auto matmul = dyn_cast<pto::MadOp>(op)) {
@@ -835,14 +862,14 @@ FailureOr<IntrinsicSelection> selectStoreIntrinsic(Operation *op) {
     usedFields = {"family=copy_matrix_cc_to_ub", "src=" + srcElem,
                   "dst=" + dstElem};
     if (dstElem == "f16")
-      return makeResolved(op, "llvm.hivm.MOV.L0CDPF32.TO.UB.f322f16",
+      return makeResolved(op, "llvm.hivm.FIX.L0C.TO.UB.f322f16.EXT",
                           usedFields, "");
     if (dstElem == "f32")
-      return makeResolved(op, "llvm.hivm.MOV.L0CDPF32.TO.UB.f322f32",
+      return makeResolved(op, "llvm.hivm.FIX.L0C.TO.UB.f32.EXT",
                           usedFields, "");
     missingFields.push_back("dst_element_type_mapping");
     return makeUnresolved(op, "copy_matrix_cc_to_ub",
-                          "llvm.hivm.MOV.L0CDPF32.TO.UB.f322f{16|32}",
+                          "llvm.hivm.FIX.L0C.TO.UB.{f322f16|f32}.EXT",
                           usedFields, missingFields, "");
   }
 

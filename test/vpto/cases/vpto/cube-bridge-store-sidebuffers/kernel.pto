@@ -1,0 +1,46 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// -----------------------------------------------------------------------------
+// case: vpto/cube-bridge-store-sidebuffers
+// family: vpto
+// target_ops: pto.cube_store_cbuf, pto.cube_store_ub, pto.cube_store_bt
+// scenarios: cube bridge store wrappers mapping to cc->cbuf/ub and cbuf->bt
+// -----------------------------------------------------------------------------
+module attributes {pto.target_arch = "a5"} {
+  func.func @cube_bridge_store_sidebuffers_kernel(%a_gm: !pto.ptr<f16, gm>,
+                                                   %b_gm: !pto.ptr<f16, gm>,
+                                                   %c_gm: !pto.ptr<f32, gm>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c16_i64 = arith.constant 16 : i64
+    %cfg0_i64 = arith.constant 4296016128 : i64
+    %cfg1_i64 = arith.constant 1 : i64
+    %true = arith.constant true
+
+    %l0c = pto.castptr %c0_i64 : i64 -> !pto.ptr<f32, acc>
+    %l1_f32 = pto.castptr %c0_i64 : i64 -> !pto.ptr<f32, mat>
+    %ub_f32 = pto.castptr %c0_i64 : i64 -> !pto.ptr<f32, vec>
+    %l1_f16 = pto.castptr %c0_i64 : i64 -> !pto.ptr<f16, mat>
+    %bt_f16 = pto.castptr %c0_i64 : i64 -> !pto.ptr<f16, bias>
+
+    pto.cube_store_cbuf %l0c, %l1_f32, %cfg0_i64, %cfg1_i64,
+      %c1_i64, %c1_i64, %c0_i64, %c0_i64
+      : !pto.ptr<f32, acc>, !pto.ptr<f32, mat>, i64, i64, i64, i64, i64, i64
+
+    pto.cube_store_ub %l0c, %ub_f32, %cfg0_i64, %cfg1_i64,
+      %c1_i64, %c1_i64, %c0_i64, %c0_i64
+      : !pto.ptr<f32, acc>, !pto.ptr<f32, vec>, i64, i64, i64, i64, i64, i64
+
+    pto.cube_store_bt %l1_f16, %bt_f16, %true, %c1_i64, %c16_i64, %c0_i64, %c0_i64
+      : !pto.ptr<f16, mat>, !pto.ptr<f16, bias>, i1, i64, i64, i64, i64
+
+    pto.barrier #pto.pipe<PIPE_ALL>
+    return
+  }
+}

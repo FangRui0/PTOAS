@@ -1977,14 +1977,42 @@ static FailureOr<StringRef> buildCopyGmToCbufCallee(MLIRContext *context,
       .getValue();
 }
 
-static StringRef buildCopyGmToCbufMultiNd2NzCallee(MLIRContext *context) {
-  return StringAttr::get(context, "llvm.hivm.MOV.OUT.TO.L1.MULTI.ND2NZ")
-      .getValue();
+static FailureOr<StringRef>
+buildCopyGmToCbufMultiNd2NzCallee(MLIRContext *context, Type sourceType) {
+  auto ptrType = dyn_cast<pto::PtrType>(sourceType);
+  if (!ptrType)
+    return failure();
+  std::string elem = getCopyElementFragment(ptrType.getElementType());
+  if (elem == "f16")
+    return StringAttr::get(context,
+                           "llvm.hivm.MOV.OUT.TO.L1.MULTI.ND2NZ.F16.V310")
+        .getValue();
+  if (elem == "bf16")
+    return StringAttr::get(context,
+                           "llvm.hivm.MOV.OUT.TO.L1.MULTI.ND2NZ.BF16.V310")
+        .getValue();
+  if (elem == "s16")
+    return StringAttr::get(context,
+                           "llvm.hivm.MOV.OUT.TO.L1.MULTI.ND2NZ.S16.V310")
+        .getValue();
+  if (elem == "f32")
+    return StringAttr::get(context,
+                           "llvm.hivm.MOV.OUT.TO.L1.MULTI.ND2NZ.F32.V310")
+        .getValue();
+  return failure();
 }
 
-static StringRef buildCopyGmToCbufMultiDn2NzCallee(MLIRContext *context) {
-  return StringAttr::get(context, "llvm.hivm.MOV.OUT.TO.L1.MULTI.DN2NZ")
-      .getValue();
+static FailureOr<StringRef>
+buildCopyGmToCbufMultiDn2NzCallee(MLIRContext *context, Type sourceType) {
+  auto ptrType = dyn_cast<pto::PtrType>(sourceType);
+  if (!ptrType)
+    return failure();
+  std::string elem = getCopyElementFragment(ptrType.getElementType());
+  if (elem == "f16" || elem == "bf16" || elem == "f32" || elem == "u32")
+    return StringAttr::get(context,
+                           "llvm.hivm.MOV.OUT.TO.L1.MULTI.DN2NZ." + elem)
+        .getValue();
+  return failure();
 }
 
 static FailureOr<StringRef> buildLoadCbufToCaCallee(MLIRContext *context,
@@ -2048,10 +2076,10 @@ static FailureOr<StringRef> buildCopyMatrixCcToUbCallee(MLIRContext *context,
     return failure();
   Type dstElem = ptrType.getElementType();
   if (dstElem.isF16())
-    return StringAttr::get(context, "llvm.hivm.MOV.L0CDPF32.TO.UB.f322f16")
+    return StringAttr::get(context, "llvm.hivm.FIX.L0C.TO.UB.f322f16.EXT")
         .getValue();
   if (dstElem.isF32())
-    return StringAttr::get(context, "llvm.hivm.MOV.L0CDPF32.TO.UB.f322f32")
+    return StringAttr::get(context, "llvm.hivm.FIX.L0C.TO.UB.f32.EXT")
         .getValue();
   return failure();
 }
@@ -3364,20 +3392,24 @@ public:
     if (failed(config0) || failed(config1))
       return rewriter.notifyMatchFailure(op, "failed to pack multi copy config");
 
-    StringRef calleeName = [] (MLIRContext *ctx) -> StringRef {
-      if constexpr (std::is_same_v<CopyOp, pto::CopyGmToCbufMultiNd2NzOp>)
-        return buildCopyGmToCbufMultiNd2NzCallee(ctx);
-      return buildCopyGmToCbufMultiDn2NzCallee(ctx);
-    }(op.getContext());
+    FailureOr<StringRef> calleeName =
+        std::is_same_v<CopyOp, pto::CopyGmToCbufMultiNd2NzOp>
+            ? buildCopyGmToCbufMultiNd2NzCallee(op.getContext(),
+                                                op.getSource().getType())
+            : buildCopyGmToCbufMultiDn2NzCallee(op.getContext(),
+                                                op.getSource().getType());
+    if (failed(calleeName))
+      return rewriter.notifyMatchFailure(op,
+                                         "unsupported multi copy element type");
 
     Type i64Ty = rewriter.getI64Type();
     auto funcType = rewriter.getFunctionType(
         TypeRange{destination->getType(), source->getType(), i64Ty, i64Ty},
         TypeRange{});
     rewriter.create<func::CallOp>(
-        op.getLoc(), calleeName, TypeRange{},
+        op.getLoc(), *calleeName, TypeRange{},
         ValueRange{*destination, *source, *config0, *config1});
-    state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
+    state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
     rewriter.eraseOp(op);
     return success();
   }

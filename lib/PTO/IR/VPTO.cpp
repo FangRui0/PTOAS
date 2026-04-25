@@ -3710,3 +3710,421 @@ LogicalResult DmaStoreOp::verify() {
       getOperation(), getLoopCounts(), getLoopSrcStrides(),
       getLoopDstStrides());
 }
+
+void CubeLoadOp::build(OpBuilder &builder, OperationState &state, Value source,
+                       Value destination, Value lenBurst,
+                       pto::DmaLoopConfig nburst,
+                       llvm::ArrayRef<pto::DmaLoopConfig> loops) {
+  state.addOperands({source, destination, lenBurst, nburst.count,
+                     nburst.srcStride, nburst.dstStride});
+  for (const pto::DmaLoopConfig &loop : loops)
+    state.addOperands(loop.count);
+  for (const pto::DmaLoopConfig &loop : loops)
+    state.addOperands(loop.srcStride);
+  for (const pto::DmaLoopConfig &loop : loops)
+    state.addOperands(loop.dstStride);
+
+  state.addAttribute(
+      getOperandSegmentSizeAttr(),
+      builder.getDenseI32ArrayAttr(
+          {1, 1, 1, 1, 1, 1, static_cast<int32_t>(loops.size()),
+           static_cast<int32_t>(loops.size()),
+           static_cast<int32_t>(loops.size())}));
+}
+
+void CubeLoadOp::build(OpBuilder &builder, OperationState &state, Value source,
+                       Value destination, Value lenBurst,
+                       pto::DmaLoopConfig nburst,
+                       std::optional<pto::DmaLoopConfig> loop1,
+                       std::optional<pto::DmaLoopConfig> loop2) {
+  SmallVector<pto::DmaLoopConfig> loops;
+  if (loop1)
+    loops.push_back(*loop1);
+  if (loop2)
+    loops.push_back(*loop2);
+  build(builder, state, source, destination, lenBurst, nburst, loops);
+}
+
+ParseResult CubeLoadOp::parse(OpAsmParser &parser, OperationState &result) {
+  OpAsmParser::UnresolvedOperand source, destination, lenBurst;
+  SmallVector<OpAsmParser::UnresolvedOperand> nburstOperands;
+  SmallVector<OpAsmParser::UnresolvedOperand> loopCountOperands;
+  SmallVector<OpAsmParser::UnresolvedOperand> loopSrcStrideOperands;
+  SmallVector<OpAsmParser::UnresolvedOperand> loopDstStrideOperands;
+  if (parseRequiredOperandWithComma(parser, source) ||
+      parseRequiredOperandWithComma(parser, destination) ||
+      parser.parseOperand(lenBurst) ||
+      parseDmaTripleGroup(parser, "nburst", nburstOperands))
+    return failure();
+  while (true) {
+    StringRef parsedKeyword;
+    SmallVector<OpAsmParser::UnresolvedOperand, 3> loopGroupOperands;
+    if (parseOptionalDmaTripleGroupAlias(parser, {"loop", "loop1", "loop2"},
+                                         parsedKeyword, loopGroupOperands))
+      return failure();
+    if (parsedKeyword.empty())
+      break;
+    loopCountOperands.push_back(loopGroupOperands[0]);
+    loopSrcStrideOperands.push_back(loopGroupOperands[1]);
+    loopDstStrideOperands.push_back(loopGroupOperands[2]);
+  }
+
+  if (parser.parseOptionalAttrDict(result.attributes) || parser.parseColon())
+    return failure();
+
+  Type sourceType, destinationType, lenBurstType;
+  SmallVector<Type> nburstTypes, loopCountTypes, loopSrcStrideTypes,
+      loopDstStrideTypes;
+  if (parser.parseType(sourceType) || parser.parseComma() ||
+      parser.parseType(destinationType) || parser.parseComma() ||
+      parser.parseType(lenBurstType) || parser.parseComma() ||
+      parseDmaTripleTypes(parser, nburstTypes))
+    return failure();
+  while (succeeded(parser.parseOptionalComma())) {
+    StringRef keyword;
+    if (parser.parseKeyword(&keyword))
+      return failure();
+    if (isDmaLoopKeyword(keyword)) {
+      SmallVector<Type> loopGroupTypes;
+      if (parseDmaTripleTypes(parser, loopGroupTypes))
+        return failure();
+      loopCountTypes.push_back(loopGroupTypes[0]);
+      loopSrcStrideTypes.push_back(loopGroupTypes[1]);
+      loopDstStrideTypes.push_back(loopGroupTypes[2]);
+      continue;
+    }
+    return parser.emitError(parser.getCurrentLocation(), "expected 'loop'");
+  }
+
+  int32_t loopGroupCount = static_cast<int32_t>(loopCountOperands.size());
+  if (loopCountOperands.size() != loopSrcStrideOperands.size() ||
+      loopCountOperands.size() != loopDstStrideOperands.size() ||
+      loopCountTypes.size() != loopSrcStrideTypes.size() ||
+      loopCountTypes.size() != loopDstStrideTypes.size())
+    return parser.emitError(
+        parser.getCurrentLocation(),
+        "requires each loop group to provide count, src stride, and dst stride");
+  if (loopCountOperands.size() != loopCountTypes.size())
+    return parser.emitError(parser.getCurrentLocation(),
+                            "requires loop operand and type groups to match");
+
+  auto &segments =
+      result.getOrAddProperties<CubeLoadOp::Properties>().operandSegmentSizes;
+  llvm::copy(ArrayRef<int32_t>{1, 1, 1, 1, 1, 1, loopGroupCount, loopGroupCount,
+                               loopGroupCount},
+             segments.begin());
+
+  if (parser.resolveOperand(source, sourceType, result.operands) ||
+      parser.resolveOperand(destination, destinationType, result.operands) ||
+      parser.resolveOperand(lenBurst, lenBurstType, result.operands) ||
+      parser.resolveOperands(nburstOperands, nburstTypes,
+                             parser.getCurrentLocation(), result.operands) ||
+      parser.resolveOperands(loopCountOperands, loopCountTypes,
+                             parser.getCurrentLocation(), result.operands) ||
+      parser.resolveOperands(loopSrcStrideOperands, loopSrcStrideTypes,
+                             parser.getCurrentLocation(), result.operands) ||
+      parser.resolveOperands(loopDstStrideOperands, loopDstStrideTypes,
+                             parser.getCurrentLocation(), result.operands))
+    return failure();
+  return success();
+}
+
+void CubeLoadOp::print(OpAsmPrinter &printer) {
+  printer << " " << getSource() << ", " << getDestination() << ", "
+          << getLenBurst();
+  printDmaTripleGroup(printer, "nburst", getNBurst(), getNburstSrcStride(),
+                      getNburstDstStride());
+  for (auto [count, srcStride, dstStride] :
+       llvm::zip(getLoopCounts(), getLoopSrcStrides(), getLoopDstStrides()))
+    printDmaTripleGroup(printer, "loop", count, srcStride, dstStride);
+  printer.printOptionalAttrDict((*this)->getAttrs());
+  printer << " : " << getSource().getType() << ", " << getDestination().getType()
+          << ", " << getLenBurst().getType() << ", " << getNBurst().getType()
+          << ", " << getNburstSrcStride().getType() << ", "
+          << getNburstDstStride().getType();
+  for (auto [count, srcStride, dstStride] :
+       llvm::zip(getLoopCounts(), getLoopSrcStrides(), getLoopDstStrides()))
+    printDmaTripleTypes(printer, "loop", count.getType(), srcStride.getType(),
+                        dstStride.getType());
+}
+
+LogicalResult CubeLoadOp::verify() {
+  return verifyDmaLoadStoreLoopGroups(
+      getOperation(), getLoopCounts(), getLoopSrcStrides(),
+      getLoopDstStrides());
+}
+
+static ParseResult parseCubeLoadMultiLike(
+    OpAsmParser &parser, OperationState &result,
+    llvm::function_ref<void(SmallVector<Type> &)> appendFixedTypes,
+    llvm::function_ref<void(SmallVector<OpAsmParser::UnresolvedOperand> &)>
+        appendFixedOperands,
+    llvm::function_ref<void(OperationState &, int32_t)> setSegments) {
+  OpAsmParser::UnresolvedOperand source, destination;
+  SmallVector<OpAsmParser::UnresolvedOperand> fixedOperands;
+  SmallVector<OpAsmParser::UnresolvedOperand> nburstOperands;
+  SmallVector<OpAsmParser::UnresolvedOperand> loopCountOperands;
+  SmallVector<OpAsmParser::UnresolvedOperand> loopSrcStrideOperands;
+  SmallVector<OpAsmParser::UnresolvedOperand> loopDstStrideOperands;
+  if (parseRequiredOperandWithComma(parser, source) ||
+      parseRequiredOperandWithComma(parser, destination))
+    return failure();
+  appendFixedOperands(fixedOperands);
+  for (auto &operand : fixedOperands)
+    if (parser.parseOperand(operand) || parser.parseComma())
+      return failure();
+  if (parseDmaTripleGroup(parser, "nburst", nburstOperands))
+    return failure();
+  while (true) {
+    StringRef parsedKeyword;
+    SmallVector<OpAsmParser::UnresolvedOperand, 3> loopGroupOperands;
+    if (parseOptionalDmaTripleGroupAlias(parser, {"loop", "loop1", "loop2"},
+                                         parsedKeyword, loopGroupOperands))
+      return failure();
+    if (parsedKeyword.empty())
+      break;
+    loopCountOperands.push_back(loopGroupOperands[0]);
+    loopSrcStrideOperands.push_back(loopGroupOperands[1]);
+    loopDstStrideOperands.push_back(loopGroupOperands[2]);
+  }
+
+  if (parser.parseOptionalAttrDict(result.attributes) || parser.parseColon())
+    return failure();
+
+  Type sourceType, destinationType;
+  SmallVector<Type> fixedTypes;
+  SmallVector<Type> nburstTypes, loopCountTypes, loopSrcStrideTypes,
+      loopDstStrideTypes;
+  if (parser.parseType(sourceType) || parser.parseComma() ||
+      parser.parseType(destinationType) || parser.parseComma())
+    return failure();
+  appendFixedTypes(fixedTypes);
+  for (Type &t : fixedTypes)
+    if (parser.parseType(t) || parser.parseComma())
+      return failure();
+  if (parseDmaTripleTypes(parser, nburstTypes))
+    return failure();
+  while (succeeded(parser.parseOptionalComma())) {
+    StringRef keyword;
+    if (parser.parseKeyword(&keyword))
+      return failure();
+    if (!isDmaLoopKeyword(keyword))
+      return parser.emitError(parser.getCurrentLocation(), "expected 'loop'");
+    SmallVector<Type> loopGroupTypes;
+    if (parseDmaTripleTypes(parser, loopGroupTypes))
+      return failure();
+    loopCountTypes.push_back(loopGroupTypes[0]);
+    loopSrcStrideTypes.push_back(loopGroupTypes[1]);
+    loopDstStrideTypes.push_back(loopGroupTypes[2]);
+  }
+
+  int32_t loopGroupCount = static_cast<int32_t>(loopCountOperands.size());
+  if (loopCountOperands.size() != loopSrcStrideOperands.size() ||
+      loopCountOperands.size() != loopDstStrideOperands.size() ||
+      loopCountTypes.size() != loopSrcStrideTypes.size() ||
+      loopCountTypes.size() != loopDstStrideTypes.size())
+    return parser.emitError(
+        parser.getCurrentLocation(),
+        "requires each loop group to provide count, src stride, and dst stride");
+  if (loopCountOperands.size() != loopCountTypes.size())
+    return parser.emitError(parser.getCurrentLocation(),
+                            "requires loop operand and type groups to match");
+
+  if (parser.resolveOperand(source, sourceType, result.operands) ||
+      parser.resolveOperand(destination, destinationType, result.operands) ||
+      parser.resolveOperands(fixedOperands, fixedTypes, parser.getCurrentLocation(),
+                             result.operands) ||
+      parser.resolveOperands(nburstOperands, nburstTypes,
+                             parser.getCurrentLocation(), result.operands) ||
+      parser.resolveOperands(loopCountOperands, loopCountTypes,
+                             parser.getCurrentLocation(), result.operands) ||
+      parser.resolveOperands(loopSrcStrideOperands, loopSrcStrideTypes,
+                             parser.getCurrentLocation(), result.operands) ||
+      parser.resolveOperands(loopDstStrideOperands, loopDstStrideTypes,
+                             parser.getCurrentLocation(), result.operands))
+    return failure();
+
+  setSegments(result, loopGroupCount);
+  return success();
+}
+
+ParseResult CubeLoadNd2NzOp::parse(OpAsmParser &parser, OperationState &result) {
+  return parseCubeLoadMultiLike(
+      parser, result,
+      [&](SmallVector<Type> &fixedTypes) {
+        fixedTypes.resize(9);
+      },
+      [&](SmallVector<OpAsmParser::UnresolvedOperand> &fixedOperands) {
+        fixedOperands.resize(9);
+      },
+      [&](OperationState &state, int32_t loopGroupCount) {
+        auto &segments =
+            state.getOrAddProperties<CubeLoadNd2NzOp::Properties>()
+                .operandSegmentSizes;
+        llvm::copy(ArrayRef<int32_t>{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+                                     loopGroupCount, loopGroupCount,
+                                     loopGroupCount},
+                   segments.begin());
+      });
+}
+
+void CubeLoadNd2NzOp::print(OpAsmPrinter &printer) {
+  printer << " " << getSource() << ", " << getDestination() << ", " << getSid()
+          << ", " << getLoop1SrcStride() << ", " << getL2CacheCtrl() << ", "
+          << getNValue() << ", " << getDValue() << ", " << getLoop4SrcStride()
+          << ", " << getSmallc0En() << ", " << getMte2NzPara() << ", "
+          << getPadValue();
+  printDmaTripleGroup(printer, "nburst", getNBurst(), getNburstSrcStride(),
+                      getNburstDstStride());
+  for (auto [count, srcStride, dstStride] :
+       llvm::zip(getLoopCounts(), getLoopSrcStrides(), getLoopDstStrides()))
+    printDmaTripleGroup(printer, "loop", count, srcStride, dstStride);
+  printer.printOptionalAttrDict((*this)->getAttrs());
+  printer << " : " << getSource().getType() << ", " << getDestination().getType()
+          << ", " << getSid().getType() << ", " << getLoop1SrcStride().getType()
+          << ", " << getL2CacheCtrl().getType() << ", " << getNValue().getType()
+          << ", " << getDValue().getType() << ", " << getLoop4SrcStride().getType()
+          << ", " << getSmallc0En().getType() << ", "
+          << getMte2NzPara().getType() << ", " << getPadValue().getType() << ", "
+          << getNBurst().getType() << ", " << getNburstSrcStride().getType()
+          << ", " << getNburstDstStride().getType();
+  for (auto [count, srcStride, dstStride] :
+       llvm::zip(getLoopCounts(), getLoopSrcStrides(), getLoopDstStrides()))
+    printDmaTripleTypes(printer, "loop", count.getType(), srcStride.getType(),
+                        dstStride.getType());
+}
+
+LogicalResult CubeLoadNd2NzOp::verify() {
+  return verifyDmaLoadStoreLoopGroups(
+      getOperation(), getLoopCounts(), getLoopSrcStrides(),
+      getLoopDstStrides());
+}
+
+ParseResult CubeLoadDn2NzOp::parse(OpAsmParser &parser, OperationState &result) {
+  return parseCubeLoadMultiLike(
+      parser, result,
+      [&](SmallVector<Type> &fixedTypes) {
+        fixedTypes.resize(9);
+      },
+      [&](SmallVector<OpAsmParser::UnresolvedOperand> &fixedOperands) {
+        fixedOperands.resize(9);
+      },
+      [&](OperationState &state, int32_t loopGroupCount) {
+        auto &segments =
+            state.getOrAddProperties<CubeLoadDn2NzOp::Properties>()
+                .operandSegmentSizes;
+        llvm::copy(ArrayRef<int32_t>{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+                                     loopGroupCount, loopGroupCount,
+                                     loopGroupCount},
+                   segments.begin());
+      });
+}
+
+void CubeLoadDn2NzOp::print(OpAsmPrinter &printer) {
+  printer << " " << getSource() << ", " << getDestination() << ", " << getSid()
+          << ", " << getLoop1SrcStride() << ", " << getL2CacheCtrl() << ", "
+          << getNValue() << ", " << getDValue() << ", " << getLoop4SrcStride()
+          << ", " << getSmallc0En() << ", " << getMte2NzPara() << ", "
+          << getPadValue();
+  printDmaTripleGroup(printer, "nburst", getNBurst(), getNburstSrcStride(),
+                      getNburstDstStride());
+  for (auto [count, srcStride, dstStride] :
+       llvm::zip(getLoopCounts(), getLoopSrcStrides(), getLoopDstStrides()))
+    printDmaTripleGroup(printer, "loop", count, srcStride, dstStride);
+  printer.printOptionalAttrDict((*this)->getAttrs());
+  printer << " : " << getSource().getType() << ", " << getDestination().getType()
+          << ", " << getSid().getType() << ", " << getLoop1SrcStride().getType()
+          << ", " << getL2CacheCtrl().getType() << ", " << getNValue().getType()
+          << ", " << getDValue().getType() << ", " << getLoop4SrcStride().getType()
+          << ", " << getSmallc0En().getType() << ", "
+          << getMte2NzPara().getType() << ", " << getPadValue().getType() << ", "
+          << getNBurst().getType() << ", " << getNburstSrcStride().getType()
+          << ", " << getNburstDstStride().getType();
+  for (auto [count, srcStride, dstStride] :
+       llvm::zip(getLoopCounts(), getLoopSrcStrides(), getLoopDstStrides()))
+    printDmaTripleTypes(printer, "loop", count.getType(), srcStride.getType(),
+                        dstStride.getType());
+}
+
+LogicalResult CubeLoadDn2NzOp::verify() {
+  return verifyDmaLoadStoreLoopGroups(
+      getOperation(), getLoopCounts(), getLoopSrcStrides(),
+      getLoopDstStrides());
+}
+
+void CubeLoadOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getSourceMutable());
+  effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
+}
+
+void CubeLoadNd2NzOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getSourceMutable());
+  effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
+}
+
+void CubeLoadDn2NzOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getSourceMutable());
+  effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
+}
+
+void LeftLoadOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getSourceMutable());
+  effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
+}
+
+void RightLoadOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getSourceMutable());
+  effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
+}
+
+void CubeStoreOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getSourceMutable());
+  effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
+}
+
+void AccStoreOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getSourceMutable());
+  effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
+}
+
+void CubeStoreCbufOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getSourceMutable());
+  effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
+}
+
+void CubeStoreUbOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getSourceMutable());
+  effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
+}
+
+void CubeStoreBtOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getSourceMutable());
+  effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
+}
+
+void CubeStoreFbufOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getSourceMutable());
+  effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
+}

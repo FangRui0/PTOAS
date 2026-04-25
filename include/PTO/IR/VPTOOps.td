@@ -1615,6 +1615,296 @@ def PTO_DmaStoreOp : PTO_Op<"dma_store", [
   ];
 }
 
+// Cube bridge wrappers: fuse common register config sequences with the core
+// cube transfer/load/store ops, similar to dma_load/dma_store wrappers.
+def PTO_CubeLoadOp : PTO_Op<"cube_load", [
+    AttrSizedOperandSegments,
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I64:$len_burst,
+    I64:$n_burst,
+    I64:$nburst_src_stride,
+    I64:$nburst_dst_stride,
+    Variadic<I64>:$loop_counts,
+    Variadic<I64>:$loop_src_strides,
+    Variadic<I64>:$loop_dst_strides
+  );
+
+  let results = (outs);
+  let hasVerifier = 1;
+  let hasCustomAssemblyFormat = 1;
+
+  let builders = [
+    OpBuilder<(ins
+      "::mlir::Value":$source,
+      "::mlir::Value":$destination,
+      "::mlir::Value":$lenBurst,
+      "::mlir::pto::DmaLoopConfig":$nburst,
+      "::llvm::ArrayRef<::mlir::pto::DmaLoopConfig>":$loops
+    )>,
+    OpBuilder<(ins
+      "::mlir::Value":$source,
+      "::mlir::Value":$destination,
+      "::mlir::Value":$lenBurst,
+      "::mlir::pto::DmaLoopConfig":$nburst,
+      "::std::optional<::mlir::pto::DmaLoopConfig>":$loop1,
+      "::std::optional<::mlir::pto::DmaLoopConfig>":$loop2
+    )>
+  ];
+}
+
+def PTO_CubeLoadNd2NzOp : PTO_Op<"cube_load_nd2nz", [
+    AttrSizedOperandSegments,
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I64:$sid,
+    I64:$loop1_src_stride,
+    I64:$l2_cache_ctrl,
+    I64:$n_value,
+    I64:$d_value,
+    I64:$loop4_src_stride,
+    I1:$smallc0_en,
+    I64:$mte2_nz_para,
+    I64:$pad_value,
+    I64:$n_burst,
+    I64:$nburst_src_stride,
+    I64:$nburst_dst_stride,
+    Variadic<I64>:$loop_counts,
+    Variadic<I64>:$loop_src_strides,
+    Variadic<I64>:$loop_dst_strides
+  );
+
+  let results = (outs);
+  let hasVerifier = 1;
+  let hasCustomAssemblyFormat = 1;
+}
+
+def PTO_CubeLoadDn2NzOp : PTO_Op<"cube_load_dn2nz", [
+    AttrSizedOperandSegments,
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I64:$sid,
+    I64:$loop1_src_stride,
+    I64:$l2_cache_ctrl,
+    I64:$n_value,
+    I64:$d_value,
+    I64:$loop4_src_stride,
+    I1:$smallc0_en,
+    I64:$mte2_nz_para,
+    I64:$pad_value,
+    I64:$n_burst,
+    I64:$nburst_src_stride,
+    I64:$nburst_dst_stride,
+    Variadic<I64>:$loop_counts,
+    Variadic<I64>:$loop_src_strides,
+    Variadic<I64>:$loop_dst_strides
+  );
+
+  let results = (outs);
+  let hasVerifier = 1;
+  let hasCustomAssemblyFormat = 1;
+}
+
+def PTO_LeftLoadOp : PTO_Op<"left_load", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I64:$m,
+    I64:$k,
+    I64:$loop3_para_a,
+    I64:$loop3_para_b,
+    I64:$channel_para_a,
+    I64:$channel_para_b
+  );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $source `,` $destination `,` $m `,` $k `,` $loop3_para_a `,`
+    $loop3_para_b `,` $channel_para_a `,` $channel_para_b
+    attr-dict `:` type($source) `,` type($destination) `,` type($m) `,`
+    type($k) `,` type($loop3_para_a) `,` type($loop3_para_b) `,`
+    type($channel_para_a) `,` type($channel_para_b)
+  }];
+}
+
+def PTO_RightLoadOp : PTO_Op<"right_load", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I64:$k,
+    I64:$n,
+    I64:$loop3_para_a,
+    I64:$loop3_para_b,
+    I64:$channel_para_a,
+    I64:$channel_para_b
+  );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $source `,` $destination `,` $k `,` $n `,` $loop3_para_a `,`
+    $loop3_para_b `,` $channel_para_a `,` $channel_para_b
+    attr-dict `:` type($source) `,` type($destination) `,` type($k) `,`
+    type($n) `,` type($loop3_para_a) `,` type($loop3_para_b) `,`
+    type($channel_para_a) `,` type($channel_para_b)
+  }];
+}
+
+def PTO_CubeStoreOp : PTO_Op<"cube_store", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I64:$m,
+    I64:$n,
+    I64:$loop3_para_a,
+    I64:$loop3_para_b,
+    I64:$channel_para_a,
+    I64:$channel_para_b
+  );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $source `,` $destination `,` $m `,` $n `,` $loop3_para_a `,`
+    $loop3_para_b `,` $channel_para_a `,` $channel_para_b
+    attr-dict `:` type($source) `,` type($destination) `,` type($m) `,`
+    type($n) `,` type($loop3_para_a) `,` type($loop3_para_b) `,`
+    type($channel_para_a) `,` type($channel_para_b)
+  }];
+}
+
+def PTO_AccStoreOp : PTO_Op<"acc_store", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I64:$m,
+    I64:$n,
+    I64:$loop3_para_a,
+    I64:$loop3_para_b,
+    I64:$channel_para_a,
+    I64:$channel_para_b
+  );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $source `,` $destination `,` $m `,` $n `,` $loop3_para_a `,`
+    $loop3_para_b `,` $channel_para_a `,` $channel_para_b
+    attr-dict `:` type($source) `,` type($destination) `,` type($m) `,`
+    type($n) `,` type($loop3_para_a) `,` type($loop3_para_b) `,`
+    type($channel_para_a) `,` type($channel_para_b)
+  }];
+}
+
+def PTO_CubeStoreCbufOp : PTO_Op<"cube_store_cbuf", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I64:$config0,
+    I64:$config1,
+    I64:$loop3_para_a,
+    I64:$loop3_para_b,
+    I64:$channel_para_a,
+    I64:$channel_para_b
+  );
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $source `,` $destination `,` $config0 `,` $config1 `,` $loop3_para_a `,`
+    $loop3_para_b `,` $channel_para_a `,` $channel_para_b
+    attr-dict `:` type($source) `,` type($destination) `,` type($config0) `,`
+    type($config1) `,` type($loop3_para_a) `,` type($loop3_para_b) `,`
+    type($channel_para_a) `,` type($channel_para_b)
+  }];
+}
+
+def PTO_CubeStoreUbOp : PTO_Op<"cube_store_ub", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I64:$config0,
+    I64:$config1,
+    I64:$loop3_para_a,
+    I64:$loop3_para_b,
+    I64:$channel_para_a,
+    I64:$channel_para_b
+  );
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $source `,` $destination `,` $config0 `,` $config1 `,` $loop3_para_a `,`
+    $loop3_para_b `,` $channel_para_a `,` $channel_para_b
+    attr-dict `:` type($source) `,` type($destination) `,` type($config0) `,`
+    type($config1) `,` type($loop3_para_a) `,` type($loop3_para_b) `,`
+    type($channel_para_a) `,` type($channel_para_b)
+  }];
+}
+
+def PTO_CubeStoreBtOp : PTO_Op<"cube_store_bt", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I1:$conv_control,
+    I64:$n_burst,
+    I64:$len_burst,
+    I64:$source_gap,
+    I64:$dst_gap
+  );
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $source `,` $destination `,` $conv_control `,` $n_burst `,` $len_burst `,`
+    $source_gap `,` $dst_gap
+    attr-dict `:` type($source) `,` type($destination) `,` type($conv_control) `,`
+    type($n_burst) `,` type($len_burst) `,` type($source_gap) `,` type($dst_gap)
+  }];
+}
+
+def PTO_CubeStoreFbufOp : PTO_Op<"cube_store_fbuf", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I64:$n_burst,
+    I64:$len_burst,
+    I64:$source_gap,
+    I64:$dst_gap
+  );
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $source `,` $destination `,` $n_burst `,` $len_burst `,` $source_gap `,`
+    $dst_gap
+    attr-dict `:` type($source) `,` type($destination) `,` type($n_burst) `,`
+    type($len_burst) `,` type($source_gap) `,` type($dst_gap)
+  }];
+}
+
 // NOTE: Unvalidated new x2 / pair / align-store-family abstractions. Added to
 // reflect CCE builtin families but not yet end-to-end validated.
 def PTO_VselrOp : PTO_Op<"vselr", [Pure]> {

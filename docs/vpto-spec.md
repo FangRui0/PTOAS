@@ -898,7 +898,7 @@ This section provides a categorized overview of all PTO micro Instruction operat
 | 13 | [DSA/SFU Ops](isa/13-dsa-sfu-ops.md) | Specialized ops, index generation, and sorting helpers | 9 | `pto.vlrelu`, `pto.vprelu`, `pto.vexpdif`, `pto.vaxpy`, `pto.vmull`, `pto.vmula`, `pto.vci`, `pto.vbitsort`, `pto.vmrgsort4` |
 | 14 | [Arith (Shared MLIR Dialect)](isa/14-shared-arith.md) | Full scalar `arith` surface used around PTO ops; the companion page lists categories and representative examples | all scalar ops | `arith.constant`, `arith.addi`, `arith.addf`, `arith.cmpi`, `arith.cmpf`, `arith.select`, `arith.index_cast`, `arith.extsi`, `arith.trunci`, `arith.andi`, `arith.shli`, etc. |
 | 15 | [SCF (Shared MLIR Dialect)](isa/15-shared-scf.md) | Structured loops, branches, and loop-carried state around PTO regions | 5 | `scf.for`, `scf.if`, `scf.while`, `scf.condition`, `scf.yield` |
-| 16 | [Cube Matrix Multiply (MAT)](isa/16-cube-matmul.md) | GM↔L1 cube staging, L0A/L0B loads, L0C matmul, and L0C/L1 side-buffer moves | 10+ | `pto.copy_gm_to_cbuf`, `pto.copy_gm_to_cbuf_multi_nd2nz`, `pto.copy_gm_to_cbuf_multi_dn2nz`, `pto.load_cbuf_to_ca`, `pto.load_cbuf_to_cb`, `pto.mad`, `pto.copy_matrix_cc_to_gm`, `pto.copy_matrix_cc_to_cbuf`, `pto.copy_matrix_cc_to_ub`, `pto.copy_cbuf_to_bt`, `pto.copy_cbuf_to_fbuf` |
+| 16 | [Cube Matrix Multiply (MAT)](isa/16-cube-matmul.md) | GM↔L1 cube staging, L0A/L0B loads, L0C matmul, wrapper bridge load/store ops, and L0C/L1 side-buffer moves | 20+ | `pto.copy_gm_to_cbuf`, `pto.copy_gm_to_cbuf_multi_nd2nz`, `pto.copy_gm_to_cbuf_multi_dn2nz`, `pto.load_cbuf_to_ca`, `pto.load_cbuf_to_cb`, `pto.mad`, `pto.copy_matrix_cc_to_gm`, `pto.copy_matrix_cc_to_cbuf`, `pto.copy_matrix_cc_to_ub`, `pto.copy_cbuf_to_bt`, `pto.copy_cbuf_to_fbuf`, `pto.cube_load`, `pto.cube_load_nd2nz`, `pto.cube_load_dn2nz`, `pto.left_load`, `pto.right_load`, `pto.cube_store`, `pto.acc_store`, `pto.cube_store_cbuf`, `pto.cube_store_ub`, `pto.cube_store_bt`, `pto.cube_store_fbuf` |
 
 ---
 
@@ -912,9 +912,14 @@ This section provides a categorized overview of all PTO micro Instruction operat
 | UB→GM DMA | 2 | `pto.dma_store` |
 | GM→L1 (cube staging) | 16 | `pto.copy_gm_to_cbuf` |
 | GM→L1 (multi layout staging) | 16 | `pto.copy_gm_to_cbuf_multi_nd2nz`, `pto.copy_gm_to_cbuf_multi_dn2nz` |
+| GM→L1 (bridge wrapper) | 16 | `pto.cube_load`, `pto.cube_load_nd2nz`, `pto.cube_load_dn2nz` |
 | L1→L0A / L1→L0B | 16 | `pto.load_cbuf_to_ca`, `pto.load_cbuf_to_cb` |
+| L1→L0A / L1→L0B (bridge wrapper) | 16 | `pto.left_load`, `pto.right_load` |
 | L0C→GM (cube writeback) | 16 | `pto.copy_matrix_cc_to_gm` |
+| L0C→GM (bridge wrapper) | 16 | `pto.cube_store`, `pto.acc_store` |
+| L0C→L1 / L0C→UB (bridge wrapper) | 16 | `pto.cube_store_cbuf`, `pto.cube_store_ub` |
 | L0C→L1 / L0C→UB | 16 | `pto.copy_matrix_cc_to_cbuf`, `pto.copy_matrix_cc_to_ub` |
+| L1→BT / L1→FB (bridge wrapper) | 16 | `pto.cube_store_bt`, `pto.cube_store_fbuf` |
 | L1→BT / L1→FB | 16 | `pto.copy_cbuf_to_bt`, `pto.copy_cbuf_to_fbuf` |
 | Contiguous Load | 3 | `pto.vlds` with `NORM` dist |
 | Broadcast Load | 3 | `pto.vlds` with `BRC` family dist |
