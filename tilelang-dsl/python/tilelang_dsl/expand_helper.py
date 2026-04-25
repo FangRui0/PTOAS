@@ -87,10 +87,15 @@ def _find_descriptors(module) -> list[VKernelDescriptor]:
 
 def _import_py_file(path: Path):
     """Import a .py file as a module and return it."""
-    spec = importlib.util.spec_from_file_location(f"_tl_template_{path.stem}", str(path))
+    template_parent = path.parent.parent
+    if str(template_parent) not in sys.path:
+        sys.path.insert(0, str(template_parent))
+    module_name = f"_tl_template_{path.stem}"
+    spec = importlib.util.spec_from_file_location(module_name, str(path))
     if spec is None or spec.loader is None:
         return None
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = mod
     try:
         spec.loader.exec_module(mod)
     except Exception as exc:

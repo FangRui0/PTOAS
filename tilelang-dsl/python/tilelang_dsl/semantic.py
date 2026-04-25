@@ -777,10 +777,14 @@ class _SemanticAnalyzer:
         self._inline_proc_nodes: dict[str, FrontendInlineProcNode] = {
             inline_proc.name: inline_proc for inline_proc in node.inline_procs
         }
-        self._inline_proc_specializations: dict[tuple[str, tuple[SemanticType, ...]], SemanticKernel] = {}
-        self._inline_proc_return_types: dict[tuple[str, tuple[SemanticType, ...]], SemanticType | None] = {}
-        self._inline_proc_order: list[tuple[str, tuple[SemanticType, ...]]] = []
-        self._inline_proc_active_stack: list[tuple[str, tuple[SemanticType, ...]]] = []
+        self._inline_proc_specializations: dict[
+            tuple[str, tuple[tuple[SemanticType, object], ...]], SemanticKernel
+        ] = {}
+        self._inline_proc_return_types: dict[
+            tuple[str, tuple[tuple[SemanticType, object], ...]], SemanticType | None
+        ] = {}
+        self._inline_proc_order: list[tuple[str, tuple[tuple[SemanticType, object], ...]]] = []
+        self._inline_proc_active_stack: list[tuple[str, tuple[tuple[SemanticType, object], ...]]] = []
 
     def _expr_source_location(
         self,
@@ -1423,8 +1427,53 @@ class _SemanticAnalyzer:
         self,
         name: str,
         args: tuple[SemanticExpr, ...],
-    ) -> tuple[str, tuple[SemanticType, ...]]:
-        return (name, tuple(arg.type for arg in args))
+    ) -> tuple[str, tuple[tuple[SemanticType, object], ...]]:
+        return (
+            name,
+            tuple(
+                (arg.type, self._inline_proc_static_specialization_token(arg))
+                for arg in args
+            ),
+        )
+
+    def _inline_proc_static_specialization_token(
+        self,
+        expr: SemanticExpr,
+    ) -> object:
+        if isinstance(expr, SemanticLiteralExpr) and expr.value is None:
+            return ("none",)
+
+        if isinstance(expr.type, SemanticMetaType) and expr.type.kind in {
+            "dtype",
+            "ptr_type",
+            "mask_type",
+        }:
+            value = self._try_static_value(expr)
+            if value is not None:
+                return ("meta", expr.type.kind, value)
+
+        value = self._try_static_value(expr)
+        if isinstance(value, bool):
+            return ("bool", value)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return ("int", value)
+        if value is None:
+            return ("dynamic",)
+        return ("dynamic",)
+
+    def _inline_proc_bound_static_value(
+        self,
+        expr: SemanticExpr,
+    ) -> Any | None:
+        token = self._inline_proc_static_specialization_token(expr)
+        kind = token[0]
+        if kind == "meta":
+            return token[2]
+        if kind in {"bool", "int"}:
+            return token[1]
+        if kind == "none":
+            return None
+        return None
 
     def _inline_proc_symbol_name(
         self,
@@ -1486,6 +1535,7 @@ class _SemanticAnalyzer:
                 ssa_name=f"%arg{index}",
                 type=arg_expr.type,
                 origin="inline_param",
+                value=self._inline_proc_bound_static_value(arg_expr),
             )
             helper_env[param.name] = binding
             helper_parameters.append(SemanticParameter(binding=binding))

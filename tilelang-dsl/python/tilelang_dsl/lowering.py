@@ -230,8 +230,13 @@ class _AuthoringRenderer:
         parameter_list = ", ".join(
             f"{param.ssa_name}: {self._render_type(param.type)}"
             for param in self.kernel.parameters
-            if param.kind != "tile_valid_shape"
+            if param.kind != "tile_valid_shape" and self._should_materialize_function_boundary_type(param.type)
         )
+        result_sig = ""
+        if self.kernel.body and isinstance(self.kernel.body[-1], SemanticReturnStmt):
+            return_value = self.kernel.body[-1].value
+            if return_value is not None:
+                result_sig = f" -> {self._render_type(return_value.type)}"
         env = {
             param.name: _RenderedValue(name=param.ssa_name, type=param.type)
             for param in self.kernel.parameters
@@ -268,7 +273,7 @@ class _AuthoringRenderer:
         lines.append(f'module attributes {{pto.target_arch = "{self.kernel.target}"}} {{')
         lines.append(
             "  func.func "
-            f"{_format_symbol_name(self.kernel.symbol_name)}({parameter_list}) "
+            f"{_format_symbol_name(self.kernel.symbol_name)}({parameter_list}){result_sig} "
             "attributes { pto.tilelang.instance } {"
         )
         lines.extend(self._constant_lines)
@@ -278,6 +283,9 @@ class _AuthoringRenderer:
         lines.append("}")
         lines.append("")
         return "\n".join(lines)
+
+    def _should_materialize_function_boundary_type(self, ty: SemanticType) -> bool:
+        return not isinstance(ty, (SemanticMetaType, SemanticPadValueType))
 
     def _collect_used_tile_buffers(
         self,
@@ -2582,6 +2590,7 @@ class _AuthoringRenderer:
             rendered_args = [
                 self._lower_expr(arg, env, indent=indent, into=into)
                 for arg in expr.args
+                if self._should_materialize_function_boundary_type(arg.type)
             ]
             rendered_arg_names = ", ".join(arg.name for arg in rendered_args)
             rendered_arg_types = ", ".join(self._render_type(arg.type) for arg in rendered_args)

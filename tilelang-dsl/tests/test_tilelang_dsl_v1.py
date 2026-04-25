@@ -7034,6 +7034,53 @@ class TileLangDSLInlineProcTests(unittest.TestCase):
         self.assertRegex(text, r"= func\.call @__tl_inline_")
         self.assertIn("pto.vsts", text)
 
+    def test_inline_proc_and_pto_surface_can_share_basename(self) -> None:
+        @pto.inline_proc
+        def vdiv(src: pto.Tile, lane: pto.i32 = 0):
+            return pto.vlds(src, lane)
+
+        @pto.vkernel(op="inline_proc_same_basename_as_pto_surface_unique",
+                     dtypes=[(pto.f32, pto.f32)])
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+            helper_vec = vdiv(src, 0)
+            raw_vec = pto.vdiv(helper_vec, helper_vec, mask)
+            pto.vsts(raw_vec, dst, 0, mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+        )
+
+        frontend_kernel = build_frontend_kernel_node(specialized)
+        self.assertGreaterEqual(len(frontend_kernel.inline_procs), 1)
+        self.assertIn("vdiv", {proc.name for proc in frontend_kernel.inline_procs})
+        call_values = [
+            stmt.value
+            for stmt in frontend_kernel.body
+            if isinstance(stmt, FrontendAssignStmt)
+            and isinstance(stmt.value, FrontendCallExpr)
+        ]
+        helper_call = next(
+            value for value in call_values if value.namespace is None and value.name == "vdiv"
+        )
+        raw_call = next(
+            value for value in call_values if value.namespace == "pto" and value.name == "vdiv"
+        )
+        self.assertEqual(len(helper_call.args), 2)
+        self.assertEqual(len(raw_call.args), 3)
+        self.assertIsInstance(raw_call, FrontendCallExpr)
+        self.assertIsNone(helper_call.namespace)
+        self.assertEqual(helper_call.name, "vdiv")
+        self.assertEqual(raw_call.namespace, "pto")
+        self.assertEqual(raw_call.name, "vdiv")
+
+        text = specialized.mlir_text()
+        self.assertIn("pto.tilelang.inline_proc", text)
+        self.assertRegex(text, r"func\.call @__tl_inline_vdiv_")
+        self.assertIn("= pto.vdiv ", text)
+
     def test_inline_proc_rejects_non_trailing_return(self) -> None:
         with self.assertRaises(pto.TileLangFrontendError) as ctx:
 
@@ -7243,6 +7290,80 @@ class TileLangDSLInlineProcTests(unittest.TestCase):
         self.assertGreaterEqual(text.count("pto.tilelang.inline_proc"), 2)
         self.assertRegex(text, r"= func\.call @__tl_inline_[A-Za-z0-9_]+\(.*\) : \([^\)]*\) -> index")
         self.assertRegex(text, r"func\.call @__tl_inline_[A-Za-z0-9_]+\(.*\) : \([^\)]*\) -> \(\)")
+
+    def test_inline_proc_supports_constexpr_dtype_dispatch(self) -> None:
+        @pto.inline_proc
+        def inline_pick_lane(dtype):
+            if pto.constexpr(dtype == pto.ui16):
+                lane = 1
+            elif pto.constexpr(dtype == pto.i16):
+                lane = 2
+            elif pto.constexpr(dtype == pto.ui32):
+                lane = 3
+            else:
+                lane = 4
+            return lane
+
+        @pto.vkernel(op="inline_proc_constexpr_dtype_dispatch_unique", dtypes=[(pto.f32,)])
+        def kernel(dst: pto.Tile):
+            lane = inline_pick_lane(dst.element_type)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+        )
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+
+        assign_stmt = next(
+            stmt
+            for stmt in semantic_kernel.body
+            if isinstance(stmt, SemanticAssignStmt) and isinstance(stmt.value, SemanticCallExpr)
+        )
+        self.assertRegex(assign_stmt.value.name, r"^__tl_inline_")
+        self.assertEqual(len(semantic_kernel.inline_helpers), 1)
+        helper_assign = next(
+            stmt
+            for stmt in semantic_kernel.inline_helpers[0].body
+            if isinstance(stmt, SemanticAssignStmt)
+            and len(stmt.targets) == 1
+            and stmt.targets[0].name == "lane"
+        )
+        self.assertIsInstance(helper_assign.value, SemanticLiteralExpr)
+        self.assertEqual(helper_assign.value.value, 4)
+
+    def test_inline_proc_specializes_same_type_with_different_static_values(self) -> None:
+        @pto.inline_proc
+        def inline_scale(lane: pto.i32):
+            if pto.constexpr(lane == 1):
+                value = 2
+            else:
+                value = 4
+            return value
+
+        @pto.vkernel(op="inline_proc_static_value_specialization_unique", dtypes=[(pto.f32,)])
+        def kernel(dst: pto.Tile):
+            lane0 = inline_scale(1)
+            lane1 = inline_scale(2)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+        )
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+
+        self.assertEqual(len(semantic_kernel.inline_helpers), 2)
+        literal_values = []
+        for helper in semantic_kernel.inline_helpers:
+            helper_assign = next(
+                stmt
+                for stmt in helper.body
+                if isinstance(stmt, SemanticAssignStmt)
+                and len(stmt.targets) == 1
+                and stmt.targets[0].name == "value"
+            )
+            self.assertIsInstance(helper_assign.value, SemanticLiteralExpr)
+            literal_values.append(helper_assign.value.value)
+        self.assertEqual(sorted(literal_values), [2, 4])
 
     def test_inline_proc_rejects_mutual_recursion(self) -> None:
         @pto.inline_proc

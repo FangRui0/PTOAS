@@ -100,6 +100,15 @@ def row_copy(dst: pto.Tile, src: pto.Tile, row: pto.i32):
 
 Important semantics:
 
+- `pto.<surface>(...)` and bare helper calls are different mechanisms.
+- Calls written as `pto.vadd(...)`, `pto.vdiv(...)`, `pto.vlds(...)`, etc. target
+  built-in TileLang/VPTO surfaces directly.
+- Calls written as bare Python names such as `store_row(...)` target a
+  user-defined `@pto.inline_proc` helper when the callee name resolves to a
+  registered top-level inline procedure in the current module.
+- `inline_proc` helpers do not live in the `pto` namespace; using the same
+  basename as a `pto.<surface>` op is allowed because the frontend distinguishes
+  `pto.xxx(...)` from bare `xxx(...)` calls.
 - Frontend preserves helper `func.func` and `func.call` in `mlir_text()` output.
 - VPTO backend mainline force-inlines helper calls before downstream lowering.
 - Helper definitions support default parameter values.

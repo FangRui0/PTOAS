@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import inspect
 import ast
+import sys
 import subprocess
 import tempfile
 import textwrap
@@ -140,7 +141,16 @@ def _inline_proc_registry_key(fn: Callable[..., Any]) -> tuple[str, str]:
 def _find_inline_proc(name: str, *, module_name: str | None) -> InlineProcDescriptor | None:
     if module_name is None:
         return None
-    return _INLINE_PROC_REGISTRY.get((module_name, name))
+    descriptor = _INLINE_PROC_REGISTRY.get((module_name, name))
+    if descriptor is not None:
+        return descriptor
+    module = sys.modules.get(module_name)
+    if module is None:
+        return None
+    value = getattr(module, name, None)
+    if isinstance(value, InlineProcDescriptor):
+        return value
+    return None
 
 
 def _validate_inline_proc_call_surface(
@@ -175,16 +185,24 @@ def _validate_inline_proc_call_surface(
 
 
 def _collect_inline_procs(module_name: str) -> tuple[tuple[str, InlineProcDescriptor], ...]:
-    return tuple(
-        sorted(
-            (
-                (symbol, descriptor)
-                for (registered_module, symbol), descriptor in _INLINE_PROC_REGISTRY.items()
-                if registered_module == module_name
-            ),
-            key=lambda item: item[0],
-        )
-    )
+    collected: dict[str, InlineProcDescriptor] = {
+        symbol: descriptor
+        for (registered_module, symbol), descriptor in _INLINE_PROC_REGISTRY.items()
+        if registered_module == module_name
+    }
+
+    module = sys.modules.get(module_name)
+    if module is not None:
+        for symbol, value in vars(module).items():
+            if not isinstance(value, InlineProcDescriptor):
+                continue
+            collected.setdefault(symbol, value)
+            origin_module = value.py_fn.__module__
+            for (registered_module, helper_name), helper in _INLINE_PROC_REGISTRY.items():
+                if registered_module == origin_module:
+                    collected.setdefault(helper_name, helper)
+
+    return tuple(sorted(collected.items(), key=lambda item: item[0]))
 
 
 def _register_inline_proc(descriptor: InlineProcDescriptor) -> InlineProcDescriptor:
