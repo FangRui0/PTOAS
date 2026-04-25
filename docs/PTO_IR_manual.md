@@ -7901,6 +7901,10 @@ generated IR. The detailed design document is:
   `pto.aic_initialize_pipe` / `pto.aiv_initialize_pipe` with the matching
   `pto.tpush_*` / `pto.tpop_*` / `pto.tfree_*` ops in the same function.
 - `slot_size` is expressed in bytes and uses the pre-split logical tile size.
+- `local_slot_num` is an optional compile-time integer attribute on
+  `pto.aic_initialize_pipe` / `pto.aiv_initialize_pipe`.
+  On A2/A3 it overrides the default consumer-side local FIFO slot count used
+  when lowering to `pto.initialize_l2g2l_pipe`.
 - `nosplit` is an optional compile-time boolean attribute on
   `pto.aic_initialize_pipe` / `pto.aiv_initialize_pipe`.
 - `split` is a compile-time attribute, not a runtime SSA operand.
@@ -8026,7 +8030,7 @@ function's reserved buffer declaration.
 
 ```mlir
 // A2/A3 (with GM slot buffer):
-pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
+pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, local_slot_num = 1}
   (gm_slot_buffer = %gm_buf : !pto.ptr<f32>,
    c2v_consumer_buf = %c2v_import : i32,
    v2c_consumer_buf = %c0_i32 : i32)
@@ -8043,6 +8047,8 @@ pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
   the same function
 - `dir_mask`: communication direction encoding
 - `slot_size`: logical slot size in bytes
+- `local_slot_num`: optional A2/A3-only local FIFO slot count override for the
+  lowered `pto.initialize_l2g2l_pipe`
 - `nosplit`: optional compile-time boolean controlling no-split pipe mode
 - `gm_slot_buffer`: optional GM pointer (`!pto.ptr<T>`), required on A2/A3, omitted on A5
 - `c2v_consumer_buf`: C2V consumer local base address
@@ -8055,6 +8061,9 @@ pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
 - Must appear in Cube kernels
 - Multiple `pto.aic_initialize_pipe` ops are allowed in one Cube function, but
   `id` must be unique among frontend initialize ops in that function
+- If `local_slot_num` is present, it must be greater than `0` and no greater
+  than the legacy slot count implied by `dir_mask`
+  (`8` for `dir_mask = 1/2`, `4` for `dir_mask = 3`)
 - The lowered pipes for one function must fit within 16 hardware flag ids in
   total
 - If `nosplit = true`, all frontend data-transfer ops bound to the same logical
@@ -8070,7 +8079,7 @@ pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
 
 ```mlir
 // A2/A3 (with GM slot buffer):
-pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
+pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, local_slot_num = 1}
   (gm_slot_buffer = %gm_buf : !pto.ptr<f32>,
    c2v_consumer_buf = %c2v_local : i32,
    v2c_consumer_buf = %c0_i32 : i32)

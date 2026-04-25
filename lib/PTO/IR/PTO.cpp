@@ -10171,6 +10171,158 @@ static LogicalResult verifyFrontendKernelKind(Operation *op,
   return success();
 }
 
+static ParseResult parseFrontendInitializePipeOp(OpAsmParser &parser,
+                                                 OperationState &result) {
+  NamedAttrList attrs;
+  bool sawId = false;
+  bool sawDirMask = false;
+  bool sawSlotSize = false;
+  bool sawLocalSlotNum = false;
+  bool sawNoSplit = false;
+
+  if (parser.parseLBrace())
+    return failure();
+
+  while (failed(parser.parseOptionalRBrace())) {
+    StringRef keyword;
+    if (parser.parseKeyword(&keyword) || parser.parseEqual())
+      return failure();
+
+    if (keyword == "id") {
+      if (sawId)
+        return parser.emitError(parser.getCurrentLocation(),
+                                "duplicate 'id' clause");
+      IntegerAttr idAttr;
+      if (parser.parseAttribute(idAttr, parser.getBuilder().getI32Type(), "id",
+                                attrs))
+        return failure();
+      sawId = true;
+    } else if (keyword == "dir_mask") {
+      if (sawDirMask)
+        return parser.emitError(parser.getCurrentLocation(),
+                                "duplicate 'dir_mask' clause");
+      IntegerAttr dirMaskAttr;
+      if (parser.parseAttribute(dirMaskAttr, parser.getBuilder().getI8Type(),
+                                "dir_mask", attrs))
+        return failure();
+      sawDirMask = true;
+    } else if (keyword == "slot_size") {
+      if (sawSlotSize)
+        return parser.emitError(parser.getCurrentLocation(),
+                                "duplicate 'slot_size' clause");
+      IntegerAttr slotSizeAttr;
+      if (parser.parseAttribute(slotSizeAttr, parser.getBuilder().getI32Type(),
+                                "slot_size", attrs))
+        return failure();
+      sawSlotSize = true;
+    } else if (keyword == "local_slot_num") {
+      if (sawLocalSlotNum)
+        return parser.emitError(parser.getCurrentLocation(),
+                                "duplicate 'local_slot_num' clause");
+      IntegerAttr localSlotNumAttr;
+      if (parser.parseAttribute(localSlotNumAttr, parser.getBuilder().getI32Type(),
+                                "local_slot_num", attrs))
+        return failure();
+      sawLocalSlotNum = true;
+    } else if (keyword == "nosplit") {
+      if (sawNoSplit)
+        return parser.emitError(parser.getCurrentLocation(),
+                                "duplicate 'nosplit' clause");
+      BoolAttr noSplitAttr;
+      if (parser.parseAttribute(noSplitAttr, "nosplit", attrs))
+        return failure();
+      sawNoSplit = true;
+    } else {
+      return parser.emitError(parser.getCurrentLocation())
+             << "unexpected keyword '" << keyword << "'";
+    }
+
+    if (succeeded(parser.parseOptionalRBrace()))
+      break;
+    if (parser.parseComma())
+      return failure();
+  }
+
+  if (!sawDirMask)
+    return parser.emitError(parser.getNameLoc(), "expected 'dir_mask' clause");
+  if (!sawSlotSize)
+    return parser.emitError(parser.getNameLoc(), "expected 'slot_size' clause");
+  if (!sawId)
+    attrs.set("id", parser.getBuilder().getI32IntegerAttr(0));
+
+  OpAsmParser::UnresolvedOperand gmSlotBuffer;
+  OpAsmParser::UnresolvedOperand c2vConsumerBuf;
+  OpAsmParser::UnresolvedOperand v2cConsumerBuf;
+  Type gmSlotBufferTy;
+  Type c2vConsumerBufTy;
+  Type v2cConsumerBufTy;
+  bool hasGmSlotBuffer = false;
+
+  if (parser.parseLParen())
+    return failure();
+  if (succeeded(parser.parseOptionalKeyword("gm_slot_buffer"))) {
+    if (parser.parseEqual() || parser.parseOperand(gmSlotBuffer) ||
+        parser.parseColonType(gmSlotBufferTy) || parser.parseComma())
+      return failure();
+    hasGmSlotBuffer = true;
+  }
+  if (parser.parseKeyword("c2v_consumer_buf") || parser.parseEqual() ||
+      parser.parseOperand(c2vConsumerBuf) ||
+      parser.parseColonType(c2vConsumerBufTy) || parser.parseComma() ||
+      parser.parseKeyword("v2c_consumer_buf") || parser.parseEqual() ||
+      parser.parseOperand(v2cConsumerBuf) ||
+      parser.parseColonType(v2cConsumerBufTy) || parser.parseRParen())
+    return failure();
+
+  if (parser.parseOptionalAttrDict(attrs))
+    return failure();
+
+  result.addAttributes(attrs);
+  if (hasGmSlotBuffer &&
+      parser.resolveOperand(gmSlotBuffer, gmSlotBufferTy, result.operands))
+    return failure();
+  if (parser.resolveOperand(c2vConsumerBuf, c2vConsumerBufTy, result.operands) ||
+      parser.resolveOperand(v2cConsumerBuf, v2cConsumerBufTy, result.operands))
+    return failure();
+  return success();
+}
+
+template <typename InitOpT>
+static void printFrontendInitializePipeOp(InitOpT op, OpAsmPrinter &p) {
+  p << " {";
+  bool needsComma = false;
+  auto printClause = [&](StringRef keyword, auto value) {
+    if (needsComma)
+      p << ", ";
+    p << keyword << " = " << value;
+    needsComma = true;
+  };
+
+  if (op.getId() != 0)
+    printClause("id", op.getId());
+  printClause("dir_mask", static_cast<int32_t>(op.getDirMask()));
+  printClause("slot_size", op.getSlotSize());
+  if (auto localSlotNumAttr = op.getLocalSlotNumAttr())
+    printClause("local_slot_num", localSlotNumAttr.getInt());
+  if (auto noSplitAttr = op.getNosplitAttr())
+    printClause("nosplit", noSplitAttr.getValue() ? "true" : "false");
+  p << "}";
+
+  p << "(";
+  if (op.getGmSlotBuffer()) {
+    p << "gm_slot_buffer = " << op.getGmSlotBuffer() << " : "
+      << op.getGmSlotBuffer().getType() << ", ";
+  }
+  p << "c2v_consumer_buf = " << op.getC2vConsumerBuf() << " : "
+    << op.getC2vConsumerBuf().getType() << ", ";
+  p << "v2c_consumer_buf = " << op.getV2cConsumerBuf() << " : "
+    << op.getV2cConsumerBuf().getType() << ")";
+  p.printOptionalAttrDict(
+      op->getAttrs(),
+      /*elidedAttrs=*/{"id", "dir_mask", "slot_size", "local_slot_num",
+                       "nosplit"});
+}
+
 template <typename InitOpT>
 static LogicalResult verifyFrontendInitCommon(InitOpT op,
                                               FunctionKernelKind expected,
@@ -10206,8 +10358,37 @@ static LogicalResult verifyFrontendInitCommon(InitOpT op,
     return op.emitOpError("expects 'dir_mask' to be 1, 2, or 3");
   if (op.getSlotSize() <= 0)
     return op.emitOpError("expects 'slot_size' to be greater than 0");
+  if (auto localSlotNumAttr = op.getLocalSlotNumAttr()) {
+    int32_t localSlotNum = localSlotNumAttr.getInt();
+    if (localSlotNum <= 0)
+      return op.emitOpError("expects 'local_slot_num' to be greater than 0");
+    int32_t loweredSlotNum = dirMask == 3 ? 4 : 8;
+    if (localSlotNum > loweredSlotNum) {
+      return op.emitOpError()
+             << "expects 'local_slot_num' to be less than or equal to "
+             << loweredSlotNum << " for dir_mask = " << static_cast<int>(dirMask);
+    }
+  }
 
   return success();
+}
+
+ParseResult AicInitializePipeOp::parse(OpAsmParser &parser,
+                                       OperationState &result) {
+  return parseFrontendInitializePipeOp(parser, result);
+}
+
+void AicInitializePipeOp::print(OpAsmPrinter &p) {
+  printFrontendInitializePipeOp(*this, p);
+}
+
+ParseResult AivInitializePipeOp::parse(OpAsmParser &parser,
+                                       OperationState &result) {
+  return parseFrontendInitializePipeOp(parser, result);
+}
+
+void AivInitializePipeOp::print(OpAsmPrinter &p) {
+  printFrontendInitializePipeOp(*this, p);
 }
 
 static ReserveBufferOp findReserveBufferByName(func::FuncOp funcOp,
