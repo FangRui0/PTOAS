@@ -34,6 +34,7 @@ module attributes {pto.target_arch = "a5"} {
 
     pto.vecscope {
       %full_mask = pto.pset_b8 "PAT_ALL" : !pto.mask<b8>
+      %cvt_mask = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
       scf.for %offset = %c0 to %c1024 step %c256 {
         %offset_p1 = arith.addi %offset, %c64 : index
         %offset_p2 = arith.addi %offset, %c128 : index
@@ -42,10 +43,10 @@ module attributes {pto.target_arch = "a5"} {
         %src_p1 = pto.vlds %ub_in[%offset_p1] : !pto.ptr<ui32, ub> -> !pto.vreg<64xui32>
         %src_p2 = pto.vlds %ub_in[%offset_p2] : !pto.ptr<ui32, ub> -> !pto.vreg<64xui32>
         %src_p3 = pto.vlds %ub_in[%offset_p3] : !pto.ptr<ui32, ub> -> !pto.vreg<64xui32>
-        %part_p0 = pto.vcvt %src_p0 {sat = "SAT", part = "P0"} : !pto.vreg<64xui32> -> !pto.vreg<256xui8>
-        %part_p1 = pto.vcvt %src_p1 {sat = "SAT", part = "P1"} : !pto.vreg<64xui32> -> !pto.vreg<256xui8>
-        %part_p2 = pto.vcvt %src_p2 {sat = "SAT", part = "P2"} : !pto.vreg<64xui32> -> !pto.vreg<256xui8>
-        %part_p3 = pto.vcvt %src_p3 {sat = "SAT", part = "P3"} : !pto.vreg<64xui32> -> !pto.vreg<256xui8>
+        %part_p0 = pto.vcvt %src_p0, %cvt_mask {sat = "SAT", part = "P0"} : !pto.vreg<64xui32>, !pto.mask<b32> -> !pto.vreg<256xui8>
+        %part_p1 = pto.vcvt %src_p1, %cvt_mask {sat = "SAT", part = "P1"} : !pto.vreg<64xui32>, !pto.mask<b32> -> !pto.vreg<256xui8>
+        %part_p2 = pto.vcvt %src_p2, %cvt_mask {sat = "SAT", part = "P2"} : !pto.vreg<64xui32>, !pto.mask<b32> -> !pto.vreg<256xui8>
+        %part_p3 = pto.vcvt %src_p3, %cvt_mask {sat = "SAT", part = "P3"} : !pto.vreg<64xui32>, !pto.mask<b32> -> !pto.vreg<256xui8>
         %merged01 = pto.vor %part_p0, %part_p1, %full_mask : !pto.vreg<256xui8>, !pto.vreg<256xui8>, !pto.mask<b8> -> !pto.vreg<256xui8>
         %merged23 = pto.vor %part_p2, %part_p3, %full_mask : !pto.vreg<256xui8>, !pto.vreg<256xui8>, !pto.mask<b8> -> !pto.vreg<256xui8>
         %merged = pto.vor %merged01, %merged23, %full_mask : !pto.vreg<256xui8>, !pto.vreg<256xui8>, !pto.mask<b8> -> !pto.vreg<256xui8>

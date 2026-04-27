@@ -28,11 +28,13 @@ module attributes {pto.target_arch = "a5"} {
     pto.vecscope {
       %_:1 = scf.for %offset = %c0 to %c1024 step %c128 iter_args(%remaining = %c1000_i32) -> (i32) {
         %mask, %next_remaining = pto.plt_b16 %remaining : i32 -> !pto.mask<b16>, i32
+        %lower_mask, %upper_remaining = pto.plt_b32 %remaining : i32 -> !pto.mask<b32>, i32
+        %upper_mask, %_next_b32 = pto.plt_b32 %upper_remaining : i32 -> !pto.mask<b32>, i32
         %upper_offset = arith.addi %offset, %c64 : index
         %lower = pto.vlds %ub_in[%offset] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
         %upper = pto.vlds %ub_in[%upper_offset] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
-        %even = pto.vcvt %lower {rnd = "R", sat = "SAT", part = "EVEN"} : !pto.vreg<64xf32> -> !pto.vreg<128xf16>
-        %odd = pto.vcvt %upper {rnd = "R", sat = "SAT", part = "ODD"} : !pto.vreg<64xf32> -> !pto.vreg<128xf16>
+        %even = pto.vcvt %lower, %lower_mask {rnd = "R", sat = "SAT", part = "EVEN"} : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<128xf16>
+        %odd = pto.vcvt %upper, %upper_mask {rnd = "R", sat = "SAT", part = "ODD"} : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<128xf16>
         %merged = pto.vor %even, %odd, %mask : !pto.vreg<128xf16>, !pto.vreg<128xf16>, !pto.mask<b16> -> !pto.vreg<128xf16>
         pto.vsts %merged, %ub_out[%offset], %mask : !pto.vreg<128xf16>, !pto.ptr<f16, ub>, !pto.mask<b16>
         scf.yield %next_remaining : i32

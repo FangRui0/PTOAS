@@ -13,11 +13,12 @@ module attributes {pto.target_arch = "a5"} {
     %c0 = arith.constant 0 : index
     pto.vecscope {
       %mask = pto.pset_b8 "PAT_ALL" : !pto.mask<b8>
+      %src_mask = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
       %src = pto.vbr %seed : ui32 -> !pto.vreg<64xui32>
-      %p0 = pto.vcvt %src {sat = "SAT", part = "P0"} : !pto.vreg<64xui32> -> !pto.vreg<256xui8>
-      %p1 = pto.vcvt %src {sat = "SAT", part = "P1"} : !pto.vreg<64xui32> -> !pto.vreg<256xui8>
-      %p2 = pto.vcvt %src {sat = "SAT", part = "P2"} : !pto.vreg<64xui32> -> !pto.vreg<256xui8>
-      %p3 = pto.vcvt %src {sat = "SAT", part = "P3"} : !pto.vreg<64xui32> -> !pto.vreg<256xui8>
+      %p0 = pto.vcvt %src, %src_mask {sat = "SAT", part = "P0"} : !pto.vreg<64xui32>, !pto.mask<b32> -> !pto.vreg<256xui8>
+      %p1 = pto.vcvt %src, %src_mask {sat = "SAT", part = "P1"} : !pto.vreg<64xui32>, !pto.mask<b32> -> !pto.vreg<256xui8>
+      %p2 = pto.vcvt %src, %src_mask {sat = "SAT", part = "P2"} : !pto.vreg<64xui32>, !pto.mask<b32> -> !pto.vreg<256xui8>
+      %p3 = pto.vcvt %src, %src_mask {sat = "SAT", part = "P3"} : !pto.vreg<64xui32>, !pto.mask<b32> -> !pto.vreg<256xui8>
       %m01 = pto.vor %p0, %p1, %mask : !pto.vreg<256xui8>, !pto.vreg<256xui8>, !pto.mask<b8> -> !pto.vreg<256xui8>
       %m23 = pto.vor %p2, %p3, %mask : !pto.vreg<256xui8>, !pto.vreg<256xui8>, !pto.mask<b8> -> !pto.vreg<256xui8>
       %out = pto.vor %m01, %m23, %mask : !pto.vreg<256xui8>, !pto.vreg<256xui8>, !pto.mask<b8> -> !pto.vreg<256xui8>
@@ -28,7 +29,8 @@ module attributes {pto.target_arch = "a5"} {
 }
 
 // CHECK-LABEL: define void @vcvt_u32_to_u8_packed_parts(
-// CHECK: call <256 x i8> @llvm.hivm.vcvtii.u322u8.x({{.*}} i32 0, i32 0)
-// CHECK: call <256 x i8> @llvm.hivm.vcvtii.u322u8.x({{.*}} i32 0, i32 1)
-// CHECK: call <256 x i8> @llvm.hivm.vcvtii.u322u8.x({{.*}} i32 0, i32 2)
-// CHECK: call <256 x i8> @llvm.hivm.vcvtii.u322u8.x({{.*}} i32 0, i32 3)
+// CHECK: [[SRC_MASK:%[0-9]+]] = call <256 x i1> @llvm.hivm.pset.b32(i32 0)
+// CHECK: call <256 x i8> @llvm.hivm.vcvtii.u322u8.x({{.*}}, <256 x i1> [[SRC_MASK]], i32 0, i32 0)
+// CHECK: call <256 x i8> @llvm.hivm.vcvtii.u322u8.x({{.*}}, <256 x i1> [[SRC_MASK]], i32 0, i32 1)
+// CHECK: call <256 x i8> @llvm.hivm.vcvtii.u322u8.x({{.*}}, <256 x i1> [[SRC_MASK]], i32 0, i32 2)
+// CHECK: call <256 x i8> @llvm.hivm.vcvtii.u322u8.x({{.*}}, <256 x i1> [[SRC_MASK]], i32 0, i32 3)

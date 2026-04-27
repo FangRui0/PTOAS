@@ -31,14 +31,14 @@ module attributes {pto.target_arch = "a5"} {
     %active_mask_16 = pto.pnot %zero_mask_15, %arg2 : !pto.mask<b16>, !pto.mask<b16> -> !pto.mask<b16>
     %zero_u16_17 = pto.vbr %zero_10 : ui16 -> !pto.vreg<128xui16>
     %vy_lower_u16_18, %vy_higher_u16_19 = pto.vintlv %arg1, %zero_u16_17 : !pto.vreg<128xui16>, !pto.vreg<128xui16> -> !pto.vreg<128xui16>, !pto.vreg<128xui16>
-    %vy_lower_u32_20 = pto.vcvt %vy_lower_u16_18 {part = "EVEN"} : !pto.vreg<128xui16> -> !pto.vreg<64xui32>
-    %vy_higher_u32_21 = pto.vcvt %vy_higher_u16_19 {part = "EVEN"} : !pto.vreg<128xui16> -> !pto.vreg<64xui32>
+    %vy_lower_u32_20 = pto.vcvt %vy_lower_u16_18, %active_mask_16 {part = "EVEN"} : !pto.vreg<128xui16>, !pto.mask<b16> -> !pto.vreg<64xui32>
+    %vy_higher_u32_21 = pto.vcvt %vy_higher_u16_19, %active_mask_16 {part = "EVEN"} : !pto.vreg<128xui16>, !pto.mask<b16> -> !pto.vreg<64xui32>
     %active_low_22 = pto.vcmps %vy_lower_u32_20, %c0_ui32, %full_mask_b32_14, "ne" : !pto.vreg<64xui32>, ui32, !pto.mask<b32> -> !pto.mask<b32>
     %active_high_23 = pto.vcmps %vy_higher_u32_21, %c0_ui32, %full_mask_b32_14, "ne" : !pto.vreg<64xui32>, ui32, !pto.mask<b32> -> !pto.mask<b32>
     %tmp_2 = pto.vbitcast %vy_lower_u32_20 : !pto.vreg<64xui32> -> !pto.vreg<64xi32>
-    %vy_lower_f32_24 = pto.vcvt %tmp_2 {rnd = "F"} : !pto.vreg<64xi32> -> !pto.vreg<64xf32>
+    %vy_lower_f32_24 = pto.vcvt %tmp_2, %active_low_22 {rnd = "F"} : !pto.vreg<64xi32>, !pto.mask<b32> -> !pto.vreg<64xf32>
     %tmp_3 = pto.vbitcast %vy_higher_u32_21 : !pto.vreg<64xui32> -> !pto.vreg<64xi32>
-    %vy_higher_f32_25 = pto.vcvt %tmp_3 {rnd = "F"} : !pto.vreg<64xi32> -> !pto.vreg<64xf32>
+    %vy_higher_f32_25 = pto.vcvt %tmp_3, %active_high_23 {rnd = "F"} : !pto.vreg<64xi32>, !pto.mask<b32> -> !pto.vreg<64xf32>
     %tmp_4 = pto.vbr %fp32_one_12 : f32 -> !pto.vreg<64xf32>
     %vy_rec_lower_26 = pto.vdiv %tmp_4, %vy_lower_f32_24, %active_low_22 : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
     %tmp_5 = pto.vbr %fp32_one_12 : f32 -> !pto.vreg<64xf32>
@@ -47,13 +47,13 @@ module attributes {pto.target_arch = "a5"} {
     %vy_scale_lower_28 = pto.vmul %vy_rec_lower_26, %tmp_6, %active_low_22 : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
     %tmp_7 = pto.vbr %c65536_0_f32 : f32 -> !pto.vreg<64xf32>
     %vy_scale_higher_29 = pto.vmul %vy_rec_higher_27, %tmp_7, %active_high_23 : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
-    %v_lower_i32_30 = pto.vcvt %vy_scale_lower_28 {rnd = "F", sat = "NOSAT"} : !pto.vreg<64xf32> -> !pto.vreg<64xi32>
-    %v_higher_i32_31 = pto.vcvt %vy_scale_higher_29 {rnd = "F", sat = "NOSAT"} : !pto.vreg<64xf32> -> !pto.vreg<64xi32>
+    %v_lower_i32_30 = pto.vcvt %vy_scale_lower_28, %active_low_22 {rnd = "F", sat = "NOSAT"} : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xi32>
+    %v_higher_i32_31 = pto.vcvt %vy_scale_higher_29, %active_high_23 {rnd = "F", sat = "NOSAT"} : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xi32>
     %v_lower_u32_32 = pto.vbitcast %v_lower_i32_30 : !pto.vreg<64xi32> -> !pto.vreg<64xui32>
     %v_higher_u32_33 = pto.vbitcast %v_higher_i32_31 : !pto.vreg<64xi32> -> !pto.vreg<64xui32>
     %vx_lower_u16_34, %vx_higher_u16_35 = pto.vintlv %arg0, %zero_u16_17 : !pto.vreg<128xui16>, !pto.vreg<128xui16> -> !pto.vreg<128xui16>, !pto.vreg<128xui16>
-    %vx_lower_u32_36 = pto.vcvt %vx_lower_u16_34 {part = "EVEN"} : !pto.vreg<128xui16> -> !pto.vreg<64xui32>
-    %vx_higher_u32_37 = pto.vcvt %vx_higher_u16_35 {part = "EVEN"} : !pto.vreg<128xui16> -> !pto.vreg<64xui32>
+    %vx_lower_u32_36 = pto.vcvt %vx_lower_u16_34, %active_mask_16 {part = "EVEN"} : !pto.vreg<128xui16>, !pto.mask<b16> -> !pto.vreg<64xui32>
+    %vx_higher_u32_37 = pto.vcvt %vx_higher_u16_35, %active_mask_16 {part = "EVEN"} : !pto.vreg<128xui16>, !pto.mask<b16> -> !pto.vreg<64xui32>
     %q_tmp_lower_38 = pto.vmul %v_lower_u32_32, %vx_lower_u32_36, %active_low_22 : !pto.vreg<64xui32>, !pto.vreg<64xui32>, !pto.mask<b32> -> !pto.vreg<64xui32>
     %q_tmp_higher_39 = pto.vmul %v_higher_u32_33, %vx_higher_u32_37, %active_high_23 : !pto.vreg<64xui32>, !pto.vreg<64xui32>, !pto.mask<b32> -> !pto.vreg<64xui32>
     %tmp_8 = pto.vbitcast %q_tmp_lower_38 : !pto.vreg<64xui32> -> !pto.vreg<128xui16>

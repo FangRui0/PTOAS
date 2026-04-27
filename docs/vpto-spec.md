@@ -877,7 +877,7 @@ pto.vstsx2 %low, %high, %dest[%offset], "DIST", %mask : !pto.vreg<NxT>, !pto.vre
 **Conversion (one vector in, different-typed vector out):**
 
 ```mlir
-%result = pto.vcvt %input {rnd = "R", sat = "SAT", part = "EVEN"} : !pto.vreg<NxT0> -> !pto.vreg<MxT1>
+%result = pto.vcvt %input, %mask {rnd = "R", sat = "SAT", part = "EVEN"} : !pto.vreg<NxT0>, !pto.mask<G> -> !pto.vreg<MxT1>
 ```
 
 **Predicate construction:**

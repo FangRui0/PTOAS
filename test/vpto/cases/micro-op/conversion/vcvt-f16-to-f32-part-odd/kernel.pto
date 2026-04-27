@@ -26,11 +26,12 @@ module attributes {pto.target_arch = "a5"} {
 
     pto.vecscope {
       %full_mask = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
+      %cvt_mask = pto.pset_b16 "PAT_ALL" : !pto.mask<b16>
       // Use packed f16 load (no UNPK): PART_ODD then selects the upper 16-bit
       // element from each f16 pair inside a b32 lane.
       scf.for %offset = %c0 to %c512 step %c64 {
         %loaded = pto.vlds %ub_in[%offset] : !pto.ptr<f16, ub> -> !pto.vreg<128xf16>
-        %out = pto.vcvt %loaded {part = "ODD"} : !pto.vreg<128xf16> -> !pto.vreg<64xf32>
+        %out = pto.vcvt %loaded, %cvt_mask {part = "ODD"} : !pto.vreg<128xf16>, !pto.mask<b16> -> !pto.vreg<64xf32>
         pto.vsts %out, %ub_out[%offset], %full_mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
       }
     }

@@ -5691,16 +5691,9 @@ public:
   LogicalResult
   matchAndRewrite(pto::VaxpyOp op, pto::VaxpyOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto laneCount = getElementCountFromVectorLike(op.getResult().getType());
     Type elemType = getElementTypeFromVectorLike(op.getResult().getType());
-    if (!laneCount || !elemType)
+    if (!elemType)
       return rewriter.notifyMatchFailure(op, "unsupported vaxpy signature");
-
-    FailureOr<Value> mask = materializeDynamicPltMask(
-        rewriter, state, op.getLoc(), getI32Constant(rewriter, op.getLoc(), *laneCount),
-        elemType);
-    if (failed(mask))
-      return rewriter.notifyMatchFailure(op, "failed to materialize vaxpy mask");
 
     Type resultType = this->getTypeConverter()->convertType(op.getResult().getType());
     if (!resultType)
@@ -5713,12 +5706,12 @@ public:
 
     auto funcType = rewriter.getFunctionType(
         TypeRange{adaptor.getSrc1().getType(), adaptor.getSrc0().getType(),
-                  adaptor.getAlpha().getType(), (*mask).getType()},
+                  adaptor.getAlpha().getType(), adaptor.getMask().getType()},
         TypeRange{resultType});
     auto call = rewriter.create<func::CallOp>(
         op.getLoc(), *calleeName, TypeRange{resultType},
         ValueRange{adaptor.getSrc1(), adaptor.getSrc0(), adaptor.getAlpha(),
-                   *mask});
+                   adaptor.getMask()});
     state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
     rewriter.replaceOp(op, call.getResults());
     return success();
@@ -5945,20 +5938,9 @@ public:
   LogicalResult
   matchAndRewrite(pto::VcvtOp op, pto::VcvtOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto inputLanes = getElementCountFromVectorLike(op.getInput().getType());
-    if (!inputLanes)
-      return rewriter.notifyMatchFailure(op, "unsupported vcvt input shape");
-
     FailureOr<VcvtContract> contract = buildVcvtContract(op);
     if (failed(contract))
       return rewriter.notifyMatchFailure(op, "unsupported vcvt type pair");
-
-    Type maskElemType = rewriter.getIntegerType((*contract).maskBitWidth);
-    FailureOr<Value> mask = materializeDynamicPltMask(
-        rewriter, state, op.getLoc(),
-        getI32Constant(rewriter, op.getLoc(), *inputLanes), maskElemType);
-    if (failed(mask))
-      return rewriter.notifyMatchFailure(op, "failed to materialize vcvt mask");
 
     Type resultType = this->getTypeConverter()->convertType(op.getResult().getType());
     if (!resultType)
@@ -5968,8 +5950,8 @@ public:
     SmallVector<Type> argTypes;
     callArgs.push_back(adaptor.getInput());
     argTypes.push_back(adaptor.getInput().getType());
-    callArgs.push_back(*mask);
-    argTypes.push_back((*mask).getType());
+    callArgs.push_back(adaptor.getMask());
+    argTypes.push_back(adaptor.getMask().getType());
 
     auto appendRndArg = [&]() -> LogicalResult {
       auto roundMode =

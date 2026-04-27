@@ -3600,7 +3600,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn('part = "ODD"', text)
         self.assertRegex(
             text,
-            r"= pto\.vcvt %[^,\s]+(?: \{[^}]+\})? : !pto\.vreg<[^>]+> -> !pto\.vreg<[^>]+>",
+            r"= pto\.vcvt %[^,\s]+, %[^,\s]+(?: \{[^}]+\})? : !pto\.vreg<[^>]+>, !pto\.mask<b32> -> !pto\.vreg<[^>]+>",
         )
 
     def test_vcvt_supports_part_t_modes_with_enum(self) -> None:

@@ -84,7 +84,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vaxpy`
 
-- **syntax:** `%result = pto.vaxpy %src0, %src1, %alpha : !pto.vreg<NxT>, !pto.vreg<NxT>, T -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vaxpy %src0, %src1, %alpha, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, T, !pto.mask<G> -> !pto.vreg<NxT>`
 - **A5 types:** f16, f32
 - **semantics:** AXPY — scalar-vector multiply-add.
 
@@ -93,8 +93,8 @@ for (int i = 0; i < N; i++)
     dst[i] = alpha * src0[i] + src1[i];
 ```
 
-- **inputs:** `%src0` is the scaled vector, `%src1` is the addend vector, and
-  `%alpha` is the scalar multiplier.
+- **inputs:** `%src0` is the scaled vector, `%src1` is the addend vector,
+  `%alpha` is the scalar multiplier, and `%mask` selects active lanes.
 - **outputs:** `%result` is the fused AXPY result.
 - **constraints and limitations:** Floating-point element types only on the
   current documented surface.

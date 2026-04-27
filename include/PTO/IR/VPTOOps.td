@@ -1330,6 +1330,7 @@ def PTO_VtrcOp : PTO_Op<"vtrc", [Pure]> {
 def PTO_VcvtOp : PTO_Op<"vcvt", [Pure]> {
   let arguments = (ins
     PTO_VectorType:$input,
+    PTO_MaskTypeConstraint:$mask,
     OptionalAttr<StrAttr>:$rnd,
     OptionalAttr<StrAttr>:$sat,
     OptionalAttr<StrAttr>:$part
@@ -1841,14 +1842,15 @@ def PTO_VaxpyOp : PTO_Op<"vaxpy", [Pure]> {
   let arguments = (ins
     PTO_VectorType:$src0,
     PTO_VectorType:$src1,
-    AnyType:$alpha
+    AnyType:$alpha,
+    PTO_MaskTypeConstraint:$mask
   );
   let results = (outs PTO_VectorType:$result);
 
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    $src0 `,` $src1 `,` $alpha attr-dict `:` type($src0) `,` type($src1) `,` type($alpha) `->` type($result)
+    $src0 `,` $src1 `,` $alpha `,` $mask attr-dict `:` type($src0) `,` type($src1) `,` type($alpha) `,` type($mask) `->` type($result)
   }];
 }
 

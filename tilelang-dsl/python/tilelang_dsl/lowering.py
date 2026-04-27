@@ -2960,6 +2960,7 @@ class _AuthoringRenderer:
 
         if expr.name == "vcvt":
             value = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+            mask = self._lower_expr(expr.args[2], env, indent=indent, into=into)
             attr_parts: list[str] = []
             if self._has_optional_string_literal(expr.args[3]):
                 attr_parts.append(f"rnd = {self._render_string_literal(expr.args[3])}")
@@ -2970,8 +2971,8 @@ class _AuthoringRenderer:
             attr_suffix = f" {{{', '.join(attr_parts)}}}" if attr_parts else ""
             into.append(
                 self._indent(indent)
-                + f"{result_name} = pto.vcvt {value.name}{attr_suffix} : "
-                + f"{self._render_type(value.type)} -> {self._render_type(expr.type)}"
+                + f"{result_name} = pto.vcvt {value.name}, {mask.name}{attr_suffix} : "
+                + f"{self._render_type(value.type)}, {self._render_type(mask.type)} -> {self._render_type(expr.type)}"
             )
             return _RenderedValue(name=result_name, type=expr.type)
 

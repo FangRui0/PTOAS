@@ -32,7 +32,7 @@ module attributes {pto.target_arch = "a5"} {
       %mask = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
       scf.for %offset = %c0 to %c1024 step %c64 {
         %loaded = pto.vlds %ub_in[%offset] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
-        %converted = pto.vcvt %loaded {rnd = "R", sat = "SAT", part = "EVEN"} : !pto.vreg<64xf32> -> !pto.vreg<128xf16>
+        %converted = pto.vcvt %loaded, %mask {rnd = "R", sat = "SAT", part = "EVEN"} : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<128xf16>
         pto.vsts %converted, %ub_out[%offset], %mask {dist = "PK_B32"} : !pto.vreg<128xf16>, !pto.ptr<f16, ub>, !pto.mask<b32>
       }
     }

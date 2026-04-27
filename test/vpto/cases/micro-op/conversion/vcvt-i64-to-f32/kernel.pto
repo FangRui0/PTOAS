@@ -39,7 +39,7 @@ module attributes {pto.target_arch = "a5"} {
       scf.for %store_offset = %c0 to %c512 step %c16 {
         %input_offset = arith.muli %store_offset, %c2 : index
         %loaded = pto.vlds %ub_in[%input_offset] : !pto.ptr<si64, ub> -> !pto.vreg<32xsi64>
-        %converted = pto.vcvt %loaded {rnd = "R", part = "EVEN"} : !pto.vreg<32xsi64> -> !pto.vreg<64xf32>
+        %converted = pto.vcvt %loaded, %mask {rnd = "R", part = "EVEN"} : !pto.vreg<32xsi64>, !pto.mask<b32> -> !pto.vreg<64xf32>
         pto.vsts %converted, %ub_out[%store_offset], %mask {dist = "PK_B64"} : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
       }
     }

@@ -24,9 +24,10 @@ module attributes {pto.target_arch = "a5"} {
 
     pto.vecscope {
       %full_mask = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
+      %cvt_mask = pto.pset_b16 "PAT_ALL" : !pto.mask<b16>
       scf.for %offset = %c0 to %c1024 step %c64 {
         %loaded = pto.vlds %ub_in[%offset] {dist = "UNPK_B16"} : !pto.ptr<f16, ub> -> !pto.vreg<128xf16>
-        %out = pto.vcvt %loaded {part = "EVEN"} : !pto.vreg<128xf16> -> !pto.vreg<64xf32>
+        %out = pto.vcvt %loaded, %cvt_mask {part = "EVEN"} : !pto.vreg<128xf16>, !pto.mask<b16> -> !pto.vreg<64xf32>
         pto.vsts %out, %ub_out[%offset], %full_mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
       }
     }

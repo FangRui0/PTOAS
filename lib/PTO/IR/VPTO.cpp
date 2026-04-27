@@ -32,6 +32,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <optional>
 
 using namespace mlir;
@@ -2868,11 +2869,14 @@ LogicalResult VtrcOp::verify() {
 
 ParseResult VcvtOp::parse(OpAsmParser &parser, OperationState &result) {
   OpAsmParser::UnresolvedOperand input;
+  OpAsmParser::UnresolvedOperand mask;
   NamedAttrList attrs;
-  Type inputType, resultType;
+  Type inputType, maskType, resultType;
 
-  if (parser.parseOperand(input) || parser.parseOptionalAttrDict(attrs) ||
-      parser.parseColonType(inputType) || parser.parseArrow() ||
+  if (parser.parseOperand(input) || parser.parseComma() ||
+      parser.parseOperand(mask) || parser.parseOptionalAttrDict(attrs) ||
+      parser.parseColonType(inputType) || parser.parseComma() ||
+      parser.parseType(maskType) || parser.parseArrow() ||
       parser.parseType(resultType))
     return failure();
 
@@ -2910,16 +2914,18 @@ ParseResult VcvtOp::parse(OpAsmParser &parser, OperationState &result) {
     return failure();
 
   result.addAttributes(attrs);
-  if (parser.resolveOperand(input, inputType, result.operands))
+  if (parser.resolveOperand(input, inputType, result.operands) ||
+      parser.resolveOperand(mask, maskType, result.operands))
     return failure();
   result.addTypes(resultType);
   return success();
 }
 
 void VcvtOp::print(OpAsmPrinter &printer) {
-  printer << ' ' << getInput();
+  printer << ' ' << getInput() << ", " << getMask();
   printer.printOptionalAttrDict((*this)->getAttrs());
-  printer << " : " << getInput().getType() << " -> " << getResult().getType();
+  printer << " : " << getInput().getType() << ", " << getMask().getType()
+          << " -> " << getResult().getType();
 }
 
 LogicalResult VcvtOp::verify() {
@@ -2927,6 +2933,8 @@ LogicalResult VcvtOp::verify() {
   auto resultType = dyn_cast<VRegType>(getResult().getType());
   if (!inputType || !resultType)
     return emitOpError("input and result must be !pto.vreg<...>");
+  if (failed(verifyMaskTypeLike(*this, getMask().getType(), "mask type")))
+    return failure();
 
   VcvtElemKind inputElemKind = classifyVcvtElemType(inputType.getElementType());
   VcvtElemKind resultElemKind = classifyVcvtElemType(resultType.getElementType());
@@ -2938,6 +2946,16 @@ LogicalResult VcvtOp::verify() {
   auto resultElemBits = getVcvtElemBitWidth(resultElemKind);
   if (!inputElemBits || !resultElemBits)
     return emitOpError("could not determine vcvt element bit width");
+  unsigned maskBitWidth = std::min(*inputElemBits, 32u);
+  StringRef expectedMaskGranularity = maskBitWidth == 8    ? "b8"
+                                      : maskBitWidth == 16 ? "b16"
+                                      : maskBitWidth == 32 ? "b32"
+                                                           : "";
+  if (expectedMaskGranularity.empty())
+    return emitOpError("could not determine vcvt mask granularity");
+  if (failed(verifyMaskTypeWithGranularityLike(
+          *this, getMask().getType(), "mask type", expectedMaskGranularity)))
+    return failure();
   if (inputType.getElementCount() * static_cast<int64_t>(*inputElemBits) !=
       resultType.getElementCount() * static_cast<int64_t>(*resultElemBits)) {
     return emitOpError("requires source and result vectors to carry the same "
@@ -3201,7 +3219,8 @@ LogicalResult VexpdifOp::verify() {
 LogicalResult VaxpyOp::verify() {
   if (failed(verifyVRegTypeLike(*this, getSrc0().getType(), "src0 type")) ||
       failed(verifyVRegTypeLike(*this, getSrc1().getType(), "src1 type")) ||
-      failed(verifyVRegTypeLike(*this, getResult().getType(), "result type")))
+      failed(verifyVRegTypeLike(*this, getResult().getType(), "result type")) ||
+      failed(verifyMaskTypeLike(*this, getMask().getType(), "mask type")))
     return failure();
   auto src0Type = cast<VRegType>(getSrc0().getType());
   auto src1Type = cast<VRegType>(getSrc1().getType());
@@ -3211,6 +3230,13 @@ LogicalResult VaxpyOp::verify() {
   Type elemType = src0Type.getElementType();
   if (!elemType.isF16() && !elemType.isF32())
     return emitOpError("requires f16 or f32 vector element type");
+  auto expectedGranularity = getVdupMaskGranularity(elemType);
+  if (!expectedGranularity)
+    return emitOpError("requires element type with supported predicate granularity");
+  if (failed(verifyMaskTypeWithGranularityLike(*this, getMask().getType(),
+                                               "mask type",
+                                               *expectedGranularity)))
+    return failure();
   if (getAlpha().getType() != elemType)
     return emitOpError("requires alpha type to match vector element type");
   return success();
