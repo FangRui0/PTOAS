@@ -221,14 +221,27 @@ def _load_module_from_path(module_name: str, path: Path) -> Any:
     return module
 
 
+def _find_internal_soft_math_path() -> Path | None:
+    module_path = Path(__file__).resolve()
+    candidate_suffixes = (
+        ("lib", "TileOps", "math.py"),
+        ("share", "ptoas", "TileOps", "math.py"),
+    )
+    for root in (module_path.parent, *module_path.parents):
+        for suffix in candidate_suffixes:
+            candidate = root.joinpath(*suffix)
+            if candidate.exists():
+                return candidate
+    return None
+
+
 def _collect_internal_inline_procs() -> tuple[tuple[str, InlineProcDescriptor], ...]:
     global _INTERNAL_INLINE_PROC_CACHE
     if _INTERNAL_INLINE_PROC_CACHE is not None:
         return _INTERNAL_INLINE_PROC_CACHE
 
-    repo_root = Path(__file__).resolve().parents[3]
-    soft_math_path = repo_root / "lib" / "TileOps" / "math.py"
-    if not soft_math_path.exists():
+    soft_math_path = _find_internal_soft_math_path()
+    if soft_math_path is None:
         _INTERNAL_INLINE_PROC_CACHE = ()
         return _INTERNAL_INLINE_PROC_CACHE
 
