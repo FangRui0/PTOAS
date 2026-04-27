@@ -130,6 +130,17 @@ endfunction()
 # --------------------------------------------------------------------------
 set(ALL_TESTCASES
     tadd
+    tsub
+    tmul
+    tdiv
+    tmax
+    tmin
+    tcmp
+    tshl
+    tshr
+    tand
+    tor
+    txor
     tcvt
     tload
     tlrelu
@@ -190,6 +201,8 @@ set(ALL_TESTCASES
     tshrs
     tsubs
     txors
+    tfmod
+    trem
 )
 
 if((TEST_CASE IN_LIST ALL_TESTCASES) OR (TEST_CASE STREQUAL "all"))

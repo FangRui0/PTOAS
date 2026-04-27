@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Huawei Technologies Co., Ltd.
 // This program is free software, you can redistribute it and/or modify it under the terms and conditions of
 // CANN Open Software License Agreement Version 2.0 (the "License").
-// Please refer to the License for details. You may not use this file except in compliance with the License.
+// Please refer to the License for details. You can not use this file except in compliance with the License.
 // THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
@@ -12,16 +12,58 @@
 #define AICORE [aicore]
 #endif
 
-// Case 0: f32 16x64
-extern "C" __global__ AICORE void TADD_f32_16x64(__gm__ float *a, __gm__ float *b, __gm__ float *c);
+// Case 0: f32 64x128_64x128_64x128_64x128
+extern "C" __global__ AICORE void TADD_f32_64x128_64x128_64x128_64x128(__gm__ float *a, __gm__ float *b, __gm__ float *c);
 
-void LaunchTADD_f32_16x64(float *a, float *b, float *c, void *stream) {
-    TADD_f32_16x64<<<1, nullptr, stream>>>((__gm__ float *)a, (__gm__ float *)b, (__gm__ float *)c);
+void LaunchTADD_f32_64x128_64x128_64x128_64x128(void *a, void *b, void *c, void *stream) {
+    TADD_f32_64x128_64x128_64x128_64x128<<<1, nullptr, stream>>>((__gm__ float *)a, (__gm__ float *)b, (__gm__ float *)c);
 }
 
-// Case 1: f32 32x32
-extern "C" __global__ AICORE void TADD_f32_32x32(__gm__ float *a, __gm__ float *b, __gm__ float *c);
+// Case 1: f32 16x64_16x64_16x64_16x64
+extern "C" __global__ AICORE void TADD_f32_16x64_16x64_16x64_16x64(__gm__ float *a, __gm__ float *b, __gm__ float *c);
 
-void LaunchTADD_f32_32x32(float *a, float *b, float *c, void *stream) {
-    TADD_f32_32x32<<<1, nullptr, stream>>>((__gm__ float *)a, (__gm__ float *)b, (__gm__ float *)c);
+void LaunchTADD_f32_16x64_16x64_16x64_16x64(void *a, void *b, void *c, void *stream) {
+    TADD_f32_16x64_16x64_16x64_16x64<<<1, nullptr, stream>>>((__gm__ float *)a, (__gm__ float *)b, (__gm__ float *)c);
+}
+
+// Case 2: f32 32x32_32x32_32x32_32x32
+extern "C" __global__ AICORE void TADD_f32_32x32_32x32_32x32_32x32(__gm__ float *a, __gm__ float *b, __gm__ float *c);
+
+void LaunchTADD_f32_32x32_32x32_32x32_32x32(void *a, void *b, void *c, void *stream) {
+    TADD_f32_32x32_32x32_32x32_32x32<<<1, nullptr, stream>>>((__gm__ float *)a, (__gm__ float *)b, (__gm__ float *)c);
+}
+
+// Case 3: f32 64x64_64x64_64x64_64x64
+extern "C" __global__ AICORE void TADD_f32_64x64_64x64_64x64_64x64(__gm__ float *a, __gm__ float *b, __gm__ float *c);
+
+void LaunchTADD_f32_64x64_64x64_64x64_64x64(void *a, void *b, void *c, void *stream) {
+    TADD_f32_64x64_64x64_64x64_64x64<<<1, nullptr, stream>>>((__gm__ float *)a, (__gm__ float *)b, (__gm__ float *)c);
+}
+
+// Case 4: i32 64x64_64x64_64x64_64x64
+extern "C" __global__ AICORE void TADD_i32_64x64_64x64_64x64_64x64(__gm__ int32_t *a, __gm__ int32_t *b, __gm__ int32_t *c);
+
+void LaunchTADD_i32_64x64_64x64_64x64_64x64(void *a, void *b, void *c, void *stream) {
+    TADD_i32_64x64_64x64_64x64_64x64<<<1, nullptr, stream>>>((__gm__ int32_t *)a, (__gm__ int32_t *)b, (__gm__ int32_t *)c);
+}
+
+// Case 5: i16 64x64_64x64_64x64_64x64
+extern "C" __global__ AICORE void TADD_i16_64x64_64x64_64x64_64x64(__gm__ int16_t *a, __gm__ int16_t *b, __gm__ int16_t *c);
+
+void LaunchTADD_i16_64x64_64x64_64x64_64x64(void *a, void *b, void *c, void *stream) {
+    TADD_i16_64x64_64x64_64x64_64x64<<<1, nullptr, stream>>>((__gm__ int16_t *)a, (__gm__ int16_t *)b, (__gm__ int16_t *)c);
+}
+
+// Case 6: f16 16x256_16x256_16x256_16x256
+extern "C" __global__ AICORE void TADD_f16_16x256_16x256_16x256_16x256(__gm__ half *a, __gm__ half *b, __gm__ half *c);
+
+void LaunchTADD_f16_16x256_16x256_16x256_16x256(void *a, void *b, void *c, void *stream) {
+    TADD_f16_16x256_16x256_16x256_16x256<<<1, nullptr, stream>>>((__gm__ half *)a, (__gm__ half *)b, (__gm__ half *)c);
+}
+
+// Case 7: half 16x64_16x128_16x128_16x64
+extern "C" __global__ AICORE void TADD_half_16x64_16x128_16x128_16x64(__gm__ half *a, __gm__ half *b, __gm__ half *c);
+
+void LaunchTADD_half_16x64_16x128_16x128_16x64(void *a, void *b, void *c, void *stream) {
+    TADD_half_16x64_16x128_16x128_16x64<<<1, nullptr, stream>>>((__gm__ half *)a, (__gm__ half *)b, (__gm__ half *)c);
 }

@@ -27,11 +27,12 @@ def main():
             continue
 
         case_dir = case["name"]
-        shape = case["shape"]
-        vr, vc = case["valid_shape"]
+        dst_tile = case["dst_tile"]
+        valid_shape = case["valid_shape"]
+        vr, vc = valid_shape
 
-        golden = np.fromfile(os.path.join(case_dir, "golden.bin"), dtype=case["dtype"]).reshape(shape)
-        output = np.fromfile(os.path.join(case_dir, "output.bin"), dtype=case["dtype"]).reshape(shape)
+        golden = np.fromfile(os.path.join(case_dir, "golden.bin"), dtype=case["dtype"]).reshape(dst_tile)
+        output = np.fromfile(os.path.join(case_dir, "output.bin"), dtype=case["dtype"]).reshape(dst_tile)
 
         ok = result_cmp(golden[:vr, :vc], output[:vr, :vc], case["eps"])
         if ok:

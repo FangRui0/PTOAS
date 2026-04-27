@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Huawei Technologies Co., Ltd.
 // This program is free software, you can redistribute it and/or modify it under the terms and conditions of
 // CANN Open Software License Agreement Version 2.0 (the "License").
-// Please refer to the License for details. You may not use this file except in compliance with the License.
+// Please refer to the License for details. You can not use this file except in compliance with the License.
 // THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
@@ -22,71 +22,89 @@
 using namespace PtoTestCommon;
 
 // Kernel launch wrappers (defined in launch.cpp)
-void LaunchTADD_f32_16x64(float *a, float *b, float *c, void *stream);
-void LaunchTADD_f32_32x32(float *a, float *b, float *c, void *stream);
+void LaunchTADD_f32_64x128_64x128_64x128_64x128(void *a, void *b, void *c, void *stream);
+void LaunchTADD_f32_16x64_16x64_16x64_16x64(void *a, void *b, void *c, void *stream);
+void LaunchTADD_f32_32x32_32x32_32x32_32x32(void *a, void *b, void *c, void *stream);
+void LaunchTADD_f32_64x64_64x64_64x64_64x64(void *a, void *b, void *c, void *stream);
+void LaunchTADD_i32_64x64_64x64_64x64_64x64(void *a, void *b, void *c, void *stream);
+void LaunchTADD_i16_64x64_64x64_64x64_64x64(void *a, void *b, void *c, void *stream);
+void LaunchTADD_f16_16x256_16x256_16x256_16x256(void *a, void *b, void *c, void *stream);
+void LaunchTADD_half_16x64_16x128_16x128_16x64(void *a, void *b, void *c, void *stream);
 
-using LaunchFn = void (*)(float *, float *, float *, void *);
+using LaunchFn = void (*)(void *, void *, void *, void *);
 
 struct TestCase {
     const char *name;
     LaunchFn    launch;
-    size_t      rows;       // allocated tile rows
-    size_t      cols;       // allocated tile cols
-    size_t      validRows;  // effective computation rows  (<= rows)
-    size_t      validCols;  // effective computation cols  (<= cols)
-    size_t      elemSize;   // bytes per element
+    size_t      src0Rows;
+    size_t      src0Cols;
+    size_t      src1Rows;
+    size_t      src1Cols;
+    size_t      dstRows;
+    size_t      dstCols;
+    size_t      validRows;
+    size_t      validCols;
+    size_t      elemSize;
 };
 
 static const TestCase kCases[] = {
-    {"f32_16x64", LaunchTADD_f32_16x64, 16, 64, 16, 64, sizeof(float)},
-    {"f32_32x32", LaunchTADD_f32_32x32, 32, 32, 32, 32, sizeof(float)},
+    {"f32_64x128_64x128_64x128_64x128", LaunchTADD_f32_64x128_64x128_64x128_64x128, 64, 128, 64, 128, 64, 128, 64, 128, sizeof(float)},
+    {"f32_16x64_16x64_16x64_16x64", LaunchTADD_f32_16x64_16x64_16x64_16x64, 16, 64, 16, 64, 16, 64, 16, 64, sizeof(float)},
+    {"f32_32x32_32x32_32x32_32x32", LaunchTADD_f32_32x32_32x32_32x32_32x32, 32, 32, 32, 32, 32, 32, 32, 32, sizeof(float)},
+    {"f32_64x64_64x64_64x64_64x64", LaunchTADD_f32_64x64_64x64_64x64_64x64, 64, 64, 64, 64, 64, 64, 64, 64, sizeof(float)},
+    {"i32_64x64_64x64_64x64_64x64", LaunchTADD_i32_64x64_64x64_64x64_64x64, 64, 64, 64, 64, 64, 64, 64, 64, sizeof(int32_t)},
+    {"i16_64x64_64x64_64x64_64x64", LaunchTADD_i16_64x64_64x64_64x64_64x64, 64, 64, 64, 64, 64, 64, 64, 64, sizeof(int16_t)},
+    {"f16_16x256_16x256_16x256_16x256", LaunchTADD_f16_16x256_16x256_16x256_16x256, 16, 256, 16, 256, 16, 256, 16, 256, sizeof(uint16_t)},
+    {"half_16x64_16x128_16x128_16x64", LaunchTADD_half_16x64_16x128_16x128_16x64, 16, 128, 16, 128, 16, 64, 16, 64, sizeof(uint16_t)},
 };
 static constexpr size_t kNumCases = sizeof(kCases) / sizeof(kCases[0]);
 
 static int RunCase(const TestCase &tc, int deviceId, aclrtStream stream) {
+    (void)deviceId;
     int rc = 0;
-    const size_t elemCount = tc.rows * tc.cols;
-    const size_t fileSize  = elemCount * tc.elemSize;
+    const size_t src0Size = tc.src0Rows * tc.src0Cols * tc.elemSize;
+    const size_t src1Size = tc.src1Rows * tc.src1Cols * tc.elemSize;
+    const size_t dstSize  = tc.dstRows * tc.dstCols * tc.elemSize;
 
-    std::printf("[INFO] === case: %s (shape=%zux%zu, valid=%zux%zu) ===\n",
-                tc.name, tc.rows, tc.cols, tc.validRows, tc.validCols);
+    std::printf("[INFO] === case: %s (dst=%zux%zu, src0=%zux%zu, src1=%zux%zu, valid=%zux%zu) ===\n",
+                tc.name, tc.dstRows, tc.dstCols, tc.src0Rows, tc.src0Cols, tc.src1Rows, tc.src1Cols, tc.validRows, tc.validCols);
 
     // Per-case data directory
     std::string caseDir = std::string("./") + tc.name;
-    size_t src0FileSize = fileSize;
-    size_t src1FileSize = fileSize;
 
-    float *src0Host = nullptr, *src1Host = nullptr, *dstHost = nullptr;
-    float *src0Device = nullptr, *src1Device = nullptr, *dstDevice = nullptr;
+    void *src0Host = nullptr, *src1Host = nullptr, *dstHost = nullptr;
+    void *src0Device = nullptr, *src1Device = nullptr, *dstDevice = nullptr;
 
-    aclrtMallocHost((void **)(&src0Host), fileSize);
-    aclrtMallocHost((void **)(&src1Host), fileSize);
-    aclrtMallocHost((void **)(&dstHost), fileSize);
+    aclrtMallocHost(&src0Host, src0Size);
+    aclrtMallocHost(&src1Host, src1Size);
+    aclrtMallocHost(&dstHost, dstSize);
 
-    aclrtMalloc((void **)&src0Device, fileSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    aclrtMalloc((void **)&src1Device, fileSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    aclrtMalloc((void **)&dstDevice, fileSize, ACL_MEM_MALLOC_HUGE_FIRST);
+    aclrtMalloc(&src0Device, src0Size, ACL_MEM_MALLOC_HUGE_FIRST);
+    aclrtMalloc(&src1Device, src1Size, ACL_MEM_MALLOC_HUGE_FIRST);
+    aclrtMalloc(&dstDevice, dstSize, ACL_MEM_MALLOC_HUGE_FIRST);
 
-    if (!ReadFile((caseDir + "/input1.bin").c_str(), src0FileSize, src0Host, fileSize)) {
+    size_t fileSize = 0;
+    if (!ReadFile((caseDir + "/input1.bin").c_str(), fileSize, src0Host, src0Size)) {
         std::fprintf(stderr, "[ERROR] failed to read %s/input1.bin\n", caseDir.c_str());
         rc = 1;
     }
-    if (rc == 0 && !ReadFile((caseDir + "/input2.bin").c_str(), src1FileSize, src1Host, fileSize)) {
+    fileSize = 0;
+    if (rc == 0 && !ReadFile((caseDir + "/input2.bin").c_str(), fileSize, src1Host, src1Size)) {
         std::fprintf(stderr, "[ERROR] failed to read %s/input2.bin\n", caseDir.c_str());
         rc = 1;
     }
 
     if (rc == 0) {
-        aclrtMemcpy(src0Device, fileSize, src0Host, fileSize, ACL_MEMCPY_HOST_TO_DEVICE);
-        aclrtMemcpy(src1Device, fileSize, src1Host, fileSize, ACL_MEMCPY_HOST_TO_DEVICE);
+        aclrtMemcpy(src0Device, src0Size, src0Host, src0Size, ACL_MEMCPY_HOST_TO_DEVICE);
+        aclrtMemcpy(src1Device, src1Size, src1Host, src1Size, ACL_MEMCPY_HOST_TO_DEVICE);
 
         tc.launch(src0Device, src1Device, dstDevice, stream);
 
         aclrtSynchronizeStream(stream);
-        aclrtMemcpy(dstHost, fileSize, dstDevice, fileSize, ACL_MEMCPY_DEVICE_TO_HOST);
+        aclrtMemcpy(dstHost, dstSize, dstDevice, dstSize, ACL_MEMCPY_DEVICE_TO_HOST);
     }
 
-    if (rc == 0 && !WriteFile((caseDir + "/output.bin").c_str(), dstHost, fileSize)) {
+    if (rc == 0 && !WriteFile((caseDir + "/output.bin").c_str(), dstHost, dstSize)) {
         std::fprintf(stderr, "[ERROR] failed to write %s/output.bin\n", caseDir.c_str());
         rc = 1;
     }
