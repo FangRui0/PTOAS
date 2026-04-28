@@ -10,6 +10,6 @@ module {
   }
 }
 
-// CHECK: error: 'pto.tfillpad' op expects src/dst tile types to be lowerable to TFILLPAD for loc=mat
+// CHECK: error: expects src/dst tile types to be lowerable to TFILLPAD for loc=mat
 // CHECK-SAME: mismatching fields: v_row (? vs 16), v_col (? vs 64), pad (0 vs 1)
 // CHECK: note: heterogeneous TFILLPAD overload is only available for loc=vec
