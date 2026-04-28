@@ -2260,6 +2260,10 @@ struct ArithCastOPToEmitC : public OpConversionPattern<arith::IndexCastOp> {
     Type newTy = getTypeConverter()->convertType(op.getType());
     if (!newTy)
       return failure();
+    if (adaptor.getIn().getType() == newTy) {
+      rewriter.replaceOp(op, adaptor.getIn());
+      return success();
+    }
     rewriter.replaceOpWithNewOp<emitc::CastOp>(op, newTy, adaptor.getIn());
     return success();
   }
