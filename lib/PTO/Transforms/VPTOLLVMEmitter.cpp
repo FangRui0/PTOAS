@@ -2513,6 +2513,22 @@ static FailureOr<VcvtContract> buildVcvtContract(pto::VcvtOp op) {
   return *contract;
 }
 
+static bool needsV300CtrlModeForVPTOFunc(func::FuncOp funcOp) {
+  if (!pto::isPTOEntryFunction(funcOp) || funcOp.getBlocks().empty())
+    return false;
+
+  bool needsCtrlSetup = false;
+  funcOp.walk([&](pto::VcvtOp vcvtOp) {
+    FailureOr<VcvtContract> contract = buildVcvtContract(vcvtOp);
+    if (succeeded(contract) && (*contract).requiresSat) {
+      needsCtrlSetup = true;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return needsCtrlSetup;
+}
+
 template <typename LoopOp>
 static StringRef buildSetLoopCallee(MLIRContext *context);
 
@@ -7067,6 +7083,28 @@ static void normalizeFuncSignaturesForOfficialLLVMLowering(ModuleOp module) {
   }
 }
 
+static void forceV300CtrlModeForVPTOFuncs(ModuleOp module) {
+  OpBuilder builder(module.getContext());
+
+  for (func::FuncOp funcOp : module.getOps<func::FuncOp>()) {
+    if (!needsV300CtrlModeForVPTOFunc(funcOp))
+      continue;
+
+    Block &entry = funcOp.getBody().front();
+    builder.setInsertionPointToStart(&entry);
+    auto i64Type = builder.getI64Type();
+    auto bit60 = builder.create<arith::ConstantOp>(
+        funcOp.getLoc(), i64Type, builder.getI64IntegerAttr(60));
+    Value ctrl =
+        builder.create<pto::GetCtrlOp>(funcOp.getLoc(), i64Type).getResult();
+    Value ctrlV300 = builder
+                         .create<pto::Sbitset0Op>(funcOp.getLoc(), i64Type,
+                                                  ctrl, bit60.getResult())
+                         .getResult();
+    builder.create<pto::SetCtrlOp>(funcOp.getLoc(), ctrlV300);
+  }
+}
+
 template <typename EmitFn>
 static LogicalResult runPipeline(ModuleOp module, llvm::raw_ostream &diagOS,
                                  const VPTOEmissionOptions &options,
@@ -7074,7 +7112,9 @@ static LogicalResult runPipeline(ModuleOp module, llvm::raw_ostream &diagOS,
   OwningOpRef<Operation *> clonedOp(module->clone());
   ModuleOp clonedModule = cast<ModuleOp>(*clonedOp);
 
+  pto::annotatePTOEntryFunctions(clonedModule);
   materializeVecScopeCarrierLoops(clonedModule);
+  forceV300CtrlModeForVPTOFuncs(clonedModule);
 
   if (failed(lowerVPTOOps(clonedModule, diagOS))) {
     diagOS << "VPTO LLVM emission failed: lowerVPTOOps failed\n";
