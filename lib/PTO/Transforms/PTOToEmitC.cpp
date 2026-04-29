@@ -81,6 +81,9 @@ static std::string getGlobalTensorTypeStringFromShape(Type elemTy,
                                                       ArrayRef<int64_t> shape,
                                                       StringRef layoutEnum =
                                                           "pto::Layout::ND");
+static std::string getGlobalTensorTypeStringFromShapeAndStrides(
+    Type elemTy, ArrayRef<int64_t> shape, ArrayRef<int64_t> strides,
+    StringRef layoutEnum = "pto::Layout::ND");
 static emitc::OpaqueType getGlobalTensorOpaqueTypeFromShape(
     MLIRContext *ctx, Type elemTy, ArrayRef<int64_t> shape,
     StringRef layoutEnum = "pto::Layout::ND");
@@ -3315,6 +3318,13 @@ static std::string getGlobalTensorTypeStringFromShape(Type elemTy,
                                                       ArrayRef<int64_t> shape,
                                                       StringRef layoutEnum) {
   SmallVector<int64_t> strides = buildRowMajorStrides(shape);
+  return getGlobalTensorTypeStringFromShapeAndStrides(elemTy, shape, strides,
+                                                      layoutEnum);
+}
+
+static std::string getGlobalTensorTypeStringFromShapeAndStrides(
+    Type elemTy, ArrayRef<int64_t> shape, ArrayRef<int64_t> strides,
+    StringRef layoutEnum) {
   SmallVector<int64_t, 5> shape5D;
   SmallVector<int64_t, 5> stride5D;
   buildGlobalTensorShapeAndStride(shape, strides, shape5D, stride5D);
@@ -5812,17 +5822,23 @@ static std::optional<int64_t> getStaticIndexLikeValue(Value value) {
 
 static FailureOr<Value> buildGlobalTensorViewFromPointer(
     ConversionPatternRewriter &rewriter, Location loc, Value ptr, Type elemTy,
-    ArrayRef<int64_t> shape, StringRef layoutEnum = "pto::Layout::ND") {
+    ArrayRef<int64_t> shape, ArrayRef<int64_t> strides = {},
+    StringRef layoutEnum = "pto::Layout::ND") {
   if (llvm::any_of(shape, [](int64_t dim) {
         return dim == ShapedType::kDynamic;
       }))
     return failure();
 
   auto *ctx = rewriter.getContext();
-  SmallVector<int64_t> strides = buildRowMajorStrides(shape);
+  SmallVector<int64_t> rowMajorStrides;
+  ArrayRef<int64_t> effectiveStrides = strides;
+  if (effectiveStrides.empty()) {
+    rowMajorStrides = buildRowMajorStrides(shape);
+    effectiveStrides = rowMajorStrides;
+  }
   SmallVector<int64_t, 5> shape5D;
   SmallVector<int64_t, 5> stride5D;
-  buildGlobalTensorShapeAndStride(shape, strides, shape5D, stride5D);
+  buildGlobalTensorShapeAndStride(shape, effectiveStrides, shape5D, stride5D);
 
   std::string shapeType = "pto::Shape<" + joinIntTemplateParams(shape5D) + ">";
   std::string strideType =
@@ -5839,12 +5855,71 @@ static FailureOr<Value> buildGlobalTensorViewFromPointer(
                        .getResult(0);
 
   std::string gtTypeStr =
-      getGlobalTensorTypeStringFromShape(elemTy, shape, layoutEnum);
+      getGlobalTensorTypeStringFromShapeAndStrides(elemTy, shape,
+                                                   effectiveStrides,
+                                                   layoutEnum);
   auto gtType = emitc::OpaqueType::get(ctx, gtTypeStr);
   auto gt = rewriter.create<emitc::CallOpaqueOp>(
       loc, gtType, gtTypeStr, ArrayAttr{}, ArrayAttr{},
       ValueRange{ptr, shapeVal, strideVal});
   return gt.getResult(0);
+}
+
+static bool parseIntegerTemplateList(StringRef token, StringRef marker,
+                                     SmallVectorImpl<int64_t> &values) {
+  size_t pos = token.find(marker);
+  if (pos == StringRef::npos)
+    return false;
+  pos += marker.size();
+  size_t end = token.find('>', pos);
+  if (end == StringRef::npos)
+    return false;
+
+  SmallVector<StringRef, 8> parts;
+  token.slice(pos, end).split(parts, ',');
+  values.clear();
+  for (StringRef part : parts) {
+    int64_t value = 0;
+    if (part.trim().getAsInteger(10, value))
+      return false;
+    values.push_back(value);
+  }
+  return true;
+}
+
+static LogicalResult getStaticTensorViewStrides(
+    Value source, Value convertedSource, pto::TensorViewType sourceType,
+    SmallVectorImpl<int64_t> &strides) {
+  int64_t rank = sourceType.getRank();
+  strides.clear();
+
+  if (auto makeView = source.getDefiningOp<pto::MakeTensorViewOp>()) {
+    if ((int64_t)makeView.getStrides().size() != rank)
+      return failure();
+    for (Value strideValue : makeView.getStrides()) {
+      auto cst = getStaticIndexLikeValue(strideValue);
+      if (!cst)
+        return failure();
+      strides.push_back(*cst);
+    }
+    return success();
+  }
+
+  Value src = peelUnrealized(convertedSource);
+  if (auto opaqueTy = dyn_cast<emitc::OpaqueType>(src.getType())) {
+    SmallVector<int64_t, 5> stride5D;
+    StringRef token = opaqueTy.getValue();
+    if ((parseIntegerTemplateList(token, "pto::Stride<", stride5D) ||
+         parseIntegerTemplateList(token, "Stride<", stride5D)) &&
+        (int64_t)stride5D.size() >= rank) {
+      strides.append(stride5D.end() - rank, stride5D.end());
+      return success();
+    }
+  }
+
+  auto fallback = buildRowMajorStrides(sourceType.getShape());
+  strides.append(fallback.begin(), fallback.end());
+  return success();
 }
 
 struct PTOPartitionViewToEmitC
@@ -5876,7 +5951,11 @@ struct PTOPartitionViewToEmitC
             op, "partition_view static size does not match result type");
     }
 
-    SmallVector<int64_t> srcStrides = buildRowMajorStrides(srcTy.getShape());
+    SmallVector<int64_t> srcStrides;
+    if (failed(getStaticTensorViewStrides(op.getSource(), adaptor.getSource(),
+                                          srcTy, srcStrides)))
+      return rewriter.notifyMatchFailure(
+          op, "partition_view requires static source strides");
     int64_t staticLinearOffset = 0;
     SmallVector<std::pair<Value, int64_t>> dynamicOffsetTerms;
     for (auto [idx, values] :
@@ -5944,7 +6023,8 @@ struct PTOPartitionViewToEmitC
     }
 
     auto resultOr = buildGlobalTensorViewFromPointer(
-        rewriter, op.getLoc(), ptr, resTy.getElementType(), resTy.getShape());
+        rewriter, op.getLoc(), ptr, resTy.getElementType(), resTy.getShape(),
+        srcStrides);
     if (failed(resultOr))
       return rewriter.notifyMatchFailure(
           op, "failed to materialize partition GlobalTensor");
