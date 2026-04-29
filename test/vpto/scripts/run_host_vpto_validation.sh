@@ -508,8 +508,8 @@ build_one_impl() {
     die "missing kernel.pto and cube.pto for ${case_name}"
 
   local -a pto_sources=()
-  [[ -f "${case_dir}/kernel.pto" ]] && pto_sources+=("kernel.pto")
   [[ -f "${case_dir}/cube.pto" ]] && pto_sources+=("cube.pto")
+  [[ -f "${case_dir}/kernel.pto" ]] && pto_sources+=("kernel.pto")
 
   local -a device_objs=()
   local pto_name
