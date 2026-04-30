@@ -544,7 +544,7 @@ int InsertSyncAnalysis::GetEventIdNum(
     bool isLocalB =
         pair.second && (pair.second->scope == pto::AddressSpace::MAT ||
                         pair.second->scope == pto::AddressSpace::VEC);
-    if (isLocalA || isLocalB) return 2;
+    if (isLocalA || isLocalB) return 1;
   }
   return 1;
 }
