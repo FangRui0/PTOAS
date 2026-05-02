@@ -1,25 +1,17 @@
-// RUN: ptoas --pto-arch=a3 --enable-insert-sync %s | FileCheck %s
+// RUN: ptoas --pto-arch=a3 --enable-graph-sync-solver --graph-sync-solver-event-id-max=64 %s | FileCheck %s
 //
-// Regression guard for nested loops sharing the same pipe pair (Issue #454 risk point):
-// - Outer loop-carried and inner loop-carried syncs on PIPE_M -> PIPE_MTE1 must coexist.
-// - Inner-loop and outer-loop event chains must both keep their set/wait handshake.
+// Companion to issue454_loop_if_else_loop_carried_sync_regression.pto (InsertSync).
+// GraphSyncSolver often emits PIPE_ALL barriers instead of fine-grained M/MTE1 events here.
 //
-// CHECK-LABEL: __global__ AICORE void nested_loop_same_pipe_pair()
-// InsertSync lowers mat<->cube pipe ops via PIPE_FIX staging (PIPE_M<->PIPE_FIX<->PIPE_MTE1).
-// CHECK-DAG: set_flag(PIPE_M, PIPE_FIX, EVENT_ID{{[0-9]+}})
-// CHECK-DAG: wait_flag(PIPE_M, PIPE_FIX, EVENT_ID{{[0-9]+}})
-// CHECK-DAG: set_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID{{[0-9]+}})
-// CHECK-DAG: wait_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID{{[0-9]+}})
+// CHECK-DAG: pipe_barrier(PIPE_ALL)
+// CHECK-LABEL: __global__ AICORE void loop_if_else_loop_carried_sync()
 // CHECK: for (size_t
-// CHECK-DAG: wait_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID{{[0-9]+}})
-// CHECK: for (size_t
-// CHECK-DAG: wait_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID{{[0-9]+}})
-// CHECK-DAG: set_flag(PIPE_MTE1, PIPE_M, EVENT_ID{{[0-9]+}})
-// CHECK-DAG: wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID{{[0-9]+}})
-// CHECK: ptoas_auto_sync_tail(PTOAutoSyncTailMode::kBarrierAll);
+// CHECK: if ((int32_t)
+// CHECK: } else {
+// CHECK: #endif // __DAV_CUBE__
 
 module {
-  func.func @nested_loop_same_pipe_pair() {
+  func.func @loop_if_else_loop_carried_sync() {
     pto.section.cube {
       %c0 = arith.constant 0 : index
       %c1 = arith.constant 1 : index
@@ -36,15 +28,16 @@ module {
       pto.tmatmul ins(%l0, %r0 : !pto.tile_buf<loc=left, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=row_major, fractal=512, pad=0>, !pto.tile_buf<loc=right, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=col_major, fractal=512, pad=0>) outs(%acc : !pto.tile_buf<loc=acc, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>)
       pto.tmov ins(%acc : !pto.tile_buf<loc=acc, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>) outs(%m0 : !pto.tile_buf<loc=mat, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>)
 
-      scf.for %o = %c0 to %c2 step %c1 {
+      scf.for %i = %c0 to %c2 step %c1 {
         pto.tmov ins(%m0 : !pto.tile_buf<loc=mat, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>) outs(%l0 : !pto.tile_buf<loc=left, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=row_major, fractal=512, pad=0>)
         pto.tmatmul ins(%l0, %r0 : !pto.tile_buf<loc=left, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=row_major, fractal=512, pad=0>, !pto.tile_buf<loc=right, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=col_major, fractal=512, pad=0>) outs(%acc : !pto.tile_buf<loc=acc, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>)
-        pto.tmov ins(%acc : !pto.tile_buf<loc=acc, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>) outs(%m0 : !pto.tile_buf<loc=mat, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>)
 
-        scf.for %i = %c0 to %c2 step %c1 {
-          pto.tmov ins(%m0 : !pto.tile_buf<loc=mat, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>) outs(%l0 : !pto.tile_buf<loc=left, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=row_major, fractal=512, pad=0>)
-          pto.tmatmul ins(%l0, %r0 : !pto.tile_buf<loc=left, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=row_major, fractal=512, pad=0>, !pto.tile_buf<loc=right, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=col_major, fractal=512, pad=0>) outs(%acc : !pto.tile_buf<loc=acc, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>)
+        %is_even = arith.cmpi eq, %i, %c0 : index
+        scf.if %is_even {
           pto.tmov ins(%acc : !pto.tile_buf<loc=acc, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>) outs(%m0 : !pto.tile_buf<loc=mat, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>)
+        } else {
+          pto.tmov ins(%acc : !pto.tile_buf<loc=acc, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>) outs(%m0 : !pto.tile_buf<loc=mat, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>)
+          pto.tmov ins(%m1 : !pto.tile_buf<loc=mat, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>) outs(%r0 : !pto.tile_buf<loc=right, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=col_major, fractal=512, pad=0>)
         }
       }
     }

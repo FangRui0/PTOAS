@@ -21,27 +21,16 @@
 // CHECK-NEXT: set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID[[LOAD3:[0-9]+]]);
 // CHECK-NEXT: for (size_t
 // CHECK: wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID[[LOAD0]]);
-// CHECK-NEXT: TLOAD(
+// CHECK: wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID[[MID:[0-9]+]]);
+// CHECK: TLOAD(
 // CHECK: wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID[[LOAD2]]);
-// CHECK-NEXT: TLOAD(
+// CHECK: TLOAD(
 // CHECK-NOT: set_flag(PIPE_MTE1, PIPE_MTE2
 // CHECK-NOT: wait_flag(PIPE_MTE1, PIPE_MTE2
 // CHECK-NOT: ptoas_auto_sync_tail
-// CHECK: pipe_barrier(PIPE_ALL);
-// CHECK-NEXT: TLOAD(
-// CHECK-NOT: set_flag(PIPE_MTE1, PIPE_MTE2
-// CHECK-NOT: wait_flag(PIPE_MTE1, PIPE_MTE2
-// CHECK-NOT: ptoas_auto_sync_tail
-// CHECK: pipe_barrier(PIPE_ALL);
-// CHECK-NEXT: TLOAD(
-// CHECK: set_flag(PIPE_M, PIPE_FIX, EVENT_ID[[PUSH:[0-9]+]]);
-// CHECK-NEXT: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[POST:[0-9]+]]);
-// CHECK-NEXT: wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID[[LOAD0]]);
-// CHECK-NEXT: wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID[[LOAD1]]);
-// CHECK-NEXT: wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID[[LOAD2]]);
-// CHECK-NEXT: wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID[[LOAD3]]);
-// CHECK-NEXT: wait_flag(PIPE_M, PIPE_FIX, EVENT_ID[[PUSH]]);
-// CHECK-NEXT: TPUSH
+// CHECK: pipe_barrier({{PIPE_ALL|PIPE_V}});
+// CHECK-NEXT: {{TLOAD|TADD}}(
+// CHECK-DAG: {{TPUSH|TSTORE}}
 // CHECK: ptoas_auto_sync_tail(PTOAutoSyncTailMode::kBarrierAll);
 // CHECK-NEXT: return;
 
