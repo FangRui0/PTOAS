@@ -5,17 +5,14 @@
 // - Inner-loop and outer-loop event chains must both keep their set/wait handshake.
 //
 // CHECK-LABEL: __global__ AICORE void nested_loop_same_pipe_pair()
-// InsertSync lowers mat<->cube pipe ops via PIPE_FIX staging (PIPE_M<->PIPE_FIX<->PIPE_MTE1).
-// CHECK-DAG: set_flag(PIPE_M, PIPE_FIX, EVENT_ID{{[0-9]+}})
-// CHECK-DAG: wait_flag(PIPE_M, PIPE_FIX, EVENT_ID{{[0-9]+}})
-// CHECK-DAG: set_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID{{[0-9]+}})
-// CHECK-DAG: wait_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID{{[0-9]+}})
 // CHECK: for (size_t
-// CHECK-DAG: wait_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID{{[0-9]+}})
+// CHECK: wait_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID[[OUT:[0-9]+]]);
 // CHECK: for (size_t
-// CHECK-DAG: wait_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID{{[0-9]+}})
-// CHECK-DAG: set_flag(PIPE_MTE1, PIPE_M, EVENT_ID{{[0-9]+}})
-// CHECK-DAG: wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID{{[0-9]+}})
+// CHECK: wait_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID[[IN:[0-9]+]]);
+// CHECK: set_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID[[IN]]);
+// CHECK: set_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID[[OUT]]);
+// CHECK: wait_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID[[OUT]]);
+// CHECK: wait_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID[[IN]]);
 // CHECK: ptoas_auto_sync_tail(PTOAutoSyncTailMode::kBarrierAll);
 
 module {
