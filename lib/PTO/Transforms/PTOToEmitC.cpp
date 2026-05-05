@@ -5567,10 +5567,6 @@ struct PTOBuildAsyncSessionToEmitC
                         .getResult();
 
     auto u32Ty = emitc::OpaqueType::get(ctx, "uint32_t");
-<<<<<<< HEAD
-=======
-    [[maybe_unused]] auto u64Ty = emitc::OpaqueType::get(ctx, "uint64_t");
->>>>>>> 308fc7b (fix compiler warnings)
 
     auto makeU32Const = [&](uint64_t value) -> Value {
       return makeEmitCOpaqueConstant(rewriter, loc, u32Ty,
