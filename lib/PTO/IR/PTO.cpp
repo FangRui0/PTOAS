@@ -8990,7 +8990,7 @@ static ParseResult parseStrideList(AsmParser &parser, SmallVectorImpl<int64_t> &
 // Printer Implementation
 // =============================================================================
 
-[[maybe_unused]] [[maybe_unused]] static void printLayout(AsmPrinter &printer, Attribute layoutAttr) {
+[[maybe_unused]] static void printLayout(AsmPrinter &printer, Attribute layoutAttr) {
   if (!layoutAttr) return;
   auto mapAttr = llvm::dyn_cast<AffineMapAttr>(layoutAttr);
   if (!mapAttr) { printer << ", " << layoutAttr; return; }
