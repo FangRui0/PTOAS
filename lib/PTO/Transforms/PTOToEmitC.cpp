@@ -6560,8 +6560,10 @@ struct ReinterpretCastToEmitC : public OpConversionPattern<memref::ReinterpretCa
       roleTok = "TileType::Vec";
       break;
     case pto::AddressSpace::Zero:
-    case pto::AddressSpace::SCALING:
       roleTok = "TileType::Vec";
+      break;
+    case pto::AddressSpace::SCALING:
+      roleTok = "TileType::Scaling";
       break;
     }
 
