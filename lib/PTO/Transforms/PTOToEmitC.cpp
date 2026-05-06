@@ -8518,6 +8518,52 @@ struct PTOPartMinToEmitC : public OpConversionPattern<pto::TPartMinOp> {
     return success();
   }
 };
+
+struct PTOPartArgMaxToEmitC
+    : public OpConversionPattern<pto::TPartArgMaxOp> {
+  using OpConversionPattern<pto::TPartArgMaxOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(pto::TPartArgMaxOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    Value src0 = peelUnrealized(adaptor.getSrc0());
+    Value src1 = peelUnrealized(adaptor.getSrc1());
+    Value src0Idx = peelUnrealized(adaptor.getSrc0Idx());
+    Value src1Idx = peelUnrealized(adaptor.getSrc1Idx());
+    Value dst = peelUnrealized(adaptor.getDst());
+    Value dstIdx = peelUnrealized(adaptor.getDstIdx());
+
+    rewriter.create<emitc::CallOpaqueOp>(
+        op.getLoc(), TypeRange{}, "TPARTARGMAX",
+        /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
+        /*operands=*/ValueRange{dst, src0, src1, dstIdx, src0Idx, src1Idx});
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct PTOPartArgMinToEmitC
+    : public OpConversionPattern<pto::TPartArgMinOp> {
+  using OpConversionPattern<pto::TPartArgMinOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(pto::TPartArgMinOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    Value src0 = peelUnrealized(adaptor.getSrc0());
+    Value src1 = peelUnrealized(adaptor.getSrc1());
+    Value src0Idx = peelUnrealized(adaptor.getSrc0Idx());
+    Value src1Idx = peelUnrealized(adaptor.getSrc1Idx());
+    Value dst = peelUnrealized(adaptor.getDst());
+    Value dstIdx = peelUnrealized(adaptor.getDstIdx());
+
+    rewriter.create<emitc::CallOpaqueOp>(
+        op.getLoc(), TypeRange{}, "TPARTARGMIN",
+        /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
+        /*operands=*/ValueRange{dst, src0, src1, dstIdx, src0Idx, src1Idx});
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
 //===----------------------------------------------------------------------===//
 // PTOConvert.cpp  (add lowering + patterns.add for TPARTMUL DPS/memref op)
 //===----------------------------------------------------------------------===//
@@ -11105,6 +11151,7 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOPartMaxToEmitC>(typeConverter, ctx);
   patterns.add<PTONotToEmitC>(typeConverter, ctx);
   patterns.add<PTOPartMinToEmitC>(typeConverter, ctx);
+  patterns.add<PTOPartArgMaxToEmitC, PTOPartArgMinToEmitC>(typeConverter, ctx);
   patterns.add<PTOPartMulToEmitC>(typeConverter, ctx);
   patterns.add<PTOExpandsToEmitC>(typeConverter, ctx);
   patterns.add<PTOOrToEmitC>(typeConverter, ctx);

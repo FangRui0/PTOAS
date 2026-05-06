@@ -6620,6 +6620,78 @@ mlir::LogicalResult mlir::pto::TPartMinOp::verify() {
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 
+static LogicalResult verifyTPartArgOpCommon(Operation *op, Type src0Ty,
+                                            Type src1Ty, Type src0IdxTy,
+                                            Type src1IdxTy, Type dstTy,
+                                            Type dstIdxTy, StringRef opName) {
+  FailureOr<Type> dataElemOr =
+      verifyPTOShapedBinarySameElemAndShape(op, src0Ty, src1Ty, dstTy);
+  if (failed(dataElemOr))
+    return failure();
+  if (failed(verifyPartialValidPattern(op, src0Ty, src1Ty, dstTy)))
+    return failure();
+
+  if (!isPTOShapedLike(src0IdxTy) || !isPTOShapedLike(src1IdxTy) ||
+      !isPTOShapedLike(dstIdxTy))
+    return op->emitOpError("expects PTO shaped-like src0Idx/src1Idx/dstIdx");
+  Type idxElem = getElemTy(src0IdxTy);
+  if (!idxElem || idxElem != getElemTy(src1IdxTy) ||
+      idxElem != getElemTy(dstIdxTy))
+    return op->emitOpError(
+        "expects src0Idx/src1Idx/dstIdx to have the same element type");
+  auto idxInt = dyn_cast<IntegerType>(idxElem);
+  if (!idxInt || idxInt.getWidth() != 32)
+    return op->emitOpError(
+        "expects src0Idx/src1Idx/dstIdx element type to be i32 or ui32");
+
+  auto dataShape = getShapeVec(src0Ty);
+  if (dataShape != getShapeVec(src0IdxTy) ||
+      dataShape != getShapeVec(src1IdxTy) ||
+      dataShape != getShapeVec(dstIdxTy))
+    return op->emitOpError(
+        "expects data and index operands to have the same shape");
+  if (getValidShapeVec(src0Ty) != getValidShapeVec(src0IdxTy) ||
+      getValidShapeVec(src1Ty) != getValidShapeVec(src1IdxTy) ||
+      getValidShapeVec(dstTy) != getValidShapeVec(dstIdxTy))
+    return op->emitOpError(
+        "expects each data operand and its index operand to have the same valid_shape");
+
+  Type elem = *dataElemOr;
+  PTOArch arch = getTargetArch(op);
+  if (arch == PTOArch::A5) {
+    if (!(elem.isInteger(32) || elem.isInteger(16) || elem.isInteger(8) ||
+          elem.isF16() || elem.isBF16() || elem.isF32()))
+      return op->emitOpError() << "expects A5 " << opName
+                               << " element type to be i32/i16/i8/f16/bf16/f32";
+  } else {
+    if (!(elem.isInteger(32) || elem.isInteger(16) || elem.isF16() ||
+          elem.isF32()))
+      return op->emitOpError() << "expects A2/A3 " << opName
+                               << " element type to be i32/i16/f16/f32";
+  }
+  return success();
+}
+
+mlir::LogicalResult mlir::pto::TPartArgMaxOp::verify() {
+  auto verifyByArch = [&]() -> LogicalResult {
+    return verifyTPartArgOpCommon(
+        getOperation(), getSrc0().getType(), getSrc1().getType(),
+        getSrc0Idx().getType(), getSrc1Idx().getType(), getDst().getType(),
+        getDstIdx().getType(), "tpartargmax");
+  };
+  return dispatchVerifierByArch(getOperation(), verifyByArch, verifyByArch);
+}
+
+mlir::LogicalResult mlir::pto::TPartArgMinOp::verify() {
+  auto verifyByArch = [&]() -> LogicalResult {
+    return verifyTPartArgOpCommon(
+        getOperation(), getSrc0().getType(), getSrc1().getType(),
+        getSrc0Idx().getType(), getSrc1Idx().getType(), getDst().getType(),
+        getDstIdx().getType(), "tpartargmin");
+  };
+  return dispatchVerifierByArch(getOperation(), verifyByArch, verifyByArch);
+}
+
 mlir::LogicalResult mlir::pto::TPartMulOp::verify() {
   auto verifyA2A3 = [&]() -> LogicalResult {
     Type src0Ty = getSrc0().getType();
@@ -9808,6 +9880,24 @@ PTO_DEFINE_UNARY_EFFECTS(TOrSOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TPartAddOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TPartMaxOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TPartMinOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
+void TPartArgMaxOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getSrc0Mutable());
+  PTO_ADD_READ(getSrc1Mutable());
+  PTO_ADD_READ(getSrc0IdxMutable());
+  PTO_ADD_READ(getSrc1IdxMutable());
+  PTO_ADD_WRITE(getDstMutable());
+  PTO_ADD_WRITE(getDstIdxMutable());
+}
+void TPartArgMinOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getSrc0Mutable());
+  PTO_ADD_READ(getSrc1Mutable());
+  PTO_ADD_READ(getSrc0IdxMutable());
+  PTO_ADD_READ(getSrc1IdxMutable());
+  PTO_ADD_WRITE(getDstMutable());
+  PTO_ADD_WRITE(getDstIdxMutable());
+}
 PTO_DEFINE_BINARY_EFFECTS(TPartMulOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 // TPRELU: Read(src0, src1) -> Write(tmp, dst)
 void TPReluOp::getEffects(

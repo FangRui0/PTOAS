@@ -1686,6 +1686,8 @@ All vector arithmetic operations execute on the **Vector pipeline** (`PIPE_V`) a
 | `pto.tpartadd` | Partial elementwise add |
 | `pto.tpartmax` | Partial elementwise max |
 | `pto.tpartmin` | Partial elementwise min |
+| `pto.tpartargmax` | Partial elementwise max with index propagation |
+| `pto.tpartargmin` | Partial elementwise min with index propagation |
 | `pto.tpartmul` | Partial elementwise mul |
 | `pto.tprelu` | `dst[i,j] = src0[i,j] > 0 ? src0[i,j] : src1[i,j] * src0[i,j]` |
 
@@ -2302,6 +2304,170 @@ pto.tpartmin ins(%a, %b : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32,
              outs(%c : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32,
                  v_row=32, v_col=32, blayout=row_major, slayout=none_box,
                  fractal=512, pad=0>)
+```
+
+---
+
+##### `pto.tpartargmax` - Partial Elementwise ArgMax
+
+**Summary:** Partial elementwise max that also propagates the selected element index.
+
+**Semantics:**
+
+```
+For each element (i, j) in the valid region:
+    if src0[i, j] is selected:
+        dst[i, j] = src0[i, j]
+        dstIdx[i, j] = src0Idx[i, j]
+    else:
+        dst[i, j] = src1[i, j]
+        dstIdx[i, j] = src1Idx[i, j]
+```
+
+The selection is the target-defined partial max comparison between `src0` and `src1`. Equal-value tie behavior follows the underlying PTO ISA implementation.
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `src0` | `pto.tile_buf` | First source value tile buffer |
+| `src1` | `pto.tile_buf` | Second source value tile buffer |
+| `src0Idx` | `pto.tile_buf` | Index tile paired with `src0` |
+| `src1Idx` | `pto.tile_buf` | Index tile paired with `src1` |
+| `dst` | `pto.tile_buf` | Destination value tile buffer |
+| `dstIdx` | `pto.tile_buf` | Destination index tile buffer |
+
+**Results:** None. Writes into `dst` and `dstIdx` via DPS pattern.
+
+**Assembly Format:**
+
+```
+pto.tpartargmax ins(<src0>, <src1>, <src0Idx>, <src1Idx> :
+                    <src0_type>, <src1_type>, <src0Idx_type>, <src1Idx_type>)
+                outs(<dst>, <dstIdx> : <dst_type>, <dstIdx_type>)
+```
+
+**Constraints & Verification:**
+
+- `src0`, `src1`, and `dst` element types must be identical and have the same shape.
+- `src0Idx`, `src1Idx`, and `dstIdx` element types must be identical and must be `i32`.
+- Data tiles and index tiles must have the same shape.
+- Each data tile and its paired index tile must have the same valid shape.
+- Uses the same partial valid-region constraints as `pto.tpartmax`.
+- **Implementation checks (A2A3)**: data element type must be one of `i32`, `i16`, `f16`, `f32`.
+- **Implementation checks (A5)**: data element type must be one of `i8`, `i16`, `i32`, `f16`, `bf16`, `f32`.
+
+**Hardware Mapping:**
+
+- Executes on the **Vector pipeline** (`PIPE_V`)
+- Operates on data in the **VEC (UB)** memory space
+- EmitC lowers to `TPARTARGMAX(dst, src0, src1, dstIdx, src0Idx, src1Idx)`
+
+**Basic Example:**
+
+```mlir
+pto.tpartargmax ins(%a, %b, %a_idx, %b_idx :
+                    !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32,
+                    v_row=16, v_col=32, blayout=row_major, slayout=none_box,
+                    fractal=512, pad=0>,
+                    !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32,
+                    v_row=16, v_col=32, blayout=row_major, slayout=none_box,
+                    fractal=512, pad=0>,
+                    !pto.tile_buf<loc=vec, dtype=ui32, rows=16, cols=32,
+                    v_row=16, v_col=32, blayout=row_major, slayout=none_box,
+                    fractal=512, pad=0>,
+                    !pto.tile_buf<loc=vec, dtype=ui32, rows=16, cols=32,
+                    v_row=16, v_col=32, blayout=row_major, slayout=none_box,
+                    fractal=512, pad=0>)
+                outs(%c, %c_idx :
+                    !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32,
+                    v_row=16, v_col=32, blayout=row_major, slayout=none_box,
+                    fractal=512, pad=0>,
+                    !pto.tile_buf<loc=vec, dtype=ui32, rows=16, cols=32,
+                    v_row=16, v_col=32, blayout=row_major, slayout=none_box,
+                    fractal=512, pad=0>)
+```
+
+---
+
+##### `pto.tpartargmin` - Partial Elementwise ArgMin
+
+**Summary:** Partial elementwise min that also propagates the selected element index.
+
+**Semantics:**
+
+```
+For each element (i, j) in the valid region:
+    if src0[i, j] is selected:
+        dst[i, j] = src0[i, j]
+        dstIdx[i, j] = src0Idx[i, j]
+    else:
+        dst[i, j] = src1[i, j]
+        dstIdx[i, j] = src1Idx[i, j]
+```
+
+The selection is the target-defined partial min comparison between `src0` and `src1`. Equal-value tie behavior follows the underlying PTO ISA implementation.
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `src0` | `pto.tile_buf` | First source value tile buffer |
+| `src1` | `pto.tile_buf` | Second source value tile buffer |
+| `src0Idx` | `pto.tile_buf` | Index tile paired with `src0` |
+| `src1Idx` | `pto.tile_buf` | Index tile paired with `src1` |
+| `dst` | `pto.tile_buf` | Destination value tile buffer |
+| `dstIdx` | `pto.tile_buf` | Destination index tile buffer |
+
+**Results:** None. Writes into `dst` and `dstIdx` via DPS pattern.
+
+**Assembly Format:**
+
+```
+pto.tpartargmin ins(<src0>, <src1>, <src0Idx>, <src1Idx> :
+                    <src0_type>, <src1_type>, <src0Idx_type>, <src1Idx_type>)
+                outs(<dst>, <dstIdx> : <dst_type>, <dstIdx_type>)
+```
+
+**Constraints & Verification:**
+
+- `src0`, `src1`, and `dst` element types must be identical and have the same shape.
+- `src0Idx`, `src1Idx`, and `dstIdx` element types must be identical and must be `i32`.
+- Data tiles and index tiles must have the same shape.
+- Each data tile and its paired index tile must have the same valid shape.
+- Uses the same partial valid-region constraints as `pto.tpartmin`.
+- **Implementation checks (A2A3)**: data element type must be one of `i32`, `i16`, `f16`, `f32`.
+- **Implementation checks (A5)**: data element type must be one of `i8`, `i16`, `i32`, `f16`, `bf16`, `f32`.
+
+**Hardware Mapping:**
+
+- Executes on the **Vector pipeline** (`PIPE_V`)
+- Operates on data in the **VEC (UB)** memory space
+- EmitC lowers to `TPARTARGMIN(dst, src0, src1, dstIdx, src0Idx, src1Idx)`
+
+**Basic Example:**
+
+```mlir
+pto.tpartargmin ins(%a, %b, %a_idx, %b_idx :
+                    !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32,
+                    v_row=16, v_col=32, blayout=row_major, slayout=none_box,
+                    fractal=512, pad=0>,
+                    !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32,
+                    v_row=16, v_col=32, blayout=row_major, slayout=none_box,
+                    fractal=512, pad=0>,
+                    !pto.tile_buf<loc=vec, dtype=ui32, rows=16, cols=32,
+                    v_row=16, v_col=32, blayout=row_major, slayout=none_box,
+                    fractal=512, pad=0>,
+                    !pto.tile_buf<loc=vec, dtype=ui32, rows=16, cols=32,
+                    v_row=16, v_col=32, blayout=row_major, slayout=none_box,
+                    fractal=512, pad=0>)
+                outs(%c, %c_idx :
+                    !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32,
+                    v_row=16, v_col=32, blayout=row_major, slayout=none_box,
+                    fractal=512, pad=0>,
+                    !pto.tile_buf<loc=vec, dtype=ui32, rows=16, cols=32,
+                    v_row=16, v_col=32, blayout=row_major, slayout=none_box,
+                    fractal=512, pad=0>)
 ```
 
 ---
@@ -6962,6 +7128,63 @@ Constraint: dst.rows >= src.rows and dst.cols >= src.cols
 
 ```mlir
 pto.tfillpad_expand ins(%src : !pto.tile_buf<...>) outs(%dst : !pto.tile_buf<...>)
+```
+
+---
+
+##### `pto.tfillpad_inplace` - Fill Padding Region In Place
+
+**Summary:** Fills the padding region in place on shared backing storage. `src` provides the valid-region bounds and `dst` provides the target pad bounds/configuration.
+
+**Semantics:**
+
+```
+For elements inside src valid_shape:
+    dst keeps the existing value
+For padded elements described by dst:
+    dst = PadVal(dst)
+```
+
+This operation is intended for the in-place case where `src` and `dst` refer to the same tile storage, often the same SSA value.
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `src` | `pto.tile_buf` | Source tile supplying valid-region bounds |
+| `dst` | `pto.tile_buf` | Destination tile supplying pad configuration and receiving the in-place update |
+
+**Results:** None. Writes into `dst` via DPS pattern.
+
+**Assembly Format:**
+
+```
+pto.tfillpad_inplace ins(<src> : <src_type>)
+                     outs(<dst> : <dst_type>)
+```
+
+**Constraints & Verification:**
+
+- `dst.pad` must not be `null`.
+- `src` and `dst` element sizes must match, and the element size must be `1`, `2`, or `4` bytes.
+- `src.rows/cols` and `dst.rows/cols` must have the same static shape.
+- The verifier uses the same non-expand shape constraints as `pto.tfillpad`.
+- Unlike `pto.tfillpad_expand`, `dst` is not allowed to have a larger static shape than `src`.
+
+**Hardware Mapping:**
+
+- Executes on the **Vector pipeline** (`PIPE_V`)
+- EmitC lowers to `TFILLPAD_INPLACE(dst, src)`
+
+**Basic Example:**
+
+```mlir
+pto.tfillpad_inplace ins(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32,
+                         v_row=32, v_col=32, blayout=row_major, slayout=none_box,
+                         fractal=512, pad=1>)
+                     outs(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32,
+                         v_row=32, v_col=32, blayout=row_major, slayout=none_box,
+                         fractal=512, pad=1>)
 ```
 
 ---

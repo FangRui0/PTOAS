@@ -4526,6 +4526,80 @@ def TPartMinOp: PTO_TOp<"tpartmin", [
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
 }
+
+def TPartArgMaxOp: PTO_TOp<"tpartargmax", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Partial elementwise max with value and index tiles.";
+
+  let arguments = (ins
+    PTODpsType:$src0,
+    PTODpsType:$src1,
+    PTODpsType:$src0Idx,
+    PTODpsType:$src1Idx,
+    PTODpsType:$dst,
+    PTODpsType:$dstIdx
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `ins` `(` $src0 `,` $src1 `,` $src0Idx `,` $src1Idx `:`
+      qualified(type($src0)) `,` qualified(type($src1)) `,`
+      qualified(type($src0Idx)) `,` qualified(type($src1Idx)) `)`
+    `outs` `(` $dst `,` $dstIdx `:`
+      qualified(type($dst)) `,` qualified(type($dstIdx)) `)`
+    attr-dict
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() {
+      return ::mlir::MutableOperandRange(getOperation(), 4, 2);
+    }
+  }];
+}
+
+def TPartArgMinOp: PTO_TOp<"tpartargmin", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Partial elementwise min with value and index tiles.";
+
+  let arguments = (ins
+    PTODpsType:$src0,
+    PTODpsType:$src1,
+    PTODpsType:$src0Idx,
+    PTODpsType:$src1Idx,
+    PTODpsType:$dst,
+    PTODpsType:$dstIdx
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `ins` `(` $src0 `,` $src1 `,` $src0Idx `,` $src1Idx `:`
+      qualified(type($src0)) `,` qualified(type($src1)) `,`
+      qualified(type($src0Idx)) `,` qualified(type($src1Idx)) `)`
+    `outs` `(` $dst `,` $dstIdx `:`
+      qualified(type($dst)) `,` qualified(type($dstIdx)) `)`
+    attr-dict
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() {
+      return ::mlir::MutableOperandRange(getOperation(), 4, 2);
+    }
+  }];
+}
 //===----------------------------------------------------------------------===//
 // PTOOps.td  (add TPARTMUL TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
