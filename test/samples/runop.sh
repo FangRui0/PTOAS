@@ -1069,6 +1069,18 @@ PY
       fi
     fi
 
+    if [[ "$base" == "tnotify_atomic_add_binding" ]]; then
+      for pat in \
+        "__global__ AICORE void TNotifyAtomicAddKernel(" \
+        "PTOAS__COMM_TNOTIFY<pto::comm::NotifyOp::AtomicAdd>("; do
+        if ! grep -Fq "$pat" "$cpp"; then
+          echo -e "${A}(${base}.py)\tFAIL\tmissing $pat lowering"
+          overall=1
+          continue 2
+        fi
+      done
+    fi
+
     if [[ "$base" == "comm_collective" || "$base" == "comm_collective_binding_variants" ]]; then
       for pat in \
         "pto::comm::ParallelGroup" \
