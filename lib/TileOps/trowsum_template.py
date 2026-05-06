@@ -64,11 +64,11 @@ def template_trowsum(src: pto.Tile, tmp: pto.Tile, dst: pto.Tile):
             v_acc = pto.vadd(v_acc, v_reduced, acc_mask_1)
 
         # Store the accumulated result safely once per row using one-point mode
-        if pto.constexpr(acc_dtype != dst_dtype):
-            # Truncate / Type cast before storing
-            # Note: For int32 -> int16 mapping, vcvt processes it.
+        if pto.constexpr(src_dtype == pto.i16):
+            # Truncate i32 accumulator back to i16
+            # Non-saturation mode (wrap-around), matching pto-isa CTRL[59:60] behavior
             acc_mask_for_cvt, _ = pto.make_mask(acc_dtype, 1)
-            v_acc_casted = pto.vcvt(v_acc, dst_dtype, acc_mask_for_cvt, sat=pto.VcvtSatMode.SAT, part=pto.VcvtPartMode.EVEN)
+            v_acc_casted = pto.vcvt(v_acc, dst_dtype, acc_mask_for_cvt, sat=pto.VcvtSatMode.NOSAT, part=pto.VcvtPartMode.EVEN)
             pto.vsts(v_acc_casted, dst[row, 0:], dst_mask_1, dist=store_dist)
         else:
             pto.vsts(v_acc, dst[row, 0:], dst_mask_1, dist=store_dist)
