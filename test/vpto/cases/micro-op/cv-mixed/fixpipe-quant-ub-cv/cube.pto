@@ -10,7 +10,7 @@
 // case: micro-op/cv-mixed/fixpipe-quant-ub-cv
 // family: cv-mixed
 // target_ops: pto.cube_load, pto.left_load, pto.right_load, pto.mad,
-//   pto.copy_cbuf_to_fbuf, pto.set_fpc, pto.acc_store_ub, pto.sync.set, pto.sync.wait
+//   pto.fp_load, pto.set_fpc, pto.acc_store_ub, pto.sync.set, pto.sync.wait
 // scenarios: split-compile, cube-producer, vector-consumer, fixpipe-quant, wrapper-load-mad
 // -----------------------------------------------------------------------------
 
@@ -63,7 +63,8 @@ module attributes {pto.target_arch = "a5"} {
 
     pto.set_flag["PIPE_M", "PIPE_FIX", "EVENT_ID1"]
     pto.wait_flag["PIPE_M", "PIPE_FIX", "EVENT_ID1"]
-    pto.copy_cbuf_to_fbuf %l1_fp, %fb_fp, %c1_i64, %c2_i64, %c0_i64, %c0_i64
+    pto.fp_load %l1_fp, %fb_fp, %c2_i64
+      nburst(%c1_i64, %c0_i64, %c0_i64)
       : !pto.ptr<f32, mat>, !pto.ptr<ui64, scaling>, i64, i64, i64, i64
     pto.set_fpc %c0_i64 : i64
 

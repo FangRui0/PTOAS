@@ -4726,6 +4726,13 @@ void BiasLoadOp::build(OpBuilder &builder, OperationState &state, Value source,
                      nburst.srcStride, nburst.dstStride});
 }
 
+void FpLoadOp::build(OpBuilder &builder, OperationState &state, Value source,
+                     Value destination, Value lenBurst,
+                     pto::DmaLoopConfig nburst) {
+  state.addOperands({source, destination, lenBurst, nburst.count,
+                     nburst.srcStride, nburst.dstStride});
+}
+
 ParseResult BiasLoadOp::parse(OpAsmParser &parser, OperationState &result) {
   OpAsmParser::UnresolvedOperand source, destination, lenBurst;
   SmallVector<OpAsmParser::UnresolvedOperand> nburstOperands;
@@ -4753,7 +4760,46 @@ ParseResult BiasLoadOp::parse(OpAsmParser &parser, OperationState &result) {
   return success();
 }
 
+ParseResult FpLoadOp::parse(OpAsmParser &parser, OperationState &result) {
+  OpAsmParser::UnresolvedOperand source, destination, lenBurst;
+  SmallVector<OpAsmParser::UnresolvedOperand> nburstOperands;
+  if (parseRequiredOperandWithComma(parser, source) ||
+      parseRequiredOperandWithComma(parser, destination) ||
+      parser.parseOperand(lenBurst) ||
+      parseDmaTripleGroup(parser, "nburst", nburstOperands) ||
+      parser.parseOptionalAttrDict(result.attributes) || parser.parseColon())
+    return failure();
+
+  Type sourceType, destinationType, lenBurstType;
+  SmallVector<Type> nburstTypes;
+  if (parser.parseType(sourceType) || parser.parseComma() ||
+      parser.parseType(destinationType) || parser.parseComma() ||
+      parser.parseType(lenBurstType) || parser.parseComma() ||
+      parseDmaTripleTypes(parser, nburstTypes))
+    return failure();
+
+  if (parser.resolveOperand(source, sourceType, result.operands) ||
+      parser.resolveOperand(destination, destinationType, result.operands) ||
+      parser.resolveOperand(lenBurst, lenBurstType, result.operands) ||
+      parser.resolveOperands(nburstOperands, nburstTypes,
+                             parser.getCurrentLocation(), result.operands))
+    return failure();
+  return success();
+}
+
 void BiasLoadOp::print(OpAsmPrinter &printer) {
+  printer << " " << getSource() << ", " << getDestination() << ", "
+          << getLenBurst();
+  printDmaTripleGroup(printer, "nburst", getNBurst(), getNburstSrcGap(),
+                      getNburstDstGap());
+  printer.printOptionalAttrDict((*this)->getAttrs());
+  printer << " : " << getSource().getType() << ", " << getDestination().getType()
+          << ", " << getLenBurst().getType() << ", " << getNBurst().getType()
+          << ", " << getNburstSrcGap().getType() << ", "
+          << getNburstDstGap().getType();
+}
+
+void FpLoadOp::print(OpAsmPrinter &printer) {
   printer << " " << getSource() << ", " << getDestination() << ", "
           << getLenBurst();
   printDmaTripleGroup(printer, "nburst", getNBurst(), getNburstSrcGap(),
@@ -4834,6 +4880,36 @@ LogicalResult BiasLoadOp::verify() {
   return success();
 }
 
+LogicalResult FpLoadOp::verify() {
+  if (!isBufferLike(getSource().getType()) || !isBufferLike(getDestination().getType()))
+    return emitOpError(
+        "requires typed !pto.ptr or memref source and destination");
+
+  auto getAddressSpace = [](Type type) -> std::optional<pto::AddressSpace> {
+    if (auto ptrType = dyn_cast<pto::PtrType>(type))
+      return ptrType.getMemorySpace().getAddressSpace();
+    if (auto memrefType = dyn_cast<BaseMemRefType>(type)) {
+      Attribute memorySpace = memrefType.getMemorySpace();
+      if (auto addrSpace = dyn_cast_or_null<pto::AddressSpaceAttr>(memorySpace))
+        return addrSpace.getAddressSpace();
+      if (auto intAttr = dyn_cast_or_null<IntegerAttr>(memorySpace))
+        return static_cast<pto::AddressSpace>(intAttr.getInt());
+    }
+    return std::nullopt;
+  };
+
+  std::optional<pto::AddressSpace> sourceAS = getAddressSpace(getSource().getType());
+  std::optional<pto::AddressSpace> destinationAS =
+      getAddressSpace(getDestination().getType());
+  if (!sourceAS || !destinationAS)
+    return emitOpError("requires source and destination with PTO address spaces");
+  if (*sourceAS != pto::AddressSpace::MAT)
+    return emitOpError("requires source in mat address space");
+  if (*destinationAS != pto::AddressSpace::SCALING)
+    return emitOpError("requires destination in scaling address space");
+  return success();
+}
+
 LogicalResult CubeLoadFracOp::verify() {
   if (failed(verifyCopyGmToUbufOp(*this, true)))
     return failure();
@@ -4883,6 +4959,13 @@ void CubeStoreOp::getEffects(
 }
 
 void BiasLoadOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getSourceMutable());
+  effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
+}
+
+void FpLoadOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
   effects.emplace_back(MemoryEffects::Read::get(), &getSourceMutable());

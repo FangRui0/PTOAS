@@ -1893,6 +1893,33 @@ def PTO_BiasLoadOp : PTO_Op<"bias_load", [
   ];
 }
 
+def PTO_FpLoadOp : PTO_Op<"fp_load", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    PTO_BufferLikeType:$source,
+    PTO_BufferLikeType:$destination,
+    I64:$len_burst,
+    I64:$n_burst,
+    I64:$nburst_src_gap,
+    I64:$nburst_dst_gap
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+  let hasCustomAssemblyFormat = 1;
+
+  let builders = [
+    OpBuilder<(ins
+      "::mlir::Value":$source,
+      "::mlir::Value":$destination,
+      "::mlir::Value":$lenBurst,
+      "::mlir::pto::DmaLoopConfig":$nburst
+    )>
+  ];
+}
+
 def PTO_CubeLoadFracOp : PTO_Op<"cube_load_frac", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {

@@ -749,6 +749,25 @@ struct ExpandBiasLoadPattern : public OpRewritePattern<pto::BiasLoadOp> {
   }
 };
 
+struct ExpandFpLoadPattern : public OpRewritePattern<pto::FpLoadOp> {
+  using OpRewritePattern<pto::FpLoadOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(pto::FpLoadOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value source = materializeBufferPointer(op.getSource(), rewriter, loc);
+    Value destination =
+        materializeBufferPointer(op.getDestination(), rewriter, loc);
+    if (!source || !destination)
+      return rewriter.notifyMatchFailure(op, "expected pointer-like operands");
+
+    rewriter.replaceOpWithNewOp<pto::CopyCbufToFbufOp>(
+        op, source, destination, op.getNBurst(),
+        op.getLenBurst(), op.getNburstSrcGap(), op.getNburstDstGap());
+    return success();
+  }
+};
+
 struct ExpandCubeLoadFracPattern : public OpRewritePattern<pto::CubeLoadFracOp> {
   using OpRewritePattern<pto::CubeLoadFracOp>::OpRewritePattern;
 
@@ -1066,6 +1085,7 @@ struct PTOVPTOExpandBridgeOpsPass
     patterns.add<ExpandUvldPattern, ExpandDmaLoadPattern, ExpandDmaStorePattern,
                  ExpandDmaCopyPattern, ExpandCubeLoadPattern,
                  ExpandCubeStorePattern, ExpandBiasLoadPattern,
+                 ExpandFpLoadPattern,
                  ExpandCubeLoadFracPattern, ExpandLeftLoadPattern,
                  ExpandRightLoadPattern, ExpandLeftLoadMxPattern,
                  ExpandRightLoadMxPattern, ExpandAccStorePattern,

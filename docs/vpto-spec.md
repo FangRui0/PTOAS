@@ -1155,6 +1155,7 @@ This section provides a categorized overview of all PTO micro Instruction operat
 | GM→L1 | 16 | `pto.cube_load`, `pto.cube_load_frac` |
 | L1→UB bridge wrapper | 16 | `pto.cube_store` |
 | L1→BT (bridge wrapper) | 16 | `pto.bias_load` |
+| L1→FB (bridge wrapper) | 16 | `pto.fp_load` |
 | L1→L0A / L1→L0B | 16 | `pto.load_cbuf_to_ca`, `pto.load_cbuf_to_cb` |
 | L1→L0A / L1→L0B bridge wrapper | 16 | `pto.left_load`, `pto.right_load`, `pto.left_load_mx`, `pto.right_load_mx` |
 | L0C→GM cube writeback | 16 | `pto.copy_matrix_cc_to_gm` |

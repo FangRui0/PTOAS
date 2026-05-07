@@ -284,6 +284,41 @@ pto.bias_load %l1_bias, %bt, %c16_i64 nburst(%c1_i64, %c0_i64, %c0_i64)
 
 ---
 
+### `pto.fp_load`
+
+- **syntax:**
+```mlir
+pto.fp_load %src, %dst, %len_burst
+  nburst(%count, %src_gap, %dst_gap)
+  : !pto.ptr<T, mat>, !pto.ptr<U, scaling>, i64, i64, i64, i64
+```
+- **semantics:** Structured helper for L1 (`cbuf`) to Fixpipe Buffer (`scaling`) load.
+
+**Parameter Table:**
+
+| Parameter | Width | Description |
+|-----------|-------|-------------|
+| `%src` | ptr | L1 source pointer (`mat`) |
+| `%dst` | ptr | Fixpipe-buffer destination pointer (`scaling`) |
+| `%len_burst` | i64 | Burst length |
+| `%count` | i64 | Burst count |
+| `%src_gap` | i64 | Source gap |
+| `%dst_gap` | i64 | Destination gap |
+
+**Constraints:**
+
+- Lowers to `pto.copy_cbuf_to_fbuf`.
+- `%src` must be in `mat`, `%dst` must be in `scaling`.
+
+**Example:**
+
+```mlir
+pto.fp_load %l1_fp, %fb_fp, %c2_i64 nburst(%c1_i64, %c0_i64, %c0_i64)
+  : !pto.ptr<f32, mat>, !pto.ptr<ui64, scaling>, i64, i64, i64, i64
+```
+
+---
+
 ### `pto.left_load`
 
 - **syntax:**
