@@ -8685,7 +8685,7 @@ This section documents PTO communication primitives. PTOAS currently exposes:
 
 - Synchronous point-to-point ops: `pto.comm.tput`, `pto.comm.tget`
 - Synchronous signal ops: `pto.comm.tnotify`, `pto.comm.twait`, `pto.comm.ttest`
-- Synchronous collective ops: `pto.comm.tbroadcast`, `pto.comm.comm_tgather`, `pto.comm.comm_tscatter`, `pto.comm.treduce`
+- Synchronous collective ops: `pto.comm.tbroadcast`, `pto.comm.tgather`, `pto.comm.tscatter`, `pto.comm.treduce`
 - Asynchronous communication/session ops: `pto.comm.build_async_session`, `pto.comm.tput_async`, `pto.comm.tget_async`, `pto.comm.wait_async_event`, `pto.comm.test_async_event`
 
 ##### `pto.comm.build_async_session` - Create Async DMA Session
@@ -8909,13 +8909,17 @@ pto.comm.twait %sig, %v {cmp = #pto.wait_cmp<ge>} : !pto.partition_tensor_view<1
 **Basic Example:**
 
 ```mlir
-pto.comm.tbroadcast %src, %ping, %g0, %g1, %g2 {root = 1, operandSegmentSizes = array<i32: 1, 1, 0, 3>} :
-  !pto.partition_tensor_view<128xf32>, !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=128, v_row=1, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.partition_tensor_view<128xf32>, !pto.partition_tensor_view<128xf32>, !pto.partition_tensor_view<128xf32>
+pto.comm.tbroadcast(%src, recv(%ping), group(%g0, %g1, %g2) :
+  !pto.partition_tensor_view<128xf32>,
+  !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=128, v_row=1, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+  !pto.partition_tensor_view<128xf32>,
+  !pto.partition_tensor_view<128xf32>,
+  !pto.partition_tensor_view<128xf32>) {root = 1 : i32}
 ```
 
 ---
 
-##### `pto.comm.comm_tgather` - Collective Gather
+##### `pto.comm.tgather` - Collective Gather
 
 **Summary:** Communication collective that lowers to `pto::comm::TGATHER(...)`. This op is distinct from tile-level `pto.tgather`.
 
@@ -8929,7 +8933,7 @@ pto.comm.tbroadcast %src, %ping, %g0, %g1, %g2 {root = 1, operandSegmentSizes = 
 
 ---
 
-##### `pto.comm.comm_tscatter` - Collective Scatter
+##### `pto.comm.tscatter` - Collective Scatter
 
 **Summary:** Communication collective that lowers to `pto::comm::TSCATTER(...)`. This op is distinct from tile-level `pto.tscatter`.
 
