@@ -61,7 +61,7 @@ def build():
                 is_root = arith.CmpIOp(arith.CmpIPredicate.eq, my_rank, c1_i32).result
                 root_if = scf.IfOp(is_root, [], hasElse=False)
                 with InsertionPoint(root_if.then_block):
-                    pto.TBroadcastOp(src, ping, group, 1)
+                    pto.TBroadcastOp(src, ping, group, root=1)
                     scf.YieldOp([])
 
                 pto.barrier(pipe_all)

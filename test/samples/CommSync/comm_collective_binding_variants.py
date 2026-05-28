@@ -62,27 +62,49 @@ def build():
                 group = [peer0, peer1, peer2]
                 root = 2
 
-                pto.TBroadcastOp(src, ping, group, root)
-                pto.TBroadcastOp(src, ping, group, root, pong=pong)
-                pto.CommTGatherOp(dst, ping, group, root)
-                pto.CommTGatherOp(dst, ping, group, root, pong=pong)
-                pto.CommTScatterOp(src, ping, group, root)
-                pto.CommTScatterOp(src, ping, group, root, pong=pong)
-                pto.TReduceOp(
-                    dst,
-                    acc,
+                pto.TBroadcastOp(src, ping, group, root=root)
+                pto.TBroadcastOp(
+                    src,
                     ping,
                     group,
-                    pto.ReduceOpAttr.get(pto.ReduceOp.Sum, ctx),
-                    root,
+                    root=root,
+                    pong=pong,
+                    collEngine=pto.CollEngineAttr.get(pto.CollEngine.CCU, ctx),
+                )
+                pto.CommTGatherOp(dst, ping, group, root=root)
+                pto.CommTGatherOp(
+                    dst,
+                    ping,
+                    group,
+                    root=root,
+                    pong=pong,
+                    collEngine=pto.CollEngineAttr.get(pto.CollEngine.CCU, ctx),
+                )
+                pto.CommTScatterOp(src, ping, group, root=root)
+                pto.CommTScatterOp(
+                    src,
+                    ping,
+                    group,
+                    root=root,
+                    pong=pong,
+                    collEngine=pto.CollEngineAttr.get(pto.CollEngine.CCU, ctx),
                 )
                 pto.TReduceOp(
                     dst,
                     acc,
                     ping,
                     group,
-                    pto.ReduceOpAttr.get(pto.ReduceOp.Min, ctx),
-                    root,
+                    reduceOp=pto.ReduceOpAttr.get(pto.ReduceOp.Sum, ctx),
+                    root=root,
+                )
+                pto.TReduceOp(
+                    dst,
+                    acc,
+                    ping,
+                    group,
+                    collEngine=pto.CollEngineAttr.get(pto.CollEngine.CCU, ctx),
+                    reduceOp=pto.ReduceOpAttr.get(pto.ReduceOp.Min, ctx),
+                    root=root,
                     recvPong=pong,
                 )
                 pto.TReduceOp(
@@ -90,8 +112,8 @@ def build():
                     acc,
                     ping,
                     group,
-                    pto.ReduceOpAttr.get(pto.ReduceOp.Max, ctx),
-                    root,
+                    reduceOp=pto.ReduceOpAttr.get(pto.ReduceOp.Max, ctx),
+                    root=root,
                     recvPong=pong,
                 )
 

@@ -10,7 +10,6 @@
 set -uo pipefail   # 注意：去掉 -e，避免失败直接退出整个脚本
 
 BASE_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
-
 # Allow overriding tool/python explicitly:
 #   PTOAS_BIN=/path/to/ptoas PYTHON_BIN=/path/to/python ./runop.sh all
 PTOAS_BIN="${PTOAS_BIN:-}"
@@ -99,6 +98,12 @@ resolve_python_bin() {
   [[ -n "$cand" ]] && { echo "$cand"; return 0; }
   echo ""
   return 1
+}
+
+has_optional_template_call() {
+  local file="$1"
+  local symbol="$2"
+  grep -Eq "${symbol}(<[^;]+>)?\\(" "$file"
 }
 
 resolve_ptobc_bin() {
@@ -1109,22 +1114,20 @@ PY
     fi
 
     if [[ "$base" == "comm_collective" || "$base" == "comm_collective_binding_variants" || "$base" == "comm_multicard_all_ops" ]]; then
-      for pat in \
-        "pto::comm::ParallelGroup" \
-        "pto::comm::TBROADCAST("; do
-        if ! grep -Fq "$pat" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tmissing $pat lowering"
-          overall=1
-          continue 2
-        fi
-      done
+      if ! grep -Fq "pto::comm::ParallelGroup" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing pto::comm::ParallelGroup lowering"
+        overall=1
+        continue
+      fi
+      if ! has_optional_template_call "$cpp" "pto::comm::TBROADCAST"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing pto::comm::TBROADCAST( lowering"
+        overall=1
+        continue
+      fi
       if [[ "$base" != "tbroadcast_root_binding" && "$base" != "tgather_root_binding" && "$base" != "tscatter_root_binding" && "$base" != "treduce_root_binding" ]]; then
-        for pat in \
-          "pto::comm::TGATHER(" \
-          "pto::comm::TSCATTER(" \
-          "pto::comm::TREDUCE("; do
-          if ! grep -Fq "$pat" "$cpp"; then
-            echo -e "${A}(${base}.py)\tFAIL\tmissing $pat lowering"
+        for pat in TGATHER TSCATTER TREDUCE; do
+          if ! has_optional_template_call "$cpp" "pto::comm::${pat}"; then
+            echo -e "${A}(${base}.py)\tFAIL\tmissing pto::comm::${pat}( lowering"
             overall=1
             continue 2
           fi
@@ -1147,7 +1150,6 @@ PY
     if [[ "$base" == "tbroadcast_root_binding" ]]; then
       for pat in \
         "__global__ AICORE void TBroadCastKernelImpl(" \
-        "pto::comm::TBROADCAST(" \
         "pto::comm::ParallelGroup"; do
         if ! grep -Fq "$pat" "$cpp"; then
           echo -e "${A}(${base}.py)\tFAIL\tmissing $pat lowering"
@@ -1155,12 +1157,16 @@ PY
           continue 2
         fi
       done
+      if ! has_optional_template_call "$cpp" "pto::comm::TBROADCAST"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing pto::comm::TBROADCAST( lowering"
+        overall=1
+        continue
+      fi
     fi
 
     if [[ "$base" == "tgather_root_binding" ]]; then
       for pat in \
         "__global__ AICORE void TGatherKernelImpl(" \
-        "pto::comm::TGATHER(" \
         "pto::comm::ParallelGroup"; do
         if ! grep -Fq "$pat" "$cpp"; then
           echo -e "${A}(${base}.py)\tFAIL\tmissing $pat lowering"
@@ -1168,12 +1174,16 @@ PY
           continue 2
         fi
       done
+      if ! has_optional_template_call "$cpp" "pto::comm::TGATHER"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing pto::comm::TGATHER( lowering"
+        overall=1
+        continue
+      fi
     fi
 
     if [[ "$base" == "tscatter_root_binding" ]]; then
       for pat in \
         "__global__ AICORE void TScatterKernelImpl(" \
-        "pto::comm::TSCATTER(" \
         "pto::comm::ParallelGroup"; do
         if ! grep -Fq "$pat" "$cpp"; then
           echo -e "${A}(${base}.py)\tFAIL\tmissing $pat lowering"
@@ -1181,12 +1191,16 @@ PY
           continue 2
         fi
       done
+      if ! has_optional_template_call "$cpp" "pto::comm::TSCATTER"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing pto::comm::TSCATTER( lowering"
+        overall=1
+        continue
+      fi
     fi
 
     if [[ "$base" == "treduce_root_binding" ]]; then
       for pat in \
         "__global__ AICORE void TReduceKernelImpl(" \
-        "pto::comm::TREDUCE(" \
         "pto::comm::ParallelGroup" \
         "pto::comm::ReduceOp::Sum"; do
         if ! grep -Fq "$pat" "$cpp"; then
@@ -1195,6 +1209,11 @@ PY
           continue 2
         fi
       done
+      if ! has_optional_template_call "$cpp" "pto::comm::TREDUCE"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing pto::comm::TREDUCE( lowering"
+        overall=1
+        continue
+      fi
     fi
 
     if [[ "$base" == "a5_comm_st_sync_flows" ]]; then

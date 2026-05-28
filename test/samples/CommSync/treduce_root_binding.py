@@ -67,8 +67,8 @@ def build():
                         acc,
                         recv,
                         group,
-                        pto.ReduceOpAttr.get(pto.ReduceOp.Sum, ctx),
-                        1,
+                        reduceOp=pto.ReduceOpAttr.get(pto.ReduceOp.Sum, ctx),
+                        root=1,
                     )
                     scf.YieldOp([])
 

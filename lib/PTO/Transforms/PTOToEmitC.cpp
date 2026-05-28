@@ -78,6 +78,8 @@ static void buildGlobalTensorShapeAndStride(ArrayRef<int64_t> shape,
                                             ArrayRef<int64_t> strides,
                                             SmallVectorImpl<int64_t> &shape5D,
                                             SmallVectorImpl<int64_t> &stride5D);
+static std::string dmaEngineTok(pto::DmaEngine engine);
+static std::string collEngineTok(pto::CollEngine engine);
 static std::string joinIntTemplateParams(ArrayRef<int64_t> values);
 static SmallVector<int64_t> buildRowMajorStrides(ArrayRef<int64_t> shape);
 static std::string getGlobalTensorTypeStringFromShape(Type elemTy,
@@ -6222,9 +6224,10 @@ struct PTOBuildAsyncSessionToEmitC
                              std::to_string(queueNum) + "u}"))
             .getResult();
 
+    std::string callee =
+        "pto::comm::BuildAsyncSession<" + dmaEngineTok(op.getDmaEngine()) + ">";
     rewriter.create<emitc::CallOpaqueOp>(
-        loc, TypeRange{}, "pto::comm::BuildAsyncSession<pto::comm::DmaEngine::SDMA>",
-        ArrayAttr{}, ArrayAttr{},
+        loc, TypeRange{}, callee, ArrayAttr{}, ArrayAttr{},
         ValueRange{*scratchTile, workspace, session, syncIdVal, baseConfig,
                    channelGroupIdxVal});
 
@@ -6236,10 +6239,6 @@ struct PTOBuildAsyncSessionToEmitC
 template <typename AsyncOp>
 struct PTOAsyncTransferToEmitC : public OpConversionPattern<AsyncOp> {
   using OpConversionPattern<AsyncOp>::OpConversionPattern;
-
-  explicit PTOAsyncTransferToEmitC(TypeConverter &typeConverter, MLIRContext *ctx,
-                                   StringRef callee)
-      : OpConversionPattern<AsyncOp>(typeConverter, ctx), callee(callee.str()) {}
 
   LogicalResult matchAndRewrite(AsyncOp op, typename AsyncOp::Adaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
@@ -6272,13 +6271,17 @@ struct PTOAsyncTransferToEmitC : public OpConversionPattern<AsyncOp> {
     if (!eventTy)
       return rewriter.notifyMatchFailure(op, "failed to convert async event type");
 
+    std::string callee;
+    if constexpr (std::is_same_v<AsyncOp, pto::TPutAsyncOp>) {
+      callee = "pto::comm::TPUT_ASYNC<" + dmaEngineTok(op.getDmaEngine()) + ">";
+    } else {
+      callee = "pto::comm::TGET_ASYNC<" + dmaEngineTok(op.getDmaEngine()) + ">";
+    }
     rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
         op, TypeRange{eventTy}, callee, ArrayAttr{}, ArrayAttr{},
         ValueRange{dstGT, srcGT, peelUnrealized(adaptor.getSession())});
     return success();
   }
-
-  std::string callee;
 };
 
 template <typename AsyncEventOp>
@@ -6417,6 +6420,26 @@ static std::string reduceOpTok(pto::ReduceOp op) {
   return "pto::comm::ReduceOp::Sum";
 }
 
+static std::string dmaEngineTok(pto::DmaEngine engine) {
+  switch (engine) {
+  case pto::DmaEngine::SDMA:
+    return "pto::comm::DmaEngine::SDMA";
+  case pto::DmaEngine::URMA:
+    return "pto::comm::DmaEngine::URMA";
+  }
+  return "pto::comm::DmaEngine::SDMA";
+}
+
+static std::string collEngineTok(pto::CollEngine engine) {
+  switch (engine) {
+  case pto::CollEngine::AIV:
+    return "pto::comm::CollEngine::AIV";
+  case pto::CollEngine::CCU:
+    return "pto::comm::CollEngine::CCU";
+  }
+  return "pto::comm::CollEngine::AIV";
+}
+
 template <typename OpTy>
 static FailureOr<SmallVector<Value>> buildCommGroupGlobalTensors(
     ConversionPatternRewriter &rewriter, Location loc, OpTy op,
@@ -6436,11 +6459,6 @@ static FailureOr<SmallVector<Value>> buildCommGroupGlobalTensors(
 template <typename CollectiveOp>
 struct PTOCommCollectiveToEmitC : public OpConversionPattern<CollectiveOp> {
   using OpConversionPattern<CollectiveOp>::OpConversionPattern;
-
-  explicit PTOCommCollectiveToEmitC(TypeConverter &typeConverter, MLIRContext *ctx,
-                                    StringRef apiName)
-      : OpConversionPattern<CollectiveOp>(typeConverter, ctx),
-        apiName(apiName.str()) {}
 
   LogicalResult matchAndRewrite(CollectiveOp op, typename CollectiveOp::Adaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
@@ -6470,12 +6488,16 @@ struct PTOCommCollectiveToEmitC : public OpConversionPattern<CollectiveOp> {
             buildPong(op.getPong(), adaptor.getPong(), "__pong");
         if (failed(pongTile))
           return rewriter.notifyMatchFailure(op, "failed to materialize pong tile");
+        std::string callee =
+            "pto::comm::TBROADCAST<" + collEngineTok(op.getCollEngine()) + ">";
         rewriter.create<emitc::CallOpaqueOp>(
-            loc, TypeRange{}, "pto::comm::TBROADCAST", ArrayAttr{}, ArrayAttr{},
+            loc, TypeRange{}, callee, ArrayAttr{}, ArrayAttr{},
             ValueRange{*pg, *srcGT, *pingTile, *pongTile});
       } else {
+        std::string callee =
+            "pto::comm::TBROADCAST<" + collEngineTok(op.getCollEngine()) + ">";
         rewriter.create<emitc::CallOpaqueOp>(
-            loc, TypeRange{}, "pto::comm::TBROADCAST", ArrayAttr{}, ArrayAttr{},
+            loc, TypeRange{}, callee, ArrayAttr{}, ArrayAttr{},
             ValueRange{*pg, *srcGT, *pingTile});
       }
     } else if constexpr (std::is_same_v<CollectiveOp, pto::CommTGatherOp>) {
@@ -6496,12 +6518,16 @@ struct PTOCommCollectiveToEmitC : public OpConversionPattern<CollectiveOp> {
             buildPong(op.getPong(), adaptor.getPong(), "__pong");
         if (failed(pongTile))
           return rewriter.notifyMatchFailure(op, "failed to materialize pong tile");
+        std::string callee =
+            "pto::comm::TGATHER<" + collEngineTok(op.getCollEngine()) + ">";
         rewriter.create<emitc::CallOpaqueOp>(
-            loc, TypeRange{}, "pto::comm::TGATHER", ArrayAttr{}, ArrayAttr{},
+            loc, TypeRange{}, callee, ArrayAttr{}, ArrayAttr{},
             ValueRange{*pg, *dstGT, *pingTile, *pongTile});
       } else {
+        std::string callee =
+            "pto::comm::TGATHER<" + collEngineTok(op.getCollEngine()) + ">";
         rewriter.create<emitc::CallOpaqueOp>(
-            loc, TypeRange{}, "pto::comm::TGATHER", ArrayAttr{}, ArrayAttr{},
+            loc, TypeRange{}, callee, ArrayAttr{}, ArrayAttr{},
             ValueRange{*pg, *dstGT, *pingTile});
       }
     } else if constexpr (std::is_same_v<CollectiveOp, pto::CommTScatterOp>) {
@@ -6522,12 +6548,16 @@ struct PTOCommCollectiveToEmitC : public OpConversionPattern<CollectiveOp> {
             buildPong(op.getPong(), adaptor.getPong(), "__pong");
         if (failed(pongTile))
           return rewriter.notifyMatchFailure(op, "failed to materialize pong tile");
+        std::string callee =
+            "pto::comm::TSCATTER<" + collEngineTok(op.getCollEngine()) + ">";
         rewriter.create<emitc::CallOpaqueOp>(
-            loc, TypeRange{}, "pto::comm::TSCATTER", ArrayAttr{}, ArrayAttr{},
+            loc, TypeRange{}, callee, ArrayAttr{}, ArrayAttr{},
             ValueRange{*pg, *srcGT, *pingTile, *pongTile});
       } else {
+        std::string callee =
+            "pto::comm::TSCATTER<" + collEngineTok(op.getCollEngine()) + ">";
         rewriter.create<emitc::CallOpaqueOp>(
-            loc, TypeRange{}, "pto::comm::TSCATTER", ArrayAttr{}, ArrayAttr{},
+            loc, TypeRange{}, callee, ArrayAttr{}, ArrayAttr{},
             ValueRange{*pg, *srcGT, *pingTile});
       }
     } else {
@@ -6554,24 +6584,26 @@ struct PTOCommCollectiveToEmitC : public OpConversionPattern<CollectiveOp> {
             emitc::OpaqueType::get(rewriter.getContext(), "pto::comm::ReduceOp");
         Value reduceOp = makeEmitCOpaqueConstant(rewriter, loc, reduceTy,
                                                 reduceOpTok(op.getReduceOp()));
+        std::string callee =
+            "pto::comm::TREDUCE<" + collEngineTok(op.getCollEngine()) + ">";
         rewriter.create<emitc::CallOpaqueOp>(
-            loc, TypeRange{}, "pto::comm::TREDUCE", ArrayAttr{}, ArrayAttr{},
+            loc, TypeRange{}, callee, ArrayAttr{}, ArrayAttr{},
             ValueRange{*pg, *dstGT, *accTile, *recvPing, *recvPong, reduceOp});
       } else {
         auto reduceTy =
             emitc::OpaqueType::get(rewriter.getContext(), "pto::comm::ReduceOp");
         Value reduceOp = makeEmitCOpaqueConstant(rewriter, loc, reduceTy,
                                                 reduceOpTok(op.getReduceOp()));
+        std::string callee =
+            "pto::comm::TREDUCE<" + collEngineTok(op.getCollEngine()) + ">";
         rewriter.create<emitc::CallOpaqueOp>(
-            loc, TypeRange{}, "pto::comm::TREDUCE", ArrayAttr{}, ArrayAttr{},
+            loc, TypeRange{}, callee, ArrayAttr{}, ArrayAttr{},
             ValueRange{*pg, *dstGT, *accTile, *recvPing, reduceOp});
       }
     }
     rewriter.eraseOp(op);
     return success();
   }
-
-  std::string apiName;
 };
 
 template <typename OpTy>
@@ -12369,12 +12401,8 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<ArithCastOPToEmitC>(typeConverter, ctx);
   patterns.add<ArithTruncIToEmitC>(typeConverter, ctx);
   patterns.add<PTOBuildAsyncSessionToEmitC>(typeConverter, ctx);
-  patterns.add<PTOAsyncTransferToEmitC<pto::TPutAsyncOp>>(
-      typeConverter, ctx,
-      "pto::comm::TPUT_ASYNC<pto::comm::DmaEngine::SDMA>");
-  patterns.add<PTOAsyncTransferToEmitC<pto::TGetAsyncOp>>(
-      typeConverter, ctx,
-      "pto::comm::TGET_ASYNC<pto::comm::DmaEngine::SDMA>");
+  patterns.add<PTOAsyncTransferToEmitC<pto::TPutAsyncOp>>(typeConverter, ctx);
+  patterns.add<PTOAsyncTransferToEmitC<pto::TGetAsyncOp>>(typeConverter, ctx);
   patterns.add<PTOP2PCommToEmitC<pto::TPutOp>>(typeConverter, ctx,
                                                "pto::comm::TPUT");
   patterns.add<PTOP2PCommToEmitC<pto::TGetOp>>(typeConverter, ctx,
@@ -12385,14 +12413,10 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
                                                    "pto::comm::TWAIT");
   patterns.add<PTOSignalCommToEmitC<pto::TTestOp>>(typeConverter, ctx,
                                                    "pto::comm::TTEST");
-  patterns.add<PTOCommCollectiveToEmitC<pto::TBroadcastOp>>(typeConverter, ctx,
-                                                            "TBROADCAST");
-  patterns.add<PTOCommCollectiveToEmitC<pto::CommTGatherOp>>(typeConverter, ctx,
-                                                             "TGATHER");
-  patterns.add<PTOCommCollectiveToEmitC<pto::CommTScatterOp>>(typeConverter, ctx,
-                                                              "TSCATTER");
-  patterns.add<PTOCommCollectiveToEmitC<pto::TReduceOp>>(typeConverter, ctx,
-                                                         "TREDUCE");
+  patterns.add<PTOCommCollectiveToEmitC<pto::TBroadcastOp>>(typeConverter, ctx);
+  patterns.add<PTOCommCollectiveToEmitC<pto::CommTGatherOp>>(typeConverter, ctx);
+  patterns.add<PTOCommCollectiveToEmitC<pto::CommTScatterOp>>(typeConverter, ctx);
+  patterns.add<PTOCommCollectiveToEmitC<pto::TReduceOp>>(typeConverter, ctx);
   patterns.add<PTOAsyncEventToEmitC<pto::WaitAsyncEventOp>>(
       typeConverter, ctx, "PTOAS__ASYNC_EVENT_WAIT");
   patterns.add<PTOAsyncEventToEmitC<pto::TestAsyncEventOp>>(

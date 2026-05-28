@@ -83,6 +83,10 @@ WaitCmp = _pto_mod.WaitCmp
 WaitCmpAttr = _pto_mod.WaitCmpAttr
 ReduceOp = _pto_mod.ReduceOp
 ReduceOpAttr = _pto_mod.ReduceOpAttr
+DmaEngine = _pto_mod.DmaEngine
+DmaEngineAttr = _pto_mod.DmaEngineAttr
+CollEngine = _pto_mod.CollEngine
+CollEngineAttr = _pto_mod.CollEngineAttr
 RoundMode = _pto_mod.RoundMode
 RoundModeAttr = _pto_mod.RoundModeAttr
 SaturationMode = _pto_mod.SaturationMode
@@ -139,6 +143,10 @@ __all__ = [
     "WaitCmpAttr",
     "ReduceOp",
     "ReduceOpAttr",
+    "DmaEngine",
+    "DmaEngineAttr",
+    "CollEngine",
+    "CollEngineAttr",
     "RoundMode",
     "RoundModeAttr",
     "SaturationMode",

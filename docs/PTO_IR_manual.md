@@ -9192,6 +9192,7 @@ This section documents PTO communication primitives. PTOAS currently exposes:
 |------|------|-------------|
 | `scratch` | `pto.tile_buf` / local memref | Local scratch/staging buffer used by the async runtime |
 | `workspace` | `!pto.ptr<...>` / GM memref | Global workspace backing the async session |
+| `dmaEngine` | optional `#pto<dma_engine ...>` attr | DMA engine template parameter, defaults to `#pto<dma_engine sdma>` |
 | `sync_id` | optional `i32` attr | Session synchronization ID |
 | `block_bytes` | optional `i64` attr | Communication block size in bytes |
 | `comm_block_offset` | optional `i64` attr | Per-block GM offset in bytes |
@@ -9204,12 +9205,13 @@ This section documents PTO communication primitives. PTOAS currently exposes:
 
 - `scratch` must be tile-like local storage.
 - `workspace` must be a GM pointer/memref.
+- `dmaEngine` currently lowers as a compile-time engine selector; omitted means `SDMA`.
 - Optional attrs are forwarded as session configuration and must use the declared integer types.
 
 **Basic Example:**
 
 ```mlir
-%session = pto.comm.build_async_session(%scratch, %workspace : !pto.tile_buf<loc=vec, dtype=i8, rows=1, cols=256, v_row=1, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.ptr<i8>) {sync_id = 0 : i32} -> !pto.async_session
+%session = pto.comm.build_async_session(%scratch, %workspace : !pto.tile_buf<loc=vec, dtype=i8, rows=1, cols=256, v_row=1, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.ptr<i8>) {dmaEngine = #pto<dma_engine urma>, sync_id = 0 : i32} -> !pto.async_session
 ```
 
 ---
@@ -9225,6 +9227,7 @@ This section documents PTO communication primitives. PTOAS currently exposes:
 | `dst` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Remote destination buffer |
 | `src` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Local source buffer |
 | `session` | `!pto.async_session` | Async DMA session |
+| `dmaEngine` | optional `#pto<dma_engine ...>` attr | Transfer engine template parameter, defaults to `#pto<dma_engine sdma>` |
 
 **Results:** `!pto.async_event`
 
@@ -9233,11 +9236,12 @@ This section documents PTO communication primitives. PTOAS currently exposes:
 - `dst` / `src` must be GM-shaped values with identical element type and static shape.
 - Current lowering only supports flat contiguous logical-1D transfers for async GM operands.
 - `session` must come from `pto.comm.build_async_session`.
+- `dmaEngine` should match the engine chosen for the session when non-default lowering is required.
 
 **Basic Example:**
 
 ```mlir
-%event = pto.comm.tput_async(%dst, %src, %session : !pto.partition_tensor_view<128xf32>, !pto.partition_tensor_view<128xf32>, !pto.async_session) -> !pto.async_event
+%event = pto.comm.tput_async(%dst, %src, %session : !pto.partition_tensor_view<128xf32>, !pto.partition_tensor_view<128xf32>, !pto.async_session) {dmaEngine = #pto<dma_engine urma>} -> !pto.async_event
 ```
 
 ---
@@ -9253,6 +9257,7 @@ This section documents PTO communication primitives. PTOAS currently exposes:
 | `dst` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Local destination buffer |
 | `src` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Remote source buffer |
 | `session` | `!pto.async_session` | Async DMA session |
+| `dmaEngine` | optional `#pto<dma_engine ...>` attr | Transfer engine template parameter, defaults to `#pto<dma_engine sdma>` |
 
 **Results:** `!pto.async_event`
 
@@ -9260,11 +9265,12 @@ This section documents PTO communication primitives. PTOAS currently exposes:
 
 - Same operand constraints as `pto.comm.tput_async`.
 - `session` must be compatible with the transfer workspace and staging configuration.
+- `dmaEngine` is forwarded to emitc as the compile-time `pto::comm::DmaEngine` template argument.
 
 **Basic Example:**
 
 ```mlir
-%event = pto.comm.tget_async(%dst, %src, %session : !pto.partition_tensor_view<128xf32>, !pto.partition_tensor_view<128xf32>, !pto.async_session) -> !pto.async_event
+%event = pto.comm.tget_async(%dst, %src, %session : !pto.partition_tensor_view<128xf32>, !pto.partition_tensor_view<128xf32>, !pto.async_session) {dmaEngine = #pto<dma_engine urma>} -> !pto.async_event
 ```
 
 ---
@@ -9393,6 +9399,7 @@ pto.comm.twait(%sig, %v : !pto.partition_tensor_view<1xi32>, i32) {cmp = #pto<wa
 | `src` | GM-shaped value | Root source buffer |
 | `recv` | `recv(%ping)` or `recv(%ping, %pong)` | One or two local VEC staging tiles |
 | `group` | variadic GM-shaped values | Parallel group members |
+| `collEngine` | optional `#pto<coll_engine ...>` attr | Collective engine template parameter, defaults to `#pto<coll_engine aiv>` |
 | `root` | `i32` attr | Root rank index inside `group` |
 
 **Constraints & Verification:**
@@ -9400,6 +9407,7 @@ pto.comm.twait(%sig, %v : !pto.partition_tensor_view<1xi32>, i32) {cmp = #pto<wa
 - `group` must be non-empty and all members must have identical types.
 - `src` must have the same type as each `group` member.
 - `root` must be in range `[0, group.size)`.
+- `collEngine` is forwarded to emitc as the compile-time `pto::comm::CollEngine` template argument.
 
 **Examples:**
 
@@ -9411,7 +9419,7 @@ pto.comm.tbroadcast(%src, recv(%ping), group(%g0, %g1, %g2) :
   !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=128, v_row=1, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
   !pto.partition_tensor_view<128xf32>,
   !pto.partition_tensor_view<128xf32>,
-  !pto.partition_tensor_view<128xf32>) {root = 1 : i32}
+  !pto.partition_tensor_view<128xf32>) {collEngine = #pto<coll_engine ccu>, root = 1 : i32}
 ```
 
 Optional ping–pong (`recv(%ping, %pong)` adds a second tile type in the operand-type list):
@@ -9439,6 +9447,7 @@ pto.comm.tbroadcast(%src, recv(%ping, %pong), group(%g0, %g1, %g2) :
 | `dst` | GM-shaped value | Destination buffer (gather target) |
 | `recv` | `recv(%ping)` or `recv(%ping, %pong)` | Staging tile(s) |
 | `group` | variadic GM-shaped values | Parallel group members |
+| `collEngine` | optional `#pto<coll_engine ...>` attr | Collective engine template parameter, defaults to `#pto<coll_engine aiv>` |
 | `root` | `i32` attr | Root rank index inside `group` |
 
 **Constraints & Verification:**
@@ -9463,7 +9472,7 @@ pto.comm.tgather(%dst, recv(%ping, %pong), group(%g0, %g1, %g2) :
   !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=128, v_row=1, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
   !pto.partition_tensor_view<128xf32>,
   !pto.partition_tensor_view<128xf32>,
-  !pto.partition_tensor_view<128xf32>) {root = 1 : i32}
+  !pto.partition_tensor_view<128xf32>) {collEngine = #pto<coll_engine ccu>, root = 1 : i32}
 ```
 
 ---
@@ -9479,6 +9488,7 @@ pto.comm.tgather(%dst, recv(%ping, %pong), group(%g0, %g1, %g2) :
 | `src` | GM-shaped value | Source buffer (scatter root) |
 | `recv` | `recv(%ping)` or `recv(%ping, %pong)` | Staging tile(s) |
 | `group` | variadic GM-shaped values | Parallel group members |
+| `collEngine` | optional `#pto<coll_engine ...>` attr | Collective engine template parameter, defaults to `#pto<coll_engine aiv>` |
 | `root` | `i32` attr | Root rank index inside `group` |
 
 **Constraints & Verification:**
@@ -9503,7 +9513,7 @@ pto.comm.tscatter(%src, recv(%ping, %pong), group(%g0, %g1, %g2) :
   !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=128, v_row=1, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
   !pto.partition_tensor_view<128xf32>,
   !pto.partition_tensor_view<128xf32>,
-  !pto.partition_tensor_view<128xf32>) {root = 1 : i32}
+  !pto.partition_tensor_view<128xf32>) {collEngine = #pto<coll_engine ccu>, root = 1 : i32}
 ```
 
 ---
@@ -9520,6 +9530,7 @@ pto.comm.tscatter(%src, recv(%ping, %pong), group(%g0, %g1, %g2) :
 | `acc` | local VEC tile-like value | Accumulation tile |
 | `recv` | `recv(%ping)` or `recv(%ping, %pong)` | One or two receive staging tiles |
 | `group` | variadic GM-shaped values | Parallel group members |
+| `collEngine` | optional `#pto<coll_engine ...>` attr | Collective engine template parameter, defaults to `#pto<coll_engine aiv>` |
 | `reduceOp` | `#pto<reduce_op sum>` / `#pto<reduce_op max>` / `#pto<reduce_op min>` | Reduction mode |
 | `root` | `i32` attr | Root rank index inside `group` |
 
@@ -9553,7 +9564,7 @@ pto.comm.treduce(%dst, %acc, recv(%ping, %pong), group(%g0, %g1, %g2) :
   !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=128, v_row=1, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
   !pto.partition_tensor_view<128xf32>,
   !pto.partition_tensor_view<128xf32>,
-  !pto.partition_tensor_view<128xf32>) {reduceOp = #pto<reduce_op max>, root = 1 : i32}
+  !pto.partition_tensor_view<128xf32>) {collEngine = #pto<coll_engine ccu>, reduceOp = #pto<reduce_op max>, root = 1 : i32}
 ```
 
 ---

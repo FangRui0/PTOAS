@@ -1737,6 +1737,7 @@ def BuildAsyncSessionOp : PTO_Op<"comm.build_async_session", [
   let arguments = (ins
       TileBufOrMemRef:$scratch,
       ScalarPtrOrMemRef:$workspace,
+      DefaultValuedAttr<PTO_DmaEngineAttr, "::mlir::pto::DmaEngine::SDMA">:$dmaEngine,
       OptionalAttr<I32Attr>:$sync_id,
       OptionalAttr<I64Attr>:$block_bytes,
       OptionalAttr<I64Attr>:$comm_block_offset,
@@ -1761,7 +1762,8 @@ def TPutAsyncOp : PTO_Op<"comm.tput_async", [
   let arguments = (ins
       PTODpsType:$dst,
       PTODpsType:$src,
-      AsyncSessionType:$session
+      AsyncSessionType:$session,
+      DefaultValuedAttr<PTO_DmaEngineAttr, "::mlir::pto::DmaEngine::SDMA">:$dmaEngine
   );
 
   let results = (outs AsyncEventType:$event);
@@ -1782,7 +1784,8 @@ def TGetAsyncOp : PTO_Op<"comm.tget_async", [
   let arguments = (ins
       PTODpsType:$dst,
       PTODpsType:$src,
-      AsyncSessionType:$session
+      AsyncSessionType:$session,
+      DefaultValuedAttr<PTO_DmaEngineAttr, "::mlir::pto::DmaEngine::SDMA">:$dmaEngine
   );
 
   let results = (outs AsyncEventType:$event);
@@ -1933,6 +1936,7 @@ def TBroadcastOp : PTO_Op<"comm.tbroadcast", [
       PTODpsType:$ping,
       Optional<PTODpsType>:$pong,
       Variadic<PTODpsType>:$group,
+      DefaultValuedAttr<PTO_CollEngineAttr, "::mlir::pto::CollEngine::AIV">:$collEngine,
       I32Attr:$root
   );
   let results = (outs);
@@ -1950,6 +1954,7 @@ def CommTGatherOp : PTO_Op<"comm.tgather", [
       PTODpsType:$ping,
       Optional<PTODpsType>:$pong,
       Variadic<PTODpsType>:$group,
+      DefaultValuedAttr<PTO_CollEngineAttr, "::mlir::pto::CollEngine::AIV">:$collEngine,
       I32Attr:$root
   );
   let results = (outs);
@@ -1967,6 +1972,7 @@ def CommTScatterOp : PTO_Op<"comm.tscatter", [
       PTODpsType:$ping,
       Optional<PTODpsType>:$pong,
       Variadic<PTODpsType>:$group,
+      DefaultValuedAttr<PTO_CollEngineAttr, "::mlir::pto::CollEngine::AIV">:$collEngine,
       I32Attr:$root
   );
   let results = (outs);
@@ -1985,6 +1991,7 @@ def TReduceOp : PTO_Op<"comm.treduce", [
       PTODpsType:$recvPing,
       Optional<PTODpsType>:$recvPong,
       Variadic<PTODpsType>:$group,
+      DefaultValuedAttr<PTO_CollEngineAttr, "::mlir::pto::CollEngine::AIV">:$collEngine,
       PTO_ReduceOpAttr:$reduceOp,
       I32Attr:$root
   );

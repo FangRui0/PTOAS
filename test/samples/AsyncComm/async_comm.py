@@ -12,11 +12,19 @@ from mlir.dialects import arith, func, pto, scf
 
 def _build_async_session(scratch, workspace, i32, ctx, sync_id=0):
     if hasattr(pto, "BuildAsyncSessionOp"):
-        return pto.BuildAsyncSessionOp(scratch, workspace, sync_id=sync_id).result
+        return pto.BuildAsyncSessionOp(
+            scratch,
+            workspace,
+            dmaEngine=pto.DmaEngineAttr.get(pto.DmaEngine.URMA, ctx),
+            sync_id=sync_id,
+        ).result
     op = Operation.create(
         "pto.comm.build_async_session",
         operands=[scratch, workspace],
-        attributes={"sync_id": IntegerAttr.get(i32, sync_id)},
+        attributes={
+            "dmaEngine": pto.DmaEngineAttr.get(pto.DmaEngine.URMA, ctx),
+            "sync_id": IntegerAttr.get(i32, sync_id),
+        },
         results=[pto.AsyncSessionType.get(ctx)],
     )
     return op.result
@@ -28,10 +36,16 @@ def _async_transfer(op_name, dst, src, session, ctx):
         "pto.comm.tget_async": "TGetAsyncOp",
     }[op_name]
     if hasattr(pto, op_class_name):
-        return getattr(pto, op_class_name)(dst, src, session).result
+        return getattr(pto, op_class_name)(
+            dst,
+            src,
+            session,
+            dmaEngine=pto.DmaEngineAttr.get(pto.DmaEngine.URMA, ctx),
+        ).result
     op = Operation.create(
         op_name,
         operands=[dst, src, session],
+        attributes={"dmaEngine": pto.DmaEngineAttr.get(pto.DmaEngine.URMA, ctx)},
         results=[pto.AsyncEventType.get(ctx)],
     )
     return op.result

@@ -708,6 +708,36 @@ int32_t mlirPTOReduceOpAttrGetValue(MlirAttribute attr) {
   return static_cast<int32_t>(a.getValue());
 }
 
+bool mlirPTOAttrIsADmaEngineAttr(MlirAttribute attr) {
+  return mlir::isa<mlir::pto::DmaEngineAttr>(unwrap(attr));
+}
+
+MlirAttribute mlirPTODmaEngineAttrGet(MlirContext ctx, int32_t value) {
+  auto *c = unwrap(ctx);
+  return wrap(mlir::pto::DmaEngineAttr::get(
+      c, static_cast<mlir::pto::DmaEngine>(value)));
+}
+
+int32_t mlirPTODmaEngineAttrGetValue(MlirAttribute attr) {
+  auto a = mlir::cast<mlir::pto::DmaEngineAttr>(unwrap(attr));
+  return static_cast<int32_t>(a.getValue());
+}
+
+bool mlirPTOAttrIsACollEngineAttr(MlirAttribute attr) {
+  return mlir::isa<mlir::pto::CollEngineAttr>(unwrap(attr));
+}
+
+MlirAttribute mlirPTOCollEngineAttrGet(MlirContext ctx, int32_t value) {
+  auto *c = unwrap(ctx);
+  return wrap(mlir::pto::CollEngineAttr::get(
+      c, static_cast<mlir::pto::CollEngine>(value)));
+}
+
+int32_t mlirPTOCollEngineAttrGetValue(MlirAttribute attr) {
+  auto a = mlir::cast<mlir::pto::CollEngineAttr>(unwrap(attr));
+  return static_cast<int32_t>(a.getValue());
+}
+
 MlirAttribute mlirPTOTileBufConfigAttrGet(MlirContext ctx,
                                           MlirAttribute bLayout,
                                           MlirAttribute sLayout,

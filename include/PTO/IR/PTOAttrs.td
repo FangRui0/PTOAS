@@ -505,6 +505,26 @@ def PTO_ReduceOpAttr : EnumAttr<PTO_Dialect, PTO_ReduceOpEnum, "reduce_op"> {
   let summary = "communication reduce operation attribute";
 }
 
+def PTO_DmaEngineEnum : PTO_I32Enum<
+  "DmaEngine", "PTO communication DMA engine", [
+    I32EnumAttrCase<"SDMA", 0, "sdma">,
+    I32EnumAttrCase<"URMA", 1, "urma">
+  ]>;
+
+def PTO_DmaEngineAttr : EnumAttr<PTO_Dialect, PTO_DmaEngineEnum, "dma_engine"> {
+  let summary = "communication DMA engine attribute";
+}
+
+def PTO_CollEngineEnum : PTO_I32Enum<
+  "CollEngine", "PTO communication collective engine", [
+    I32EnumAttrCase<"AIV", 0, "aiv">,
+    I32EnumAttrCase<"CCU", 1, "ccu">
+  ]>;
+
+def PTO_CollEngineAttr : EnumAttr<PTO_Dialect, PTO_CollEngineEnum, "coll_engine"> {
+  let summary = "communication collective engine attribute";
+}
+
 def PTO_ReluPreModeEnum : PTO_I32Enum<
   "ReluPreMode", "PTO TSTORE relu pre mode", [
     I32EnumAttrCase<"NoRelu", 0, "no_relu">,

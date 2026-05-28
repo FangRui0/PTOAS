@@ -198,6 +198,16 @@ static void bindPTOModule(pybind11::module &m) {
       .value("Min", mlir::pto::ReduceOp::Min)
       .export_values();
 
+    py::enum_<mlir::pto::DmaEngine>(m, "DmaEngine")
+      .value("SDMA", mlir::pto::DmaEngine::SDMA)
+      .value("URMA", mlir::pto::DmaEngine::URMA)
+      .export_values();
+
+    py::enum_<mlir::pto::CollEngine>(m, "CollEngine")
+      .value("AIV", mlir::pto::CollEngine::AIV)
+      .value("CCU", mlir::pto::CollEngine::CCU)
+      .export_values();
+
     py::enum_<mlir::pto::SyncOpType>(m, "SyncOpType")
       .value("TLOAD", mlir::pto::SyncOpType::TLOAD)
       .value("TSTORE_ACC", mlir::pto::SyncOpType::TSTORE_ACC)
@@ -359,6 +369,32 @@ static void bindPTOModule(pybind11::module &m) {
             "get",
             [](py::object cls, mlir::pto::ReduceOp value, MlirContext ctx) -> py::object {
             MlirAttribute a = mlirPTOReduceOpAttrGet(ctx, static_cast<int32_t>(value));
+            if (mlirAttributeIsNull(a)) return py::none();
+            return cls(a);
+            },
+            py::arg("cls"), py::arg("value"), py::arg("context") = py::none());
+
+    mlir_attribute_subclass(m, "DmaEngineAttr",
+                            [](MlirAttribute a) -> bool {
+                            return mlirPTOAttrIsADmaEngineAttr(a);
+                            })
+        .def_classmethod(
+            "get",
+            [](py::object cls, mlir::pto::DmaEngine value, MlirContext ctx) -> py::object {
+            MlirAttribute a = mlirPTODmaEngineAttrGet(ctx, static_cast<int32_t>(value));
+            if (mlirAttributeIsNull(a)) return py::none();
+            return cls(a);
+            },
+            py::arg("cls"), py::arg("value"), py::arg("context") = py::none());
+
+    mlir_attribute_subclass(m, "CollEngineAttr",
+                            [](MlirAttribute a) -> bool {
+                            return mlirPTOAttrIsACollEngineAttr(a);
+                            })
+        .def_classmethod(
+            "get",
+            [](py::object cls, mlir::pto::CollEngine value, MlirContext ctx) -> py::object {
+            MlirAttribute a = mlirPTOCollEngineAttrGet(ctx, static_cast<int32_t>(value));
             if (mlirAttributeIsNull(a)) return py::none();
             return cls(a);
             },
