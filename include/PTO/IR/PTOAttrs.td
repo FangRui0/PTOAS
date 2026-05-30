@@ -880,6 +880,39 @@ def PTO_AccToVecModeAttr : PTO_Attr<"AccToVecMode", "acc_to_vec_mode"> {
   let parameters = (ins EnumParameter<PTO_AccToVecMode_Enum>:$value);
   let assemblyFormat = "`<` params `>`";
 }
+
+def PTO_TInsertModeEnum : PTO_I32Enum<
+  "TInsertMode", "PTO A5 tinsert vec->mat mode", [
+    I32EnumAttrCase<"SPLIT2", 2, "split2">,
+    I32EnumAttrCase<"SPLIT4", 3, "split4">
+  ]>;
+
+def PTO_TInsertModeAttr : PTO_Attr<"TInsertMode", "tinsert_mode"> {
+  let parameters = (ins EnumParameter<PTO_TInsertModeEnum>:$value);
+  let assemblyFormat = "`<` params `>`";
+}
+
+def PTO_QuantScaleAlgEnum : PTO_I32Enum<
+  "QuantScaleAlg", "PTO TQUANT quant scale algorithm", [
+    I32EnumAttrCase<"OCP", 0, "ocp">,
+    I32EnumAttrCase<"NV", 1, "nv">
+  ]>;
+
+def PTO_QuantScaleAlgAttr : PTO_Attr<"QuantScaleAlg", "quant_scale_alg"> {
+  let parameters = (ins EnumParameter<PTO_QuantScaleAlgEnum>:$value);
+  let assemblyFormat = "`<` params `>`";
+}
+
+def PTO_VecStoreModeEnum : PTO_I32Enum<
+  "VecStoreMode", "PTO TQUANT vec store mode", [
+    I32EnumAttrCase<"ND", 0, "nd">,
+    I32EnumAttrCase<"NZ", 1, "nz">
+  ]>;
+
+def PTO_VecStoreModeAttr : PTO_Attr<"VecStoreMode", "vec_store_mode"> {
+  let parameters = (ins EnumParameter<PTO_VecStoreModeEnum>:$value);
+  let assemblyFormat = "`<` params `>`";
+}
 //===----------------------------------------------------------------------===//
 // MaskPattern
 //===----------------------------------------------------------------------===//

@@ -119,7 +119,7 @@ static LogicalResult computeSubviewElementOffset(memref::SubViewOp op,
 
   Location loc = op.getLoc();
   Value total = rewriter.create<arith::ConstantIndexOp>(loc, baseOffset);
-  ArrayRef<OpFoldResult> mixedOffsets = op.getMixedOffsets();
+  SmallVector<OpFoldResult> mixedOffsets = llvm::to_vector(op.getMixedOffsets());
   if (mixedOffsets.size() != strides.size())
     return failure();
 

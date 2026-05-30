@@ -1,0 +1,101 @@
+// RUN: ptoas --pto-arch=a5 %s 2>&1 | FileCheck %s
+
+module {
+  func.func @textract_acc_mat_prequant() {
+    %c0 = arith.constant 0 : index
+    %pq = arith.constant 7 : i64
+    %src = pto.alloc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>
+    %dst = pto.alloc_tile : !pto.tile_buf<loc=mat, dtype=i8, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>
+    pto.textract ins(%src, %pq, %c0, %c0 : !pto.tile_buf<loc=acc, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>, i64, index, index)
+                 outs(%dst : !pto.tile_buf<loc=mat, dtype=i8, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>)
+                 {reluPreMode = #pto<relu_pre_mode normal_relu>}
+    return
+  }
+
+  func.func @textract_fp_acc_vec_mode() {
+    %c0 = arith.constant 0 : index
+    %src = pto.alloc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>
+    %fp = pto.alloc_tile : !pto.tile_buf<loc=scaling, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=row_major, fractal=512, pad=0>
+    %dst = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    pto.textract_fp ins(%src, %fp, %c0, %c0 : !pto.tile_buf<loc=acc, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>, !pto.tile_buf<loc=scaling, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=row_major, fractal=512, pad=0>, index, index)
+                    outs(%dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+                    {accToVecMode = #pto.acc_to_vec_mode<single_mode_vec0>, reluPreMode = #pto<relu_pre_mode normal_relu>}
+    return
+  }
+
+  func.func @tinsert_acc_mat_prequant() {
+    %c0 = arith.constant 0 : index
+    %pq = arith.constant 11 : i64
+    %src = pto.alloc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>
+    %dst = pto.alloc_tile : !pto.tile_buf<loc=mat, dtype=i8, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>
+    pto.tinsert ins(%src, %pq, %c0, %c0 : !pto.tile_buf<loc=acc, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>, i64, index, index)
+                outs(%dst : !pto.tile_buf<loc=mat, dtype=i8, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>)
+                {reluPreMode = #pto<relu_pre_mode normal_relu>}
+    return
+  }
+
+  func.func @tinsert_fp_acc_vec_mode() {
+    %c0 = arith.constant 0 : index
+    %src = pto.alloc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>
+    %fp = pto.alloc_tile : !pto.tile_buf<loc=scaling, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=row_major, fractal=512, pad=0>
+    %dst = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    pto.tinsert_fp ins(%src, %fp, %c0, %c0 : !pto.tile_buf<loc=acc, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>, !pto.tile_buf<loc=scaling, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=row_major, fractal=512, pad=0>, index, index)
+                   outs(%dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+                   {accToVecMode = #pto.acc_to_vec_mode<single_mode_vec1>, reluPreMode = #pto<relu_pre_mode normal_relu>}
+    return
+  }
+
+  func.func @tinsert_vec_mat_mode() {
+    %c0 = arith.constant 0 : index
+    %src = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>
+    %dst = pto.alloc_tile : !pto.tile_buf<loc=mat, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>
+    pto.tinsert ins(%src, %c0, %c0 : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>, index, index)
+                outs(%dst : !pto.tile_buf<loc=mat, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>)
+                {tinsertMode = #pto.tinsert_mode<split2>}
+    return
+  }
+
+  func.func @tquant_scale_alg_form() {
+    %src = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %exp = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %max = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %scaling = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %dst = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=i8, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    "pto.tquant"(%src, %exp, %max, %scaling, %dst) <{operandSegmentSizes = array<i32: 1, 0, 0, 1, 1, 1, 0, 1>}> {
+      quant_type = #pto<quant_type INT8_SYM>,
+      quantScaleAlg = #pto.quant_scale_alg<nv>
+    } : (!pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+         !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+         !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+         !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+         !pto.tile_buf<loc=vec, dtype=i8, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) -> ()
+    return
+  }
+
+  func.func @tquant_vec_store_mode_form() {
+    %src = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %exp = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %max = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %scaling = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %expzz = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %dst = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=i8, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    "pto.tquant"(%src, %exp, %max, %scaling, %expzz, %dst) <{operandSegmentSizes = array<i32: 1, 0, 0, 1, 1, 1, 1, 1>}> {
+      quant_type = #pto<quant_type INT8_SYM>,
+      vecStoreMode = #pto.vec_store_mode<nz>
+    } : (!pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+         !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+         !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+         !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+         !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+         !pto.tile_buf<loc=vec, dtype=i8, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) -> ()
+    return
+  }
+}
+
+// CHECK: TEXTRACT<{{.*}}ReluPreMode::NormalRelu>({{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}})
+// CHECK: TEXTRACT<{{.*}}pto::AccToVecMode::SingleModeVec0{{.*}}ReluPreMode::NormalRelu>({{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}})
+// CHECK: TINSERT<{{.*}}ReluPreMode::NormalRelu>({{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}})
+// CHECK: TINSERT<{{.*}}pto::AccToVecMode::SingleModeVec1{{.*}}ReluPreMode::NormalRelu>({{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}})
+// CHECK: TINSERT<pto::TInsertMode::SPLIT2>({{.*}}, {{.*}}, {{.*}}, {{.*}})
+// CHECK: TQUANT<pto::QuantType::INT8_SYM, pto::QuantScaleAlg::NV>({{.*}})
+// CHECK: TQUANT<pto::QuantType::INT8_SYM, pto::VecStoreMode::NZ>({{.*}})

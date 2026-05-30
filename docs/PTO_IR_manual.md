@@ -7273,9 +7273,17 @@ dst[i + indexRow, j + indexCol] = src[i, j]
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile |
+| `preQuantScalar` | `i64` (optional) | Optional pre-quant scalar for acc-source extraction forms |
 | `indexRow` | `Index` | Destination row offset |
 | `indexCol` | `Index` | Destination column offset |
 | `dst` | `pto.tile_buf` | Destination tile |
+
+**Attributes:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `accToVecMode` | `#pto.acc_to_vec_mode<...>` (optional) | Acc-to-vec mode for acc-source vec destinations |
+| `reluPreMode` | `#pto.relu_pre_mode<...>` | Optional relu-pre mode for acc-source forms |
 
 **Results:** None. Writes into `dst` via DPS pattern.
 
@@ -7293,6 +7301,8 @@ dst[i + indexRow, j + indexCol] = src[i, j]
 
 ```mlir
 pto.tinsert ins(%src, %row, %col : !pto.tile_buf<...>, index, index) outs(%dst : !pto.tile_buf<...>)
+pto.tinsert ins(%src, %preq, %row, %col : !pto.tile_buf<...>, i64, index, index)
+           outs(%dst : !pto.tile_buf<...>) {reluPreMode = #pto.relu_pre_mode<normal_relu>}
 ```
 
 ---
@@ -7312,9 +7322,17 @@ dst[i, j] = src[i + indexRow, j + indexCol]
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile |
+| `preQuantScalar` | `i64` (optional) | Optional pre-quant scalar for acc-source extraction forms |
 | `indexRow` | `Index` | Starting row |
 | `indexCol` | `Index` | Starting column |
 | `dst` | `pto.tile_buf` | Destination tile |
+
+**Attributes:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `accToVecMode` | `#pto.acc_to_vec_mode<...>` (optional) | Acc-to-vec mode for acc-source vec destinations |
+| `reluPreMode` | `#pto.relu_pre_mode<...>` | Optional relu-pre mode for acc-source forms |
 
 **Results:** None. Writes into `dst` via DPS pattern.
 
@@ -7341,6 +7359,8 @@ dst[i, j] = src[i + indexRow, j + indexCol]
 
 ```mlir
 pto.textract ins(%src[%row, %col] : !pto.tile_buf<...>) outs(%dst : !pto.tile_buf<...>)
+pto.textract ins(%src, %preq, %row, %col : !pto.tile_buf<...>, i64, index, index)
+            outs(%dst : !pto.tile_buf<...>) {reluPreMode = #pto.relu_pre_mode<normal_relu>}
 ```
 
 ---
@@ -7932,7 +7952,10 @@ dst[i, j] = Quantize(src[i, j]; fp, quant_type)
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile (`f32`) |
-| `fp` | `pto.tile_buf` | Scaling parameter tile |
+| `fp` | `pto.tile_buf` (optional) | Legacy scaling parameter tile |
+| `offset` | `pto.tile_buf` (optional) | Legacy asymmetric offset tile |
+| `exp` / `max` / `scaling` | `pto.tile_buf` (optional) | A5 statistic/scaling helper tiles |
+| `expZZ` | `pto.tile_buf` (optional) | A5 vec-store helper tile |
 | `dst` | `pto.tile_buf` | Destination tile (`i8` for SYM, `ui8` for ASYM) |
 
 **Attributes:**
@@ -7940,6 +7963,8 @@ dst[i, j] = Quantize(src[i, j]; fp, quant_type)
 | Name | Type | Description |
 |------|------|-------------|
 | `quant_type` | `#pto.quant_type` | `INT8_SYM` or `INT8_ASYM` |
+| `quantScaleAlg` | `#pto.quant_scale_alg<...>` (optional) | A5 scale-algorithm selector for `exp/max/scaling` form |
+| `vecStoreMode` | `#pto.vec_store_mode<...>` (optional) | A5 vec-store mode selector for `expZZ` form |
 
 **Results:** None. Writes into `dst` via DPS pattern.
 
@@ -7948,6 +7973,8 @@ dst[i, j] = Quantize(src[i, j]; fp, quant_type)
 - `src` element type must be `f32`.
 - `dst` element type must be `i8` (`INT8_SYM`) or `ui8` (`INT8_ASYM`).
 - A2/A3: `src` and `dst` must use row-major layout.
+- Legacy scale-tile form uses `fp` and optional `offset`.
+- A5 extended forms use `exp/max/scaling` or `exp/max/scaling/expZZ`; they are mutually exclusive with the legacy `fp/offset` form.
 
 **Hardware Mapping:**
 

@@ -2905,9 +2905,12 @@ struct PTOViewToMemrefPass
             op,
             TypeRange{},
             src,
+            op.getPreQuantScalar(),
             indexRow,
             indexCol,
-            dst);
+            dst,
+            op.getAccToVecModeAttr(),
+            op.getReluPreModeAttr());
       }
 
       DefaultInlineVector<mlir::pto::TFillPadOp> fillpadops;
@@ -3344,18 +3347,46 @@ struct PTOViewToMemrefPass
         Value src = op.getSrc();
         Value fp = op.getFp();
         Value offset = op.getOffset();
+        Value exp = op.getExp();
+        Value max = op.getMax();
+        Value scaling = op.getScaling();
+        Value expZZ = op.getExpZZ();
         Value dst = op.getDst();
 
         auto srcTy = dyn_cast<MemRefType>(src.getType());
-        auto fpTy = dyn_cast<MemRefType>(fp.getType());
         auto dstTy = dyn_cast<MemRefType>(dst.getType());
-        if (!srcTy || !fpTy || !dstTy) {
+        if (!srcTy || !dstTy) {
           op.emitError("ins/outs are not memref yet");
+          signalPassFailure();
+          return;
+        }
+        if (fp && !dyn_cast<MemRefType>(fp.getType())) {
+          op.emitError("fp is not memref yet");
           signalPassFailure();
           return;
         }
         if (offset && !dyn_cast<MemRefType>(offset.getType())) {
           op.emitError("offset is not memref yet");
+          signalPassFailure();
+          return;
+        }
+        if (exp && !dyn_cast<MemRefType>(exp.getType())) {
+          op.emitError("exp is not memref yet");
+          signalPassFailure();
+          return;
+        }
+        if (max && !dyn_cast<MemRefType>(max.getType())) {
+          op.emitError("max is not memref yet");
+          signalPassFailure();
+          return;
+        }
+        if (scaling && !dyn_cast<MemRefType>(scaling.getType())) {
+          op.emitError("scaling is not memref yet");
+          signalPassFailure();
+          return;
+        }
+        if (expZZ && !dyn_cast<MemRefType>(expZZ.getType())) {
+          op.emitError("expZZ is not memref yet");
           signalPassFailure();
           return;
         }
@@ -3366,8 +3397,14 @@ struct PTOViewToMemrefPass
             src,
             fp,
             offset,
+            exp,
+            max,
+            scaling,
+            expZZ,
             dst,
-            op.getQuantTypeAttr());
+            op.getQuantTypeAttr(),
+            op.getQuantScaleAlgAttr(),
+            op.getVecStoreModeAttr());
       }
 
       DefaultInlineVector<mlir::pto::TMrgSortOp> mrgsortops;

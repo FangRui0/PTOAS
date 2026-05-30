@@ -1206,12 +1206,12 @@ static LogicalResult verifyCubeBridgeLoadLikeOp(BridgeLoadOp op,
   return success();
 }
 
-static bool hasAll(Value first, Value second, Value third) {
+[[maybe_unused]] static bool hasAll(Value first, Value second, Value third) {
   return static_cast<bool>(first) && static_cast<bool>(second) &&
          static_cast<bool>(third);
 }
 
-static bool hasAny(Value first, Value second, Value third) {
+[[maybe_unused]] static bool hasAny(Value first, Value second, Value third) {
   return static_cast<bool>(first) || static_cast<bool>(second) ||
          static_cast<bool>(third);
 }
@@ -2517,10 +2517,8 @@ static LogicalResult verifyCopyGmToUbufOp(CopyOp op, bool expectSourceGM) {
 }
 
 template <typename DmaOp>
-static LogicalResult verifyOptionalDmaLoopGroup(DmaOp op, Value count,
-                                                Value srcStride,
-                                                Value dstStride,
-                                                StringRef name) {
+[[maybe_unused]] static LogicalResult verifyOptionalDmaLoopGroup(
+    DmaOp op, Value count, Value srcStride, Value dstStride, StringRef name) {
   if (hasAny(count, srcStride, dstStride) && !hasAll(count, srcStride, dstStride))
     return op.emitOpError() << "requires " << name
                             << " group to provide count, src stride, and dst stride together";

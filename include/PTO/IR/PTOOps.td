@@ -4119,20 +4119,18 @@ def TExtractOp : PTO_TOp<"textract", [
 
   let arguments = (ins
     PTODpsType:$src,
+    Optional<I64>:$preQuantScalar,
     Index:$indexRow,
     Index:$indexCol,
-    PTODpsType:$dst
+    PTODpsType:$dst,
+    OptionalAttr<PTO_AccToVecModeAttr>:$accToVecMode,
+    DefaultValuedAttr<PTO_ReluPreModeAttr, "::mlir::pto::ReluPreMode::NoRelu">:$reluPreMode
   );
 
   let results = (outs);
 
   let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `ins` `(` $src `,` $indexRow `,` $indexCol `:` qualified(type($src)) `,` type($indexRow) `,` type($indexCol) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    attr-dict
-  }];
+  let hasCustomAssemblyFormat = 1;
 
   let extraClassDeclaration = [{
     ::mlir::pto::PIPE getPipe() {
@@ -4207,7 +4205,9 @@ def TExtractFPOp : PTO_TOp<"textract_fp", [
     PTODpsType:$fp,
     Index:$indexRow,
     Index:$indexCol,
-    PTODpsType:$dst
+    PTODpsType:$dst,
+    OptionalAttr<PTO_AccToVecModeAttr>:$accToVecMode,
+    DefaultValuedAttr<PTO_ReluPreModeAttr, "::mlir::pto::ReluPreMode::NoRelu">:$reluPreMode
   );
 
   let results = (outs);
@@ -4235,20 +4235,19 @@ def TInsertOp : PTO_TOp<"tinsert", [
 
   let arguments = (ins
     PTODpsType:$src,
+    Optional<I64>:$preQuantScalar,
     Index:$indexRow,
     Index:$indexCol,
-    PTODpsType:$dst
+    PTODpsType:$dst,
+    OptionalAttr<PTO_AccToVecModeAttr>:$accToVecMode,
+    DefaultValuedAttr<PTO_ReluPreModeAttr, "::mlir::pto::ReluPreMode::NoRelu">:$reluPreMode,
+    OptionalAttr<PTO_TInsertModeAttr>:$tinsertMode
   );
 
   let results = (outs);
 
   let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `ins` `(` $src `,` $indexRow `,` $indexCol `:` qualified(type($src)) `,` type($indexRow) `,` type($indexCol) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    attr-dict
-  }];
+  let hasCustomAssemblyFormat = 1;
 
   let extraClassDeclaration = [{
     // TINSERT runs on different pipes depending on target/path:
@@ -4324,7 +4323,9 @@ def TInsertFPOp : PTO_TOp<"tinsert_fp", [
     PTODpsType:$fp,
     Index:$indexRow,
     Index:$indexCol,
-    PTODpsType:$dst
+    PTODpsType:$dst,
+    OptionalAttr<PTO_AccToVecModeAttr>:$accToVecMode,
+    DefaultValuedAttr<PTO_ReluPreModeAttr, "::mlir::pto::ReluPreMode::NoRelu">:$reluPreMode
   );
 
   let results = (outs);
@@ -5161,6 +5162,7 @@ def TPReluOp: PTO_TOp<"tprelu", [
 //===----------------------------------------------------------------------===//
 
 def TQuantOp : PTO_TOp<"tquant", [
+  AttrSizedOperandSegments,
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -5183,10 +5185,16 @@ def TQuantOp : PTO_TOp<"tquant", [
 
   let arguments = (ins
     PTODpsType:$src,
-    PTODpsType:$fp,
+    Optional<PTODpsType>:$fp,
     Optional<PTODpsType>:$offset,
+    Optional<PTODpsType>:$exp,
+    Optional<PTODpsType>:$max,
+    Optional<PTODpsType>:$scaling,
+    Optional<PTODpsType>:$expZZ,
     PTODpsType:$dst,
-    PTO_QuantTypeAttr:$quant_type
+    PTO_QuantTypeAttr:$quant_type,
+    OptionalAttr<PTO_QuantScaleAlgAttr>:$quantScaleAlg,
+    OptionalAttr<PTO_VecStoreModeAttr>:$vecStoreMode
   );
 
   let results = (outs);
@@ -5194,7 +5202,12 @@ def TQuantOp : PTO_TOp<"tquant", [
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    `ins` `(` $src `,` $fp (`,` $offset^)? `:` qualified(type($src)) `,` qualified(type($fp)) (`,` qualified(type($offset))^)? `)`
+    `ins` `(` $src
+    (`,` $fp^)? (`,` $offset^)? (`,` $exp^)? (`,` $max^)? (`,` $scaling^)? (`,` $expZZ^)?
+    `:` qualified(type($src))
+    (`,` qualified(type($fp))^)? (`,` qualified(type($offset))^)? (`,` qualified(type($exp))^)?
+    (`,` qualified(type($max))^)? (`,` qualified(type($scaling))^)? (`,` qualified(type($expZZ))^)?
+    `)`
     `outs` `(` $dst `:` qualified(type($dst)) `)`
     attr-dict
   }];
