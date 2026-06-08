@@ -353,8 +353,7 @@ jobs:
           path: ptoas-bin-macos-${{ matrix.arch }}.tar.gz
 
   upload_release_assets:
-    # Disabled together with build_wheel because wheel publication is paused.
-    if: false
+    if: github.event_name == 'release'
     name: Upload release assets
     needs: build_wheel
     runs-on: ubuntu-latest
@@ -388,13 +387,6 @@ jobs:
             } >> "$GITHUB_ENV"
           fi
 
-      - name: Download all wheel artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: ptoas-wheel-macos-*
-          path: release-artifacts
-          merge-multiple: true
-
       - name: Download x86_64 binary artifact
         uses: actions/download-artifact@v4
         with:
@@ -426,5 +418,4 @@ jobs:
           body: ${{ env.RELEASE_BODY }}
           overwrite_files: true
           files: |
-            release-artifacts/*.whl
             release-artifacts/*.tar.gz
