@@ -1,11 +1,11 @@
-Qwen3 decode PTO kernels for A3, generated from `pypto-lib/models/qwen3/32b/qwen3_32b_decode.py` at `05127d2`.
+Qwen3 decode PTO kernels for A3, generated from `pypto-lib/models/qwen3/32b/qwen3_32b_decode.py` at `ccbdc4fa5cafd1eda7784c9585f9dc876791778b`.
 
 Scope:
 - compile-regression inputs for `ptoas`
 - board-validation inputs with per-case custom golden
 
 Notes:
-- This directory vendors the 14 raw `.pto` fragments emitted by the latest PyPTO PTO backend for the A3 lowering.
+- This directory vendors 14 raw `.pto` fragments remapped from the current pypto-lib/main raw kernel names for the A3 lowering.
 - The upstream kernel topology changed from the old 17-case `qwen3_decode_incore_*` layout to a mixed set including `rmsnorm`, `rope_kv_cache`, `out_proj_residual`, `post_rmsnorm`, and `down_proj_residual`.
 - `runop.sh` defaults these cases to `--pto-level=level3`.
 - `runop.sh` skips this directory on A5 / Ascend950 targets.

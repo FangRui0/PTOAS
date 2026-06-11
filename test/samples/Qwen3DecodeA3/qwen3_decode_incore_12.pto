@@ -1,5 +1,5 @@
 module attributes {pto.target_arch = "a2a3"} {
-  func.func @qwen3_decode_incore_12(%arg0: !pto.ptr<f32>, %arg1: !pto.ptr<f32>, %arg2: !pto.ptr<bf16>, %arg3: index, %__pypto_spmd_block_idx: i32, %__pypto_spmd_block_num: i32) attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+  func.func @silu(%arg0: !pto.ptr<f32>, %arg1: !pto.ptr<f32>, %arg2: !pto.ptr<bf16>, %arg3: index, %__pypto_spmd_block_idx: i32, %__pypto_spmd_block_num: i32) attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
   %c8192_i64 = arith.constant 8192 : i64
   %c24576_i64 = arith.constant 24576 : i64
   %c40960_i64 = arith.constant 40960 : i64
