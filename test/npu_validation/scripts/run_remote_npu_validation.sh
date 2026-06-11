@@ -594,11 +594,20 @@ while IFS= read -r -d '' cpp; do
       done
     }
 
+    clear_golden_outputs() {
+      rm -f ./golden_*.bin
+    }
+
+    has_golden_outputs() {
+      compgen -G "./golden_*.bin" > /dev/null
+    }
+
     case "${GOLDEN_MODE}" in
       sim)
+        clear_golden_outputs
         python3 ./golden.py
         LD_LIBRARY_PATH="${LD_LIBRARY_PATH_SIM}" ./build/${testcase}_sim
-        if [[ "${CUSTOM_GOLDEN}" != "1" ]]; then
+        if ! has_golden_outputs; then
           copy_outputs_as_golden
         fi
         if [[ "${RUN_MODE}" == "npu" ]]; then
@@ -611,9 +620,10 @@ while IFS= read -r -d '' cpp; do
           log "ERROR: GOLDEN_MODE=npu requires RUN_MODE=npu"
           exit 2
         fi
+        clear_golden_outputs
         python3 ./golden.py
         LD_LIBRARY_PATH="${LD_LIBRARY_PATH_NPU}" ./build/${testcase}
-        if [[ "${CUSTOM_GOLDEN}" != "1" ]]; then
+        if ! has_golden_outputs; then
           copy_outputs_as_golden
           python3 ./golden.py
           LD_LIBRARY_PATH="${LD_LIBRARY_PATH_NPU}" ./build/${testcase}
