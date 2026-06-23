@@ -20,7 +20,7 @@ PTOAS_OUT_DIR="${PTOAS_OUT_DIR:-}"
 PTO_BUILD_DIR="${PTO_BUILD_DIR:-}"
 PTOAS_ENABLE_INSERT_SYNC="${PTOAS_ENABLE_INSERT_SYNC:-1}"
 PTOAS_FLAGS="${PTOAS_FLAGS:-}"
-PTO_PTO_DIRS="${PTO_PTO_DIRS:-Sync Qwen3DecodeA3 Qwen3DecodeA5 DeepseekV4DecodeA3 DeepseekV4DecodeA5 CommSync Prelu Rem Rems Gemvmx MatmulMxLowPrecision}"
+PTO_PTO_DIRS="${PTO_PTO_DIRS:-Sync Qwen3DecodeA3 Qwen3DecodeA5 DeepseekV4DecodeA3 DeepseekV4DecodeA5 CommSync Prelu Rem Rems Gemvmx MatmulMxLowPrecision Mgather}"
 ENABLE_BC=0
 
 usage() {

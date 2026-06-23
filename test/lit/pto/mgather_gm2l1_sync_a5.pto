@@ -6,13 +6,9 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// Regression for the A5 GM->L1 mgather pipe. PTOViewToMemref rewrites the mat
-// destination into a memref<...,mat> before InsertSync / GraphSyncSolver run, so
-// MGatherOp::getPipe() must resolve the MAT address space from the lowered
-// memref form too. If it only matched a TileBufType, A5 would fall through to
-// PIPE_V and the GM->L1 DMA would be mis-synced as a vector op. Here the gathered
-// L1 tile feeds a TMOV (mat -> left, PIPE_MTE1); the producer side of the sync
-// must be PIPE_MTE2 (the GM->L1 DMA pipe), not PIPE_V.
+// Regression for the A5 GM->L1 mgather sync chain. A5 MGATHER now runs on
+// PIPE_V, so when its MAT/L1 result feeds TMOV (mat -> left, PIPE_MTE1) the
+// producer side of the inserted sync must be PIPE_V rather than PIPE_MTE2.
 
 // RUN: ptoas --pto-arch=a5 --enable-insert-sync %s -o - 2>&1 | FileCheck %s
 
@@ -46,6 +42,6 @@ module {
 }
 
 // CHECK: MGATHER<pto::Coalesce::Row>
-// CHECK-NEXT: set_flag(PIPE_MTE2, PIPE_MTE1
-// CHECK-NEXT: wait_flag(PIPE_MTE2, PIPE_MTE1
+// CHECK-NEXT: set_flag(PIPE_V, PIPE_MTE1
+// CHECK-NEXT: wait_flag(PIPE_V, PIPE_MTE1
 // CHECK-NEXT: TMOV
