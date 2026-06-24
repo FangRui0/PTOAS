@@ -284,13 +284,16 @@ static pto::Coalesce inferMGatherCoalesce(pto::MGatherOp op) {
 // real cross-pipe sync (notably the MTE2->S wait for the scalar index read that
 // MGatherOp::getPipe() hides by reporting a single pipe).
 //
-// See docs/designs/2026-06-24-mgather-sync-insertion-plan.md and
-// PTOAS#861 / pto-isa#178 for the row-mode index DMA race this fixes.
+// Also reserve pto-isa's fixed internal event ids through hiddenEvents so
+// compiler-generated sync around the macro does not reuse EVENT_ID0 on pipe
+// pairs already consumed inside the library implementation.
+//
+// See docs/designs/2026-06-24-mgather-sync-insertion-plan.md.
 std::optional<SyncMacroModel> getMGatherSyncMacroModel(pto::MGatherOp op) {
   // GM -> L1 (dst is an L1 / cube MAT tile). A5/A2A3 share the same data flow:
   // the scalar pipe reads the GM index to compute src rows, then MTE2 issues the
-  // GM -> L1 nd2nz DMA. The hidden S->MTE2 ordering (one phase before the next)
-  // is preserved by phase ordering; no fixed hidden event is needed.
+  // GM -> L1 nd2nz DMA. pto-isa currently keeps an internal fixed EVENT_ID0 on
+  // S -> MTE2, so reserve that pair here.
   auto dstSpace = getMGatherOperandAddressSpace(op.getDst().getType());
   const bool isGm2L1 = dstSpace && *dstSpace == pto::AddressSpace::MAT;
 
@@ -315,6 +318,8 @@ std::optional<SyncMacroModel> getMGatherSyncMacroModel(pto::MGatherOp op) {
       addPhase(model, PipelineType::PIPE_MTE2,
                ValueRange{op.getDst()}, ValueRange{op.getMem()});
     }
+    addHiddenEvent(model, PipelineType::PIPE_S, PipelineType::PIPE_MTE2,
+                   ArrayRef<unsigned>{0});
     return model;
   }
 
@@ -333,6 +338,9 @@ std::optional<SyncMacroModel> getMGatherSyncMacroModel(pto::MGatherOp op) {
                ValueRange{op.getIdx()});
       addPhase(model, PipelineType::PIPE_S, ValueRange{op.getDst()},
                ValueRange{op.getMem()});
+      addBidirectionalHiddenEvent(model, PipelineType::PIPE_V,
+                                  PipelineType::PIPE_S,
+                                  ArrayRef<unsigned>{0});
     } else {
       addPhase(model, PipelineType::PIPE_V, ValueRange{op.getDst()},
                ValueRange{op.getMem(), op.getIdx()});
@@ -348,12 +356,38 @@ std::optional<SyncMacroModel> getMGatherSyncMacroModel(pto::MGatherOp op) {
              ValueRange{op.getIdx()});
     addPhase(model, PipelineType::PIPE_MTE2, ValueRange{op.getDst()},
              ValueRange{op.getMem()});
+    addHiddenEvent(model, PipelineType::PIPE_V, PipelineType::PIPE_S,
+                   ArrayRef<unsigned>{0});
+    addHiddenEvent(model, PipelineType::PIPE_MTE3, PipelineType::PIPE_S,
+                   ArrayRef<unsigned>{0});
+    addHiddenEvent(model, PipelineType::PIPE_S, PipelineType::PIPE_MTE2,
+                   ArrayRef<unsigned>{0});
+    addHiddenEvent(model, PipelineType::PIPE_MTE2, PipelineType::PIPE_V,
+                   ArrayRef<unsigned>{0});
+    addHiddenEvent(model, PipelineType::PIPE_MTE2, PipelineType::PIPE_MTE3,
+                   ArrayRef<unsigned>{0});
+    addHiddenEvent(model, PipelineType::PIPE_S, PipelineType::PIPE_V,
+                   ArrayRef<unsigned>{0});
+    addHiddenEvent(model, PipelineType::PIPE_S, PipelineType::PIPE_MTE3,
+                   ArrayRef<unsigned>{0});
   } else {
     SmallVector<Value> sUses;
     sUses.push_back(op.getIdx());
     sUses.push_back(op.getMem());
     addPhase(model, PipelineType::PIPE_S, ValueRange{op.getDst()},
              ValueRange(sUses));
+    addHiddenEvent(model, PipelineType::PIPE_V, PipelineType::PIPE_S,
+                   ArrayRef<unsigned>{0});
+    addHiddenEvent(model, PipelineType::PIPE_MTE3, PipelineType::PIPE_S,
+                   ArrayRef<unsigned>{0});
+    addHiddenEvent(model, PipelineType::PIPE_MTE2, PipelineType::PIPE_S,
+                   ArrayRef<unsigned>{0});
+    addHiddenEvent(model, PipelineType::PIPE_S, PipelineType::PIPE_V,
+                   ArrayRef<unsigned>{0});
+    addHiddenEvent(model, PipelineType::PIPE_S, PipelineType::PIPE_MTE2,
+                   ArrayRef<unsigned>{0});
+    addHiddenEvent(model, PipelineType::PIPE_S, PipelineType::PIPE_MTE3,
+                   ArrayRef<unsigned>{0});
   }
   return model;
 }
