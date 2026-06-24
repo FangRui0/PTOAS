@@ -193,6 +193,171 @@ std::optional<SyncMacroModel> getTGatherSyncMacroModel(pto::TGatherOp op) {
   return model;
 }
 
+// Resolve the PTO address space of an MGatherOp operand type. Mirrors the
+// getAddressSpace helper used by MGatherOp::getPipe() so the model matches the
+// post-PTOViewToMemref (memref<...,mat>) form that InsertSync actually sees.
+static std::optional<pto::AddressSpace>
+getMGatherOperandAddressSpace(::mlir::Type ty) {
+  if (auto tb = ::mlir::dyn_cast<::mlir::pto::TileBufType>(ty)) {
+    if (auto as = ::mlir::dyn_cast_or_null<::mlir::pto::AddressSpaceAttr>(
+            tb.getMemorySpace()))
+      return as.getAddressSpace();
+    return std::nullopt;
+  }
+  if (auto mr = ::mlir::dyn_cast<::mlir::MemRefType>(ty)) {
+    if (auto ms = mr.getMemorySpace()) {
+      if (auto as = ::mlir::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
+        return as.getAddressSpace();
+    }
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+// Infer the effective Coalesce when the attribute is absent. Mirrors the
+// isRowCoalescedMGatherIndexType heuristic from PTOToEmitC: row gather has a
+// unit-extent index (valid [1,R] row-major or [R,1] col-major), otherwise Elem.
+// InsertSync runs after PTOViewToMemref / buffer materialization, so the index
+// may already be a memref that no longer carries tile layout metadata. In that
+// lowered form, treat either unit-extent shape (1xR or Rx1) as row-coalesced.
+static pto::Coalesce inferMGatherCoalesce(pto::MGatherOp op) {
+  if (auto coalesceAttr = op.getCoalesceAttr())
+    return coalesceAttr.getValue();
+
+  auto getDataShape = [](::mlir::Type ty) -> std::optional<SmallVector<int64_t>> {
+    if (auto tb = ::mlir::dyn_cast<::mlir::pto::TileBufType>(ty))
+      return SmallVector<int64_t>(tb.getValidShape().begin(),
+                                  tb.getValidShape().end());
+    if (auto mr = ::mlir::dyn_cast<::mlir::MemRefType>(ty)) {
+      SmallVector<int64_t> shape(mr.getShape().begin(), mr.getShape().end());
+      return shape;
+    }
+    return std::nullopt;
+  };
+
+  auto getIdxShape = [](::mlir::Type ty) -> std::optional<SmallVector<int64_t>> {
+    if (auto tb = ::mlir::dyn_cast<::mlir::pto::TileBufType>(ty))
+      return SmallVector<int64_t>(tb.getValidShape().begin(),
+                                  tb.getValidShape().end());
+    if (auto mr = ::mlir::dyn_cast<::mlir::MemRefType>(ty))
+      return SmallVector<int64_t>(mr.getShape().begin(), mr.getShape().end());
+    return std::nullopt;
+  };
+
+  auto dataShape = getDataShape(op.getDst().getType());
+  auto idxShape = getIdxShape(op.getIdx().getType());
+  if (!dataShape || dataShape->size() != 2 || !idxShape || idxShape->size() != 2)
+    return pto::Coalesce::Elem;
+
+  const bool idxRowMajor =
+      !::mlir::isa<::mlir::pto::TileBufType>(op.getIdx().getType()) ||
+      ::mlir::cast<::mlir::pto::TileBufType>(op.getIdx().getType())
+              .getBLayoutValueI32() ==
+          static_cast<int32_t>(pto::BLayout::RowMajor);
+  const bool idxColMajor =
+      ::mlir::isa<::mlir::pto::TileBufType>(op.getIdx().getType()) &&
+      ::mlir::cast<::mlir::pto::TileBufType>(op.getIdx().getType())
+              .getBLayoutValueI32() ==
+          static_cast<int32_t>(pto::BLayout::ColMajor);
+
+  auto isUnit = [](int64_t d) {
+    return d == ::mlir::ShapedType::kDynamic || d == 0 || d == 1;
+  };
+  auto compat = [](int64_t a, int64_t b) {
+    return a == ::mlir::ShapedType::kDynamic ||
+           b == ::mlir::ShapedType::kDynamic || a == b;
+  };
+
+  const bool rowCoalesce1xR =
+      idxRowMajor && isUnit((*idxShape)[0]) &&
+      compat((*idxShape)[1], (*dataShape)[0]);
+  const bool rowCoalesceRx1 =
+      (idxColMajor || !::mlir::isa<::mlir::pto::TileBufType>(op.getIdx().getType())) &&
+      compat((*idxShape)[0], (*dataShape)[0]) && isUnit((*idxShape)[1]);
+  return (rowCoalesce1xR || rowCoalesceRx1) ? pto::Coalesce::Row
+                                            : pto::Coalesce::Elem;
+}
+
+// MGather is a macro-like library call whose internal pipe usage depends on the
+// destination address space, the coalesce mode, and the target arch. Model each
+// reachable lowering path as SyncMacroPhases so InsertSyncAnalysis can derive the
+// real cross-pipe sync (notably the MTE2->S wait for the scalar index read that
+// MGatherOp::getPipe() hides by reporting a single pipe).
+//
+// See docs/designs/2026-06-24-mgather-sync-insertion-plan.md and
+// PTOAS#861 / pto-isa#178 for the row-mode index DMA race this fixes.
+std::optional<SyncMacroModel> getMGatherSyncMacroModel(pto::MGatherOp op) {
+  // GM -> L1 (dst is an L1 / cube MAT tile). A5/A2A3 share the same data flow:
+  // the scalar pipe reads the GM index to compute src rows, then MTE2 issues the
+  // GM -> L1 nd2nz DMA. The hidden S->MTE2 ordering (one phase before the next)
+  // is preserved by phase ordering; no fixed hidden event is needed.
+  auto dstSpace = getMGatherOperandAddressSpace(op.getDst().getType());
+  const bool isGm2L1 = dstSpace && *dstSpace == pto::AddressSpace::MAT;
+
+  const PTOArch arch = getTargetArch(op.getOperation());
+  const pto::Coalesce coalesce = inferMGatherCoalesce(op);
+
+  SyncMacroModel model;
+
+  if (isGm2L1) {
+    // P1/P2: GM -> L1 (Row + Elem). S reads GM idx; MTE2 DMAs GM -> L1 into dst.
+    // Elem additionally writes the GM scratch (owned by S in the template) before
+    // the MTE2 bulk copy reads it, so model scratch as a S def / MTE2 use.
+    addPhase(model, PipelineType::PIPE_S, ValueRange{},
+             ValueRange{op.getIdx()});
+    if (coalesce == pto::Coalesce::Elem && op.getScratch()) {
+      SmallVector<Value> mte2Uses;
+      mte2Uses.push_back(op.getMem());
+      mte2Uses.push_back(op.getScratch());
+      addPhase(model, PipelineType::PIPE_MTE2,
+               ValueRange{op.getDst()}, ValueRange(mte2Uses));
+    } else {
+      addPhase(model, PipelineType::PIPE_MTE2,
+               ValueRange{op.getDst()}, ValueRange{op.getMem()});
+    }
+    return model;
+  }
+
+  // GM -> UB (dst is a VEC tile).
+  if (arch == PTOArch::A5) {
+    // P3/P4: A5 lowers GM -> UB through a SIMT kernel on the vector pipe (no
+    // scalar index loop). The 1x1 scalar overload (P5) reads idx on V then does
+    // a scalar GM load + dst write on S.
+    auto dstTile = ::mlir::dyn_cast<::mlir::pto::TileBufType>(op.getDst().getType());
+    auto dstValid = dstTile ? dstTile.getValidShape() : ::llvm::ArrayRef<int64_t>{};
+    const bool isElem1x1 = coalesce == pto::Coalesce::Elem && dstTile &&
+                           dstValid.size() == 2 && dstValid[0] == 1 &&
+                           dstValid[1] == 1;
+    if (isElem1x1) {
+      addPhase(model, PipelineType::PIPE_V, ValueRange{},
+               ValueRange{op.getIdx()});
+      addPhase(model, PipelineType::PIPE_S, ValueRange{op.getDst()},
+               ValueRange{op.getMem()});
+    } else {
+      addPhase(model, PipelineType::PIPE_V, ValueRange{op.getDst()},
+               ValueRange{op.getMem(), op.getIdx()});
+    }
+    return model;
+  }
+
+  // A2/A3 GM -> UB. Row (P6): S reads the UB index tile to compute GM addresses,
+  // then MTE2 DMAs each gathered row GM -> UB. Elem (P7): the whole gather runs
+  // on the scalar pipe (scalar GM loads + scalar UB dst writes), single phase.
+  if (coalesce == pto::Coalesce::Row) {
+    addPhase(model, PipelineType::PIPE_S, ValueRange{},
+             ValueRange{op.getIdx()});
+    addPhase(model, PipelineType::PIPE_MTE2, ValueRange{op.getDst()},
+             ValueRange{op.getMem()});
+  } else {
+    SmallVector<Value> sUses;
+    sUses.push_back(op.getIdx());
+    sUses.push_back(op.getMem());
+    addPhase(model, PipelineType::PIPE_S, ValueRange{op.getDst()},
+             ValueRange(sUses));
+  }
+  return model;
+}
+
 } // namespace
 
 std::optional<SyncMacroModel> mlir::pto::getSyncMacroModel(Operation *op) {
@@ -204,5 +369,7 @@ std::optional<SyncMacroModel> mlir::pto::getSyncMacroModel(Operation *op) {
     return getTScatterSyncMacroModel(tscatter);
   if (auto tgather = dyn_cast<pto::TGatherOp>(op))
     return getTGatherSyncMacroModel(tgather);
+  if (auto mgather = dyn_cast<pto::MGatherOp>(op))
+    return getMGatherSyncMacroModel(mgather);
   return std::nullopt;
 }
