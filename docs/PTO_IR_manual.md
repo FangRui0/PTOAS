@@ -8125,7 +8125,7 @@ dst[i, j] = S + linear_index(i, j)   // or descending if requested
 | Name | Type | Description |
 |------|------|-------------|
 | `S` | `Integer` | Starting value |
-| `tmp` | `pto.tile_buf` (optional) | Optional scratch tile forwarded to the `pto-isa` tmp-buffer overload |
+| `tmp` | `pto.tile_buf` | Scratch tile forwarded to the `pto-isa` tmp-buffer overload of `TCI` (required) |
 | `dst` | `pto.tile_buf` | Destination tile |
 | `descending` | `BoolAttr` (default: false) | Generate descending sequence |
 
@@ -8133,6 +8133,7 @@ dst[i, j] = S + linear_index(i, j)   // or descending if requested
 
 **Constraints & Verification:**
 
+- `tmp` is **required**. It is forwarded to the `pto-isa` `TCI(dst, start, tmp)` tmp-buffer overload; on A2/A3 `tmp` is consumed as a Unified-Buffer `float` scratch (the vectorized fast path), on A5 it is accepted for interface compatibility and ignored.
 - **Implementation checks (A2/A3/A5)**
   - Tile element type must be exactly the same type as the `S`.
   - `dst/scalar` element types must be identical, and must be one of: `i16`, `ui16`, `i32`, `ui32`.
@@ -8140,12 +8141,11 @@ dst[i, j] = S + linear_index(i, j)   // or descending if requested
 
 **Hardware Mapping:**
 
-- Executes on the **Vector pipeline** (`PIPE_V`)
+- Executes on the **Scalar pipeline** (`PIPE_S`)
 
 **Basic Example:**
 
 ```mlir
-pto.tci ins(%start : i32) outs(%dst : !pto.tile_buf<...>)
 pto.tci ins(%start, %tmp : i32, !pto.tile_buf<...>) outs(%dst : !pto.tile_buf<...>)
 ```
 

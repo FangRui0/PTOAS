@@ -8316,7 +8316,7 @@ struct PTOTCIToEmitC : public OpConversionPattern<pto::TCIOp> {
 
     Value dst = peelUnrealized(adaptor.getDst());
     Value S = peelUnrealized(adaptor.getOperands()[0]);
-    Value tmp = op.getTmp() ? peelUnrealized(adaptor.getTmp()) : Value();
+    Value tmp = peelUnrealized(adaptor.getTmp());
 
     // The TCI scalar template parameter should follow the original PTO IR
     // scalar type, not the converted EmitC value type.
@@ -8332,29 +8332,24 @@ struct PTOTCIToEmitC : public OpConversionPattern<pto::TCIOp> {
     // descending -> "0"/"1"
     std::string descTok = op.getDescending() ? "1" : "0";
 
+    // Always lower to the pto-isa tmp-buffer overload TCI(dst, start, tmp).
     ArrayAttr targs;
     if (auto ot = mlir::dyn_cast<emitc::OpaqueType>(dst.getType())) {
-      SmallVector<Attribute, 4> templateArgVec;
-      templateArgVec.push_back(
-          emitc::OpaqueAttr::get(ctx, ot.getValue().str()));
-      if (tmp) {
-        auto tmpOt = mlir::dyn_cast<emitc::OpaqueType>(tmp.getType());
-        if (!tmpOt)
-          return rewriter.notifyMatchFailure(
-              op, "expected tmp tile to lower to emitc::OpaqueType");
-        templateArgVec.push_back(
-            emitc::OpaqueAttr::get(ctx, tmpOt.getValue().str()));
-      }
-      templateArgVec.push_back(emitc::OpaqueAttr::get(ctx, scalarTok));
-      templateArgVec.push_back(emitc::OpaqueAttr::get(ctx, descTok));
-      targs = rewriter.getArrayAttr(templateArgVec);
+      auto tmpOt = mlir::dyn_cast<emitc::OpaqueType>(tmp.getType());
+      if (!tmpOt)
+        return rewriter.notifyMatchFailure(
+            op, "expected tmp tile to lower to emitc::OpaqueType");
+      targs = rewriter.getArrayAttr({
+          emitc::OpaqueAttr::get(ctx, ot.getValue().str()),
+          emitc::OpaqueAttr::get(ctx, tmpOt.getValue().str()),
+          emitc::OpaqueAttr::get(ctx, scalarTok),
+          emitc::OpaqueAttr::get(ctx, descTok),
+      });
     } else {
       targs = rewriter.getArrayAttr({});
     }
 
-    SmallVector<Value, 3> operands{dst, S};
-    if (tmp)
-      operands.push_back(tmp);
+    SmallVector<Value, 3> operands{dst, S, tmp};
 
     rewriter.create<emitc::CallOpaqueOp>(
         loc, TypeRange{}, "TCI",

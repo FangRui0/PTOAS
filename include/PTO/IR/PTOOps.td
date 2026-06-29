@@ -3446,7 +3446,7 @@ def TCIOp : PTO_TOp<"tci", [
 
   let arguments = (ins
     AnyInteger:$S,
-    Optional<PTODpsType>:$tmp,
+    PTODpsType:$tmp,
     PTODpsType:$dst,
     DefaultValuedAttr<BoolAttr, "false">:$descending
   );

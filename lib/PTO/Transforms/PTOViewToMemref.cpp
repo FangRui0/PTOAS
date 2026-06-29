@@ -2668,8 +2668,8 @@ struct PTOViewToMemrefPass
 
         auto sTy = dyn_cast<IntegerType>(s.getType());
         auto dstTy = dyn_cast<MemRefType>(dst.getType());
-        auto tmpTy = tmp ? dyn_cast<MemRefType>(tmp.getType()) : MemRefType{};
-        if (!sTy || !dstTy || (tmp && !tmpTy)) {
+        auto tmpTy = dyn_cast<MemRefType>(tmp.getType());
+        if (!sTy || !dstTy || !tmpTy) {
           op.emitError("ins/outs are not memref yet");
           signalPassFailure();
           return;

@@ -70,6 +70,8 @@ static bool shouldEncodeViaGenericV0CompatibilityShim(mlir::Operation &op) {
   // pto.tci / pto.trowexpandadd forms without tmp. Newer tmp-operand forms
   // must not reuse those schemas or older .ptobc files would become
   // undecodable, so serialize the new forms through the generic v0 opcode.
+  // pto.tci's tmp operand is now mandatory, so every TCI routes here; the
+  // legacy 0x100D 2-operand schema is only kept for decoding old .ptobc files.
   if (auto tci = llvm::dyn_cast<mlir::pto::TCIOp>(&op))
     return static_cast<bool>(tci.getTmp());
   if (auto trowexpandadd = llvm::dyn_cast<mlir::pto::TRowExpandAddOp>(&op))

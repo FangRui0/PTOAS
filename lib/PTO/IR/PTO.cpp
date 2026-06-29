@@ -5388,47 +5388,28 @@ static ParseResult parseTCILikeOp(OpAsmParser &parser, OperationState &result) {
   OpAsmParser::UnresolvedOperand s, tmp, dst;
   Type sTy, tmpTy, dstTy;
 
-  if (parser.parseKeyword("ins") || parser.parseLParen() || parser.parseOperand(s))
+  // ins(%s, %tmp : ty_s, ty_tmp) outs(%dst : ty_dst)
+  if (parser.parseKeyword("ins") || parser.parseLParen() ||
+      parser.parseOperand(s) || parser.parseComma() || parser.parseOperand(tmp) ||
+      parser.parseColonType(sTy) || parser.parseComma() || parser.parseType(tmpTy) ||
+      parser.parseRParen() || parser.parseKeyword("outs") || parser.parseLParen() ||
+      parser.parseOperand(dst) || parser.parseColonType(dstTy) ||
+      parser.parseRParen() || parser.parseOptionalAttrDict(result.attributes))
     return failure();
 
-  bool hasTmp = succeeded(parser.parseOptionalComma());
-  if (hasTmp && parser.parseOperand(tmp))
+  if (parser.resolveOperand(s, sTy, result.operands) ||
+      parser.resolveOperand(tmp, tmpTy, result.operands) ||
+      parser.resolveOperand(dst, dstTy, result.operands))
     return failure();
 
-  if (parser.parseColonType(sTy))
-    return failure();
-  if (hasTmp) {
-    if (parser.parseComma() || parser.parseType(tmpTy))
-      return failure();
-  }
-  if (parser.parseRParen() || parser.parseKeyword("outs") || parser.parseLParen() ||
-      parser.parseOperand(dst) || parser.parseColonType(dstTy) || parser.parseRParen() ||
-      parser.parseOptionalAttrDict(result.attributes))
-    return failure();
-
-  if (parser.resolveOperand(s, sTy, result.operands))
-    return failure();
-  if (hasTmp && parser.resolveOperand(tmp, tmpTy, result.operands))
-    return failure();
-  if (parser.resolveOperand(dst, dstTy, result.operands))
-    return failure();
-
-  result.addAttribute(
-      "operandSegmentSizes",
-      parser.getBuilder().getDenseI32ArrayAttr({1, hasTmp ? 1 : 0, 1}));
   return success();
 }
 
 static void printTCILikeOp(OpAsmPrinter &p, Operation *op, Value s, Value tmp,
                            Value dst) {
-  p << " ins(" << s;
-  if (tmp)
-    p << ", " << tmp;
-  p << " : " << s.getType();
-  if (tmp)
-    p << ", " << tmp.getType();
-  p << ") outs(" << dst << " : " << dst.getType() << ")";
-  p.printOptionalAttrDict(op->getAttrs(), /*elidedAttrs=*/{"operandSegmentSizes"});
+  p << " ins(" << s << ", " << tmp << " : " << s.getType() << ", "
+    << tmp.getType() << ") outs(" << dst << " : " << dst.getType() << ")";
+  p.printOptionalAttrDict(op->getAttrs());
 }
 
 ParseResult mlir::pto::TCIOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -5445,7 +5426,7 @@ LogicalResult pto::TCIOp::verify() {
   Type dstTy = getDst().getType();
   if (failed(verifyTileBufCommon(*this, dstTy, "dst")))
     return failure();
-  if (getTmp() && failed(verifyTileBufCommon(*this, getTmp().getType(), "tmp")))
+  if (failed(verifyTileBufCommon(*this, getTmp().getType(), "tmp")))
     return failure();
 
   auto elemTy = mlir::dyn_cast<IntegerType>(getElemTy(dstTy));
@@ -13198,9 +13179,11 @@ PTO_DEFINE_BINARY_EFFECTS(TConcatOp, getSrc0Mutable(), getSrc1Mutable(), getDstM
 PTO_DEFINE_QUATERNARY_EFFECTS(TConcatidxOp, getSrc0Mutable(), getSrc1Mutable(), getSrc0IdxMutable(), getSrc1IdxMutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TAndSOp, getSrcMutable(), getDstMutable())
 
-// TCI: Write(dst) (generates sequence)
+// TCI: Read/Write(tmp scratch), Write(dst) (generates sequence)
 void TCIOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getTmpMutable());
+  PTO_ADD_WRITE(getTmpMutable());
   PTO_ADD_WRITE(getDstMutable());
 }
 

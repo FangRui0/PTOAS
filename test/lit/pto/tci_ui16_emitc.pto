@@ -9,11 +9,12 @@ module {
     %c16 = arith.constant 16 : index
     %src = memref.reinterpret_cast %dst to offset: [%c0], sizes: [%c1, %c16], strides: [%c16, %c1] {layout = #pto.layout<nd>} : memref<16xui16, #pto.address_space<gm>> to memref<1x16xui16, strided<[16, 1], offset: ?>, #pto.address_space<gm>>
     %tile = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=ui16, rows=1, cols=16, v_row=1, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    pto.tci ins(%c7_ui16 : ui16) outs(%tile : !pto.tile_buf<loc=vec, dtype=ui16, rows=1, cols=16, v_row=1, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    %tmp = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=128, v_row=1, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    pto.tci ins(%c7_ui16, %tmp : ui16, !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=128, v_row=1, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%tile : !pto.tile_buf<loc=vec, dtype=ui16, rows=1, cols=16, v_row=1, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     pto.tstore ins(%tile : !pto.tile_buf<loc=vec, dtype=ui16, rows=1, cols=16, v_row=1, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%src : memref<1x16xui16, strided<[16, 1], offset: ?>, #pto.address_space<gm>>) {layout = #pto.layout<nd>, pto.inferred_layout = true}
     return
   }
 }
 
-// A3: TCI<{{.*}}, uint16_t, 0>(
-// A3-NOT: TCI<{{.*}}, int16_t, 0>(
+// A3: TCI<{{.*}}, {{.*}}, uint16_t, 0>(
+// A3-NOT: TCI<{{.*}}, {{.*}}, int16_t, 0>(

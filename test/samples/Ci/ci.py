@@ -8,7 +8,7 @@
 
 from mlir.ir import Context, Location, Module, InsertionPoint, UnitAttr
 from mlir.dialects import func, arith, pto
-from mlir.ir import IntegerType, IndexType, IntegerAttr, BoolAttr
+from mlir.ir import IntegerType, IndexType, IntegerAttr, BoolAttr, F32Type
 
 
 def build():
@@ -32,6 +32,9 @@ def build():
             cfg = pto.TileBufConfigAttr.get(bl, sl, fractal_ab_size, pd, ctx)
             # TCI only initializes a 1xC row (see pto-isa: TCI loops `i < validCol`).
             tile_buf_1x32 = pto.TileBufType.get([1, 32], i32, vec, [1, 32], cfg, ctx)
+            # TCI requires a scratch tmp tile (Unified-Buffer float on A2/A3).
+            f32 = F32Type.get(ctx)
+            tile_buf_1x128_f32 = pto.TileBufType.get([1, 128], f32, vec, [1, 128], cfg, ctx)
 
             fn_ty = func.FunctionType.get([ptr_i32, i32], [])
             with InsertionPoint(m.body):
@@ -50,8 +53,9 @@ def build():
                 # Output is (1 x 32).
                 tv_dst = pto.MakeTensorViewOp(tv2_i32, arg0, [c1, c32], [c32, c1]).result
                 tb_dst = pto.AllocTileOp(tile_buf_1x32).result
+                tb_tmp = pto.AllocTileOp(tile_buf_1x128_f32).result
 
-                pto.TCIOp(arg1, tb_dst, descending=descending_attr)
+                pto.TCIOp(arg1, tb_tmp, tb_dst, descending=descending_attr)
 
                 sv_dst = pto.PartitionViewOp(tile_view_1x32, tv_dst, offsets=[c0, c0], sizes=[c1, c32]).result
                 pto.TStoreOp(None, tb_dst, sv_dst)
