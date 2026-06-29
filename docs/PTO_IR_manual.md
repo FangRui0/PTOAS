@@ -7905,7 +7905,7 @@ idx = permutation indices for the sort
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Input value tile |
 | `idx` | `pto.tile_buf` | Input index tile permuted together with `src` |
-| `tmp` | `Optional<pto.tile_buf>` | Optional scratch tile for the tmp-taking DPS overload |
+| `tmp` | `pto.tile_buf` | Scratch tile |
 | `dst` | `pto.tile_buf` | Output tile storing sorted value-index pairs |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -7913,7 +7913,7 @@ idx = permutation indices for the sort
 **Assembly Format:**
 
 ```
-pto.tsort32 ins(<src>, <idx>[, <tmp>] : <src_type>, <idx_type>[, <tmp_type>])
+pto.tsort32 ins(<src>, <idx>, <tmp> : <src_type>, <idx_type>, <tmp_type>)
            outs(<dst> : <dst_type>)
 ```
 
@@ -7923,7 +7923,7 @@ pto.tsort32 ins(<src>, <idx>[, <tmp>] : <src_type>, <idx_type>[, <tmp_type>])
 - `src` element type must match `dst` element type.
 - `idx` element type must be `u32`.
 - `src`, `dst`, and `idx` must all use `loc=vec` and `blayout=row_major`.
-- If the 4-operand form is used, `tmp` only needs to be a `loc=vec` tile.
+- `tmp` must be a `loc=vec` tile.
 - PTO IR does not impose a same-shape or rounded-tail tmp formula in the verifier.
 
 **Hardware Mapping:**
@@ -7933,10 +7933,6 @@ pto.tsort32 ins(<src>, <idx>[, <tmp>] : <src_type>, <idx_type>[, <tmp_type>])
 **Basic Example:**
 
 ```mlir
-pto.tsort32 ins(%src, %idx : !pto.tile_buf<...>, !pto.tile_buf<...>)
-           outs(%dst : !pto.tile_buf<...>)
-
-# Optional scratch form:
 pto.tsort32 ins(%src, %idx, %tmp : !pto.tile_buf<...>, !pto.tile_buf<...>, !pto.tile_buf<...>)
            outs(%dst : !pto.tile_buf<...>)
 ```

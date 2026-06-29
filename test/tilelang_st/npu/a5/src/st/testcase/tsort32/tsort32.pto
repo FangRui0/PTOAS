@@ -47,6 +47,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 
     %src_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x32xf32>
     %idx_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x32xui32>
+    %tmp_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x32xf32>
     %dst_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x128xf32>
 
     pto.tload ins(%src_part : !pto.partition_tensor_view<1x1x1x1x32xf32>)
@@ -54,8 +55,9 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     pto.tload ins(%idx_part : !pto.partition_tensor_view<1x1x1x1x32xui32>)
               outs(%idx_tile : !pto.tile_buf<vec, 1x32xui32>)
 
-    pto.tsort32 ins(%src_tile, %idx_tile : !pto.tile_buf<vec, 1x32xf32>,
-                          !pto.tile_buf<vec, 1x32xui32>)
+    pto.tsort32 ins(%src_tile, %idx_tile, %tmp_tile : !pto.tile_buf<vec, 1x32xf32>,
+                          !pto.tile_buf<vec, 1x32xui32>,
+                          !pto.tile_buf<vec, 1x32xf32>)
              outs(%dst_tile : !pto.tile_buf<vec, 1x128xf32>)
 
     pto.tstore ins(%dst_tile : !pto.tile_buf<vec, 1x128xf32>)
@@ -98,6 +100,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 
     %src_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
     %idx_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x64xui32>
+    %tmp_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
     %dst_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x256xf32>
 
     pto.tload ins(%src_part : !pto.partition_tensor_view<1x1x1x1x64xf32>)
@@ -105,8 +108,9 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     pto.tload ins(%idx_part : !pto.partition_tensor_view<1x1x1x1x64xui32>)
               outs(%idx_tile : !pto.tile_buf<vec, 1x64xui32>)
 
-    pto.tsort32 ins(%src_tile, %idx_tile : !pto.tile_buf<vec, 1x64xf32>,
-                          !pto.tile_buf<vec, 1x64xui32>)
+    pto.tsort32 ins(%src_tile, %idx_tile, %tmp_tile : !pto.tile_buf<vec, 1x64xf32>,
+                          !pto.tile_buf<vec, 1x64xui32>,
+                          !pto.tile_buf<vec, 1x64xf32>)
              outs(%dst_tile : !pto.tile_buf<vec, 1x256xf32>)
 
     pto.tstore ins(%dst_tile : !pto.tile_buf<vec, 1x256xf32>)
@@ -152,6 +156,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 
     %src_tile = pto.alloc_tile : !pto.tile_buf<vec, 16x32xf32>
     %idx_tile = pto.alloc_tile : !pto.tile_buf<vec, 16x32xui32>
+    %tmp_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x32xf32>
     %dst_tile = pto.alloc_tile : !pto.tile_buf<vec, 16x128xf32>
 
     pto.tload ins(%src_part : !pto.partition_tensor_view<1x1x1x16x32xf32>)
@@ -159,8 +164,9 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     pto.tload ins(%idx_part : !pto.partition_tensor_view<1x1x1x16x32xui32>)
               outs(%idx_tile : !pto.tile_buf<vec, 16x32xui32>)
 
-    pto.tsort32 ins(%src_tile, %idx_tile : !pto.tile_buf<vec, 16x32xf32>,
-                          !pto.tile_buf<vec, 16x32xui32>)
+    pto.tsort32 ins(%src_tile, %idx_tile, %tmp_tile : !pto.tile_buf<vec, 16x32xf32>,
+                          !pto.tile_buf<vec, 16x32xui32>,
+                          !pto.tile_buf<vec, 1x32xf32>)
              outs(%dst_tile : !pto.tile_buf<vec, 16x128xf32>)
 
     pto.tstore ins(%dst_tile : !pto.tile_buf<vec, 16x128xf32>)
@@ -206,6 +212,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 
     %src_tile = pto.alloc_tile : !pto.tile_buf<vec, 16x64xf32>
     %idx_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x64xui32>
+    %tmp_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
     %dst_tile = pto.alloc_tile : !pto.tile_buf<vec, 16x256xf32>
 
     pto.tload ins(%src_part : !pto.partition_tensor_view<1x1x1x16x64xf32>)
@@ -213,8 +220,9 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     pto.tload ins(%idx_part : !pto.partition_tensor_view<1x1x1x1x64xui32>)
               outs(%idx_tile : !pto.tile_buf<vec, 1x64xui32>)
 
-    pto.tsort32 ins(%src_tile, %idx_tile : !pto.tile_buf<vec, 16x64xf32>,
-                          !pto.tile_buf<vec, 1x64xui32>)
+    pto.tsort32 ins(%src_tile, %idx_tile, %tmp_tile : !pto.tile_buf<vec, 16x64xf32>,
+                          !pto.tile_buf<vec, 1x64xui32>,
+                          !pto.tile_buf<vec, 1x64xf32>)
              outs(%dst_tile : !pto.tile_buf<vec, 16x256xf32>)
 
     pto.tstore ins(%dst_tile : !pto.tile_buf<vec, 16x256xf32>)
@@ -260,6 +268,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 
     %src_tile = pto.alloc_tile : !pto.tile_buf<vec, 2x32xf32>
     %idx_tile = pto.alloc_tile : !pto.tile_buf<vec, 2x32xui32>
+    %tmp_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x32xf32>
     %dst_tile = pto.alloc_tile : !pto.tile_buf<vec, 2x128xf32>
 
     pto.tload ins(%src_part : !pto.partition_tensor_view<1x1x1x2x32xf32>)
@@ -267,8 +276,9 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     pto.tload ins(%idx_part : !pto.partition_tensor_view<1x1x1x2x32xui32>)
               outs(%idx_tile : !pto.tile_buf<vec, 2x32xui32>)
 
-    pto.tsort32 ins(%src_tile, %idx_tile : !pto.tile_buf<vec, 2x32xf32>,
-                          !pto.tile_buf<vec, 2x32xui32>)
+    pto.tsort32 ins(%src_tile, %idx_tile, %tmp_tile : !pto.tile_buf<vec, 2x32xf32>,
+                          !pto.tile_buf<vec, 2x32xui32>,
+                          !pto.tile_buf<vec, 1x32xf32>)
              outs(%dst_tile : !pto.tile_buf<vec, 2x128xf32>)
 
     pto.tstore ins(%dst_tile : !pto.tile_buf<vec, 2x128xf32>)
@@ -314,6 +324,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 
     %src_tile = pto.alloc_tile : !pto.tile_buf<vec, 2x64xf32>
     %idx_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x64xui32>
+    %tmp_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
     %dst_tile = pto.alloc_tile : !pto.tile_buf<vec, 2x256xf32>
 
     pto.tload ins(%src_part : !pto.partition_tensor_view<1x1x1x2x64xf32>)
@@ -321,8 +332,9 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     pto.tload ins(%idx_part : !pto.partition_tensor_view<1x1x1x1x64xui32>)
               outs(%idx_tile : !pto.tile_buf<vec, 1x64xui32>)
 
-    pto.tsort32 ins(%src_tile, %idx_tile : !pto.tile_buf<vec, 2x64xf32>,
-                          !pto.tile_buf<vec, 1x64xui32>)
+    pto.tsort32 ins(%src_tile, %idx_tile, %tmp_tile : !pto.tile_buf<vec, 2x64xf32>,
+                          !pto.tile_buf<vec, 1x64xui32>,
+                          !pto.tile_buf<vec, 1x64xf32>)
              outs(%dst_tile : !pto.tile_buf<vec, 2x256xf32>)
 
     pto.tstore ins(%dst_tile : !pto.tile_buf<vec, 2x256xf32>)
@@ -365,6 +377,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 
     %src_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x8192xf32>
     %idx_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x8192xui32>
+    %tmp_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x8192xf32>
     %dst_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x32768xf32>
 
     pto.tload ins(%src_part : !pto.partition_tensor_view<1x1x1x1x8192xf32>)
@@ -372,8 +385,9 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     pto.tload ins(%idx_part : !pto.partition_tensor_view<1x1x1x1x8192xui32>)
               outs(%idx_tile : !pto.tile_buf<vec, 1x8192xui32>)
 
-    pto.tsort32 ins(%src_tile, %idx_tile : !pto.tile_buf<vec, 1x8192xf32>,
-                          !pto.tile_buf<vec, 1x8192xui32>)
+    pto.tsort32 ins(%src_tile, %idx_tile, %tmp_tile : !pto.tile_buf<vec, 1x8192xf32>,
+                          !pto.tile_buf<vec, 1x8192xui32>,
+                          !pto.tile_buf<vec, 1x8192xf32>)
              outs(%dst_tile : !pto.tile_buf<vec, 1x32768xf32>)
 
     pto.tstore ins(%dst_tile : !pto.tile_buf<vec, 1x32768xf32>)
@@ -416,6 +430,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 
     %src_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x32xf16>
     %idx_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x32xui32>
+    %tmp_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x32xf16>
     %dst_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x128xf16>
 
     pto.tload ins(%src_part : !pto.partition_tensor_view<1x1x1x1x32xf16>)
@@ -423,8 +438,9 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     pto.tload ins(%idx_part : !pto.partition_tensor_view<1x1x1x1x32xui32>)
               outs(%idx_tile : !pto.tile_buf<vec, 1x32xui32>)
 
-    pto.tsort32 ins(%src_tile, %idx_tile : !pto.tile_buf<vec, 1x32xf16>,
-                          !pto.tile_buf<vec, 1x32xui32>)
+    pto.tsort32 ins(%src_tile, %idx_tile, %tmp_tile : !pto.tile_buf<vec, 1x32xf16>,
+                          !pto.tile_buf<vec, 1x32xui32>,
+                          !pto.tile_buf<vec, 1x32xf16>)
              outs(%dst_tile : !pto.tile_buf<vec, 1x128xf16>)
 
     pto.tstore ins(%dst_tile : !pto.tile_buf<vec, 1x128xf16>)
@@ -469,6 +485,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 
     %src_tile = pto.alloc_tile : !pto.tile_buf<vec, 4x64xf16>
     %idx_tile = pto.alloc_tile : !pto.tile_buf<vec, 4x64xui32>
+    %tmp_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf16>
     %dst_tile = pto.alloc_tile : !pto.tile_buf<vec, 4x256xf16>
 
     pto.tload ins(%src_part : !pto.partition_tensor_view<1x1x1x4x64xf16>)
@@ -476,8 +493,9 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     pto.tload ins(%idx_part : !pto.partition_tensor_view<1x1x1x4x64xui32>)
               outs(%idx_tile : !pto.tile_buf<vec, 4x64xui32>)
 
-    pto.tsort32 ins(%src_tile, %idx_tile : !pto.tile_buf<vec, 4x64xf16>,
-                          !pto.tile_buf<vec, 4x64xui32>)
+    pto.tsort32 ins(%src_tile, %idx_tile, %tmp_tile : !pto.tile_buf<vec, 4x64xf16>,
+                          !pto.tile_buf<vec, 4x64xui32>,
+                          !pto.tile_buf<vec, 1x64xf16>)
              outs(%dst_tile : !pto.tile_buf<vec, 4x256xf16>)
 
     pto.tstore ins(%dst_tile : !pto.tile_buf<vec, 4x256xf16>)

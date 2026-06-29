@@ -69,9 +69,9 @@ def build():
                 pto.TLoadOp(None, sv0, tb_src)
                 pto.TLoadOp(None, sv2, tb_idx)
 
-                # Exercise the no-tmp form first.
-                pto.TSort32Op(src=tb_src, idx=tb_idx, dst=tb_stage0)
-                # Then exercise the tmp-taking form using the first result as input.
+                # TSORT32 requires explicit scratch.
+                pto.TSort32Op(src=tb_src, idx=tb_idx, dst=tb_stage0, tmp=tb_tmp)
+                # Then exercise the same form using the first result as input.
                 pto.TSort32Op(src=tb_stage0, idx=tb_idx, dst=tb_dst, tmp=tb_tmp)
 
                 pto.TStoreOp(None, tb_dst, sv1)

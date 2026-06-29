@@ -28,7 +28,7 @@ def _constraint_aligned(
     idx_config=None,
     dst_config=None,
 ) -> bool:
-    """Constraint for Format1: valid_cols % 32 == 0 (aligned, no tmp needed)."""
+    """Constraint for Format1: valid_cols % 32 == 0."""
     if len(src_valid_shape) != 2:
         return False
     valid_cols = src_valid_shape[1]
@@ -62,14 +62,11 @@ def _constraint_unaligned(
     op="pto.tsort32",
     constraints=[_constraint_aligned]
 )
-def template_tsort32(src: pto.Tile, idx: pto.Tile, dst: pto.Tile):
+def template_tsort32_aligned_with_tmp(src: pto.Tile, idx: pto.Tile, tmp: pto.Tile, dst: pto.Tile):
     """
-    TSort32 Format1: Bitonic sort for aligned cols (valid_cols % 32 == 0).
-    
-    Semantics (matching pto-isa TSort32.hpp Format1):
-    - Sorts src values into dst, generating indices in idx
-    - Direct sort without tmp buffer when src.valid_cols % 32 == 0
-    - No padding needed
+    TSort32 Format1 with explicit tmp operand: Bitonic sort for aligned cols
+    (valid_cols % 32 == 0). The tmp tile is part of the public IR signature but
+    is not used by the aligned algorithm.
     """
     dtype = dst.element_type
     valid_rows = dst.valid_shape[0]
@@ -108,7 +105,7 @@ def template_tsort32(src: pto.Tile, idx: pto.Tile, dst: pto.Tile):
                 repeat_num = REPEAT_MAX
                 if j == loop_num - 1:
                     repeat_num = tail_repeat_num
-                    
+
                 pto.vbitsort(
                     pto.addptr(dst_ptr, i * dst_stride + j * REPEAT_MAX * BLOCK_SIZE * type_coef),
                     pto.addptr(src_ptr, i * src_stride + j * REPEAT_MAX * BLOCK_SIZE),
@@ -126,11 +123,11 @@ def template_tsort32(src: pto.Tile, idx: pto.Tile, dst: pto.Tile):
 )
 def template_tsort32_with_tmp(src: pto.Tile, idx: pto.Tile, tmp: pto.Tile, dst: pto.Tile):
     """
-    TSort32 Format2: Bitonic sort with tmp buffer for unaligned cols.
+    TSort32 with explicit tmp buffer.
     
     Semantics (matching pto-isa TSort32.hpp Format2):
     - Sorts src values into dst, generating indices in idx
-    - Uses tmp buffer when src.valid_cols % 32 != 0 (padding needed)
+    - Uses tmp buffer for unaligned cols that need padding
     - Pads unaligned tail with NaN to ensure correct sorting
     """
     dtype = dst.element_type
