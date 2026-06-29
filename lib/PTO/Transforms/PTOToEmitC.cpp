@@ -8854,13 +8854,28 @@ struct PTOCvtToEmitC : public OpConversionPattern<pto::TCvtOp> {
     Value satModeVal = rewriter.create<emitc::ConstantOp>(
         loc, satModeTy, emitc::OpaqueAttr::get(ctx, satTok));
 
-    SmallVector<Value, 4> operands{dst, src, rmodeVal, satModeVal};
+    // TCVT has four pto-isa overloads:
+    //   TCVT(dst, src, tmp, mode, satMode) | TCVT(dst, src, tmp, mode)
+    //   TCVT(dst, src, mode, satMode)      | TCVT(dst, src, mode)
+    // The satMode is always emitted (defaulting to OFF), so the tmp overload
+    // selected here is TCVT(dst, src, tmp, mode, satMode) and the non-tmp one
+    // is TCVT(dst, src, mode, satMode).
+    SmallVector<unsigned, 3> tileSlotOrder;
+    tileSlotOrder.push_back(op.getDstMutable().getOperandNumber());
+    tileSlotOrder.push_back(op.getSrcMutable().getOperandNumber());
 
-    rewriter.create<emitc::CallOpaqueOp>(
-        loc, TypeRange{}, "TCVT",
-        /*args=*/ArrayAttr{},
-        /*templateArgs=*/ArrayAttr{},
-        /*operands=*/operands);
+    SmallVector<Value, 5> operands{dst, src};
+    if (op.getTmp()) {
+      Value tmp = peelUnrealized(adaptor.getTmp());
+      operands.push_back(tmp);
+      tileSlotOrder.push_back(op.getTmpMutable().begin()->getOperandNumber());
+    }
+    operands.push_back(rmodeVal);
+    operands.push_back(satModeVal);
+
+    createLastUseAwareOpaqueCall(rewriter, op.getOperation(), TypeRange{},
+                                 "TCVT", ValueRange{operands}, ArrayAttr{},
+                                 ArrayAttr{}, tileSlotOrder);
 
     rewriter.eraseOp(op);
     return success();

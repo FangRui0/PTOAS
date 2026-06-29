@@ -8063,6 +8063,7 @@ dst[i, j] = saturate(cast(src[i, j], rmode), satmode)
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile |
+| `tmp` | `pto.tile_buf` (optional) | Optional scratch tile forwarded to the `pto-isa` tmp-buffer overload of `TCVT` |
 | `dst` | `pto.tile_buf` | Destination tile (different element type) |
 | `rmode` | `RoundModeAttr` (default: `CAST_RINT`) | Rounding mode |
 | `satmode` | `SaturationModeAttr` (default: `OFF`) | Saturation mode |
@@ -8073,6 +8074,7 @@ dst[i, j] = saturate(cast(src[i, j], rmode), satmode)
 
 - `dst` and `src` must be compatible in shape/valid region as required by the implementation.
 - `satmode = ON` requests destination-range clamping after rounding; `OFF` preserves the target's non-saturating conversion path.
+- When `tmp` is provided it is forwarded to the `pto-isa` `TCVT` overload that takes a `TmpTileData` scratch tile — `TCVT(dst, src, tmp, mode, satMode)`; on A2/A3 `tmp` is consumed as a Unified-Buffer `int32` scratch, on A5 it is accepted for interface compatibility and ignored. Omitting `tmp` selects the non-tmp `TCVT(dst, src, mode, satMode)` overload.
 - **A2/A3 and A5 notes:**
   - A2/A3 reject all low-precision `tcvt` operands.
   - A5 only accepts the following low-precision pairs: 
@@ -8097,6 +8099,10 @@ dst[i, j] = saturate(cast(src[i, j], rmode), satmode)
 
 ```mlir
 pto.tcvt ins(%src {rmode = #pto<round_mode FLOOR>, satmode = #pto<saturation_mode ON>} : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+         outs(%dst : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+
+// with optional tmp scratch tile (selects the pto-isa TCVT tmp-buffer overload)
+pto.tcvt ins(%src, %tmp {rmode = #pto<round_mode FLOOR>, satmode = #pto<saturation_mode ON>} : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=i32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
          outs(%dst : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
 ```
 

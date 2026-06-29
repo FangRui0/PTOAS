@@ -2990,6 +2990,7 @@ struct PTOViewToMemrefPass
 
         Value src = op.getSrc();
         Value dst = op.getDst();
+        Value tmp = op.getTmp();
 
         auto srcTy = dyn_cast<MemRefType>(src.getType());
         auto dstTy = dyn_cast<MemRefType>(dst.getType());
@@ -2997,6 +2998,14 @@ struct PTOViewToMemrefPass
           op.emitError("ins/outs are not memref yet");
           signalPassFailure();
           return;
+        }
+        if (tmp) {
+          auto tmpTy = dyn_cast<MemRefType>(tmp.getType());
+          if (!tmpTy) {
+            op.emitError("tmp is not memref yet");
+            signalPassFailure();
+            return;
+          }
         }
 
         auto rmodeAttr = op.getRmodeAttr(); // PTO_RoundModeAttr
@@ -3006,6 +3015,7 @@ struct PTOViewToMemrefPass
             op.getLoc(),
             TypeRange{},
             src,
+            tmp,
             dst,
             rmodeAttr,
             satModeAttr);

@@ -70,6 +70,21 @@ module attributes {"pto.device-spec" = "Ascend910B3"} {
     return
   }
 
+  // -----------------------------------------------------------------------
+  // f32 -> f16 with an explicit tmp scratch tile (selects the pto-isa
+  // TCVT(dst, src, tmp, mode, satMode) tmp-buffer overload)
+  // -----------------------------------------------------------------------
+  func.func @tcvt_f32_to_f16_tmp() attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %src = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %tmp = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=i32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %dst = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    pto.tcvt ins(%src, %tmp {rmode = #pto<round_mode FLOOR>, satmode = #pto<saturation_mode ON>} : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=i32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+             outs(%dst : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+
+    return
+  }
+
 }
 
 // A3-LABEL: AICORE void tcvt_f32_to_f16(
@@ -90,6 +105,12 @@ module attributes {"pto.device-spec" = "Ascend910B3"} {
 // A3:       RoundMode::CAST_ROUND
 // A3:       TCVT(
 
+// A3-LABEL: AICORE void tcvt_f32_to_f16_tmp(
+// A3:       SaturationMode::ON
+// A3:       RoundMode::CAST_FLOOR
+// A3:       Tile<TileType::Vec, int32_t
+// A3:       TCVT({{[^)]*}}, {{[^)]*}}, {{[^)]*}}, {{[^)]*}}, {{[^)]*}})
+
 // A5-LABEL: AICORE void tcvt_f32_to_f16(
 // A5:       RoundMode::CAST_RINT
 // A5:       TCVT(
@@ -107,3 +128,9 @@ module attributes {"pto.device-spec" = "Ascend910B3"} {
 // A5:       SaturationMode::ON
 // A5:       RoundMode::CAST_ROUND
 // A5:       TCVT(
+
+// A5-LABEL: AICORE void tcvt_f32_to_f16_tmp(
+// A5:       SaturationMode::ON
+// A5:       RoundMode::CAST_FLOOR
+// A5:       Tile<TileType::Vec, int32_t
+// A5:       TCVT({{[^)]*}}, {{[^)]*}}, {{[^)]*}}, {{[^)]*}}, {{[^)]*}})
