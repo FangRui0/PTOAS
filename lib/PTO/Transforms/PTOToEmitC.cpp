@@ -11153,7 +11153,7 @@ struct PTOShrSConstToEmitC : public OpConversionPattern<pto::TShrSOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (TSORT32 DPS/memref op: ins(src, idx[, tmp]) outs(dst))
+// PTOConvert.cpp  (TSORT32 DPS/memref op: ins(src, idx) outs(dst))
 //===----------------------------------------------------------------------===//
 
 struct PTOSORT32SToEmitC : public OpConversionPattern<pto::TSort32Op> {
@@ -11166,13 +11166,8 @@ struct PTOSORT32SToEmitC : public OpConversionPattern<pto::TSort32Op> {
     Value src = peelUnrealized(adaptor.getSrc());
     Value dst = peelUnrealized(adaptor.getDst());
     Value idx = peelUnrealized(adaptor.getIdx());
-    Value tmp = op.getTmp() ? peelUnrealized(adaptor.getTmp()) : Value();
 
-    SmallVector<Value, 4> operands;
-    if (tmp)
-      operands.assign({dst, src, idx, tmp});
-    else
-      operands.assign({dst, src, idx});
+    SmallVector<Value, 3> operands{dst, src, idx};
     rewriter.create<emitc::CallOpaqueOp>(
         loc, TypeRange{}, "TSORT32",
         /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},

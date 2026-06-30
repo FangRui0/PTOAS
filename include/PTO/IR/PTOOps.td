@@ -6390,15 +6390,12 @@ def TSort32Op: PTO_TOp<"tsort32", [
   let summary = "TSORT32: Sort fixed-size 32-element blocks using explicit input indices.";
   let description = [{
     DPS form: `idx` is modeled as an input operand in `ins(...)`, while `dst`
-    remains the sole DPS init/output buffer in `outs(...)`. The `tmp` operand is
-    required scratch storage, so lowering always targets the tmp-taking TSORT32
-    backend interface.
+    remains the sole DPS init/output buffer in `outs(...)`.
   }];
 
   let arguments = (ins
     PTODpsType:$src,
     PTODpsType:$idx,
-    PTODpsType:$tmp,
     PTODpsType:$dst
   );
 

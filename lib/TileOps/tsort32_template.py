@@ -40,16 +40,13 @@ def _constraint_unaligned(
     src_valid_shape=(),
     idx_shape=(),
     idx_valid_shape=(),
-    tmp_shape=(),
-    tmp_valid_shape=(),
     dst_shape=(),
     dst_valid_shape=(),
     src_config=None,
     idx_config=None,
-    tmp_config=None,
     dst_config=None,
 ) -> bool:
-    """Constraint for Format2: valid_cols % 32 != 0 (unaligned, tmp needed)."""
+    """Constraint for unaligned tails: valid_cols % 32 != 0."""
     if len(src_valid_shape) != 2:
         return False
     valid_cols = src_valid_shape[1]
@@ -124,18 +121,20 @@ def template_tsort32(src: pto.Tile, idx: pto.Tile, dst: pto.Tile):
     op="pto.tsort32",
     constraints=[_constraint_unaligned]
 )
-def template_tsort32_with_tmp(src: pto.Tile, idx: pto.Tile, tmp: pto.Tile, dst: pto.Tile):
+def template_tsort32_unaligned(src: pto.Tile, idx: pto.Tile, dst: pto.Tile):
     """
-    TSort32 Format2: Bitonic sort with tmp buffer for unaligned cols.
+    TSort32: Bitonic sort with internal scratch for unaligned cols.
     
-    Semantics (matching pto-isa TSort32.hpp Format2):
+    Semantics:
     - Sorts src values into dst, generating indices in idx
-    - Uses tmp buffer when src.valid_cols % 32 != 0 (padding needed)
+    - Uses internal scratch when src.valid_cols % 32 != 0 (padding needed)
     - Pads unaligned tail with NaN to ensure correct sorting
     """
     dtype = dst.element_type
     valid_rows = dst.valid_shape[0]
     valid_cols = src.valid_shape[1]
+    tmp_cols = ((valid_cols + BLOCK_SIZE - 1) // BLOCK_SIZE) * BLOCK_SIZE
+    tmp = pto.alloc_tile(shape=[1, tmp_cols], dtype=dtype)
 
     dst_ptr = dst.as_ptr()
     src_ptr = src.as_ptr()

@@ -64,15 +64,13 @@ def build():
                 tb_stage0 = pto.AllocTileOp(tile_buf_f32).result
                 tb_dst = pto.AllocTileOp(tile_buf_f32).result
                 tb_idx = pto.AllocTileOp(tile_buf_u32).result
-                tb_tmp = pto.AllocTileOp(tile_buf_f32).result
 
                 pto.TLoadOp(None, sv0, tb_src)
                 pto.TLoadOp(None, sv2, tb_idx)
 
-                # Exercise the no-tmp form first.
+                # Exercise the public tsort32 form twice.
                 pto.TSort32Op(src=tb_src, idx=tb_idx, dst=tb_stage0)
-                # Then exercise the tmp-taking form using the first result as input.
-                pto.TSort32Op(src=tb_stage0, idx=tb_idx, dst=tb_dst, tmp=tb_tmp)
+                pto.TSort32Op(src=tb_stage0, idx=tb_idx, dst=tb_dst)
 
                 pto.TStoreOp(None, tb_dst, sv1)
                 pto.TStoreOp(None, tb_idx, sv2)

@@ -20,12 +20,12 @@
 // CHECK-NOT: pto.tsort32 ins
 // CHECK: pto.vbitsort
 
-// CHECK-LABEL: func.func @TSORT32_with_tmp
+// CHECK-LABEL: func.func @TSORT32_unaligned
 // CHECK-NOT: pto.tsort32 ins
 // CHECK: pto.vbitsort
 
 module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
-  // Case 1: aligned cols (valid_cols % 32 == 0), no tmp needed
+  // Case 1: aligned cols (valid_cols % 32 == 0).
   func.func @TSORT32_no_tmp() {
     %src = pto.alloc_tile : !pto.tile_buf<vec, 1x32xf16>
     %idx = pto.alloc_tile : !pto.tile_buf<vec, 1x32xui32>
@@ -37,16 +37,14 @@ module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
     return
   }
 
-  // Case 2: unaligned cols (valid_cols % 32 != 0), tmp needed
-  func.func @TSORT32_with_tmp() {
+  // Case 2: unaligned cols (valid_cols % 32 != 0), internal scratch needed.
+  func.func @TSORT32_unaligned() {
     %src = pto.alloc_tile : !pto.tile_buf<vec, 1x48xf16>
     %idx = pto.alloc_tile : !pto.tile_buf<vec, 1x48xui32>
-    %tmp = pto.alloc_tile : !pto.tile_buf<vec, 1x32xf16>
     %dst = pto.alloc_tile : !pto.tile_buf<vec, 1x96xf16>
 
-    pto.tsort32 ins(%src, %idx, %tmp : !pto.tile_buf<vec, 1x48xf16>,
-                            !pto.tile_buf<vec, 1x48xui32>,
-                            !pto.tile_buf<vec, 1x32xf16>)
+    pto.tsort32 ins(%src, %idx : !pto.tile_buf<vec, 1x48xf16>,
+                            !pto.tile_buf<vec, 1x48xui32>)
                outs(%dst : !pto.tile_buf<vec, 1x96xf16>)
     return
   }
