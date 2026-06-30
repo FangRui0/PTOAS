@@ -67,11 +67,9 @@ using FunctionVector = llvm::SmallVector<mlir::func::FuncOp,
 
 static bool shouldEncodeViaGenericV0CompatibilityShim(mlir::Operation &op) {
   // PTOBC v0 already shipped fixed-width known-op payloads for legacy
-  // pto.tci / pto.trowexpandadd forms without tmp. Newer tmp-operand forms
-  // must not reuse those schemas or older .ptobc files would become
-  // undecodable, so serialize the new forms through the generic v0 opcode.
-  if (auto tci = llvm::dyn_cast<mlir::pto::TCIOp>(&op))
-    return static_cast<bool>(tci.getTmp());
+  // pto.trowexpandadd forms without tmp. Newer tmp-operand forms must not
+  // reuse those schemas or older .ptobc files would become undecodable, so
+  // serialize the new forms through the generic v0 opcode.
   if (auto trowexpandadd = llvm::dyn_cast<mlir::pto::TRowExpandAddOp>(&op))
     return static_cast<bool>(trowexpandadd.getTmp());
   return false;

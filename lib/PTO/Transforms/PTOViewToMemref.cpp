@@ -2526,14 +2526,12 @@ struct PTOViewToMemrefPass
         rewriter.setInsertionPoint(op);
 
         Value s = op->getOperand(0);
-        Value tmp = op.getTmp();
         Value dst = op.getDst();
         bool descending = op.getDescending();
 
         auto sTy = dyn_cast<IntegerType>(s.getType());
         auto dstTy = dyn_cast<MemRefType>(dst.getType());
-        auto tmpTy = tmp ? dyn_cast<MemRefType>(tmp.getType()) : MemRefType{};
-        if (!sTy || !dstTy || (tmp && !tmpTy)) {
+        if (!sTy || !dstTy) {
           op.emitError("ins/outs are not memref yet");
           signalPassFailure();
           return;
@@ -2543,7 +2541,6 @@ struct PTOViewToMemrefPass
             op,
             TypeRange{},
             s,
-            tmp,
             dst,
             descending);
       }

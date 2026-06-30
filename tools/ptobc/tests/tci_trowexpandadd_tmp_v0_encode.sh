@@ -31,6 +31,7 @@ ROUNDTRIP="${OUT_DIR}/tci_trowexpandadd_tmp_v0_roundtrip.roundtrip.pto"
 "${PTOBC_BIN}" encode "${IN}" -o "${BC}"
 "${PTOBC_BIN}" decode "${BC}" -o "${ROUNDTRIP}"
 
-perl -0ne 'exit(!/pto\.tci ins\([^:]*,[^:]* :/s)' "${ROUNDTRIP}"
+perl -0ne 'exit(!/pto\.tci ins\([^:]* :/s)' "${ROUNDTRIP}"
+perl -0ne 'exit(/pto\.tci ins\([^:]*,[^:]* :/s)' "${ROUNDTRIP}"
 perl -0ne 'exit(!/pto\.trowexpandadd ins\([^:]*,[^:]*,[^:]* :/s)' \
   "${ROUNDTRIP}"

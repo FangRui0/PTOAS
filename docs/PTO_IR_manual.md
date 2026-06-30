@@ -1372,7 +1372,7 @@ For each element (i, j):
 
 **Hardware Mapping:**
 
-- Executes on the **Vector pipeline** (`PIPE_V`)
+- Executes on the **Scalar pipeline** (`PIPE_S`)
 
 **Basic Example:**
 
@@ -2053,7 +2053,7 @@ pto.tadd ins(<src0>, <src1> : <src0_type>, <src1_type>)
 
 **Hardware Mapping:**
 
-- Executes on the **Vector pipeline** (`PIPE_V`)
+- Executes on the **Scalar pipeline** (`PIPE_S`)
 - Operates on data in the **VEC (UB)** memory space
 - Implements `OpPipeInterface`
 
@@ -2116,7 +2116,7 @@ pto.tsub ins(<src0>, <src1> : <src0_type>, <src1_type>)
 
 **Hardware Mapping:**
 
-- Executes on the **Vector pipeline** (`PIPE_V`)
+- Executes on the **Scalar pipeline** (`PIPE_S`)
 - Operates on data in the **VEC (UB)** memory space
 
 **Basic Example:**
@@ -8119,7 +8119,6 @@ dst[i, j] = S + linear_index(i, j)   // or descending if requested
 | Name | Type | Description |
 |------|------|-------------|
 | `S` | `Integer` | Starting value |
-| `tmp` | `pto.tile_buf` (optional) | Optional scratch tile forwarded to the `pto-isa` tmp-buffer overload |
 | `dst` | `pto.tile_buf` | Destination tile |
 | `descending` | `BoolAttr` (default: false) | Generate descending sequence |
 
@@ -8134,13 +8133,12 @@ dst[i, j] = S + linear_index(i, j)   // or descending if requested
 
 **Hardware Mapping:**
 
-- Executes on the **Vector pipeline** (`PIPE_V`)
+- Executes on the **Scalar pipeline** (`PIPE_S`)
 
 **Basic Example:**
 
 ```mlir
 pto.tci ins(%start : i32) outs(%dst : !pto.tile_buf<...>)
-pto.tci ins(%start, %tmp : i32, !pto.tile_buf<...>) outs(%dst : !pto.tile_buf<...>)
 ```
 
 ---
