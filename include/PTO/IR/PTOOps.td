@@ -5373,33 +5373,18 @@ def TQuantOp : PTO_TOp<"tquant", [
 
     For INT8_ASYM an additional offset tile must be supplied in ins.
 
-    The optional tmp tile is the scratch buffer used by the A2/A3
-    TQUANT_IMPL row-wise broadcast (the fp->s32 conversion reuses it). On
-    pto-isa builds where the 4-arg TQUANT overload routes through the fixed
-    TMP_UB_OFFSET scratch area, supplying tmp selects the tmp-aware 5-arg
-    overload and avoids the fixed-address collision. PTOAS auto-synthesizes
-    this scratch tile for A2/A3 only. On A5 the tmp operand is accepted as a
-    placeholder and does not add extra shape or memory-planning constraints.
-
     DPS form (INT8_SYM):
       pto.tquant ins(%src, %fp : <src_type>, <fp_type>)
                  outs(%dst : <dst_type>) {quant_type = #pto<quant_type INT8_SYM>}
-    DPS form (INT8_SYM, with tmp):
-      pto.tquant ins(%src, %fp : <src_type>, <fp_type>)
-                 outs(%dst, %tmp : <dst_type>, <tmp_type>) {quant_type = #pto<quant_type INT8_SYM>}
     DPS form (INT8_ASYM):
       pto.tquant ins(%src, %fp, %offset : <src_type>, <fp_type>, <offset_type>)
                  outs(%dst : <dst_type>) {quant_type = #pto<quant_type INT8_ASYM>}
-    DPS form (INT8_ASYM, with tmp):
-      pto.tquant ins(%src, %fp, %offset : <src_type>, <fp_type>, <offset_type>)
-                 outs(%dst, %tmp : <dst_type>, <tmp_type>) {quant_type = #pto<quant_type INT8_ASYM>}
   }];
 
   let arguments = (ins
     PTODpsType:$src,
     PTODpsType:$fp,
     Optional<PTODpsType>:$offset,
-    Optional<PTODpsType>:$tmp,
     PTODpsType:$dst,
     PTO_QuantTypeAttr:$quant_type
   );

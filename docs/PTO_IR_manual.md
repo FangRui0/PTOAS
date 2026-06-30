@@ -8320,7 +8320,7 @@ pto.tmov.fp ins(%acc, %fp : !pto.tile_buf<...>, !pto.tile_buf<...>)
 
 ##### `pto.tquant` - Quantize Tile with Scaling Tile
 
-**Summary:** Quantizes `f32` source tile elements into a lower-precision integer format using a scaling (`fp`) tile. The quantization mode is controlled by the `quant_type` attribute.
+**Summary:** Quantizes `f32` source tile elements into an 8-bit integer destination tile using a scaling (`fp`) tile. The quantization mode is controlled by the `quant_type` attribute.
 
 **Semantics:**
 
@@ -8337,6 +8337,7 @@ dst[i, j] = Quantize(src[i, j]; fp, quant_type)
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile (`f32`) |
 | `fp` | `pto.tile_buf` | Scaling parameter tile |
+| `offset` | `Optional<pto.tile_buf>` | Additional offset tile required only by `INT8_ASYM` |
 | `dst` | `pto.tile_buf` | Destination tile (`i8` for SYM, `ui8` for ASYM) |
 
 **Attributes:**
@@ -8351,6 +8352,8 @@ dst[i, j] = Quantize(src[i, j]; fp, quant_type)
 
 - `src` element type must be `f32`.
 - `dst` element type must be `i8` (`INT8_SYM`) or `ui8` (`INT8_ASYM`).
+- `INT8_SYM` must not provide `offset`.
+- `INT8_ASYM` must provide `offset`.
 - `pto.tquant` only models the plain INT8 quantization forms. MX quantization uses `pto.tquant.mx`.
 - A2/A3: `src` and `dst` must use row-major layout.
 
@@ -8364,6 +8367,10 @@ dst[i, j] = Quantize(src[i, j]; fp, quant_type)
 pto.tquant ins(%src, %fp : !pto.tile_buf<...>, !pto.tile_buf<...>)
            outs(%dst : !pto.tile_buf<...>)
            {quant_type = #pto<quant_type INT8_SYM>}
+
+pto.tquant ins(%src, %fp, %offset : !pto.tile_buf<...>, !pto.tile_buf<...>, !pto.tile_buf<...>)
+           outs(%dst : !pto.tile_buf<...>)
+           {quant_type = #pto<quant_type INT8_ASYM>}
 ```
 
 ---
