@@ -11,12 +11,11 @@ module {
     return
   }
 
-  func.func @trowexpandadd_with_tmp() {
+  func.func @trowexpandadd_without_tmp() {
     %src0 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     %src1 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=1, v_row=8, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>
-    %tmp = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     %dst = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    pto.trowexpandadd ins(%src0, %src1, %tmp : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=1, v_row=8, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.trowexpandadd ins(%src0, %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=1, v_row=8, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>)
                       outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     return
   }
@@ -52,7 +51,7 @@ module {
 }
 
 // A3: TCI<{{.*}}, int16_t, 0>({{.*}}, {{.*}})
-// A3: TROWEXPANDADD({{.*}}, {{.*}}, {{.*}}, {{.*}})
+// A3: TROWEXPANDADD({{.*}}, {{.*}}, {{.*}})
 // A3: MGATHER<pto::Coalesce::Elem, pto::GatherOOB::Zero>({{.*}}, {{.*}}, {{.*}})
 // A3: MSCATTER<pto::Coalesce::Elem, pto::ScatterAtomicOp::Add, pto::ScatterOOB::Skip>({{.*}}, {{.*}}, {{.*}})
 // A3: TPRINT<pto::PrintFormat::Width8_Precision2>({{.*}})

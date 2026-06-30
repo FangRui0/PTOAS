@@ -38,6 +38,7 @@ grep -F "pto.trowexpandmul ins(" "${ROUNDTRIP}" >/dev/null
 [[ $(grep -Fc "pto.trowexpandexpdif ins(" "${ROUNDTRIP}") -eq 2 ]]
 [[ $(grep -Fc "pto.trowexpandmax ins(" "${ROUNDTRIP}") -eq 2 ]]
 [[ $(grep -Fc "pto.trowexpandmin ins(" "${ROUNDTRIP}") -eq 2 ]]
+perl -0ne 'exit(/pto\.trowexpand(mul|max|min) ins\([^:]*,[^:]*,[^:]* :/s)' "${ROUNDTRIP}"
 grep -F "pto.trsqrt ins(" "${ROUNDTRIP}" >/dev/null
 grep -E "pto\\.trsqrt ins\\(%[^,]+, %[^:]+ :" "${ROUNDTRIP}" >/dev/null
 grep -F "pto.tpartmul ins(" "${ROUNDTRIP}" >/dev/null

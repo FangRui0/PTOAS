@@ -2729,54 +2729,49 @@ def trowexpandadd(src0, src1, dst):
     )
 
 
-def trowexpandsub(src0, src1, dst, *, tmp=None):
-    """``pto.trowexpandsub ins(src0, src1, tmp?) outs(dst)``."""
+def trowexpandsub(src0, src1, dst):
+    """``pto.trowexpandsub ins(src0, src1) outs(dst)``."""
     _pto.trowexpandsub(
         unwrap_surface_value(src0),
         unwrap_surface_value(src1),
         unwrap_surface_value(dst),
-        tmp=None if tmp is None else unwrap_surface_value(tmp),
     )
 
 
-def trowexpandmul(src0, src1, dst, *, tmp=None):
-    """``pto.trowexpandmul ins(src0, src1, tmp?) outs(dst)``."""
+def trowexpandmul(src0, src1, dst):
+    """``pto.trowexpandmul ins(src0, src1) outs(dst)``."""
     _pto.trowexpandmul(
         unwrap_surface_value(src0),
         unwrap_surface_value(src1),
         unwrap_surface_value(dst),
-        tmp=None if tmp is None else unwrap_surface_value(tmp),
     )
 
 
-def trowexpanddiv(src0, src1, dst, *, tmp=None, div_precision=None):
-    """``pto.trowexpanddiv ins(src0, src1, tmp?) outs(dst)``."""
+def trowexpanddiv(src0, src1, dst, *, div_precision=None):
+    """``pto.trowexpanddiv ins(src0, src1) outs(dst)``."""
     _pto.trowexpanddiv(
         unwrap_surface_value(src0),
         unwrap_surface_value(src1),
         unwrap_surface_value(dst),
-        tmp=None if tmp is None else unwrap_surface_value(tmp),
         precision_type=div_precision,
     )
 
 
-def trowexpandmax(src0, src1, dst, *, tmp=None):
-    """``pto.trowexpandmax ins(src0, src1, tmp?) outs(dst)``."""
+def trowexpandmax(src0, src1, dst):
+    """``pto.trowexpandmax ins(src0, src1) outs(dst)``."""
     _pto.trowexpandmax(
         unwrap_surface_value(src0),
         unwrap_surface_value(src1),
         unwrap_surface_value(dst),
-        tmp=None if tmp is None else unwrap_surface_value(tmp),
     )
 
 
-def trowexpandmin(src0, src1, dst, *, tmp=None):
-    """``pto.trowexpandmin ins(src0, src1, tmp?) outs(dst)``."""
+def trowexpandmin(src0, src1, dst):
+    """``pto.trowexpandmin ins(src0, src1) outs(dst)``."""
     _pto.trowexpandmin(
         unwrap_surface_value(src0),
         unwrap_surface_value(src1),
         unwrap_surface_value(dst),
-        tmp=None if tmp is None else unwrap_surface_value(tmp),
     )
 
 

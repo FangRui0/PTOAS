@@ -50,7 +50,7 @@ add_test(NAME ptobc_tprint_v0_encode
     ${CMAKE_CURRENT_LIST_DIR}/tprint_v0_encode.sh
 )
 
-add_test(NAME ptobc_tci_trowexpandadd_tmp_v0_encode
+add_test(NAME ptobc_tci_trowexpandadd_v0_encode
   COMMAND ${CMAKE_COMMAND} -E env
     PTOBC_BIN=$<TARGET_FILE:ptobc>
     TESTDATA_DIR=${PTObc_TESTDATA_DIR}

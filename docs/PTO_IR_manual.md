@@ -5171,15 +5171,15 @@ element-type constraints are:
 
 `pto.trowexpandexpdif` and `pto.tcolexpandexpdif` remain floating-point only (`f16`/`f32`).
 
-All `pto.trowexpandmul/div/sub/add/expdif/max/min` ops accept both the plain
-two-source form and the tmp-taking form. PTO IR does not require `tmp` to
-match the shape or valid shape of `src0` / `src1` / `dst`. On A5, `tmp` is
-accepted as a compatibility placeholder and may be smaller than the data tiles.
+`pto.trowexpandmul/div/sub/add/max/min` use the two-source DPS form
+`ins(src0, src1) outs(dst)`. `pto.trowexpandexpdif` still keeps an optional
+`tmp` operand.
 
 For `pto.trowexpandexpdif/max/min`, PTO IR requires one source to match
-`dst valid_shape` and the other to be a per-row scalar vector. When the A3
-tmp-taking form is used, that scalar-vector operand must use a non-row-major
-layout. When `tmp` is present, it must have the same element type as `dst`.
+`dst valid_shape` and the other to be a per-row scalar vector. For
+`pto.trowexpandexpdif`, when the A3 tmp-taking form is used, that scalar-vector
+operand must use a non-row-major layout, and `tmp` must have the same element
+type as `dst`.
 
 ---
 
@@ -5604,7 +5604,6 @@ For each element (i, j):
 |------|------|-------------|
 | `src0` | `pto.tile_buf` | Source tile buffer |
 | `src1` | `pto.tile_buf` | Per-row scalar vector |
-| `tmp` | `Optional<pto.tile_buf>` | Optional workspace tile on A2/A3; compatibility placeholder on A5 |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -5612,7 +5611,7 @@ For each element (i, j):
 **Assembly Format:**
 
 ```
-pto.trowexpandmul ins(<src0>, <src1>[, <tmp>] : <src0_type>, <src1_type>[, <tmp_type>])
+pto.trowexpandmul ins(<src0>, <src1> : <src0_type>, <src1_type>)
                   outs(<dst> : <dst_type>)
 ```
 
@@ -5622,10 +5621,6 @@ pto.trowexpandmul ins(<src0>, <src1>[, <tmp>] : <src0_type>, <src1_type>[, <tmp_
   - `dst`, `src0`, and `src1` must have the same element type.
   - The shared element type must be `f16` or `f32`.
   - `dst` must use row-major layout (`blayout=row_major`).
-- When `tmp` is present:
-  - PTO IR does not require `tmp` to match the shape or valid shape of `src0` / `src1` / `dst`.
-  - On A5, `tmp` is accepted as a compatibility placeholder and is not consumed by the current implementation.
- 
 **Hardware Mapping:**
 
 - Executes on the **Vector pipeline** (`PIPE_V`)
@@ -5634,14 +5629,10 @@ pto.trowexpandmul ins(<src0>, <src1>[, <tmp>] : <src0_type>, <src1_type>[, <tmp_
 **Basic Example:**
 
 ```mlir
-pto.trowexpandmul ins(%src0, %src1, %tmp : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64,
+pto.trowexpandmul ins(%src0, %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64,
                       v_row=16, v_col=64, blayout=row_major, slayout=none_box,
                       fractal=512, pad=0>,
                       !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1,
-                      v_row=16, v_col=1, blayout=col_major, slayout=none_box,
-                      fractal=512, pad=0>,
-                      !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=8,
-                      v_row=1, v_col=8, blayout=row_major, slayout=none_box,
                       fractal=512, pad=0>)
                   outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64,
                       v_row=16, v_col=64, blayout=row_major, slayout=none_box,
@@ -5667,7 +5658,6 @@ For each element (i, j):
 |------|------|-------------|
 | `src0` | `pto.tile_buf` | Source tile buffer |
 | `src1` | `pto.tile_buf` | Per-row scalar vector (divisor) |
-| `tmp` | `Optional<pto.tile_buf>` | Optional workspace tile on A2/A3; compatibility placeholder on A5 |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -5675,7 +5665,7 @@ For each element (i, j):
 **Assembly Format:**
 
 ```
-pto.trowexpanddiv ins(<src0>, <src1>[, <tmp>] : <src0_type>, <src1_type>[, <tmp_type>])
+pto.trowexpanddiv ins(<src0>, <src1> : <src0_type>, <src1_type>)
                   outs(<dst> : <dst_type>)
 ```
 
@@ -5685,10 +5675,8 @@ pto.trowexpanddiv ins(<src0>, <src1>[, <tmp>] : <src0_type>, <src1_type>[, <tmp_
   - `dst`, `src0`, and `src1` must have the same element type.
   - The shared element type must be `f16` or `f32`.
   - `dst` must use row-major layout (`blayout=row_major`).
-- `precisionType = #pto<div_precision high_precision>` requires `tmp`.
-- When `tmp` is present:
-  - PTO IR does not require `tmp` to match the shape or valid shape of `src0` / `src1` / `dst`.
-  - On A5, `tmp` is accepted as a compatibility placeholder and is not consumed by the current implementation.
+- `precisionType` may be omitted for the default algorithm or set to
+  `#pto<div_precision high_precision>` to request the high-precision path.
 
 **Hardware Mapping:**
 
@@ -5698,14 +5686,10 @@ pto.trowexpanddiv ins(<src0>, <src1>[, <tmp>] : <src0_type>, <src1_type>[, <tmp_
 **Basic Example:**
 
 ```mlir
-pto.trowexpanddiv ins(%src0, %src1, %tmp : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64,
+pto.trowexpanddiv ins(%src0, %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64,
                       v_row=16, v_col=64, blayout=row_major, slayout=none_box,
                       fractal=512, pad=0>,
                       !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1,
-                      v_row=16, v_col=1, blayout=col_major, slayout=none_box,
-                      fractal=512, pad=0>,
-                      !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=8,
-                      v_row=1, v_col=8, blayout=row_major, slayout=none_box,
                       fractal=512, pad=0>)
                   outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64,
                       v_row=16, v_col=64, blayout=row_major, slayout=none_box,
@@ -5731,7 +5715,6 @@ For each element (i, j):
 |------|------|-------------|
 | `src0` | `pto.tile_buf` | Source tile buffer |
 | `src1` | `pto.tile_buf` | Per-row scalar vector (subtrahend) |
-| `tmp` | `Optional<pto.tile_buf>` | Optional workspace tile on A2/A3; compatibility placeholder on A5 |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -5739,7 +5722,7 @@ For each element (i, j):
 **Assembly Format:**
 
 ```
-pto.trowexpandsub ins(<src0>, <src1>[, <tmp>] : <src0_type>, <src1_type>[, <tmp_type>])
+pto.trowexpandsub ins(<src0>, <src1> : <src0_type>, <src1_type>)
                   outs(<dst> : <dst_type>)
 ```
 
@@ -5751,10 +5734,6 @@ pto.trowexpandsub ins(<src0>, <src1>[, <tmp>] : <src0_type>, <src1_type>[, <tmp_
     - A2/A3: `i16`, `i32`, `f16`, `f32`
     - A5: `i8`, `i16`, `i32`, `f16`, `f32`
   - `dst` must use row-major layout (`blayout=row_major`).
-- When `tmp` is present:
-  - PTO IR does not require `tmp` to match the shape or valid shape of `src0` / `src1` / `dst`.
-  - On A5, `tmp` is accepted as a compatibility placeholder and is not consumed by the current implementation.
-
 **Hardware Mapping:**
 
 - Executes on the **Vector pipeline** (`PIPE_V`)
@@ -5763,14 +5742,10 @@ pto.trowexpandsub ins(<src0>, <src1>[, <tmp>] : <src0_type>, <src1_type>[, <tmp_
 **Basic Example:**
 
 ```mlir
-pto.trowexpandsub ins(%src0, %src1, %tmp : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64,
+pto.trowexpandsub ins(%src0, %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64,
                       v_row=16, v_col=64, blayout=row_major, slayout=none_box,
                       fractal=512, pad=0>,
                       !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1,
-                      v_row=16, v_col=1, blayout=col_major, slayout=none_box,
-                      fractal=512, pad=0>,
-                      !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=8,
-                      v_row=1, v_col=8, blayout=row_major, slayout=none_box,
                       fractal=512, pad=0>)
                   outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64,
                       v_row=16, v_col=64, blayout=row_major, slayout=none_box,
@@ -5796,7 +5771,6 @@ For each element (i, j):
 |------|------|-------------|
 | `src0` | `pto.tile_buf` | Source tile buffer |
 | `src1` | `pto.tile_buf` | Per-row scalar vector |
-| `tmp` | `pto.tile_buf` (optional) | Optional workspace tile on A2/A3; compatibility placeholder on A5 |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -5804,7 +5778,7 @@ For each element (i, j):
 **Assembly Format:**
 
 ```
-pto.trowexpandadd ins(<src0>, <src1> [, <tmp>] : <src0_type>, <src1_type> [, <tmp_type>])
+pto.trowexpandadd ins(<src0>, <src1> : <src0_type>, <src1_type>)
                   outs(<dst> : <dst_type>)
 ```
 
@@ -5819,10 +5793,6 @@ pto.trowexpandadd ins(<src0>, <src1> [, <tmp>] : <src0_type>, <src1_type> [, <tm
   - `src1 valid_shape[0]` must equal `dst valid_shape[0]`.
   - If `src1` is row-major: `src1 valid_shape[1] == 32 / sizeof(dtype)` (`16` for `f16`, `8` for `f32`).
   - If `src1` is not row-major: `src1 valid_shape[1] == 1`.
-- When `tmp` is present:
-  - PTO IR does not require `tmp` to match the shape or valid shape of `src0` / `src1` / `dst`.
-  - On A5, `tmp` is accepted as a compatibility placeholder and is not consumed by the current implementation.
-
 **Hardware Mapping:**
 
 - Executes on the **Vector pipeline** (`PIPE_V`)
@@ -5861,7 +5831,6 @@ For each element (i, j):
 |------|------|-------------|
 | `src0` | `pto.tile_buf` | One input tile; one of `src0` / `src1` must match `dst` valid shape |
 | `src1` | `pto.tile_buf` | The other input; interpreted as a per-row scalar vector |
-| `tmp` | `Optional<pto.tile_buf>` | Optional workspace tile on A2/A3; compatibility placeholder on A5 |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -5930,7 +5899,6 @@ For each element (i, j):
 |------|------|-------------|
 | `src0` | `pto.tile_buf` | One input tile; one of `src0` / `src1` must match `dst` valid shape |
 | `src1` | `pto.tile_buf` | The other input; interpreted as a per-row scalar vector |
-| `tmp` | `Optional<pto.tile_buf>` | Optional workspace tile on A2/A3; compatibility placeholder on A5 |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -5938,7 +5906,7 @@ For each element (i, j):
 **Assembly Format:**
 
 ```
-pto.trowexpandmax ins(<src0>, <src1>[, <tmp>] : <src0_type>, <src1_type>[, <tmp_type>])
+pto.trowexpandmax ins(<src0>, <src1> : <src0_type>, <src1_type>)
                   outs(<dst> : <dst_type>)
 ```
 
@@ -5954,12 +5922,6 @@ pto.trowexpandmax ins(<src0>, <src1>[, <tmp>] : <src0_type>, <src1_type>[, <tmp_
   - `valid_shape[0] == dst valid_shape[0]`
   - if it is row-major, `valid_shape[1] == 32 / sizeof(dtype)` (`32` for `i8`, `16` for `i16` / `f16`, `8` for `i32` / `f32`)
   - otherwise, `valid_shape[1] == 1`
-- When the A3 tmp-taking form is used, the scalar-vector operand must use a non-row-major layout.
-- When `tmp` is present:
-  - `tmp` must have the same element type as `dst`.
-  - PTO IR does not require `tmp` to match the shape or valid shape of `src0` / `src1` / `dst`.
-  - On A5, `tmp` is accepted as a compatibility placeholder and is not consumed by the current implementation.
-
 **Hardware Mapping:**
 
 - Executes on the **Vector pipeline** (`PIPE_V`)
@@ -5968,14 +5930,11 @@ pto.trowexpandmax ins(<src0>, <src1>[, <tmp>] : <src0_type>, <src1_type>[, <tmp_
 **Basic Example:**
 
 ```mlir
-pto.trowexpandmax ins(%src0, %src1, %tmp : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64,
+pto.trowexpandmax ins(%src0, %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64,
                       v_row=16, v_col=64, blayout=row_major, slayout=none_box,
                       fractal=512, pad=0>,
                       !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1,
                       v_row=16, v_col=1, blayout=col_major, slayout=none_box,
-                      fractal=512, pad=0>,
-                      !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=8,
-                      v_row=1, v_col=8, blayout=row_major, slayout=none_box,
                       fractal=512, pad=0>)
                   outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64,
                       v_row=16, v_col=64, blayout=row_major, slayout=none_box,
@@ -6001,7 +5960,6 @@ For each element (i, j):
 |------|------|-------------|
 | `src0` | `pto.tile_buf` | One input tile; one of `src0` / `src1` must match `dst` valid shape |
 | `src1` | `pto.tile_buf` | The other input; interpreted as a per-row scalar vector |
-| `tmp` | `Optional<pto.tile_buf>` | Optional workspace tile on A2/A3; compatibility placeholder on A5 |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -6009,7 +5967,7 @@ For each element (i, j):
 **Assembly Format:**
 
 ```
-pto.trowexpandmin ins(<src0>, <src1>[, <tmp>] : <src0_type>, <src1_type>[, <tmp_type>])
+pto.trowexpandmin ins(<src0>, <src1> : <src0_type>, <src1_type>)
                   outs(<dst> : <dst_type>)
 ```
 
@@ -6025,11 +5983,6 @@ pto.trowexpandmin ins(<src0>, <src1>[, <tmp>] : <src0_type>, <src1_type>[, <tmp_
   - `valid_shape[0] == dst valid_shape[0]`
   - if it is row-major, `valid_shape[1] == 32 / sizeof(dtype)` (`32` for `i8`, `16` for `i16` / `f16`, `8` for `i32` / `f32`)
   - otherwise, `valid_shape[1] == 1`
-- When the A3 tmp-taking form is used, the scalar-vector operand must use a non-row-major layout.
-- When `tmp` is present:
-  - `tmp` must have the same element type as `dst`.
-  - PTO IR does not require `tmp` to match the shape or valid shape of `src0` / `src1` / `dst`.
-  - On A5, `tmp` is accepted as a compatibility placeholder and is not consumed by the current implementation.
 
 **Hardware Mapping:**
 
@@ -6039,14 +5992,11 @@ pto.trowexpandmin ins(<src0>, <src1>[, <tmp>] : <src0_type>, <src1_type>[, <tmp_
 **Basic Example:**
 
 ```mlir
-pto.trowexpandmin ins(%src0, %src1, %tmp : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64,
+pto.trowexpandmin ins(%src0, %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64,
                       v_row=16, v_col=64, blayout=row_major, slayout=none_box,
                       fractal=512, pad=0>,
                       !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1,
                       v_row=16, v_col=1, blayout=col_major, slayout=none_box,
-                      fractal=512, pad=0>,
-                      !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=8,
-                      v_row=1, v_col=8, blayout=row_major, slayout=none_box,
                       fractal=512, pad=0>)
                   outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64,
                       v_row=16, v_col=64, blayout=row_major, slayout=none_box,

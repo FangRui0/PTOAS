@@ -10154,6 +10154,33 @@ void mlir::pto::TPowSOp::print(OpAsmPrinter &p) {
 
 static ParseResult parseTRowExpandBinaryLikeOp(OpAsmParser &parser,
                                                OperationState &result) {
+  OpAsmParser::UnresolvedOperand src0, src1, dst;
+  Type src0Ty, src1Ty, dstTy;
+
+  if (parser.parseKeyword("ins") || parser.parseLParen() ||
+      parser.parseOperand(src0) || parser.parseComma() || parser.parseOperand(src1) ||
+      parser.parseColon() || parser.parseType(src0Ty) || parser.parseComma() ||
+      parser.parseType(src1Ty) || parser.parseRParen())
+    return failure();
+  if (parser.parseKeyword("outs") || parser.parseLParen() ||
+      parser.parseOperand(dst) || parser.parseColonType(dstTy) ||
+      parser.parseRParen())
+    return failure();
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+
+  if (parser.resolveOperand(src0, src0Ty, result.operands) ||
+      parser.resolveOperand(src1, src1Ty, result.operands) ||
+      parser.resolveOperand(dst, dstTy, result.operands))
+    return failure();
+
+  result.addAttribute("operandSegmentSizes",
+                      parser.getBuilder().getDenseI32ArrayAttr({1, 1, 1}));
+  return success();
+}
+
+static ParseResult parseTRowExpandBinaryLikeOpWithOptionalTmp(
+    OpAsmParser &parser, OperationState &result) {
   OpAsmParser::UnresolvedOperand src0, src1, tmp, dst;
   Type src0Ty, src1Ty, tmpTy, dstTy;
   bool hasTmp = false;
@@ -10200,7 +10227,17 @@ static ParseResult parseTRowExpandBinaryLikeOp(OpAsmParser &parser,
 }
 
 static void printTRowExpandBinaryLikeOp(OpAsmPrinter &p, Operation *op, Value src0,
-                                        Value src1, Value tmp, Value dst) {
+                                        Value src1, Value dst) {
+  p << " ins(" << src0 << ", " << src1 << " : " << src0.getType() << ", "
+    << src1.getType() << ")";
+  p << " outs(" << dst << " : " << dst.getType() << ")";
+  p.printOptionalAttrDict(op->getAttrs(), /*elidedAttrs=*/{"operandSegmentSizes"});
+}
+
+static void printTRowExpandBinaryLikeOpWithOptionalTmp(OpAsmPrinter &p,
+                                                       Operation *op, Value src0,
+                                                       Value src1, Value tmp,
+                                                       Value dst) {
   p << " ins(" << src0 << ", " << src1;
   if (tmp) {
     p << ", " << tmp;
@@ -10218,8 +10255,7 @@ ParseResult mlir::pto::TRowExpandDivOp::parse(OpAsmParser &parser, OperationStat
 }
 
 void mlir::pto::TRowExpandDivOp::print(OpAsmPrinter &p) {
-  printTRowExpandBinaryLikeOp(p, getOperation(), getSrc0(), getSrc1(), getTmp(),
-                              getDst());
+  printTRowExpandBinaryLikeOp(p, getOperation(), getSrc0(), getSrc1(), getDst());
 }
 
 ParseResult mlir::pto::TRowExpandMulOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -10227,8 +10263,7 @@ ParseResult mlir::pto::TRowExpandMulOp::parse(OpAsmParser &parser, OperationStat
 }
 
 void mlir::pto::TRowExpandMulOp::print(OpAsmPrinter &p) {
-  printTRowExpandBinaryLikeOp(p, getOperation(), getSrc0(), getSrc1(), getTmp(),
-                              getDst());
+  printTRowExpandBinaryLikeOp(p, getOperation(), getSrc0(), getSrc1(), getDst());
 }
 
 ParseResult mlir::pto::TRowExpandSubOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -10236,8 +10271,7 @@ ParseResult mlir::pto::TRowExpandSubOp::parse(OpAsmParser &parser, OperationStat
 }
 
 void mlir::pto::TRowExpandSubOp::print(OpAsmPrinter &p) {
-  printTRowExpandBinaryLikeOp(p, getOperation(), getSrc0(), getSrc1(), getTmp(),
-                              getDst());
+  printTRowExpandBinaryLikeOp(p, getOperation(), getSrc0(), getSrc1(), getDst());
 }
 
 ParseResult mlir::pto::TRowExpandAddOp::parse(OpAsmParser &parser,
@@ -10246,18 +10280,17 @@ ParseResult mlir::pto::TRowExpandAddOp::parse(OpAsmParser &parser,
 }
 
 void mlir::pto::TRowExpandAddOp::print(OpAsmPrinter &p) {
-  printTRowExpandBinaryLikeOp(p, getOperation(), getSrc0(), getSrc1(), getTmp(),
-                              getDst());
+  printTRowExpandBinaryLikeOp(p, getOperation(), getSrc0(), getSrc1(), getDst());
 }
 
 ParseResult mlir::pto::TRowExpandExpdifOp::parse(OpAsmParser &parser,
                                                  OperationState &result) {
-  return parseTRowExpandBinaryLikeOp(parser, result);
+  return parseTRowExpandBinaryLikeOpWithOptionalTmp(parser, result);
 }
 
 void mlir::pto::TRowExpandExpdifOp::print(OpAsmPrinter &p) {
-  printTRowExpandBinaryLikeOp(p, getOperation(), getSrc0(), getSrc1(), getTmp(),
-                              getDst());
+  printTRowExpandBinaryLikeOpWithOptionalTmp(
+      p, getOperation(), getSrc0(), getSrc1(), getTmp(), getDst());
 }
 
 ParseResult mlir::pto::TRowExpandMaxOp::parse(OpAsmParser &parser,
@@ -10266,8 +10299,7 @@ ParseResult mlir::pto::TRowExpandMaxOp::parse(OpAsmParser &parser,
 }
 
 void mlir::pto::TRowExpandMaxOp::print(OpAsmPrinter &p) {
-  printTRowExpandBinaryLikeOp(p, getOperation(), getSrc0(), getSrc1(), getTmp(),
-                              getDst());
+  printTRowExpandBinaryLikeOp(p, getOperation(), getSrc0(), getSrc1(), getDst());
 }
 
 ParseResult mlir::pto::TRowExpandMinOp::parse(OpAsmParser &parser,
@@ -10276,18 +10308,14 @@ ParseResult mlir::pto::TRowExpandMinOp::parse(OpAsmParser &parser,
 }
 
 void mlir::pto::TRowExpandMinOp::print(OpAsmPrinter &p) {
-  printTRowExpandBinaryLikeOp(p, getOperation(), getSrc0(), getSrc1(), getTmp(),
-                              getDst());
+  printTRowExpandBinaryLikeOp(p, getOperation(), getSrc0(), getSrc1(), getDst());
 }
 
 static FailureOr<Type> verifyTRowExpandBinaryCore(Operation *op, Type src0Ty,
-                                                  Type src1Ty, Type dstTy,
-                                                  Type tmpTy, bool hasTmp) {
+                                                  Type src1Ty, Type dstTy) {
   if (failed(verifyTileBufCommon(op, src0Ty, "src0")) ||
       failed(verifyTileBufCommon(op, src1Ty, "src1")) ||
       failed(verifyTileBufCommon(op, dstTy, "dst")))
-    return failure();
-  if (hasTmp && failed(verifyTileBufCommon(op, tmpTy, "tmp")))
     return failure();
   if (failed(verifyTileBufSameElemType(op, src0Ty, dstTy, "src0", "dst")))
     return failure();
@@ -10307,9 +10335,8 @@ mlir::LogicalResult mlir::pto::TRowExpandDivOp::verify() {
     Type src0Ty = getSrc0().getType();
     Type src1Ty = getSrc1().getType();
     Type dstTy = getDst().getType();
-    FailureOr<Type> elemOr = verifyTRowExpandBinaryCore(
-        *this, src0Ty, src1Ty, dstTy, getTmp() ? getTmp().getType() : Type{},
-        static_cast<bool>(getTmp()));
+    FailureOr<Type> elemOr =
+        verifyTRowExpandBinaryCore(*this, src0Ty, src1Ty, dstTy);
     if (failed(elemOr))
       return failure();
     Type elem = *elemOr;
@@ -10323,8 +10350,6 @@ mlir::LogicalResult mlir::pto::TRowExpandDivOp::verify() {
             "expects A5 trowexpanddiv element type to be i8/i16/i32/f16/f32");
       return emitOpError("expects element type to be f16 or f32");
     }
-    if (getPrecisionType() == pto::DivPrecision::HighPrecision && !getTmp())
-      return emitOpError("expects tmp when precisionType is high_precision");
     return mlir::success();
   };
   auto verifyA2A3 = [&]() -> LogicalResult { return verifyByArch(PTOArch::A3); };
@@ -10338,9 +10363,8 @@ mlir::LogicalResult mlir::pto::TRowExpandMulOp::verify() {
     Type src0Ty = getSrc0().getType();
     Type src1Ty = getSrc1().getType();
     Type dstTy = getDst().getType();
-    FailureOr<Type> elemOr = verifyTRowExpandBinaryCore(
-        *this, src0Ty, src1Ty, dstTy, getTmp() ? getTmp().getType() : Type{},
-        static_cast<bool>(getTmp()));
+    FailureOr<Type> elemOr =
+        verifyTRowExpandBinaryCore(*this, src0Ty, src1Ty, dstTy);
     if (failed(elemOr))
       return failure();
     Type elem = *elemOr;
@@ -10367,9 +10391,8 @@ mlir::LogicalResult mlir::pto::TRowExpandSubOp::verify() {
     Type src0Ty = getSrc0().getType();
     Type src1Ty = getSrc1().getType();
     Type dstTy = getDst().getType();
-    FailureOr<Type> elemOr = verifyTRowExpandBinaryCore(
-        *this, src0Ty, src1Ty, dstTy, getTmp() ? getTmp().getType() : Type{},
-        static_cast<bool>(getTmp()));
+    FailureOr<Type> elemOr =
+        verifyTRowExpandBinaryCore(*this, src0Ty, src1Ty, dstTy);
     if (failed(elemOr))
       return failure();
     Type elem = *elemOr;
@@ -10395,9 +10418,8 @@ mlir::LogicalResult mlir::pto::TRowExpandAddOp::verify() {
     Type src0Ty = getSrc0().getType();
     Type src1Ty = getSrc1().getType();
     Type dstTy = getDst().getType();
-    FailureOr<Type> elemOr = verifyTRowExpandBinaryCore(
-        *this, src0Ty, src1Ty, dstTy, getTmp() ? getTmp().getType() : Type{},
-        static_cast<bool>(getTmp()));
+    FailureOr<Type> elemOr =
+        verifyTRowExpandBinaryCore(*this, src0Ty, src1Ty, dstTy);
     if (failed(elemOr))
       return failure();
     if (failed(verifyTileBufSameValidShape(*this, src0Ty, dstTy, "src0", "dst")))
@@ -10601,17 +10623,15 @@ mlir::LogicalResult mlir::pto::TRowExpandExpdifOp::verify() {
 mlir::LogicalResult mlir::pto::TRowExpandMaxOp::verify() {
   auto verifyA2A3 = [&]() -> LogicalResult {
     return verifyTRowExpandReduceLikeOp(getOperation(), getSrc0().getType(),
-                                        getSrc1().getType(), getDst().getType(),
-                                        getTmp() ? getTmp().getType() : Type{},
-                                        (bool)getTmp(), PTOArch::A3,
+                                        getSrc1().getType(), getDst().getType(), Type{},
+                                        /*hasTmp=*/false, PTOArch::A3,
                                         "trowexpandmax",
                                         /*allowIntegerTypes=*/true);
   };
   auto verifyA5 = [&]() -> LogicalResult {
     return verifyTRowExpandReduceLikeOp(getOperation(), getSrc0().getType(),
-                                        getSrc1().getType(), getDst().getType(),
-                                        getTmp() ? getTmp().getType() : Type{},
-                                        (bool)getTmp(), PTOArch::A5,
+                                        getSrc1().getType(), getDst().getType(), Type{},
+                                        /*hasTmp=*/false, PTOArch::A5,
                                         "trowexpandmax",
                                         /*allowIntegerTypes=*/true);
   };
@@ -10621,17 +10641,15 @@ mlir::LogicalResult mlir::pto::TRowExpandMaxOp::verify() {
 mlir::LogicalResult mlir::pto::TRowExpandMinOp::verify() {
   auto verifyA2A3 = [&]() -> LogicalResult {
     return verifyTRowExpandReduceLikeOp(getOperation(), getSrc0().getType(),
-                                        getSrc1().getType(), getDst().getType(),
-                                        getTmp() ? getTmp().getType() : Type{},
-                                        (bool)getTmp(), PTOArch::A3,
+                                        getSrc1().getType(), getDst().getType(), Type{},
+                                        /*hasTmp=*/false, PTOArch::A3,
                                         "trowexpandmin",
                                         /*allowIntegerTypes=*/true);
   };
   auto verifyA5 = [&]() -> LogicalResult {
     return verifyTRowExpandReduceLikeOp(getOperation(), getSrc0().getType(),
-                                        getSrc1().getType(), getDst().getType(),
-                                        getTmp() ? getTmp().getType() : Type{},
-                                        (bool)getTmp(), PTOArch::A5,
+                                        getSrc1().getType(), getDst().getType(), Type{},
+                                        /*hasTmp=*/false, PTOArch::A5,
                                         "trowexpandmin",
                                         /*allowIntegerTypes=*/true);
   };
@@ -12999,9 +13017,6 @@ void TRowExpandDivOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   PTO_ADD_READ(getSrc0Mutable());
   PTO_ADD_READ(getSrc1Mutable());
-  auto tmp = getTmpMutable();
-  if (!tmp.empty() && getTargetArch(getOperation()) != PTOArch::A5)
-    PTO_ADD_WRITE(tmp[0]);
   PTO_ADD_WRITE(getDstMutable());
 }
 
@@ -13009,9 +13024,6 @@ void TRowExpandMulOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   PTO_ADD_READ(getSrc0Mutable());
   PTO_ADD_READ(getSrc1Mutable());
-  auto tmp = getTmpMutable();
-  if (!tmp.empty() && getTargetArch(getOperation()) != PTOArch::A5)
-    PTO_ADD_WRITE(tmp[0]);
   PTO_ADD_WRITE(getDstMutable());
 }
 
@@ -13019,9 +13031,6 @@ void TRowExpandSubOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   PTO_ADD_READ(getSrc0Mutable());
   PTO_ADD_READ(getSrc1Mutable());
-  auto tmp = getTmpMutable();
-  if (!tmp.empty() && getTargetArch(getOperation()) != PTOArch::A5)
-    PTO_ADD_WRITE(tmp[0]);
   PTO_ADD_WRITE(getDstMutable());
 }
 
@@ -13029,9 +13038,6 @@ void TRowExpandAddOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   PTO_ADD_READ(getSrc0Mutable());
   PTO_ADD_READ(getSrc1Mutable());
-  auto tmp = getTmpMutable();
-  if (!tmp.empty() && getTargetArch(getOperation()) != PTOArch::A5)
-    PTO_ADD_WRITE(tmp[0]);
   PTO_ADD_WRITE(getDstMutable());
 }
 
@@ -13049,9 +13055,6 @@ void TRowExpandMaxOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   PTO_ADD_READ(getSrc0Mutable());
   PTO_ADD_READ(getSrc1Mutable());
-  auto tmp = getTmpMutable();
-  if (!tmp.empty() && getTargetArch(getOperation()) != PTOArch::A5)
-    PTO_ADD_WRITE(tmp[0]);
   PTO_ADD_WRITE(getDstMutable());
 }
 
@@ -13059,9 +13062,6 @@ void TRowExpandMinOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   PTO_ADD_READ(getSrc0Mutable());
   PTO_ADD_READ(getSrc1Mutable());
-  auto tmp = getTmpMutable();
-  if (!tmp.empty() && getTargetArch(getOperation()) != PTOArch::A5)
-    PTO_ADD_WRITE(tmp[0]);
   PTO_ADD_WRITE(getDstMutable());
 }
 

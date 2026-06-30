@@ -5695,14 +5695,13 @@ def TRowExpandDivOp: PTO_TOp<"trowexpanddiv", [
 ]> {
   let summary = "TROWEXPANDDIV: Row-wise broadcast divide: divide each row of src0 by a per-row scalar vector src1.";
   let description = [{
-    DPS form with required temporary scratch storage. Lowering always forwards
-    `tmp` to the tmp-taking backend interface.
+    DPS form. `src0` provides the full tile, `src1` provides one scalar per
+    row, and the quotient is written to `dst`.
   }];
 
   let arguments = (ins
     PTODpsType:$src0,
     PTODpsType:$src1,
-    PTODpsType:$tmp,
     PTODpsType:$dst,
     DefaultValuedAttr<PTO_DivPrecisionAttr, "::mlir::pto::DivPrecision::Default">:$precisionType
   );
@@ -5729,14 +5728,13 @@ def TRowExpandMulOp: PTO_TOp<"trowexpandmul", [
 ]> {
   let summary = "TROWEXPANDMUL: Row-wise broadcast multiply with per-row scalar vector.";
   let description = [{
-    DPS form with required temporary scratch storage. Lowering always forwards
-    `tmp` to the tmp-taking backend interface.
+    DPS form. `src0` provides the full tile, `src1` provides one scalar per
+    row, and the product is written to `dst`.
   }];
 
   let arguments = (ins
     PTODpsType:$src0,
     PTODpsType:$src1,
-    PTODpsType:$tmp,
     PTODpsType:$dst
   );
 
@@ -5762,14 +5760,13 @@ def TRowExpandSubOp: PTO_TOp<"trowexpandsub", [
 ]> {
   let summary = "TROWEXPANDSUB: Row-wise broadcast subtract: subtract a per-row scalar vector src1 from each row of src0.";
   let description = [{
-    DPS form with required temporary scratch storage. Lowering always forwards
-    `tmp` to the tmp-taking backend interface.
+    DPS form. `src0` provides the full tile, `src1` provides one scalar per
+    row, and the difference is written to `dst`.
   }];
 
   let arguments = (ins
     PTODpsType:$src0,
     PTODpsType:$src1,
-    PTODpsType:$tmp,
     PTODpsType:$dst
   );
 
@@ -5792,14 +5789,13 @@ def TRowExpandAddOp: PTO_TOp<"trowexpandadd", [
 ]> {
   let summary = "TROWEXPANDADD: Row-wise broadcast add: add a per-row scalar vector src1 to each row of src0.";
   let description = [{
-    DPS form with required temporary scratch storage. Lowering always forwards
-    `tmp` to the tmp-taking backend interface.
+    DPS form. `src0` provides the full tile, `src1` provides one scalar per
+    row, and the sum is written to `dst`.
   }];
 
   let arguments = (ins
     PTODpsType:$src0,
     PTODpsType:$src1,
-    PTODpsType:$tmp,
     PTODpsType:$dst
   );
 
@@ -5850,14 +5846,13 @@ def TRowExpandMaxOp: PTO_TOp<"trowexpandmax", [
 ]> {
   let summary = "TROWEXPANDMAX: Row-wise broadcast max with per-row scalar vector.";
   let description = [{
-    DPS form with required temporary scratch storage. Lowering always forwards
-    `tmp` to the tmp-taking backend interface.
+    DPS form. One input provides the full tile, the other provides one scalar
+    per row, and the row-wise maximum is written to `dst`.
   }];
 
   let arguments = (ins
     PTODpsType:$src0,
     PTODpsType:$src1,
-    PTODpsType:$tmp,
     PTODpsType:$dst
   );
 
@@ -5880,14 +5875,13 @@ def TRowExpandMinOp: PTO_TOp<"trowexpandmin", [
 ]> {
   let summary = "TROWEXPANDMIN: Row-wise broadcast min with per-row scalar vector.";
   let description = [{
-    DPS form with required temporary scratch storage. Lowering always forwards
-    `tmp` to the tmp-taking backend interface.
+    DPS form. One input provides the full tile, the other provides one scalar
+    per row, and the row-wise minimum is written to `dst`.
   }];
 
   let arguments = (ins
     PTODpsType:$src0,
     PTODpsType:$src1,
-    PTODpsType:$tmp,
     PTODpsType:$dst
   );
 

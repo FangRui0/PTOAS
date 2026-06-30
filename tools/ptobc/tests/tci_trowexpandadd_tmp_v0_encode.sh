@@ -22,16 +22,16 @@ if [[ -z "${TESTDATA_DIR}" ]]; then
 fi
 
 IN="${TESTDATA_DIR}/tci_trowexpandadd_tmp_v0_roundtrip.pto"
-OUT_DIR=${OUT_DIR:-"${PWD}/ptobc_tci_trowexpandadd_tmp_out"}
+OUT_DIR=${OUT_DIR:-"${PWD}/ptobc_tci_trowexpandadd_out"}
 mkdir -p "${OUT_DIR}"
 
-BC="${OUT_DIR}/tci_trowexpandadd_tmp_v0_roundtrip.ptobc"
-ROUNDTRIP="${OUT_DIR}/tci_trowexpandadd_tmp_v0_roundtrip.roundtrip.pto"
+BC="${OUT_DIR}/tci_trowexpandadd_v0_roundtrip.ptobc"
+ROUNDTRIP="${OUT_DIR}/tci_trowexpandadd_v0_roundtrip.roundtrip.pto"
 
 "${PTOBC_BIN}" encode "${IN}" -o "${BC}"
 "${PTOBC_BIN}" decode "${BC}" -o "${ROUNDTRIP}"
 
 perl -0ne 'exit(!/pto\.tci ins\([^:]* :/s)' "${ROUNDTRIP}"
 perl -0ne 'exit(/pto\.tci ins\([^:]*,[^:]* :/s)' "${ROUNDTRIP}"
-perl -0ne 'exit(!/pto\.trowexpandadd ins\([^:]*,[^:]*,[^:]* :/s)' \
-  "${ROUNDTRIP}"
+perl -0ne 'exit(!/pto\.trowexpandadd ins\([^:]*,[^:]* :/s)' "${ROUNDTRIP}"
+perl -0ne 'exit(/pto\.trowexpandadd ins\([^:]*,[^:]*,[^:]* :/s)' "${ROUNDTRIP}"

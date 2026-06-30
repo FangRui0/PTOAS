@@ -10422,12 +10422,9 @@ struct PTORowExpandAddToEmitC : public OpConversionPattern<pto::TRowExpandAddOp>
 
     Value src0 = peelUnrealized(adaptor.getSrc0());
     Value src1 = peelUnrealized(adaptor.getSrc1());
-    Value tmp = op.getTmp() ? peelUnrealized(adaptor.getTmp()) : Value();
     Value dst = peelUnrealized(adaptor.getDst());
 
-    SmallVector<Value, 4> operands{dst, src0, src1};
-    if (tmp)
-      operands.push_back(tmp);
+    SmallVector<Value, 3> operands{dst, src0, src1};
     rewriter.create<emitc::CallOpaqueOp>(
         loc, TypeRange{}, "TROWEXPANDADD",
         /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
@@ -10653,13 +10650,8 @@ struct PTORowExpandDivToEmitC : public OpConversionPattern<pto::TRowExpandDivOp>
     Value src0 = peelUnrealized(adaptor.getSrc0());
     Value src1 = peelUnrealized(adaptor.getSrc1());
     Value dst  = peelUnrealized(adaptor.getDst());
-    Value tmp  = op.getTmp() ? peelUnrealized(adaptor.getTmp()) : Value();
 
-    SmallVector<Value, 4> operands;
-    if (tmp)
-      operands.assign({dst, src0, src1, tmp});
-    else
-      operands.assign({dst, src0, src1});
+    SmallVector<Value, 3> operands{dst, src0, src1};
     ArrayAttr templateArgs;
     if (op.getPrecisionType() != pto::DivPrecision::Default) {
       StringRef precisionTok;
@@ -10693,13 +10685,8 @@ struct PTORowExpandMulToEmitC : public OpConversionPattern<pto::TRowExpandMulOp>
     Value src0 = peelUnrealized(adaptor.getSrc0());
     Value src1 = peelUnrealized(adaptor.getSrc1());
     Value dst  = peelUnrealized(adaptor.getDst());
-    Value tmp  = op.getTmp() ? peelUnrealized(adaptor.getTmp()) : Value();
 
-    SmallVector<Value, 4> operands;
-    if (tmp)
-      operands.assign({dst, src0, src1, tmp});
-    else
-      operands.assign({dst, src0, src1});
+    SmallVector<Value, 3> operands{dst, src0, src1};
     createLastUseAwareOpaqueCall(rewriter, op.getOperation(), TypeRange{},
                                  "TROWEXPANDMUL", operands);
 
@@ -10722,13 +10709,8 @@ struct PTORowExpandSubToEmitC : public OpConversionPattern<pto::TRowExpandSubOp>
     Value src0 = peelUnrealized(adaptor.getSrc0());
     Value src1 = peelUnrealized(adaptor.getSrc1());
     Value dst  = peelUnrealized(adaptor.getDst());
-    Value tmp  = op.getTmp() ? peelUnrealized(adaptor.getTmp()) : Value();
 
-    SmallVector<Value, 4> operands;
-    if (tmp)
-      operands.assign({dst, src0, src1, tmp});
-    else
-      operands.assign({dst, src0, src1});
+    SmallVector<Value, 3> operands{dst, src0, src1};
     rewriter.create<emitc::CallOpaqueOp>(
         loc, TypeRange{}, "TROWEXPANDSUB",
         /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
@@ -10749,13 +10731,8 @@ struct PTORowExpandMaxToEmitC : public OpConversionPattern<pto::TRowExpandMaxOp>
     Value src0 = peelUnrealized(adaptor.getSrc0());
     Value src1 = peelUnrealized(adaptor.getSrc1());
     Value dst  = peelUnrealized(adaptor.getDst());
-    Value tmp  = op.getTmp() ? peelUnrealized(adaptor.getTmp()) : Value();
 
-    SmallVector<Value, 4> operands;
-    if (tmp)
-      operands.assign({dst, src0, src1, tmp});
-    else
-      operands.assign({dst, src0, src1});
+    SmallVector<Value, 3> operands{dst, src0, src1};
     rewriter.create<emitc::CallOpaqueOp>(
         loc, TypeRange{}, "TROWEXPANDMAX",
         /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
@@ -10776,13 +10753,8 @@ struct PTORowExpandMinToEmitC : public OpConversionPattern<pto::TRowExpandMinOp>
     Value src0 = peelUnrealized(adaptor.getSrc0());
     Value src1 = peelUnrealized(adaptor.getSrc1());
     Value dst  = peelUnrealized(adaptor.getDst());
-    Value tmp  = op.getTmp() ? peelUnrealized(adaptor.getTmp()) : Value();
 
-    SmallVector<Value, 4> operands;
-    if (tmp)
-      operands.assign({dst, src0, src1, tmp});
-    else
-      operands.assign({dst, src0, src1});
+    SmallVector<Value, 3> operands{dst, src0, src1};
     rewriter.create<emitc::CallOpaqueOp>(
         loc, TypeRange{}, "TROWEXPANDMIN",
         /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
