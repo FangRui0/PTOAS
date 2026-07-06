@@ -86,7 +86,23 @@ UNSTABLE_A3_CUSTOM_GOLDEN_CASES = frozenset({
     "xor",
 })
 
-CASE_INT_SCALAR_DEFAULTS = {}
+DEEPSEEK_V4_DIRECT_CASES = frozenset({
+    "attention_csa_test_refresh_incore_81",
+    "attention_hca_test_incore_54",
+    "attention_swa_test_incore_40",
+    "decode_csa_test_incore_81",
+    "decode_hca_test_incore_54",
+    "decode_swa_test_incore_40",
+    "sparse_attn_test_incore_7",
+})
+
+CASE_INT_SCALAR_DEFAULTS = {
+    testcase: {
+        "v4": 0,
+        "v5": 32,
+    }
+    for testcase in DEEPSEEK_V4_DIRECT_CASES
+}
 
 CASE_BOOL_SCALAR_DEFAULTS = {}
 
