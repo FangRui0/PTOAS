@@ -1,4 +1,4 @@
-module attributes {pto.target_arch = "a5"} {
+module attributes {pto.target_arch = "a2a3"} {
   func.func @rope_kv_cache(%arg0: !pto.ptr<bf16>, %arg1: !pto.ptr<bf16>, %arg2: !pto.ptr<bf16>, %arg3: !pto.ptr<f32>, %arg4: !pto.ptr<f32>, %arg5: !pto.ptr<f32>, %arg6: !pto.ptr<f32>, %arg7: !pto.ptr<f32>, %arg8: !pto.ptr<f32>, %arg9: !pto.ptr<f32>, %arg10: index, %arg11: index) attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
   %c0_i64 = arith.constant 0 : i64
   %c256_i64 = arith.constant 256 : i64

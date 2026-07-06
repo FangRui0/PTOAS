@@ -5,9 +5,9 @@ Scope:
 - board-validation inputs with per-case custom golden wrappers
 
 Notes:
-- Current `pypto-lib/main` export produces 54 raw `.pto` fragments for this arch.
-- This directory vendors the 27 fragments that currently compile on `PTOAS` `main` with `--pto-level=level3 --pto-arch=a5`.
-- The remaining 27 latest fragments are intentionally omitted here until the corresponding PTO parser / verifier issues are fixed in `PTOAS`.
+- The vendored sample set in this directory comes from the `pypto-lib` export at `ccbdc4fa5cafd1eda7784c9585f9dc876791778b`, which produced 54 raw `.pto` fragments for this arch.
+- This directory vendors the 27 fragments from that export that compile on rebased `PTOAS` `main` with `--pto-level=level3 --pto-arch=a5`.
+- As of `pypto-lib/main` `628dcf68d3776e61341d09088063e426cd5ef69c`, the upstream A5 DeepSeek V4 compile-only path currently fails verifier checks around `hc_pre_fused`, so this directory remains pinned to the earlier export instead of claiming a straight latest-main refresh.
 - Raw kernels emitted under `aic/` or `aiv/` are flattened to top-level sample files via `<section>_<kernel>.pto` naming.
 - Each current fragment has a sibling `<case>_golden.py`; shared reference logic lives in `deepseek_v4_decode_golden_lib.py`.
 - The shared helper generates deterministic inputs only; board-validation falls back to first-run output capture when no `golden_*.bin` is emitted.
