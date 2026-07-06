@@ -106,6 +106,13 @@ CASE_INT_SCALAR_DEFAULTS = {
 CASE_BOOL_SCALAR_DEFAULTS = {}
 
 CASE_POINTER_COUNT_MINIMUMS = {
+    "aiv_merge_norm": {
+        # The packed sparse output is written through a large tiled GM address
+        # space even though each individual store only covers 448 bf16 values.
+        # Keep the backing buffer large enough for the maximum `v7=1` testcase
+        # offset emitted by the vendored DeepSeek V4 A3 sample.
+        "v2": 4_198_400,
+    },
     "down_proj_residual": {
         "v1": 123648,
         "v2": 123648,
