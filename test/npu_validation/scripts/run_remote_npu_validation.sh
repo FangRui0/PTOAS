@@ -249,7 +249,7 @@ list_contains() {
 
 case_requires_multicard_comm() {
   local cpp="$1"
-  grep -Eq 'pto\.comm\.|CommRemoteOffset_|[[:<:]](tput|tnotify|twait)[[:>:]]' "${cpp}"
+  grep -Eq 'pto\.comm\.|CommRemoteOffset_|(^|[^A-Za-z0-9_])(tput|tnotify|twait)([^A-Za-z0-9_]|$)' "${cpp}"
 }
 
 SKIP_CASES_NORM="$(normalize_list "${SKIP_CASES}")"
