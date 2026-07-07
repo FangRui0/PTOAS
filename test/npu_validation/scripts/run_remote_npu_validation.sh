@@ -247,6 +247,11 @@ list_contains() {
   [[ ",${list}," == *",${item},"* ]]
 }
 
+case_requires_multicard_comm() {
+  local cpp="$1"
+  grep -Eq 'pto\.comm\.|CommRemoteOffset_|[[:<:]](tput|tnotify|twait)[[:>:]]' "${cpp}"
+}
+
 SKIP_CASES_NORM="$(normalize_list "${SKIP_CASES}")"
 RUN_ONLY_CASES_NORM="$(normalize_list "${RUN_ONLY_CASES}")"
 
@@ -521,6 +526,12 @@ while IFS= read -r -d '' cpp; do
     skip_count=$((skip_count + 1))
     printf "%s\tSKIP\t%s\tlisted in SKIP_CASES\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
     log "SKIP: ${testcase} (SKIP_CASES)"
+    continue
+  fi
+  if [[ "${STAGE}" == "run" && "${RUN_MODE}" == "npu" ]] && case_requires_multicard_comm "${cpp}"; then
+    skip_count=$((skip_count + 1))
+    printf "%s\tSKIP\t%s\trequires multi-card communication harness\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
+    log "SKIP: ${testcase} (requires multi-card communication harness)"
     continue
   fi
   if [[ "${testcase}" == "partarg" ]] && ! pto_isa_has_symbol "TPARTARGMAX("; then
