@@ -498,6 +498,22 @@ while IFS= read -r -d '' cpp; do
     continue
   fi
 
+  # DeepSeek-V4 A5 sample pack intentionally vendors hc_pre_fused only as a
+  # compile-regression input. Upstream pypto-lib currently documents the source
+  # hc_pre kernel as Ascend910B/A3-only: its hard mix syncall needs full
+  # physical-core occupancy, so the direct A5 export fails with
+  # HardSyncallOccupancy before kernel emission. Keep build coverage, but do not
+  # treat runtime board execution as expected-pass on A5.
+  if [[ "${STAGE}" == "run" && "${testcase}" == "hc_pre_fused" ]]; then
+    sample_name_probe="$(basename "$(dirname "${cpp}")")"
+    if [[ "${sample_name_probe}" == "DeepseekV4DecodeA5" ]]; then
+      skip_count=$((skip_count + 1))
+      printf "%s\tSKIP\t%s\tupstream DeepSeek-V4 A5 hc_pre_fused runtime is unsupported (HardSyncallOccupancy)\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
+      log "SKIP: ${testcase} (DeepSeek-V4 A5 upstream runtime unsupported)"
+      continue
+    fi
+  fi
+
   if [[ -n "${RUN_ONLY_CASES_NORM}" ]] && ! list_contains "${RUN_ONLY_CASES_NORM}" "${testcase}"; then
     continue
   fi

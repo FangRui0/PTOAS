@@ -12,6 +12,7 @@ Notes:
 - Each vendored fragment has a sibling `<case>_golden.py`; shared reference logic lives in `deepseek_v4_decode_golden_lib.py`.
 - The shared helper generates deterministic inputs only; board-validation falls back to first-run output capture when no `golden_*.bin` is emitted.
 - `runop.sh` defaults these cases to `--pto-level=level3` and skips the A5 directory on non-A5 targets.
+- `hc_pre_fused.pto` is kept as an A5 compile-regression input only. Upstream `pypto-lib` currently treats the source `hc_pre` kernel as Ascend910B/A3-only because its hard `mix` syncall requires full physical-core occupancy; `run_remote_npu_validation.sh` therefore skips `hc_pre_fused` in `STAGE=run` on A5 boards to match the upstream limitation instead of treating it as a PTOAS regression.
 
 Latest representative families excluded on A5 because they fail `ptoas --pto-arch=a5` today:
 - `aic_exp_gate_mm`
