@@ -1,0 +1,10 @@
+module attributes {pto.target_arch = "a2a3"} {
+  func.func @gate_inactive_zero() attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+  %c0_index = arith.constant 0 : index
+  %c8_index = arith.constant 8 : index
+  %c1_index = arith.constant 1 : index
+  scf.for %zt_inline3540__idx_v0 = %c0_index to %c8_index step %c1_index {
+  }
+  return
+  }
+}

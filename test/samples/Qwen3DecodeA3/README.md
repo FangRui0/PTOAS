@@ -1,4 +1,4 @@
-Qwen3 decode PTO kernels for A3, generated from `pypto-lib/models/qwen3/32b/qwen3_32b_decode.py` at `628dcf68d3776e61341d09088063e426cd5ef69c`.
+Qwen3 decode PTO kernels for A3, generated from `pypto-lib/models/qwen3/32b/qwen3_32b_decode.py` at `d3340a080dec891d6ba71425b934bfaadd6d2371`.
 
 Scope:
 - compile-regression inputs for `ptoas`

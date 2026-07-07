@@ -1,0 +1,77 @@
+module attributes {pto.target_arch = "a2a3"} {
+  func.func @hca_overlay_topk(%arg0: !pto.ptr<i32>, %arg1: !pto.ptr<i32>, %arg2: !pto.ptr<i32>, %__pypto_spmd_block_idx: i32, %__pypto_spmd_block_num: i32) attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+  %c8_index = arith.constant 8 : index
+  %c1_index = arith.constant 1 : index
+  %c384_index = arith.constant 384 : index
+  %c0_index = arith.constant 0 : index
+  %c128_index = arith.constant 128 : index
+  %cn1_index = arith.constant -1 : index
+  %c255_index = arith.constant 255 : index
+  %c129_index = arith.constant 129 : index
+  %position_ids__ssa_v0_view = pto.make_tensor_view %arg0, shape = [%c8_index], strides = [%c1_index] {layout = #pto.layout<nd>}: !pto.tensor_view<?xi32>
+  %topk_all_inline791__ssa_v0_view = pto.make_tensor_view %arg1, shape = [%c8_index, %c384_index], strides = [%c384_index, %c1_index] {layout = #pto.layout<nd>}: !pto.tensor_view<?x?xi32>
+  %kv_seq_lens__ssa_v0_view = pto.make_tensor_view %arg2, shape = [%c8_index], strides = [%c1_index] {layout = #pto.layout<nd>}: !pto.tensor_view<?xi32>
+  %topk_block_inline795__ssa_v0 = arith.index_cast %__pypto_spmd_block_idx : i32 to index
+  %0 = arith.muli %topk_block_inline795__ssa_v0, %c8_index : index
+  scf.for %topk_dt_inline792__idx_v0 = %c0_index to %c8_index step %c1_index {
+    %1 = arith.addi %0, %topk_dt_inline792__idx_v0 : index
+    %2 = arith.cmpi slt, %1, %c8_index : index
+    scf.if %2 {
+      %topk_abs_pos_inline788__tile = pto.load_scalar %arg0[%1] : !pto.ptr<i32> -> i32
+      scf.for %topk_k_inline835__idx_v0 = %c0_index to %c128_index step %c1_index {
+        %3 = arith.index_cast %topk_abs_pos_inline788__tile : i32 to index
+        %4 = arith.cmpi sle, %topk_k_inline835__idx_v0, %3 : index
+        scf.if %4 {
+          %topk_overlay_pos_inline826__tile = pto.load_scalar %arg0[%1] : !pto.ptr<i32> -> i32
+          %5 = arith.index_cast %topk_overlay_pos_inline826__tile : i32 to index
+          %6 = arith.remsi %5, %c128_index : index
+          %7 = arith.cmpi eq, %topk_k_inline835__idx_v0, %6 : index
+          %topk_out_inline806__phi_v4 = scf.if %7 -> (index) {
+            scf.yield %cn1_index : index
+          } else {
+            scf.yield %topk_k_inline835__idx_v0 : index
+          }
+          %8 = arith.index_cast %topk_out_inline806__phi_v4 : index to i32
+          %flat_offset_mul = arith.muli %1, %c384_index : index
+          %flat_offset = arith.addi %flat_offset_mul, %topk_k_inline835__idx_v0 : index
+          pto.store_scalar %8, %arg1[%flat_offset] : !pto.ptr<i32>, i32
+        } else {
+          %9 = arith.index_cast %cn1_index : index to i32
+          %10 = arith.muli %1, %c384_index : index
+          %11 = arith.addi %10, %topk_k_inline835__idx_v0 : index
+          pto.store_scalar %9, %arg1[%11] : !pto.ptr<i32>, i32
+        }
+      }
+      %12 = arith.index_cast %c128_index : index to i32
+      %13 = arith.muli %1, %c384_index : index
+      %14 = arith.addi %13, %c128_index : index
+      pto.store_scalar %12, %arg1[%14] : !pto.ptr<i32>, i32
+      %t__tile = pto.load_scalar %arg2[%1] : !pto.ptr<i32> -> i32
+      %15 = arith.index_cast %topk_abs_pos_inline788__tile : i32 to index
+      %16 = arith.addi %15, %c1_index : index
+      %17 = arith.index_cast %t__tile : i32 to index
+      %18 = arith.minsi %16, %17 : index
+      %19 = arith.divsi %18, %c128_index : index
+      %20 = arith.minsi %19, %c128_index : index
+      scf.for %topk_ck_inline786__idx_v0 = %c0_index to %c255_index step %c1_index {
+        %21 = arith.cmpi slt, %topk_ck_inline786__idx_v0, %20 : index
+        scf.if %21 {
+          %22 = arith.addi %topk_ck_inline786__idx_v0, %c129_index : index
+          %23 = arith.index_cast %22 : index to i32
+          %24 = arith.addi %topk_ck_inline786__idx_v0, %c129_index : index
+          %25 = arith.muli %1, %c384_index : index
+          %26 = arith.addi %25, %24 : index
+          pto.store_scalar %23, %arg1[%26] : !pto.ptr<i32>, i32
+        } else {
+          %27 = arith.index_cast %cn1_index : index to i32
+          %28 = arith.addi %topk_ck_inline786__idx_v0, %c129_index : index
+          %29 = arith.muli %1, %c384_index : index
+          %30 = arith.addi %29, %28 : index
+          pto.store_scalar %27, %arg1[%30] : !pto.ptr<i32>, i32
+        }
+      }
+    }
+  }
+  return
+  }
+}
