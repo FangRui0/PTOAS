@@ -1,5 +1,0 @@
-module attributes {pto.target_arch = "a2a3"} {
-  func.func @dispatch_warmup() attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
-  return
-  }
-}

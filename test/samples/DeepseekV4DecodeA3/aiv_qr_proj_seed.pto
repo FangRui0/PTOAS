@@ -8,16 +8,16 @@ module attributes {pto.target_arch = "a2a3"} {
   %c16_index = arith.constant 16 : index
   %c8_index = arith.constant 8 : index
   %cst_7 = arith.constant 0.00000000000000000e+00 : f32
-  %qr_fp32_inline3130__ssa_v0_view = pto.make_tensor_view %arg0, shape = [%c128_index, %c1024_index], strides = [%c1024_index, %c1_index] {layout = #pto.layout<nd>}: !pto.tensor_view<?x?xf32>
+  %qr_fp32_inline3060__ssa_v0_view = pto.make_tensor_view %arg0, shape = [%c128_index, %c1024_index], strides = [%c1024_index, %c1_index] {layout = #pto.layout<nd>}: !pto.tensor_view<?x?xf32>
   %0 = arith.divsi %arg1, %c16_index : index
-  scf.for %tc_inline3075__idx_v0 = %c0_index to %0 step %c1_index {
-    %1 = arith.muli %tc_inline3075__idx_v0, %c16_index : index
-    scf.for %nb_inline3082__idx_v0 = %c0_index to %c8_index step %c1_index {
-      %2 = arith.muli %nb_inline3082__idx_v0, %c128_index : index
+  scf.for %tc_inline3063__idx_v0 = %c0_index to %0 step %c1_index {
+    %1 = arith.muli %tc_inline3063__idx_v0, %c16_index : index
+    scf.for %nb_inline3036__idx_v0 = %c0_index to %c8_index step %c1_index {
+      %2 = arith.muli %nb_inline3036__idx_v0, %c128_index : index
       %t__tile = pto.alloc_tile addr = %c0_i64 valid_row = %c16_index valid_col = %c128_index : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=128, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>
       pto.texpands ins(%cst_7 : f32) outs(%t__tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=128, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-      %qr_fp32_inline3130__iter_v3_pview = pto.partition_view %qr_fp32_inline3130__ssa_v0_view, offsets = [%1, %2], sizes = [%c16_index, %c128_index] : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<16x128xf32>
-      pto.tstore ins(%t__tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=128, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%qr_fp32_inline3130__iter_v3_pview : !pto.partition_tensor_view<16x128xf32>)
+      %qr_fp32_inline3060__iter_v3_pview = pto.partition_view %qr_fp32_inline3060__ssa_v0_view, offsets = [%1, %2], sizes = [%c16_index, %c128_index] : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<16x128xf32>
+      pto.tstore ins(%t__tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=128, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%qr_fp32_inline3060__iter_v3_pview : !pto.partition_tensor_view<16x128xf32>)
     }
   }
   return

@@ -1,31 +1,18 @@
-DeepSeek V4 decode PTO kernels for A5, aligned to the latest `hw-native-sys/pypto-lib` `models/deepseek/v4/decode_fwd.py` topology at commit `d3340a080dec891d6ba71425b934bfaadd6d2371`.
+DeepSeek V4 decode PTO kernels for A5, generated from `hw-native-sys/pypto-lib` `models/deepseek/v4/decode_fwd.py` at commit `402d12a61dfd3f415ca9ec5356f9e7ff876b6ad8`, using `hw-native-sys/pypto` commit `0f15ec140f1112392584e4d8f2d95e2b723c0471`.
 
 Scope:
 - compile-regression inputs for `ptoas`
 - board-validation inputs with per-case custom golden wrappers
 
 Notes:
-- Direct latest-main export command `PYTHONPATH=/tmp/pypto-lib-pr799 python3 /tmp/pypto-lib-pr799/models/deepseek/v4/decode_fwd.py --compile-only -p a5` currently fails upstream before kernel emission on `hc_pre_fused` with `HardSyncallOccupancy`, so this directory mirrors the latest successful raw topology exported with `-p a2a3` instead of claiming a direct A5 dump.
-- That latest successful upstream export wrote 299 raw `.pto` fragments under `build_output/_jit_l3_decode_fwd_*/next_levels/decode_fwd/kernels/` and collapses to 80 representative kernel families by the same unsuffixed-fragment rule used for A3.
-- This directory vendors the 66 representative families from that latest raw topology that compile on rebased `PTOAS` `main` with `--pto-level=level3 --pto-arch=a5`.
+- Export command: `python3 models/deepseek/v4/decode_fwd.py --compile-only -p a5` with `PYPTO_PROG_BUILD_DIR` set to an isolated output directory.
+- The current direct A5 export succeeds, writes 343 raw `.pto` fragments under `_jit_l3_decode_fwd_*/next_levels/decode_fwd/kernels/`, and collapses to 85 representative kernel families when repeated `_N` specializations use the unsuffixed fragment.
+- This directory vendors the 79 representative families that compile on `PTOAS` `main` `0251110abb4dfe73076a5fc38770fa4a00af54c9` with `--pto-level=level3 --pto-arch=a5`.
 - Raw kernels emitted under `aic/` or `aiv/` are flattened to top-level sample files via `<section>_<kernel>.pto` naming; top-level kernels keep their original names.
 - Each vendored fragment has a sibling `<case>_golden.py`; shared reference logic lives in `deepseek_v4_decode_golden_lib.py`.
 - The shared helper generates deterministic inputs only; board-validation falls back to first-run output capture when no `golden_*.bin` is emitted.
 - `runop.sh` defaults these cases to `--pto-level=level3` and skips the A5 directory on non-A5 targets.
-- `hc_pre_fused.pto` is kept as an A5 compile-regression input only. Upstream `pypto-lib` currently treats the source `hc_pre` kernel as Ascend910B/A3-only because its hard `mix` syncall requires full physical-core occupancy; `run_remote_npu_validation.sh` therefore skips `hc_pre_fused` in `STAGE=run` on A5 boards to match the upstream limitation instead of treating it as a PTOAS regression.
 
-Latest representative families excluded on A5 because they fail `ptoas --pto-arch=a5` today:
-- `aic_exp_gate_mm`
-- `aic_exp_up_mm`
-- `aic_exp_w2_mm`
-- `aic_kv_proj_matmul`
-- `aic_kv_score_proj`
-- `aic_proj_a_mm`
-- `aic_proj_b_mm`
-- `aic_qproj_matmul`
-- `aic_qr_proj_matmul`
-- `aic_sh_gate_mm`
-- `aic_sh_up_mm`
-- `aic_sh_w2_mm`
-- `qk_pv`
-- `weights_proj`
+Current upstream families not vendored:
+- `aiv_combine`, `aiv_combine_wait`, `aiv_dispatch_meta`, `aiv_dispatch_push`, and `aiv_dispatch_wait` fail PTOAS memory-consistency validation because communication offset helpers have not been inlined; `aiv_dispatch_meta` also lacks the required GM cache invalidation after `twait`.
+- `aiv_csa_slots_build_valid_qk_plan` did not finish PTOAS compilation within three minutes and is excluded to keep sample CI bounded.
