@@ -2015,6 +2015,12 @@ static bool isRowMajorTileBuf(Type ty) {
   return tb && tb.getBLayoutValueI32() == static_cast<int32_t>(pto::BLayout::RowMajor);
 }
 
+static bool isColMajorTileBuf(Type ty) {
+  auto tb = mlir::dyn_cast<pto::TileBufType>(ty);
+  return tb && tb.getBLayoutValueI32() ==
+                   static_cast<int32_t>(pto::BLayout::ColMajor);
+}
+
 static LogicalResult verifyRowReductionSrcLayout(Operation *op, Type ty,
                                                  StringRef name) {
   if (failed(verifyTileBufCommon(op, ty, name)))
@@ -5840,6 +5846,33 @@ LogicalResult pto::TCIOp::verify() {
   unsigned bw = elemTy.getWidth();
   if (bw != 16 && bw != 32)
     return emitOpError("expects dst element type to be i16/i32");
+
+  if (getTmp() && getTargetArch(getOperation()) != PTOArch::A5) {
+    auto tmpTy = mlir::dyn_cast<TileBufType>(getTmp().getType());
+    if (!tmpTy)
+      return emitOpError("expects tmp to be a tile buffer");
+    auto tmpSpace =
+        mlir::dyn_cast_or_null<AddressSpaceAttr>(tmpTy.getMemorySpace());
+    if (!tmpSpace || tmpSpace.getAddressSpace() != AddressSpace::VEC)
+      return emitOpError("expects tmp to be in vec address space");
+    Type tmpElemTy = tmpTy.getElementType();
+    if (!(tmpElemTy.isF32() || tmpElemTy.isInteger(32)))
+      return emitOpError("expects A2/A3 tmp element type to be a 4-byte type");
+    if (tmpTy.getBLayoutValueI32() != static_cast<int32_t>(BLayout::RowMajor))
+      return emitOpError("expects tmp blayout to be row_major");
+    if (tmpTy.getSLayoutValueI32() != static_cast<int32_t>(SLayout::NoneBox))
+      return emitOpError("expects tmp slayout to be none_box");
+    if (tmpTy.getSFractalSizeI32() != 512)
+      return emitOpError("expects tmp fractal size to be 512");
+    auto tmpBytes = getStaticByteSize(tmpTy);
+    if (!tmpBytes)
+      return emitOpError("expects tmp to have static byte size");
+    uint64_t minTmpBytes = bw == 32 ? 768 : 1792;
+    if (*tmpBytes < minTmpBytes)
+      return emitOpError("expects A2/A3 tmp capacity to be at least ")
+             << minTmpBytes << " bytes for " << bw
+             << "-bit dst element type";
+  }
 
   auto sTy = mlir::dyn_cast<IntegerType>(getOperand(0).getType());
   if (!sTy)
@@ -11723,6 +11756,112 @@ static FailureOr<Type> verifyTRowExpandBinaryCore(Operation *op, Type src0Ty,
   return getElemTy(src0Ty);
 }
 
+enum class TRowExpandBinaryMode {
+  Unknown,
+  Mode1ColMajorScalar,
+  Mode2RowMajorBlock,
+};
+
+static bool validShapesCompatibleForTRowExpand(ArrayRef<int64_t> lhs,
+                                               ArrayRef<int64_t> rhs) {
+  if (lhs.size() != rhs.size())
+    return false;
+  for (auto [l, r] : llvm::zip(lhs, rhs)) {
+    if (l != ShapedType::kDynamic && r != ShapedType::kDynamic && l != r)
+      return false;
+  }
+  return true;
+}
+
+static TRowExpandBinaryMode classifyTRowExpandBinaryMode(Type src0Ty,
+                                                         Type src1Ty,
+                                                         Type dstTy) {
+  auto src0Valid = getValidShapeVec(src0Ty);
+  auto src1Valid = getValidShapeVec(src1Ty);
+  auto dstValid = getValidShapeVec(dstTy);
+  if (src0Valid.size() != 2 || src1Valid.size() != 2 || dstValid.size() != 2)
+    return TRowExpandBinaryMode::Unknown;
+
+  Type expandedTy;
+  ArrayRef<int64_t> expandedValid;
+  if (validShapesCompatibleForTRowExpand(src0Valid, dstValid)) {
+    expandedTy = src1Ty;
+    expandedValid = src1Valid;
+  } else if (validShapesCompatibleForTRowExpand(src1Valid, dstValid)) {
+    expandedTy = src0Ty;
+    expandedValid = src0Valid;
+  } else {
+    return TRowExpandBinaryMode::Unknown;
+  }
+
+  int64_t expandedCols = expandedValid[1];
+  if (isColMajorTileBuf(expandedTy) &&
+      (expandedCols == ShapedType::kDynamic || expandedCols == 1))
+    return TRowExpandBinaryMode::Mode1ColMajorScalar;
+
+  std::optional<int64_t> elemBytes = getElemBytes(getElemTy(dstTy));
+  if (!elemBytes || *elemBytes == 0)
+    return TRowExpandBinaryMode::Unknown;
+  int64_t expectedMode2Cols = 32 / *elemBytes;
+  if (isRowMajorTileBuf(expandedTy) &&
+      (expandedCols == ShapedType::kDynamic ||
+       expandedCols == expectedMode2Cols))
+    return TRowExpandBinaryMode::Mode2RowMajorBlock;
+
+  return TRowExpandBinaryMode::Unknown;
+}
+
+static int64_t getTRowExpandTmpMinBytes(int64_t dstValidRows) {
+  if (dstValidRows == ShapedType::kDynamic)
+    return 8192;
+  if (dstValidRows < 0)
+    return 8192;
+  if (dstValidRows < 256)
+    return ceilDivInt64(dstValidRows, 8) * 256;
+  return 30 * 256;
+}
+
+static std::optional<int64_t> getStaticTileCapacityBytes(Type ty) {
+  auto numElems = getStaticNumElements(getShapeVec(ty));
+  auto elemBytes = getElemBytes(getElemTy(ty));
+  if (!numElems || !elemBytes)
+    return std::nullopt;
+  return *numElems * *elemBytes;
+}
+
+static LogicalResult verifyTRowExpandImplicitTmpContract(
+    Operation *op, Type src0Ty, Type src1Ty, Type dstTy, Type tmpTy,
+    bool hasTmp, PTOArch targetArch) {
+  if (!hasTmp || targetArch == PTOArch::A5)
+    return success();
+
+  if (classifyTRowExpandBinaryMode(src0Ty, src1Ty, dstTy) !=
+      TRowExpandBinaryMode::Mode1ColMajorScalar) {
+    return op->emitOpError(
+        "expects A2/A3 tmp-form trowexpand to use mode 1 "
+        "(ColMajor per-row scalar expanded operand)");
+  }
+
+  if (failed(verifyVecTileStorage(op, tmpTy, "tmp")))
+    return failure();
+  if (getElemTy(tmpTy) != getElemTy(dstTy))
+    return op->emitOpError("expects tmp and dst to have the same element type");
+
+  auto dstValid = getValidShapeVec(dstTy);
+  if (dstValid.size() != 2)
+    return op->emitOpError("expects dst to have rank-2 valid_shape");
+  int64_t minBytes = getTRowExpandTmpMinBytes(dstValid[0]);
+  std::optional<int64_t> tmpBytes = getStaticTileCapacityBytes(tmpTy);
+  if (!tmpBytes)
+    return op->emitOpError(
+        "expects A2/A3 trowexpand tmp capacity to be statically known");
+  if (*tmpBytes < minBytes)
+    return op->emitOpError()
+           << "expects A2/A3 trowexpand tmp capacity to be at least "
+           << minBytes << " bytes, but got " << *tmpBytes << " bytes";
+  return success();
+}
+
 mlir::LogicalResult mlir::pto::TRowExpandDivOp::verify() {
   auto verifyByArch = [&](PTOArch targetArch) -> LogicalResult {
     Type src0Ty = getSrc0().getType();
@@ -11746,6 +11885,11 @@ mlir::LogicalResult mlir::pto::TRowExpandDivOp::verify() {
     }
     if (getPrecisionType() == pto::DivPrecision::HighPrecision && !getTmp())
       return emitOpError("expects tmp when precisionType is high_precision");
+    if (failed(verifyTRowExpandImplicitTmpContract(
+            getOperation(), src0Ty, src1Ty, dstTy,
+            getTmp() ? getTmp().getType() : Type{}, static_cast<bool>(getTmp()),
+            targetArch)))
+      return failure();
     return mlir::success();
   };
   auto verifyA2A3 = [&]() -> LogicalResult { return verifyByArch(PTOArch::A3); };
@@ -11775,6 +11919,11 @@ mlir::LogicalResult mlir::pto::TRowExpandMulOp::verify() {
       return emitOpError(
           "expects A2/A3 trowexpandmul element type to be i16/i32/f16/f32");
     }
+    if (failed(verifyTRowExpandImplicitTmpContract(
+            getOperation(), src0Ty, src1Ty, dstTy,
+            getTmp() ? getTmp().getType() : Type{}, static_cast<bool>(getTmp()),
+            targetArch)))
+      return failure();
     return mlir::success();
   };
   auto verifyA2A3 = [&]() -> LogicalResult { return verifyByArch(PTOArch::A3); };
@@ -11804,6 +11953,11 @@ mlir::LogicalResult mlir::pto::TRowExpandSubOp::verify() {
       return emitOpError(
           "expects A2/A3 trowexpandsub element type to be i16/i32/f16/f32");
     }
+    if (failed(verifyTRowExpandImplicitTmpContract(
+            getOperation(), src0Ty, src1Ty, dstTy,
+            getTmp() ? getTmp().getType() : Type{}, static_cast<bool>(getTmp()),
+            targetArch)))
+      return failure();
     return mlir::success();
   };
   auto verifyA2A3 = [&]() -> LogicalResult { return verifyByArch(PTOArch::A3); };
@@ -11855,6 +12009,11 @@ mlir::LogicalResult mlir::pto::TRowExpandAddOp::verify() {
       if (src1Col != ShapedType::kDynamic && src1Col != 1)
         return emitOpError("expects non-row-major src1 valid_shape[1] to be 1");
     }
+    if (failed(verifyTRowExpandImplicitTmpContract(
+            getOperation(), src0Ty, src1Ty, dstTy,
+            getTmp() ? getTmp().getType() : Type{}, static_cast<bool>(getTmp()),
+            targetArch)))
+      return failure();
     return mlir::success();
   };
   auto verifyA2A3 = [&]() -> LogicalResult { return verifyByArch(PTOArch::A3); };
@@ -11866,6 +12025,7 @@ static LogicalResult verifyTRowExpandReduceLikeOp(Operation *op, Type src0Ty,
                                                   Type src1Ty, Type dstTy,
                                                   Type tmpTy, bool hasTmp,
                                                   PTOArch targetArch,
+                                                  bool enforceTmpContract,
                                                   StringRef opName,
                                                   bool allowIntegerTypes) {
   if (failed(verifyTileBufCommon(op, src0Ty, "src0")) ||
@@ -11984,14 +12144,23 @@ static LogicalResult verifyTRowExpandReduceLikeOp(Operation *op, Type src0Ty,
 
   // (A5 tmp-form invariant is checked earlier, before the empty-marker accept.)
 
+  auto verifyTmpContract = [&]() -> LogicalResult {
+    if (!enforceTmpContract)
+      return success();
+    return verifyTRowExpandImplicitTmpContract(op, src0Ty, src1Ty, dstTy,
+                                               tmpTy, hasTmp, targetArch);
+  };
+
   if (src0MatchesDst) {
     if (succeeded(checkFullAndBroadcast(src0Ty, src0Valid, "src0", src1Ty,
-                                        src1Valid, "src1")))
+                                        src1Valid, "src1")) &&
+        succeeded(verifyTmpContract()))
       return success();
   }
   if (src1MatchesDst) {
     if (succeeded(checkFullAndBroadcast(src1Ty, src1Valid, "src1", src0Ty,
-                                        src0Valid, "src0")))
+                                        src0Valid, "src0")) &&
+        succeeded(verifyTmpContract()))
       return success();
   }
 
@@ -12005,6 +12174,7 @@ mlir::LogicalResult mlir::pto::TRowExpandExpdifOp::verify() {
                                         getSrc1().getType(), getDst().getType(),
                                         getTmp() ? getTmp().getType() : Type{},
                                         (bool)getTmp(), PTOArch::A3,
+                                        /*enforceTmpContract=*/false,
                                         "trowexpandexpdif",
                                         /*allowIntegerTypes=*/false);
   };
@@ -12013,6 +12183,7 @@ mlir::LogicalResult mlir::pto::TRowExpandExpdifOp::verify() {
                                         getSrc1().getType(), getDst().getType(),
                                         getTmp() ? getTmp().getType() : Type{},
                                         (bool)getTmp(), PTOArch::A5,
+                                        /*enforceTmpContract=*/false,
                                         "trowexpandexpdif",
                                         /*allowIntegerTypes=*/false);
   };
@@ -12025,6 +12196,7 @@ mlir::LogicalResult mlir::pto::TRowExpandMaxOp::verify() {
                                         getSrc1().getType(), getDst().getType(),
                                         getTmp() ? getTmp().getType() : Type{},
                                         (bool)getTmp(), PTOArch::A3,
+                                        /*enforceTmpContract=*/true,
                                         "trowexpandmax",
                                         /*allowIntegerTypes=*/true);
   };
@@ -12033,6 +12205,7 @@ mlir::LogicalResult mlir::pto::TRowExpandMaxOp::verify() {
                                         getSrc1().getType(), getDst().getType(),
                                         getTmp() ? getTmp().getType() : Type{},
                                         (bool)getTmp(), PTOArch::A5,
+                                        /*enforceTmpContract=*/true,
                                         "trowexpandmax",
                                         /*allowIntegerTypes=*/true);
   };
@@ -12045,6 +12218,7 @@ mlir::LogicalResult mlir::pto::TRowExpandMinOp::verify() {
                                         getSrc1().getType(), getDst().getType(),
                                         getTmp() ? getTmp().getType() : Type{},
                                         (bool)getTmp(), PTOArch::A3,
+                                        /*enforceTmpContract=*/true,
                                         "trowexpandmin",
                                         /*allowIntegerTypes=*/true);
   };
@@ -12053,6 +12227,7 @@ mlir::LogicalResult mlir::pto::TRowExpandMinOp::verify() {
                                         getSrc1().getType(), getDst().getType(),
                                         getTmp() ? getTmp().getType() : Type{},
                                         (bool)getTmp(), PTOArch::A5,
+                                        /*enforceTmpContract=*/true,
                                         "trowexpandmin",
                                         /*allowIntegerTypes=*/true);
   };
@@ -14181,6 +14356,11 @@ PTO_DEFINE_UNARY_EFFECTS(TAndSOp, getSrcMutable(), getDstMutable())
 // TCI: Write(dst) (generates sequence)
 void TCIOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  if (auto tmp = getTmpMutable();
+      !tmp.empty() && getTargetArch(getOperation()) != PTOArch::A5) {
+    PTO_ADD_READ(tmp[0]);
+    PTO_ADD_WRITE(tmp[0]);
+  }
   PTO_ADD_WRITE(getDstMutable());
 }
 
@@ -14449,8 +14629,10 @@ void TRowExpandDivOp::getEffects(
   PTO_ADD_READ(getSrc0Mutable());
   PTO_ADD_READ(getSrc1Mutable());
   auto tmp = getTmpMutable();
-  if (!tmp.empty() && getTargetArch(getOperation()) != PTOArch::A5)
+  if (!tmp.empty() && getTargetArch(getOperation()) != PTOArch::A5) {
+    PTO_ADD_READ(tmp[0]);
     PTO_ADD_WRITE(tmp[0]);
+  }
   PTO_ADD_WRITE(getDstMutable());
 }
 
@@ -14459,8 +14641,10 @@ void TRowExpandMulOp::getEffects(
   PTO_ADD_READ(getSrc0Mutable());
   PTO_ADD_READ(getSrc1Mutable());
   auto tmp = getTmpMutable();
-  if (!tmp.empty() && getTargetArch(getOperation()) != PTOArch::A5)
+  if (!tmp.empty() && getTargetArch(getOperation()) != PTOArch::A5) {
+    PTO_ADD_READ(tmp[0]);
     PTO_ADD_WRITE(tmp[0]);
+  }
   PTO_ADD_WRITE(getDstMutable());
 }
 
@@ -14469,8 +14653,10 @@ void TRowExpandSubOp::getEffects(
   PTO_ADD_READ(getSrc0Mutable());
   PTO_ADD_READ(getSrc1Mutable());
   auto tmp = getTmpMutable();
-  if (!tmp.empty() && getTargetArch(getOperation()) != PTOArch::A5)
+  if (!tmp.empty() && getTargetArch(getOperation()) != PTOArch::A5) {
+    PTO_ADD_READ(tmp[0]);
     PTO_ADD_WRITE(tmp[0]);
+  }
   PTO_ADD_WRITE(getDstMutable());
 }
 
@@ -14479,8 +14665,10 @@ void TRowExpandAddOp::getEffects(
   PTO_ADD_READ(getSrc0Mutable());
   PTO_ADD_READ(getSrc1Mutable());
   auto tmp = getTmpMutable();
-  if (!tmp.empty() && getTargetArch(getOperation()) != PTOArch::A5)
+  if (!tmp.empty() && getTargetArch(getOperation()) != PTOArch::A5) {
+    PTO_ADD_READ(tmp[0]);
     PTO_ADD_WRITE(tmp[0]);
+  }
   PTO_ADD_WRITE(getDstMutable());
 }
 
@@ -14499,8 +14687,10 @@ void TRowExpandMaxOp::getEffects(
   PTO_ADD_READ(getSrc0Mutable());
   PTO_ADD_READ(getSrc1Mutable());
   auto tmp = getTmpMutable();
-  if (!tmp.empty() && getTargetArch(getOperation()) != PTOArch::A5)
+  if (!tmp.empty() && getTargetArch(getOperation()) != PTOArch::A5) {
+    PTO_ADD_READ(tmp[0]);
     PTO_ADD_WRITE(tmp[0]);
+  }
   PTO_ADD_WRITE(getDstMutable());
 }
 
@@ -14509,8 +14699,10 @@ void TRowExpandMinOp::getEffects(
   PTO_ADD_READ(getSrc0Mutable());
   PTO_ADD_READ(getSrc1Mutable());
   auto tmp = getTmpMutable();
-  if (!tmp.empty() && getTargetArch(getOperation()) != PTOArch::A5)
+  if (!tmp.empty() && getTargetArch(getOperation()) != PTOArch::A5) {
+    PTO_ADD_READ(tmp[0]);
     PTO_ADD_WRITE(tmp[0]);
+  }
   PTO_ADD_WRITE(getDstMutable());
 }
 

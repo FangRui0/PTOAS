@@ -1,0 +1,25 @@
+// RUN: ptoas --pto-arch=a3 --pto-level=level2 --emit-pto-ir %s 2>&1 | FileCheck %s --check-prefix=IR
+// RUN: ptoas --pto-arch=a3 --pto-level=level2 %s 2>&1 | FileCheck %s --check-prefix=CPP
+// RUN: ptoas --pto-arch=a5 --pto-level=level2 --emit-pto-ir %s 2>&1 | FileCheck %s --check-prefix=A5IR
+
+module {
+  func.func @tci_implicit_tmp(%dst: memref<32xi32, #pto.address_space<gm>>) {
+    %c0_i32 = arith.constant 0 : i32
+    %src = memref.reinterpret_cast %dst to offset: [0], sizes: [1, 32], strides: [32, 1] {layout = #pto.layout<nd>} : memref<32xi32, #pto.address_space<gm>> to memref<1x32xi32, strided<[32, 1], offset: ?>, #pto.address_space<gm>>
+    %tile = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=i32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    pto.tci ins(%c0_i32 : i32)
+      outs(%tile : !pto.tile_buf<loc=vec, dtype=i32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tstore ins(%tile : !pto.tile_buf<loc=vec, dtype=i32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+      outs(%src : memref<1x32xi32, strided<[32, 1], offset: ?>, #pto.address_space<gm>>) {layout = #pto.layout<nd>, pto.inferred_layout = true}
+    return
+  }
+}
+
+// IR: pto.alloc_tile addr = {{.*}} : !pto.tile_buf<vec, 1x192xf32>
+// IR: pto.tci ins(%{{.*}}, %{{.*}} : i32, !pto.tile_buf<vec, 1x192xf32>)
+// IR-NOT: memref.alloc
+
+// CPP: TCI<{{.*}}, {{.*}}, int32_t, 0>({{.*}}, {{.*}}, {{.*}})
+
+// A5IR: pto.tci ins(%{{.*}} : i32) outs(
+// A5IR-NOT: !pto.tile_buf<vec, 1x192xf32>
