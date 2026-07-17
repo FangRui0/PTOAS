@@ -566,6 +566,301 @@ A5 level3 + no tmp 不应因为 tmp 缺失报错。
 - A2/A3 动态 `dst.validRow` 且显式 tmp 小于 8192 字节，按保守规则报错。
 - A5 显式 tmp 不触发 A2/A3 容量校验。
 
+## 批量 optional tmp op 分类设计
+
+本节按 PTO-ISA tmp 行为对后续待改造 op 做分类。输入列表中的重复项只记录一次：
+
+```text
+TCOLARGMAX, TCOLARGMIN, TROWARGMAX, TROWARGMIN,
+TADDDEQRELU, TGATHER, TTRANS, TXOR, TXORS, TPRELU, TMRGSORT,
+TROWPROD, TCOLSUM, TROWSUM, TROWMAX, TROWMIN,
+TSEL, TSELS, TRSQRT, TPOW, TPOWS, TREM, TREMS, TCVT,
+TSORT32, TQUANT
+```
+
+其中 `TADDDEQRELU` 对应 PTO-ISA 文档 `TAddDeqRelu_zh.md`；当前 PTOAS ODS 中未找到同名 op，先标记为待 IR 接入。
+
+### 分类总览
+
+| 分类 | Op / 模式 | 设计结论 |
+| --- | --- | --- |
+| A2/A3 使用 tmp，A5 接受但不使用 | `TCOLARGMAX`、`TCOLARGMIN`、`TROWARGMAX`、`TROWARGMIN`、`TGATHER`、`TROWPROD`、`TROWSUM`、`TROWMAX`、`TROWMIN`、`TSEL`、`TSELS`、`TREM`、`TREMS`、`TQUANT`、`TADDDEQRELU` | level1/2 在 A2/A3 生成真实 scratch；若 A5 C++ 签名仍要求 tmp，则生成不带 MemoryEffects 的 ABI placeholder。 |
+| A2/A3 和 A5 都可能使用 tmp | `TCOLSUM(isBinary=true)`、`TSORT32` 非 32 对齐尾部、`TMRGSORT` 多列表归并 format2 | tmp 使用由 op 模式决定，不能只按 arch 判断。 |
+| 条件性 tmp，不应无条件 materialize | `TTRANS`、`TCVT`、`TPOW`、`TPOWS`、`TRSQRT`、`TMRGSORT`、`TSORT32` | 需要先判断精度、dtype、layout、format 或尾部条件。 |
+| 已从 mandatory tmp 改为 optional tmp | `TTRANS`、`TXOR`、`TXORS`、`TPRELU`、`TROWPROD`、`TROWSUM`、`TROWMAX`、`TROWMIN`、`TROWARGMAX`、`TROWARGMIN`、`TCOLARGMAX`、`TCOLARGMIN`、`TSEL`、`TSELS`、`TREM`、`TREMS` | ODS、parse/print、verifier、MemoryEffects、materialize 和 lowering 已接入。 |
+| 当前 PTOAS IR 已有 optional tmp | `TGATHER`、`TCOLSUM`、`TRSQRT`、`TPOW`、`TPOWS`、`TSORT32`、`TQUANT` | 可直接纳入 `pto-materialize-implicit-tmp` 的后续实现。 |
+| 当前 PTOAS IR 暂无对应 op | `TADDDEQRELU` | 需先完成 PTOAS IR 接入；`TCVT` 已新增 optional tmp operand。 |
+
+### 通用规则
+
+- level1/level2：只有该 op 在当前 arch / 模式下实际需要 tmp，且 IR 允许省略 tmp 时，才自动 materialize `pto.alloc_tile(no addr)`。
+- level3：若该 op 在当前 arch / 模式下需要 tmp 且用户省略 tmp，则报错；若当前 arch / 模式不使用 tmp，则不强制补 tmp。
+- A5 仅接受但不使用 tmp 的 op：若后端存在 no-tmp overload，则不自动补 tmp；若 C++ 签名仍要求 tmp，则自动生成 ABI placeholder。placeholder 不建模 tmp 的 Read/Write，用户显式 tmp 也不按 A2/A3 容量规则校验。
+- tmp 是 scratch 的 op：MemoryEffects 需要建模为 `Read(tmp) + Write(tmp)`，或在 semantic no-alias side table 中显式加入 `forbidAlias(tmp, dst/output)`。
+- 原 mandatory tmp op 已统一改为 optional，并保持显式 tmp 文本格式兼容。
+
+### Arg reduction 类
+
+覆盖：
+
+```text
+TCOLARGMAX, TCOLARGMIN, TROWARGMAX, TROWARGMIN
+```
+
+现状：
+
+- 这些 op 的 tmp 已改为 optional，并接入 `pto-materialize-implicit-tmp`。
+- A2/A3 使用 tmp；A5 接受 tmp 但不使用。
+
+TCOLARGMAX / TCOLARGMIN：
+
+- tmp dtype 必须与 `src` 一致。
+- tmp 用于索引跟踪和当前比较值临时存储。
+- tmp 容量需要按 `tmpGapEles` 和输出模式计算：当 `srcValidCol >= elemPerRpt` 时，`tmpGapEles = elemPerRpt`；否则 `tmpGapEles = ceil(srcValidCol / elemPerBlock) * elemPerBlock`。
+- half + 纯索引模式是 tmp 使用量最大的组合；其它类型 / 模式下 tmp 中可能只需要区域 0，但自动 materialize 可先采用覆盖最大需求的保守形状。
+
+TROWARGMAX / TROWARGMIN：
+
+- 仅索引模式在 A2/A3 可能不使用 tmp；值+索引模式和两阶段归约需要 tmp。
+- tmp 行数与 `src` 相同；每行 stride 按 PTO-ISA 文档公式计算。
+- 当前 PTOAS ODS 只有单输出索引模式；该模式仍需满足后端显式 tmp 参数签名，因此 level1/2 生成保守同形状 tmp。未来接入值+索引模式后，再按输出模式和归约阶段收紧容量。
+
+MemoryEffects / alias：
+
+- A2/A3 实际使用 tmp 时建模 `Read(src) + Read(tmp) + Write(tmp) + Write(dstIdx/dstVal)`。
+- tmp 不应与同 op 的输出 alias；如果 MemoryEffects 无法覆盖，应加入 `forbidAlias(tmp, dstIdx)` 和必要的 `forbidAlias(tmp, dstVal)`。
+
+### Row reduction 类
+
+覆盖：
+
+```text
+TROWPROD, TROWSUM, TROWMAX, TROWMIN
+```
+
+现状：
+
+- 这些 op 的 tmp 已改为 optional，并接入 `pto-materialize-implicit-tmp`。
+- A2/A3 使用 tmp；A5 接受 tmp 但不使用。
+
+tmp 规格：
+
+- tmp dtype 与 `src` / `dst` 一致。
+- 整数路径最小需要 1 个 vector block：`int32` 为 8 列，`int16` 为 16 列。
+- 浮点路径用于二叉树归约；安全默认形状可设为与 `src` 相同。
+- `TROWPROD` 的安全默认也可设为与 `src` 相同；最小需求为 1 行和 1 个 vector block。
+
+Pass 行为：
+
+- A2/A3 level1/2：若 IR 已支持 optional tmp 且缺省 tmp，则自动生成 vec row-major none-box tmp。
+- A5：生成后端签名需要的 ABI placeholder，但不为其添加 tmp MemoryEffects。
+- level3：A2/A3 需要 tmp 时缺省 tmp 报错；A5 不强制 tmp。
+
+MemoryEffects / alias：
+
+- A2/A3 建模 `Read(src) + Read(tmp) + Write(tmp) + Write(dst)`。
+- tmp 与 `dst` 禁止 alias。
+
+### Column sum 类
+
+覆盖：
+
+```text
+TCOLSUM
+```
+
+现状：
+
+- 当前 PTOAS IR 已支持 optional tmp。
+- no-tmp 形式表示顺序累加，不需要 tmp。
+- `isBinary=true` 时 A2/A3 和 A5 都使用 tmp 做二叉树累加。
+
+tmp 规格：
+
+- tmp dtype 与 `src` / `dst` 一致。
+- tmp 为 vec row-major none-box tile。
+- `tmp.validCol >= src.validCol`。
+- `tmp.validRow >= ceil(src.validRow / 2)`。
+
+Pass 行为：
+
+- 仅当 `isBinary=true` 且缺省 tmp 时自动 materialize。
+- `isBinary=false` 不自动补 tmp。
+- level3 下 `isBinary=true` 且缺省 tmp 报错。
+
+MemoryEffects / alias：
+
+- `isBinary=true` 且 tmp 存在时，建模 `Read(src) + Read(tmp) + Write(tmp) + Write(dst)`。
+- `isBinary=false` 且 tmp 缺省时，保持 no-tmp 顺序累加语义。
+
+### Elementwise scratch 类
+
+覆盖：
+
+```text
+TXOR, TXORS, TPRELU, TREM, TREMS, TADDDEQRELU, TQUANT
+```
+
+现状：
+
+- `TXOR`、`TXORS`、`TPRELU`、`TREM`、`TREMS` 的 tmp 均已改为 optional 并接入 materialize pass。
+- `TQUANT` 当前 PTOAS IR 已支持 optional tmp。
+- `TADDDEQRELU` 当前 PTOAS ODS 中未找到同名 op，需先完成 IR 接入。
+
+tmp 规格：
+
+- `TXOR` / `TXORS`：A2/A3 tmp dtype 与输入输出一致，row-major，容量覆盖 `dst` 有效区域；A5 不使用 tmp。
+- `TPRELU`：A2/A3 tmp dtype 为 `uint8_t`，row-major，`tmp.validRow > dst.validRow`，用于 mask buffer；A5 不使用 tmp。
+- `TREM`：A2/A3 tmp dtype 与 `dst` 一致，至少 2 行和 `dst.validCol` 列；A5 不使用 tmp。
+- `TREMS`：A2/A3 tmp dtype 与 `dst` 一致，至少 1 行和 `dst.validCol` 列；A5 不使用 tmp。
+- `TADDDEQRELU`：A2/A3 tmp dtype 为 `int32_t`，容量至少覆盖 `dst` 有效区域；A5 不使用 tmp。
+- `TQUANT`：A2/A3 tmp 为 FP32，形状与 `src` 同尺寸，用作 FP32 到 S32 转换中间结果；A5 不使用 tmp。
+
+Pass 行为：
+
+- A2/A3 level1/2：缺省 tmp 且 IR 支持 optional tmp 时自动 materialize。
+- A5：`TXOR/TXORS` 因后端签名要求生成 ABI placeholder；其余 op 按各自后端是否存在 no-tmp overload 决定。
+- level3：A2/A3 缺省 tmp 报错；A5 不强制 tmp。
+
+MemoryEffects / alias：
+
+- A2/A3 tmp 是 scratch 时建模 `Read(tmp) + Write(tmp)`。
+- tmp 与 `dst` 禁止 alias；`TXOR/TXORS/TPRELU/TREM/TREMS/TADDDEQRELU` 还应禁止 tmp 与同 op 输入错误 alias。
+
+### Mask select 类
+
+覆盖：
+
+```text
+TSEL, TSELS
+```
+
+现状：
+
+- 当前 PTOAS IR 中 tmp 是 mandatory；隐式 tmp 支持前需要先改成 optional tmp。
+- A2/A3 使用 tmp；A5 接受 tmp 但不使用。
+
+tmp 规格：
+
+- `TSEL`：tmp dtype 为 `uint32_t`，用于 mask buffer。16 位数据类型的 `cmpmaskLen = 4` 个 `uint32_t`；32 位数据类型的 `cmpmaskLen = 2` 个 `uint32_t`。
+- `TSELS`：tmp dtype 与 `src` 一致，至少 1 个元素，用于保存 scalar 和比较 mask。
+
+Pass 行为：
+
+- A2/A3 level1/2：缺省 tmp 时自动 materialize。
+- A5：不自动补 tmp。
+- level3：A2/A3 缺省 tmp 报错；A5 不强制 tmp。
+
+MemoryEffects / alias：
+
+- A2/A3 建模 `Read(mask/src) + Read(tmp) + Write(tmp) + Write(dst)`。
+- tmp 与 `dst` 禁止 alias。
+
+### Data movement / layout 类
+
+覆盖：
+
+```text
+TGATHER, TTRANS, TCVT
+```
+
+TGATHER：
+
+- 当前 PTOAS IR 已支持 optional tmp。
+- index form：A2/A3 C++ API 需要 tmp；tmp dtype 与 indices dtype 一致，shape 覆盖 indices；A5 不使用 tmp。
+- compare form：A2/A3 tmp 是合并暂存缓冲区，包含 `cmpsTmp`、`indexTmp`、`cvtTmp` 三个区域；最小字节数按 PTO-ISA 文档公式计算；A5 不使用 tmp。
+- mask form 不使用 tmp，不应自动补 tmp。
+- A2/A3 level3 下 index / compare form 缺省 tmp 报错。
+
+TTRANS：
+
+- 当前 PTOAS IR 中 tmp 已改为 optional，并接入 materialize pass。
+- tmp 只在满足高效转置路径条件时使用；scalar copy 和部分 layout 转换不需要 tmp。
+- 静态满足 stride 条件时生成与 src 同形状的保守 scratch；不满足并走 scalar copy 时生成 32 字节 ABI placeholder。
+- 只有真实 scratch 进入 `Read(tmp) + Write(tmp)` MemoryEffects；scalar-copy placeholder 不建模内存访问。
+
+TCVT：
+
+- 当前 PTOAS IR 已新增 optional tmp operand，并完成 parser/printer、verifier、MemoryEffects、materialize 和 EmitC lowering。
+- A2/A3 仅在 `SaturationMode::OFF` 的 PyTorch 兼容非饱和窄化路径使用 tmp：`float -> int16`、`half -> int16`、`half -> int8`。
+- 其它转换不需要 tmp，不应自动 materialize。
+- tmp 按字节规划，容量使用 PTO-ISA 的 `tmpFloatToInt16Bytes`、`tmpHalfToInt16Bytes`、`tmpHalfToInt8Bytes` 公式。
+- level3 下上述三种路径缺省 tmp 报错；其它转换继续使用 no-tmp overload。
+
+MemoryEffects / alias：
+
+- 只有实际使用 tmp 的路径建模 `Read(tmp) + Write(tmp)`。
+- tmp 与 `dst` 禁止 alias。
+
+### Sort / merge 类
+
+覆盖：
+
+```text
+TSORT32, TMRGSORT
+```
+
+TSORT32：
+
+- 当前 PTOAS IR 已支持 optional tmp。
+- 3 参数形式适用于 `validCol` 已按 32 对齐的路径，不需要 tmp。
+- 4 参数形式用于非 32 对齐尾部，通过 tmp 保存填充后的行或尾块副本。
+- tmp dtype 与 `src` 一致；容量按 PTO-ISA `tmpSize` 公式计算，不能固定为 8KB。
+- level1/2 仅在能静态证明存在非 32 对齐尾部时自动补 tmp；否则保持 no-tmp。
+- level3 下非 32 对齐尾部缺省 tmp 报错。
+
+TMRGSORT：
+
+- 当前 PTOAS IR 已支持 optional tmp；缺省 format2 使用显式 `no_tmp` 中间语法消除 src/tmp 个数歧义。
+- format1 单输入 block sort 不需要 tmp。
+- format2 多列表归并需要 tmp 和 executed list。
+- level1/2 对 format2 `no_tmp` 生成一行 row-major tmp，`tmp.cols = sum(src.cols)`；format1 不补 tmp。
+- level3 下 format2 `no_tmp` 报错。
+
+MemoryEffects / alias：
+
+- 使用 tmp 的 sort / merge 路径建模 `Read(tmp) + Write(tmp)`。
+- tmp 与 `dst` 禁止 alias；`TMRGSORT` 还需考虑 `executed` output 的写 effect。
+
+### Pow / rsqrt 类
+
+覆盖：
+
+```text
+TPOW, TPOWS, TRSQRT
+```
+
+TPOW / TPOWS：
+
+- 当前 PTOAS IR 已支持 optional tmp。
+- A2/A3 浮点路径使用 tmp；整数路径不使用 tmp。
+- A5 接受 tmp 但不使用。
+- tmp dtype 与 `dst` / `base` 一致，容量覆盖 `dst` 有效区域。
+- level1/2：A2/A3 浮点路径缺省 tmp 时自动 materialize；整数路径不补 tmp。
+- level3：A2/A3 浮点路径缺省 tmp 报错；整数路径不强制 tmp。
+
+TRSQRT：
+
+- 当前 PTOAS IR 已支持 optional tmp。
+- no-tmp 默认实现不需要 tmp。
+- 带 tmp overload 当前仅作为 API 兼容 / 未来高精度路径保留，现阶段不自动 materialize。
+- 用户显式 tmp 时，A5 不按 A2/A3 scratch 容量规则校验。
+
+MemoryEffects / alias：
+
+- `TPOW/TPOWS` 只有浮点 tmp-backed 路径建模 `Read(tmp) + Write(tmp)`。
+- `TRSQRT` 现阶段不因缺省 tmp 增加 MemoryEffects。
+
+### 批量 op 测试策略
+
+后续按类别实现时，每一类至少补以下 lit：
+
+- 自动补 tmp：level1/2 + A2/A3 + 缺省 tmp，检查 `pto.alloc_tile(no addr)` 经 memplan 后带 `addr`。
+- A5 不补 tmp：A5 + 缺省 tmp，检查保持 no-tmp 形态。
+- level3 负例：A2/A3 + 需要 tmp + 缺省 tmp 报错。
+- verifier 负例：显式 tmp dtype / shape / capacity / layout 不满足对应 op 规格时报错。
+- EmitC overload：需要 tmp 的路径最终走 tmp-aware C++ 调用；不需要 tmp 的路径不强行切换。
+
 ## 后续扩展
 
 后续新增其它 optional tmp op 时，需要补充一个 op-specific 小节，并明确：
