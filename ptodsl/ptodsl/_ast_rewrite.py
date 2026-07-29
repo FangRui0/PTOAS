@@ -30,7 +30,8 @@ def rewrite_jit_function(fn, *, static_bindings=None, rewrite_control_flow=True)
     a sibling physical section.
     """
     try:
-        source = inspect.getsource(fn)
+        source_lines, source_start_line = inspect.getsourcelines(fn)
+        source = "".join(source_lines)
     except (OSError, TypeError) as exc:
         # Dynamically-created functions from exec/REPL/notebook contexts may
         # not have retrievable source. Keep existing tracing behavior for those
@@ -64,6 +65,7 @@ def rewrite_jit_function(fn, *, static_bindings=None, rewrite_control_flow=True)
         function_def.body = rewriter.rewrite_block(function_def.body, live_after=set())
     tree = ast.Module(body=[function_def], type_ignores=[])
     ast.fix_missing_locations(tree)
+    ast.increment_lineno(tree, source_start_line - 1)
 
     locals_ns = {}
     try:
