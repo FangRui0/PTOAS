@@ -2098,6 +2098,12 @@ def vdup(input_value, mask, position=None):
             raise TypeError("vdup(scalar, mask, position=...) does not support position; position is only valid for vector input")
         raw_input = _coerce_vdup_scalar_input(input_value, mask, context="vdup(scalar, mask)")
         result_type = _infer_vdup_scalar_result_type(raw_input, mask, context="vdup(scalar, mask)")
+        result_element_type = _pto.VRegType(result_type).element_type
+        raw_input = coerce_scalar_to_type(
+            raw_input,
+            result_element_type,
+            context="vdup(scalar, mask)",
+        )
         normalized_position = None
     return wrap_surface_value(
         _pto.VdupOp(
