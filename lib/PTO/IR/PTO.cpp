@@ -7269,9 +7269,9 @@ mlir::LogicalResult mlir::pto::TInsertFPOp::verify() {
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 
-static mlir::LogicalResult verifyTFillPadLike(Operation *op, Type srcTy, Type dstTy,
-                                              bool allowDstExpand,
-                                              llvm::StringRef opName) {
+static mlir::LogicalResult verifyTFillPadLike(Operation *op, Type srcTy,
+                                              Type dstTy,
+                                              pto::TFillPadMode mode) {
   if (!isPTOShapedLike(srcTy) || !isPTOShapedLike(dstTy))
     return op->emitError("expects src/dst to be PTO shaped-like types");
 
@@ -7297,67 +7297,68 @@ static mlir::LogicalResult verifyTFillPadLike(Operation *op, Type srcTy, Type ds
   if (!(srcB == 1 || srcB == 2 || srcB == 4))
     return op->emitError("expects element size to be 1, 2, or 4 bytes");
 
+  auto srcSpace = getPTOMemorySpaceEnum(srcTy);
+  auto dstSpace = getPTOMemorySpaceEnum(dstTy);
+  if (mode != pto::TFillPadMode::Normal &&
+      (!srcSpace || !dstSpace || *srcSpace != pto::AddressSpace::VEC ||
+       *dstSpace != pto::AddressSpace::VEC))
+    return op->emitError()
+           << "expects non-normal TFILLPAD mode only for loc=vec";
+
   // pto.tfillpad lowers to TFILLPAD(dst, src). For loc=mat, pto-isa only
   // exposes the homogeneous overload, so src/dst must use the same Tile<...>
   // specialization (including valid_shape and pad).
-  // Note: tfillpad_expand is intentionally not covered here because its
-  // cross-layer ABI contract for loc=mat heterogeneous shape expansion is not
-  // finalized yet.
-  if (opName == "tfillpad") {
-    auto srcTb = mlir::dyn_cast<mlir::pto::TileBufType>(srcTy);
-    auto dstTb = mlir::dyn_cast<mlir::pto::TileBufType>(dstTy);
-    auto srcSpace = getPTOMemorySpaceEnum(srcTy);
-    auto dstSpace = getPTOMemorySpaceEnum(dstTy);
-    if (srcTb && dstTb && srcSpace && dstSpace &&
-        *srcSpace == mlir::pto::AddressSpace::MAT &&
-        *dstSpace == mlir::pto::AddressSpace::MAT && srcTb != dstTb) {
-      auto dimToStr = [](int64_t dim) -> std::string {
-        return dim == ShapedType::kDynamic ? "?" : std::to_string(dim);
-      };
-      SmallVector<std::string, 4> mismatchFields;
-      auto srcValid = getValidShapeVec(srcTy);
-      auto dstValid = getValidShapeVec(dstTy);
-      if (srcValid.size() == 2 && dstValid.size() == 2) {
-        if (srcValid[0] != dstValid[0])
-          mismatchFields.push_back("v_row (" + dimToStr(srcValid[0]) + " vs " +
-                                   dimToStr(dstValid[0]) + ")");
-        if (srcValid[1] != dstValid[1])
-          mismatchFields.push_back("v_col (" + dimToStr(srcValid[1]) + " vs " +
-                                   dimToStr(dstValid[1]) + ")");
-      }
-      if (srcTb.getPadValueI32() != dstTb.getPadValueI32())
-        mismatchFields.push_back("pad (" + std::to_string(srcTb.getPadValueI32()) +
-                                 " vs " + std::to_string(dstTb.getPadValueI32()) +
-                                 ")");
-
-      auto diag = op->emitError()
-                  << "expects src/dst tile types to be lowerable to TFILLPAD "
-                     "for loc=mat";
-      if (!mismatchFields.empty())
-        diag << "; mismatching fields: " << llvm::join(mismatchFields, ", ");
-      diag << "\n  src: " << srcTy;
-      diag << "\n  dst: " << dstTy;
-      diag << "\n  note: heterogeneous TFILLPAD overload is only available for loc=vec";
-      return failure();
+  auto srcTb = mlir::dyn_cast<mlir::pto::TileBufType>(srcTy);
+  auto dstTb = mlir::dyn_cast<mlir::pto::TileBufType>(dstTy);
+  if (srcTb && dstTb && srcSpace && dstSpace &&
+      *srcSpace == mlir::pto::AddressSpace::MAT &&
+      *dstSpace == mlir::pto::AddressSpace::MAT && srcTb != dstTb) {
+    auto dimToStr = [](int64_t dim) -> std::string {
+      return dim == ShapedType::kDynamic ? "?" : std::to_string(dim);
+    };
+    SmallVector<std::string, 4> mismatchFields;
+    auto srcValid = getValidShapeVec(srcTy);
+    auto dstValid = getValidShapeVec(dstTy);
+    if (srcValid.size() == 2 && dstValid.size() == 2) {
+      if (srcValid[0] != dstValid[0])
+        mismatchFields.push_back("v_row (" + dimToStr(srcValid[0]) + " vs " +
+                                 dimToStr(dstValid[0]) + ")");
+      if (srcValid[1] != dstValid[1])
+        mismatchFields.push_back("v_col (" + dimToStr(srcValid[1]) + " vs " +
+                                 dimToStr(dstValid[1]) + ")");
     }
+    if (srcTb.getPadValueI32() != dstTb.getPadValueI32())
+      mismatchFields.push_back("pad (" + std::to_string(srcTb.getPadValueI32()) +
+                               " vs " + std::to_string(dstTb.getPadValueI32()) +
+                               ")");
+
+    auto diag = op->emitError()
+                << "expects src/dst tile types to be lowerable to TFILLPAD "
+                   "for loc=mat";
+    if (!mismatchFields.empty())
+      diag << "; mismatching fields: " << llvm::join(mismatchFields, ", ");
+    diag << "\n  src: " << srcTy;
+    diag << "\n  dst: " << dstTy;
+    diag << "\n  note: heterogeneous TFILLPAD overload is only available for loc=vec";
+    return failure();
   }
 
   if (auto dstTileTy = mlir::dyn_cast<mlir::pto::TileBufType>(dstTy)) {
     auto padAttr = mlir::dyn_cast<mlir::pto::PadValueAttr>(dstTileTy.getPadValueAttr());
     if (!padAttr || padAttr.getValue() == mlir::pto::PadValue::Null)
-      return op->emitError() << "expects dst PadVal != Null for " << opName;
+      return op->emitError("expects dst PadVal != Null for tfillpad");
   }
 
-  if (!allowDstExpand) {
+  if (mode != pto::TFillPadMode::Expand) {
     if (srcShape != dstShape)
-      return op->emitError()
-             << "expects src and dst to have the same static shape for " << opName;
+      return op->emitError("expects src and dst to have the same static shape "
+                           "unless mode is expand");
     return mlir::success();
   }
 
   if (srcShape[0] > dstShape[0] || srcShape[1] > dstShape[1]) {
-    return op->emitError()
-           << "expects dst static shape to be >= src static shape for " << opName;
+    return op->emitError(
+        "expects dst static shape to be >= src static shape for expand mode");
   }
 
   return mlir::success();
@@ -7365,10 +7366,12 @@ static mlir::LogicalResult verifyTFillPadLike(Operation *op, Type srcTy, Type ds
 
 mlir::LogicalResult mlir::pto::TFillPadOp::verify() {
   if (failed(verifyTFillPadLike(getOperation(), getSrc().getType(), getDst().getType(),
-                                /*allowDstExpand=*/false, "tfillpad")))
+                                getMode())))
     return failure();
 
   if (auto padValueAttr = getPadValueAttr()) {
+    if (getMode() != pto::TFillPadMode::Normal)
+      return emitOpError("expects padValue attribute only for normal mode");
     auto dstSpace = getPTOMemorySpaceEnum(getDst().getType());
     if (!dstSpace || *dstSpace != pto::AddressSpace::MAT)
       return emitOpError("expects padValue attribute only for loc=mat tfillpad");
@@ -7380,16 +7383,6 @@ mlir::LogicalResult mlir::pto::TFillPadOp::verify() {
   }
 
   return success();
-}
-
-mlir::LogicalResult mlir::pto::TFillPadExpandOp::verify() {
-  return verifyTFillPadLike(getOperation(), getSrc().getType(), getDst().getType(),
-                            /*allowDstExpand=*/true, "tfillpad_expand");
-}
-
-mlir::LogicalResult mlir::pto::TFillPadInplaceOp::verify() {
-  return verifyTFillPadLike(getOperation(), getSrc().getType(), getDst().getType(),
-                            /*allowDstExpand=*/false, "tfillpad_inplace");
 }
 
 
@@ -14136,8 +14129,6 @@ void TInsertFPOp::getEffects(
 }
 
 PTO_DEFINE_UNARY_EFFECTS(TFillPadOp, getSrcMutable(), getDstMutable())
-PTO_DEFINE_UNARY_EFFECTS(TFillPadExpandOp, getSrcMutable(), getDstMutable())
-PTO_DEFINE_UNARY_EFFECTS(TFillPadInplaceOp, getSrcMutable(), getDstMutable())
 
 void TGatherOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {

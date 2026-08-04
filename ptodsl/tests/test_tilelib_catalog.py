@@ -75,8 +75,6 @@ CATALOG = {
     "pto.tfmod": ("template_tfmod", "pto.vtrc", ("src0", "src1", "dst"), "f32"),
     "pto.tfmods": ("template_tfmods", "pto.vtrc", ("src", "scalar", "dst"), "f32"),
     "pto.tfillpad": ("template_tfillpad", "pto.vsts", ("src", "dst"), "f32"),
-    "pto.tfillpad_expand": ("template_tfillpad_expand", "pto.vsts", ("src", "dst"), "f32"),
-    "pto.tfillpad_inplace": ("template_tfillpad_inplace", "pto.vdup", ("src", "dst"), "f32"),
     "pto.tgemv": ("template_tgemv", "pto.mad", ("lhs", "rhs", "acc"), "f16"),
     "pto.tgemv.acc": ("template_tgemv_acc", "pto.mad_acc", ("acc_in", "lhs", "rhs", "dst"), "f16"),
     "pto.tgemv.bias": ("template_tgemv_bias", "pto.mad_bias", ("lhs", "rhs", "bias", "dst"), "f16"),
@@ -269,7 +267,6 @@ SHARED_RENDERED_OPS = (
 )
 OPS_WITHOUT_TILE_LOAD = {"pto.texpands"}
 OPS_WITHOUT_TILE_LOAD = OPS_WITHOUT_TILE_LOAD | {"pto.trandom", "pto.tsort32", "pto.tload", "pto.tstore", "pto.tstore_fp", "pto.textract_fp"}
-OPS_WITHOUT_TILE_LOAD = OPS_WITHOUT_TILE_LOAD | {"pto.tfillpad_inplace"}
 OPS_WITHOUT_TILE_LOAD = OPS_WITHOUT_TILE_LOAD | CUBE_OPS
 OPS_WITHOUT_VECTOR_STORE = {"pto.tcmp", "pto.tcmps", "pto.tsort32"}
 OPS_WITHOUT_VECTOR_STORE = OPS_WITHOUT_VECTOR_STORE | {"pto.tload", "pto.tstore", "pto.tstore_fp", "pto.textract_fp"}

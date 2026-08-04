@@ -31,11 +31,12 @@ module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
       : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=8, v_col=48,
                       blayout=row_major, slayout=none_box, fractal=512, pad=1>
 
-    // src 和 dst 相同，表示原地填充 padding
+    // src 和 dst 相同，并显式选择原地填充模式
     pto.tfillpad ins(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=8, v_col=48,
                               blayout=row_major, slayout=none_box, fractal=512, pad=1>)
                  outs(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=8, v_col=48,
                                    blayout=row_major, slayout=none_box, fractal=512, pad=1>)
+                 {mode = #pto.tfillpad_mode<in_place>}
     return
   }
 }

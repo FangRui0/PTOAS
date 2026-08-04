@@ -118,11 +118,12 @@ class VectorCubeSurfaceTest(unittest.TestCase):
     def test_tile_partial_and_fillpad_names_are_exposed_without_legacy_names(self):
         preferred_names = [
             "partadd", "partmul", "partmax", "partmin",
-            "fillpad", "fillpad_expand", "fillpad_inplace",
+            "fillpad",
         ]
         legacy_names = [
             "part_add", "part_mul", "part_max", "part_min",
             "fill_pad", "fill_pad_expand", "fill_pad_inplace",
+            "fillpad_expand", "fillpad_inplace",
         ]
 
         for name in preferred_names:
@@ -132,6 +133,23 @@ class VectorCubeSurfaceTest(unittest.TestCase):
         for name in legacy_names:
             with self.subTest(name=name):
                 self.assertFalse(hasattr(pto.tile, name), name)
+
+    def test_tile_fillpad_dispatches_one_op_with_mode(self):
+        src = object()
+        dst = object()
+        mode_attr = object()
+
+        with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_ops, "_tfillpad_mode_attr", return_value=mode_attr) as build_mode, \
+             patch.object(_ops._pto, "tfillpad") as tfillpad:
+            pto.tile.fillpad(src, dst, mode="expand")
+
+        build_mode.assert_called_once_with("expand")
+        tfillpad.assert_called_once_with(src, dst, mode=mode_attr)
+
+    def test_tile_fillpad_rejects_unknown_mode(self):
+        with self.assertRaisesRegex(ValueError, "normal.*in_place.*expand"):
+            _ops._tfillpad_mode_attr("automatic")
 
     def test_sync_flag_names_are_exposed_without_legacy_aliases(self):
         preferred_names = [

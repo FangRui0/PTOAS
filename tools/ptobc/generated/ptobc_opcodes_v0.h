@@ -97,8 +97,6 @@ inline constexpr OpInfo kOpTable[] = {
   {0x1021, "pto.textract", 0, 0x00, 0x00, 4, 0, 0, 0x00},
   {0x1022, "pto.textract_fp", 0, 0x00, 0x00, 5, 0, 0, 0x00},
   {0x1023, "pto.tfillpad", 0, 0x00, 0x00, 2, 0, 0, 0x00},
-  {0x1024, "pto.tfillpad_expand", 0, 0x00, 0x00, 2, 0, 0, 0x00},
-  {0x1025, "pto.tfillpad_inplace", 0, 0x00, 0x00, 2, 0, 0, 0x00},
   {0x1026, "pto.tfmod", 0, 0x00, 0x00, 3, 0, 0, 0x00},
   {0x1027, "pto.tfmods", 0, 0x00, 0x00, 3, 0, 0, 0x00},
   {0x1028, "pto.tgather", 0, 0x00, 0x02, 0, 0, 0, 0x00},
@@ -306,8 +304,6 @@ inline std::optional<uint16_t> lookupOpcodeByName(llvm::StringRef name) {
     .Case("pto.textract", 0x1021)
     .Case("pto.textract_fp", 0x1022)
     .Case("pto.tfillpad", 0x1023)
-    .Case("pto.tfillpad_expand", 0x1024)
-    .Case("pto.tfillpad_inplace", 0x1025)
     .Case("pto.tfmod", 0x1026)
     .Case("pto.tfmods", 0x1027)
     .Case("pto.tgather", 0x1028)
@@ -502,8 +498,6 @@ inline std::optional<OpcodeAndVariant> lookupOpcodeAndVariantByFullName(llvm::St
     .Case("pto.textract", OpcodeAndVariant{0x1021, 0, 0})
     .Case("pto.textract_fp", OpcodeAndVariant{0x1022, 0, 0})
     .Case("pto.tfillpad", OpcodeAndVariant{0x1023, 0, 0})
-    .Case("pto.tfillpad_expand", OpcodeAndVariant{0x1024, 0, 0})
-    .Case("pto.tfillpad_inplace", OpcodeAndVariant{0x1025, 0, 0})
     .Case("pto.tfmod", OpcodeAndVariant{0x1026, 0, 0})
     .Case("pto.tfmods", OpcodeAndVariant{0x1027, 0, 0})
     .Case("pto.tgather", OpcodeAndVariant{0x1028, 0, 0})

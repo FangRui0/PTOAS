@@ -261,7 +261,7 @@ static InplacePolicy getInplacePolicy(Operation *op) {
 
   policy.notInplaceSafe = isOneOf(
       name, {
-                "pto.tands",      "pto.tfillpad_expand", "pto.tfmod",
+                "pto.tands",      "pto.tfmod",
                 "pto.tfmods",     "pto.tgather",         "pto.tmrgsort",
                 "pto.tors",       "pto.trecip",          "pto.trsqrt",
                 "pto.tsort32",    "pto.ttrans",          "pto.trowargmax",
@@ -269,6 +269,9 @@ static InplacePolicy getInplacePolicy(Operation *op) {
                 "pto.trowprod",   "pto.trowsum",         "pto.tcolargmax",
                 "pto.tcolargmin", "pto.tcvt",            "pto.txors",
             });
+
+  if (auto fillPad = dyn_cast<TFillPadOp>(op))
+    policy.notInplaceSafe |= fillPad.getMode() == TFillPadMode::Expand;
 
   if (name == "pto.tsel") {
     policy.forbidOutputAliasOperands.push_back(0); // mask

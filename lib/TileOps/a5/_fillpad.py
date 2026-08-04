@@ -152,11 +152,11 @@ def _fill_inplace(dst, src_valid_rows, src_valid_cols, dst_valid_rows, dst_valid
     _fill(dst, src_valid_rows, dst_valid_rows, 0, dst_valid_cols)
 
 
-def register_fillpad(*, op, name, copy):
+def register_fillpad():
     @tilelib.tile_template(
-        op=op,
+        op="pto.tfillpad",
         target="a5",
-        name=name,
+        name="template_tfillpad",
         dtypes=_DTYPES,
         iteration_axis="none",
         op_engine="other",
@@ -168,20 +168,19 @@ def register_fillpad(*, op, name, copy):
         tags=("fillpad",),
     )
     def template(src: pto.Tile, dst: pto.Tile):
+        mode = pto.get_op_attr("mode", "normal")
         src_valid_rows, src_valid_cols = src.valid_shape
         dst_valid_rows, dst_valid_cols = dst.valid_shape
         lanes = pto.elements_per_vreg(dst.dtype)
         aligned_cols = (src_valid_cols // lanes) * lanes
-        if not copy:
+        if mode == "in_place":
             _fill_inplace(dst, src_valid_rows, src_valid_cols, dst_valid_rows, dst_valid_cols)
             return
-        if copy:
-            _copy_region(src, dst, src_valid_rows, 0, aligned_cols)
-        fill_row_stop = dst_valid_rows if op == "pto.tfillpad_expand" else src_valid_rows
+        _copy_region(src, dst, src_valid_rows, 0, aligned_cols)
+        fill_row_stop = dst_valid_rows if mode == "expand" else src_valid_rows
         scalar_tail_start = _scalar_tail_start(dst, lanes)
         _fill(dst, 0, fill_row_stop, aligned_cols, dst_valid_cols, scalar_tail_start=scalar_tail_start)
-        if copy:
-            _copy_region(src, dst, src_valid_rows, aligned_cols, src_valid_cols)
+        _copy_region(src, dst, src_valid_rows, aligned_cols, src_valid_cols)
         _fill(dst, src_valid_rows, dst_valid_rows, 0, dst_valid_cols, scalar_tail_start=scalar_tail_start)
 
     return template

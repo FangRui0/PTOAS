@@ -4007,27 +4007,31 @@ def tpartmin(src0, src1, dst):
     )
 
 
-def tfillpad(src, dst):
-    """``pto.tfillpad ins(src) outs(dst)``."""
+def _tfillpad_mode_attr(mode):
+    if isinstance(mode, Attribute):
+        return mode
+    if isinstance(mode, str):
+        token = mode.strip().lower().replace("-", "_")
+        aliases = {
+            "normal": _pto.TFillPadMode.Normal,
+            "inplace": _pto.TFillPadMode.InPlace,
+            "in_place": _pto.TFillPadMode.InPlace,
+            "expand": _pto.TFillPadMode.Expand,
+        }
+        if token not in aliases:
+            raise ValueError(
+                "tfillpad mode must be 'normal', 'in_place', or 'expand'"
+            )
+        mode = aliases[token]
+    return _pto.TFillPadModeAttr.get(mode)
+
+
+def tfillpad(src, dst, *, mode="normal"):
+    """``pto.tfillpad ins(src) outs(dst)`` with an explicit ISA mode."""
     _pto.tfillpad(
         unwrap_surface_value(src),
         unwrap_surface_value(dst),
-    )
-
-
-def tfillpad_expand(src, dst):
-    """``pto.tfillpad_expand ins(src) outs(dst)``."""
-    _pto.tfillpad_expand(
-        unwrap_surface_value(src),
-        unwrap_surface_value(dst),
-    )
-
-
-def tfillpad_inplace(src, dst):
-    """``pto.tfillpad_inplace ins(src) outs(dst)``."""
-    _pto.tfillpad_inplace(
-        unwrap_surface_value(src),
-        unwrap_surface_value(dst),
+        mode=_tfillpad_mode_attr(mode),
     )
 
 
@@ -6348,7 +6352,7 @@ __all__ = [
     "tsel", "tsels", "tcvt",
     "tnot", "tand", "tands", "tor", "tors", "txor", "txors", "tshl", "tshls", "tshr", "tshrs",
     "tpartadd", "tpartmul", "tpartmax", "tpartmin",
-    "tfillpad", "tfillpad_expand", "tfillpad_inplace",
+    "tfillpad",
     "ttri", "tthistogram",
     "chistv2",
     "as_ptr",

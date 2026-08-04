@@ -207,8 +207,6 @@ class _TileNamespace:
     partmin = staticmethod(_ops.tpartmin)
 
     fillpad = staticmethod(_ops.tfillpad)
-    fillpad_expand = staticmethod(_ops.tfillpad_expand)
-    fillpad_inplace = staticmethod(_ops.tfillpad_inplace)
 
 
 tile = _TileNamespace()

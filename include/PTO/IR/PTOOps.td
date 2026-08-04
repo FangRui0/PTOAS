@@ -4750,12 +4750,13 @@ def TFillPadOp : PTO_TOp<"tfillpad", [
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
-  let summary = "Copy src into dst and fill padded elements using dst PadVal (tilebuf, DPS)";
+  let summary = "Fill padding in normal, in-place, or expand mode (tilebuf, DPS)";
 
   let arguments = (ins
     PTODpsType:$src,
     PTODpsType:$dst,
-    OptionalAttr<PTO_PadValueAttr>:$padValue
+    OptionalAttr<PTO_PadValueAttr>:$padValue,
+    DefaultValuedAttr<PTO_TFillPadModeAttr, "::mlir::pto::TFillPadMode::Normal">:$mode
   );
 
   let results = (outs);
@@ -4789,62 +4790,6 @@ def TFillPadOp : PTO_TOp<"tfillpad", [
         return ::mlir::pto::PIPE::PIPE_MTE1;
       return ::mlir::pto::PIPE::PIPE_V;
     }
-    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
-  }];
-}
-
-def TFillPadExpandOp : PTO_TOp<"tfillpad_expand", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "Copy src into dst and fill padded elements using dst PadVal, allowing dst to be larger (tilebuf, DPS)";
-
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst
-  );
-
-  let results = (outs);
-
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `ins`  `(` $src `:` qualified(type($src)) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    attr-dict
-  }];
-
-  let extraClassDeclaration = [{
-    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
-    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
-  }];
-}
-
-def TFillPadInplaceOp : PTO_TOp<"tfillpad_inplace", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "In-place fill padding on shared backing storage: src supplies valid-region bounds, dst supplies target pad bounds (tilebuf, DPS)";
-
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst
-  );
-
-  let results = (outs);
-
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `ins`  `(` $src `:` qualified(type($src)) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    attr-dict
-  }];
-
-  let extraClassDeclaration = [{
-    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
 }

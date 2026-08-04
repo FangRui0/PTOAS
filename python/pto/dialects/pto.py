@@ -72,6 +72,8 @@ PadValue = _pto_mod.PadValue
 PadValueAttr = _pto_mod.PadValueAttr
 CompactMode = _pto_mod.CompactMode
 CompactModeAttr = _pto_mod.CompactModeAttr
+TFillPadMode = _pto_mod.TFillPadMode
+TFillPadModeAttr = _pto_mod.TFillPadModeAttr
 AccToVecMode = _pto_mod.AccToVecMode
 AccToVecModeAttr = _pto_mod.AccToVecModeAttr
 TInsertMode = _pto_mod.TInsertMode
@@ -251,6 +253,8 @@ __all__ = [
     "PadValueAttr",
     "CompactMode",
     "CompactModeAttr",
+    "TFillPadMode",
+    "TFillPadModeAttr",
     "AccToVecMode",
     "AccToVecModeAttr",
     "TInsertMode",

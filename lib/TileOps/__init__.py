@@ -46,8 +46,6 @@ _TEMPLATE_MODULES = {
     ("a5", "pto.tfmod"): ".a5.tfmod",
     ("a5", "pto.tfmods"): ".a5.tfmods",
     ("a5", "pto.tfillpad"): ".a5.tfillpad",
-    ("a5", "pto.tfillpad_expand"): ".a5.tfillpad_expand",
-    ("a5", "pto.tfillpad_inplace"): ".a5.tfillpad_inplace",
     ("a5", "pto.tgatherb"): ".a5.tgatherb",
     ("a5", "pto.tgemv"): ".a5.tgemv",
     ("a5", "pto.tgemv.acc"): ".a5.tgemv_acc",

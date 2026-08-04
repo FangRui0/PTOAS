@@ -8038,13 +8038,14 @@ pto.textract ins(%src[%row, %col] : !pto.tile_buf<...>) outs(%dst : !pto.tile_bu
 
 ##### `pto.tfillpad` - Fill Padding Region
 
-**Summary:** Copies `src` into `dst` and fills padded elements using `dst`'s PadVal.
+**Summary:** Unified normal, in-place, and expand padding operation. `mode` defaults to `normal` and is never inferred from SSA aliasing or shapes.
 
 **Semantics:**
 
 ```
-For valid elements: dst = src
-For padded elements: dst = PadVal(dst)
+normal:   copy valid src elements, then fill dst padding
+in_place: keep valid data already in shared storage, then fill dst padding
+expand:   copy src into a possibly larger dst, then fill the expanded region
 ```
 
 **Arguments:**
@@ -8053,6 +8054,7 @@ For padded elements: dst = PadVal(dst)
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile |
 | `dst` | `pto.tile_buf` | Destination tile (with pad config) |
+| `mode` | `#pto.tfillpad_mode<normal\|in_place\|expand>` | PTO-ISA execution mode; defaults to `normal` |
 | `padValue` | `#pto.pad_value<...>` (optional) | Explicit `TFILLPAD<PadValue>` template argument for `loc=mat`. When present, it must match `dst`'s tile pad configuration. |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -8061,116 +8063,30 @@ For padded elements: dst = PadVal(dst)
 
 - `dst.pad` must not be `null`.
 - `src` and `dst` element sizes must match, and the element size must be `1`, `2`, or `4` bytes.
-- `dst.rows/cols` must match `src.rows/cols`.
-- If `padValue` is present, `dst` must be `loc=mat` and `padValue` must equal the tile type's `pad`.
+- Normal and in-place modes require equal source and destination static shapes.
+- Expand mode requires `dst.rows >= src.rows` and `dst.cols >= src.cols`.
+- Non-normal modes require both operands to use `loc=vec`.
+- If `padValue` is present, mode must be normal, `dst` must be `loc=mat`, and `padValue` must equal the tile type's `pad`.
 - For `loc=mat`, `src` and `dst` must be lowerable to the same `TFILLPAD` tile specialization, i.e. `validShape` and `pad` must be identical.
 
 **Hardware Mapping:**
 
-- Executes on the **Vector pipeline** (`PIPE_V`)
+- VEC forms execute on the **Vector pipeline** (`PIPE_V`).
+- The normal homogeneous MAT form executes on `PIPE_MTE1`.
+- Normal lowers to `TFILLPAD(dst, src)`; non-normal modes lower one-to-one to `TFILLPAD<pto::TFillPadMode::InPlace/Expand>(dst, src)`.
 
 **Basic Example:**
 
 ```mlir
 pto.tfillpad ins(%src : !pto.tile_buf<...>) outs(%dst : !pto.tile_buf<...>)
 
-pto.tfillpad ins(%src : !pto.tile_buf<...>) outs(%dst : !pto.tile_buf<...>)
-           {padValue = #pto.pad_value<max>}
-```
+pto.tfillpad ins(%tile : !pto.tile_buf<vec, 32x32xf32, pad=1>)
+             outs(%tile : !pto.tile_buf<vec, 32x32xf32, pad=1>)
+             {mode = #pto.tfillpad_mode<in_place>}
 
----
-
-##### `pto.tfillpad_expand` - Fill Padding Region With Expand
-
-**Summary:** Copies `src` into `dst` and fills padded elements using `dst`'s PadVal, allowing `dst` to be larger than `src`.
-
-**Semantics:**
-
-```
-For valid elements: dst = src
-For padded elements: dst = PadVal(dst)
-Constraint: dst.rows >= src.rows and dst.cols >= src.cols
-```
-
-**Arguments:**
-
-| Name | Type | Description |
-|------|------|-------------|
-| `src` | `pto.tile_buf` | Source tile |
-| `dst` | `pto.tile_buf` | Destination tile (with pad config, may be larger) |
-
-**Results:** None. Writes into `dst` via DPS pattern.
-
-**Constraints & Verification:**
-
-- The operation has a custom verifier.
-- For `loc=mat`, cross-layer behavior with heterogeneous (`src`/`dst`) expand shape is not finalized in this release; `tfillpad_expand` is not covered by the `tfillpad`-specific lowerability check.
-
-**Hardware Mapping:**
-
-- Executes on the **Vector pipeline** (`PIPE_V`)
-
-**Basic Example:**
-
-```mlir
-pto.tfillpad_expand ins(%src : !pto.tile_buf<...>) outs(%dst : !pto.tile_buf<...>)
-```
-
----
-
-##### `pto.tfillpad_inplace` - Fill Padding Region In Place
-
-**Summary:** Fills the padding region in place on shared backing storage. `src` provides the valid-region bounds and `dst` provides the target pad bounds/configuration.
-
-**Semantics:**
-
-```
-For elements inside src valid_shape:
-    dst keeps the existing value
-For padded elements described by dst:
-    dst = PadVal(dst)
-```
-
-This operation is intended for the in-place case where `src` and `dst` refer to the same tile storage, often the same SSA value.
-
-**Arguments:**
-
-| Name | Type | Description |
-|------|------|-------------|
-| `src` | `pto.tile_buf` | Source tile supplying valid-region bounds |
-| `dst` | `pto.tile_buf` | Destination tile supplying pad configuration and receiving the in-place update |
-
-**Results:** None. Writes into `dst` via DPS pattern.
-
-**Assembly Format:**
-
-```
-pto.tfillpad_inplace ins(<src> : <src_type>)
-                     outs(<dst> : <dst_type>)
-```
-
-**Constraints & Verification:**
-
-- `dst.pad` must not be `null`.
-- `src` and `dst` element sizes must match, and the element size must be `1`, `2`, or `4` bytes.
-- `src.rows/cols` and `dst.rows/cols` must have the same static shape.
-- The verifier uses the same non-expand shape constraints as `pto.tfillpad`.
-- Unlike `pto.tfillpad_expand`, `dst` is not allowed to have a larger static shape than `src`.
-
-**Hardware Mapping:**
-
-- Executes on the **Vector pipeline** (`PIPE_V`)
-- EmitC lowers to `TFILLPAD_INPLACE(dst, src)`
-
-**Basic Example:**
-
-```mlir
-pto.tfillpad_inplace ins(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32,
-                         v_row=32, v_col=32, blayout=row_major, slayout=none_box,
-                         fractal=512, pad=1>)
-                     outs(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32,
-                         v_row=32, v_col=32, blayout=row_major, slayout=none_box,
-                         fractal=512, pad=1>)
+pto.tfillpad ins(%src_small : !pto.tile_buf<vec, 16x16xf32>)
+             outs(%dst_large : !pto.tile_buf<vec, 32x32xf32, pad=1>)
+             {mode = #pto.tfillpad_mode<expand>}
 ```
 
 ---

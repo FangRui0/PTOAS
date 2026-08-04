@@ -9824,6 +9824,18 @@ struct PTOInsertFPToEmitC : public OpConversionPattern<pto::TInsertFPOp> {
 // pto.tfillpad lowering -> TFILLPAD(dst, src)
 //===----------------------------------------------------------------------===//
 
+static StringRef getTFillPadModeToken(pto::TFillPadMode mode) {
+  switch (mode) {
+  case pto::TFillPadMode::Normal:
+    return "pto::TFillPadMode::Normal";
+  case pto::TFillPadMode::InPlace:
+    return "pto::TFillPadMode::InPlace";
+  case pto::TFillPadMode::Expand:
+    return "pto::TFillPadMode::Expand";
+  }
+  llvm_unreachable("unknown TFillPadMode");
+}
+
 struct PTOFillPadToEmitC : public OpConversionPattern<pto::TFillPadOp> {
   using OpConversionPattern<pto::TFillPadOp>::OpConversionPattern;
 
@@ -9855,59 +9867,14 @@ struct PTOFillPadToEmitC : public OpConversionPattern<pto::TFillPadOp> {
       // tfillpad, so lowering can trust the preserved semantic contract.
       templateArgs = rewriter.getArrayAttr(
           {emitc::OpaqueAttr::get(ctx, padValueTok(padValueAttr.getValue()))});
+    } else if (op.getMode() != pto::TFillPadMode::Normal) {
+      templateArgs = rewriter.getArrayAttr(
+          {emitc::OpaqueAttr::get(ctx, getTFillPadModeToken(op.getMode()))});
     }
 
     rewriter.create<emitc::CallOpaqueOp>(
         loc, TypeRange{}, "TFILLPAD",
         /*args=*/ArrayAttr{}, /*templateArgs=*/templateArgs,
-        /*operands=*/ValueRange{dst, src});
-
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-//===----------------------------------------------------------------------===//
-// pto.tfillpad_inplace lowering -> TFILLPAD_INPLACE(dst, src)
-//===----------------------------------------------------------------------===//
-
-struct PTOFillPadInplaceToEmitC
-    : public OpConversionPattern<pto::TFillPadInplaceOp> {
-  using OpConversionPattern<pto::TFillPadInplaceOp>::OpConversionPattern;
-
-  LogicalResult matchAndRewrite(pto::TFillPadInplaceOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-
-    Value src = peelUnrealized(adaptor.getSrc());
-    Value dst = peelUnrealized(adaptor.getDst());
-
-    rewriter.create<emitc::CallOpaqueOp>(
-        loc, TypeRange{}, "TFILLPAD_INPLACE",
-        /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
-        /*operands=*/ValueRange{dst, src});
-
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-//===----------------------------------------------------------------------===//
-// pto.tfillpad_expand lowering -> TFILLPAD_EXPAND(dst, src)
-//===----------------------------------------------------------------------===//
-
-struct PTOFillPadExpandToEmitC
-    : public OpConversionPattern<pto::TFillPadExpandOp> {
-  using OpConversionPattern<pto::TFillPadExpandOp>::OpConversionPattern;
-
-  LogicalResult matchAndRewrite(pto::TFillPadExpandOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-
-    Value src = peelUnrealized(adaptor.getSrc());
-    Value dst = peelUnrealized(adaptor.getDst());
-
-    rewriter.create<emitc::CallOpaqueOp>(
-        loc, TypeRange{}, "TFILLPAD_EXPAND",
-        /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
         /*operands=*/ValueRange{dst, src});
 
     rewriter.eraseOp(op);
@@ -13460,8 +13427,7 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOPartAddToEmitC>(typeConverter, ctx);
   patterns.add<PTOExtractToEmitC, PTOExtractFPToEmitC, PTOInsertToEmitC,
                PTOInsertFPToEmitC>(typeConverter, ctx);
-  patterns.add<PTOFillPadToEmitC, PTOFillPadInplaceToEmitC, PTOFillPadExpandToEmitC>(
-      typeConverter, ctx);
+  patterns.add<PTOFillPadToEmitC>(typeConverter, ctx);
   patterns.add<PTOGatherToEmitC>(typeConverter, ctx);
   patterns.add<PTOGatherbToEmitC>(typeConverter, ctx);
   patterns.add<PTOMovFPToEmitC>(typeConverter, ctx);

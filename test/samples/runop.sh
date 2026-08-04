@@ -993,21 +993,16 @@ PY
         overall=1
         continue
       fi
-      if grep -Fq "TFILLPAD_EXPAND(" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tpto.tfillpad should not lower via TFILLPAD_EXPAND()"
+      if grep -Fq "TFillPadMode::" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tnormal pto.tfillpad should use the default ISA mode"
         overall=1
         continue
       fi
     fi
 
     if [[ "$base" == "fillpad_expand" ]]; then
-      if ! grep -Fq "TFILLPAD_EXPAND(" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing TFILLPAD_EXPAND() lowering for pto.tfillpad_expand"
-        overall=1
-        continue
-      fi
-      if grep -Fq "TFILLPAD(" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tpto.tfillpad_expand should not lower via TFILLPAD()"
+      if ! grep -Fq "TFILLPAD<pto::TFillPadMode::Expand>" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing TFILLPAD<...Expand> lowering"
         overall=1
         continue
       fi
@@ -1032,13 +1027,8 @@ PY
     fi
 
     if [[ "$base" == "fillpad_inplace" ]]; then
-      if ! grep -Fq "TFILLPAD_INPLACE(" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing TFILLPAD_INPLACE() lowering for pto.tfillpad_inplace"
-        overall=1
-        continue
-      fi
-      if grep -Fq "TFILLPAD_EXPAND(" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tpto.tfillpad_inplace should not lower via TFILLPAD_EXPAND()"
+      if ! grep -Fq "TFILLPAD<pto::TFillPadMode::InPlace>" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing TFILLPAD<...InPlace> lowering"
         overall=1
         continue
       fi
