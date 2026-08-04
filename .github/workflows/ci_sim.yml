@@ -116,9 +116,10 @@ jobs:
       PYPTO_REF: ef6ce7cd8bd33b4c93b58dc34830a20b145736ac
       PYPTO_WORKSPACE: ${{ github.workspace }}/.work/pypto-ci
       PYPTO_RUN_WORKSPACE: ${{ github.workspace }}/.work/pypto-run-ci
-      # Keep this pin aligned with the compiler, Docker, documentation, and
-      # remote-validation defaults via update_pto_isa_pin.py.
-      PTO_ISA_COMMIT: 27386d906e8fdcbd93aec84197939bc0b2c6caea
+      # GitHub pin containing the unified TFILLPAD API, the two-argument Soft
+      # SYNCALL ABI, and the follow-up CPU-Sim duplicate-stub fix. Keep this
+      # separate from the GitCode pins managed by update_pto_isa_pin.py.
+      PTO_ISA_COMMIT: e948507e18ec4f39037a04914b97e77f5b9d75e3
       PTO_ISA_ROOT: ${{ github.workspace }}/.work/pto-isa-ci
     steps:
       - name: Checkout

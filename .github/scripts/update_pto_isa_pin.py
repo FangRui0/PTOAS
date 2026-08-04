@@ -41,11 +41,6 @@ def parse_args() -> argparse.Namespace:
         help="Path to the Dockerfile that vendors pto-isa.",
     )
     parser.add_argument(
-        "--sim-workflow",
-        default=".github/workflows/ci_sim.yml",
-        help="Path to the VPTO simulator workflow file.",
-    )
-    parser.add_argument(
         "--compile-only-guide",
         default="docs/no_npu_compile_only_guide_zh.md",
         help="Path to the no-NPU compile-only guide.",
@@ -150,20 +145,6 @@ def update_dockerfile(path: pathlib.Path, commit: str) -> bool:
     return False
 
 
-def update_sim_workflow(path: pathlib.Path, commit: str) -> bool:
-    original = read_text(path)
-    updated = replace_exactly_once(
-        original,
-        r"^(\s*PTO_ISA_COMMIT:\s*)([0-9a-f]{40})$",
-        rf"\g<1>{commit}",
-        path,
-    )
-    if updated != original:
-        write_text(path, updated)
-        return True
-    return False
-
-
 def update_compile_only_guide(path: pathlib.Path, commit: str) -> bool:
     original = read_text(path)
     updated = replace_exact_count(
@@ -222,16 +203,6 @@ def extract_docker_commit(path: pathlib.Path) -> tuple[str, str]:
     return arg_match.group(1), comment_match.group(1)
 
 
-def extract_sim_commit(path: pathlib.Path) -> str:
-    text = read_text(path)
-    match = re.search(
-        r"^\s*PTO_ISA_COMMIT:\s*([0-9a-f]{40})$", text, flags=re.MULTILINE
-    )
-    if not match:
-        raise RuntimeError(f"failed to read pinned pto-isa commit from {path}")
-    return match.group(1)
-
-
 def extract_compile_only_commits(path: pathlib.Path) -> tuple[str, str]:
     matches = re.findall(
         r"^export PTO_ISA_COMMIT=([0-9a-f]{40})$",
@@ -260,14 +231,12 @@ def extract_remote_validation_commit(path: pathlib.Path) -> str:
 def verify(
     ci_path: pathlib.Path,
     docker_path: pathlib.Path,
-    sim_workflow_path: pathlib.Path,
     compile_only_guide_path: pathlib.Path,
     remote_validation_path: pathlib.Path,
     commit: str,
 ) -> None:
     ci_default, ci_env = extract_ci_commit(ci_path)
     docker_arg, docker_comment = extract_docker_commit(docker_path)
-    sim_commit = extract_sim_commit(sim_workflow_path)
     guide_setup, guide_run = extract_compile_only_commits(compile_only_guide_path)
     remote_validation_commit = extract_remote_validation_commit(
         remote_validation_path
@@ -277,7 +246,6 @@ def verify(
         f"{ci_path}:runtime_default": ci_env,
         f"{docker_path}:arg": docker_arg,
         f"{docker_path}:comment": docker_comment,
-        f"{sim_workflow_path}:simulator": sim_commit,
         f"{compile_only_guide_path}:setup": guide_setup,
         f"{compile_only_guide_path}:run": guide_run,
         f"{remote_validation_path}:fallback": remote_validation_commit,
@@ -293,7 +261,6 @@ def main() -> int:
     commit = args.commit or resolve_head_commit(args.repo_url)
     ci_path = pathlib.Path(args.ci_workflow)
     docker_path = pathlib.Path(args.dockerfile)
-    sim_workflow_path = pathlib.Path(args.sim_workflow)
     compile_only_guide_path = pathlib.Path(args.compile_only_guide)
     remote_validation_path = pathlib.Path(args.remote_validation_script)
 
@@ -301,7 +268,6 @@ def main() -> int:
         verify(
             ci_path,
             docker_path,
-            sim_workflow_path,
             compile_only_guide_path,
             remote_validation_path,
             commit,
@@ -311,13 +277,11 @@ def main() -> int:
 
     update_ci_workflow(ci_path, commit)
     update_dockerfile(docker_path, commit)
-    update_sim_workflow(sim_workflow_path, commit)
     update_compile_only_guide(compile_only_guide_path, commit)
     update_remote_validation_script(remote_validation_path, commit)
     verify(
         ci_path,
         docker_path,
-        sim_workflow_path,
         compile_only_guide_path,
         remote_validation_path,
         commit,
