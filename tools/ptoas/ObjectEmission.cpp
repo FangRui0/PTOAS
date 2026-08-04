@@ -50,6 +50,12 @@ static llvm::cl::opt<bool> enableBishengVecMISched(
                    "the scheduler"),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> enableSimtFastMath(
+    "simt-fastmath",
+    llvm::cl::desc("Enable Bisheng SIMT floating-point contraction and fast "
+                   "math combining for VPTO device compilation"),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<BishengVFAutoSyncMode> bishengVFAutoSyncMode(
     "bisheng-vf-auto-sync",
     llvm::cl::desc("Explicit Bisheng VF auto-sync mode for VPTO device "
@@ -520,6 +526,9 @@ static bool compileDeviceLLVMToObject(llvm::StringRef llPath,
     args.push_back("-mllvm");
     args.push_back("--cce-aicore-vec-misched=0");
   }
+  args.push_back("-mllvm");
+  args.push_back(std::string("--cce-simt-fpmath-combine=") +
+                 (enableSimtFastMath ? "true" : "false"));
   args.push_back("-c");
   args.push_back("-x");
   args.push_back("ir");
