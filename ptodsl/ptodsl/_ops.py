@@ -2931,14 +2931,21 @@ def tload(part, tile):
     _pto.TLoadOp(None, unwrap_surface_value(part), unwrap_surface_value(tile))
 
 
-def tstore(tile, part):
+def tstore(tile, part, *, fp=None):
     """``pto.tstore ins(tile) outs(part)``."""
-    _pto.TStoreOp(None, unwrap_surface_value(tile), unwrap_surface_value(part))
+    kwargs = {}
+    if fp is not None:
+        kwargs["fp"] = unwrap_surface_value(fp)
+    _pto.TStoreOp(
+        None, unwrap_surface_value(tile), unwrap_surface_value(part), **kwargs
+    )
 
 
-def tmov(src, dst, *, mode=None):
+def tmov(src, dst, *, fp=None, mode=None):
     """``pto.tmov ins(src) outs(dst)`` – move data between tile domains."""
     kwargs = {}
+    if fp is not None:
+        kwargs["fp"] = unwrap_surface_value(fp)
     if mode is not None:
         kwargs["accToVecMode"] = _normalize_acc_to_vec_mode(mode, context="tmov(..., mode=...)")
     _pto.TMovOp(None, unwrap_surface_value(src), unwrap_surface_value(dst), **kwargs)
@@ -2953,23 +2960,39 @@ def ttrans(src, tmp, dst):
     )
 
 
-def textract(src, dst, index_row, index_col):
+def textract(src, dst, index_row, index_col, *, fp=None, mode=None):
     """``pto.textract ins(src, index_row, index_col) outs(dst)``."""
+    kwargs = {}
+    if fp is not None:
+        kwargs["fp"] = unwrap_surface_value(fp)
+    if mode is not None:
+        kwargs["accToVecMode"] = _normalize_acc_to_vec_mode(
+            mode, context="textract(..., mode=...)"
+        )
     _pto.TExtractOp(
         unwrap_surface_value(src),
         _coerce_index(index_row, context="textract(index_row)"),
         _coerce_index(index_col, context="textract(index_col)"),
         unwrap_surface_value(dst),
+        **kwargs,
     )
 
 
-def tinsert(src, dst, index_row, index_col):
+def tinsert(src, dst, index_row, index_col, *, fp=None, mode=None):
     """``pto.tinsert ins(src, index_row, index_col) outs(dst)``."""
+    kwargs = {}
+    if fp is not None:
+        kwargs["fp"] = unwrap_surface_value(fp)
+    if mode is not None:
+        kwargs["accToVecMode"] = _normalize_acc_to_vec_mode(
+            mode, context="tinsert(..., mode=...)"
+        )
     _pto.TInsertOp(
         unwrap_surface_value(src),
         _coerce_index(index_row, context="tinsert(index_row)"),
         _coerce_index(index_col, context="tinsert(index_col)"),
         unwrap_surface_value(dst),
+        **kwargs,
     )
 
 

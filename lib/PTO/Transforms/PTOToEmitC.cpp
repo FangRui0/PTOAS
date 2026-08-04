@@ -4933,6 +4933,9 @@ struct PTOTStoreToTSTORE : public OpConversionPattern<pto::TStoreOp> {
     auto *ctx = rewriter.getContext();
     Value src = peelUnrealized(adaptor.getSrc());
     Value dst = peelUnrealized(adaptor.getDst());
+    Value fp;
+    if (op.getFp())
+      fp = peelUnrealized(adaptor.getFp());
     Value preQuantScalar;
     if (op.getPreQuantScalar())
       preQuantScalar = peelUnrealized(adaptor.getPreQuantScalar());
@@ -4941,6 +4944,7 @@ struct PTOTStoreToTSTORE : public OpConversionPattern<pto::TStoreOp> {
     const auto phase = op.getStPhase();
     const auto atomicType = op.getAtomicType();
     const auto reluPreMode = op.getReluPreMode();
+    const bool hasFp = static_cast<bool>(fp);
     const bool hasPreQuantScalar = static_cast<bool>(preQuantScalar);
     const bool phaseNonDefault = phase != pto::STPhase::Unspecified;
     const bool atomicNonDefault = atomicType != pto::AtomicType::AtomicNone;
@@ -4953,6 +4957,34 @@ struct PTOTStoreToTSTORE : public OpConversionPattern<pto::TStoreOp> {
     };
 
     ArrayAttr targs;
+    if (hasFp) {
+      SmallVector<Value, 3> operands{dstArg, src, fp};
+      if (atomicNonDefault || reluNonDefault) {
+        auto srcTokOr = getOpaqueTok(src, "src");
+        auto dstTokOr = getOpaqueTok(dstArg, "dst");
+        auto fpTokOr = getOpaqueTok(fp, "fp");
+        if (failed(srcTokOr) || failed(dstTokOr) || failed(fpTokOr))
+          return failure();
+        targs = rewriter.getArrayAttr({
+            emitc::OpaqueAttr::get(ctx, *srcTokOr),
+            emitc::OpaqueAttr::get(ctx, *dstTokOr),
+            emitc::OpaqueAttr::get(ctx, *fpTokOr),
+            emitc::OpaqueAttr::get(ctx, atomicTypeTok(atomicType)),
+            emitc::OpaqueAttr::get(ctx, reluPreModeTok(reluPreMode)),
+        });
+      } else {
+        targs = ArrayAttr{};
+      }
+
+      rewriter.create<emitc::CallOpaqueOp>(
+          loc, TypeRange{}, "TSTORE_FP", ArrayAttr{}, targs, operands);
+      if (op->getNumResults() == 1)
+        rewriter.replaceOp(op, dst);
+      else
+        rewriter.eraseOp(op);
+      return success();
+    }
+
     // Map op attributes/operands to the exact TSTORE overload family:
     //  1) TSTORE(dst, src)
     //  2) TSTORE<Phase>(dst, src)
@@ -9621,14 +9653,20 @@ struct PTOExtractToEmitC : public OpConversionPattern<pto::TExtractOp> {
     Value preQuantScalar;
     if (op.getPreQuantScalar())
       preQuantScalar = peelUnrealized(adaptor.getPreQuantScalar());
+    Value fp;
+    if (op.getFp())
+      fp = peelUnrealized(adaptor.getFp());
 
     auto modeAttr = op.getAccToVecModeAttr();
+    const bool hasFp = static_cast<bool>(fp);
     const bool hasPreQuantScalar = static_cast<bool>(preQuantScalar);
     const bool hasMode = static_cast<bool>(modeAttr);
     const bool reluNonDefault =
         op.getReluPreMode() != pto::ReluPreMode::NoRelu;
 
     SmallVector<Value, 5> operands{dst, src};
+    if (hasFp)
+      operands.push_back(fp);
     if (hasPreQuantScalar)
       operands.push_back(preQuantScalar);
     operands.push_back(r0);
@@ -9645,6 +9683,13 @@ struct PTOExtractToEmitC : public OpConversionPattern<pto::TExtractOp> {
           emitc::OpaqueAttr::get(ctx, dstOT.getValue().str()),
           emitc::OpaqueAttr::get(ctx, srcOT.getValue().str()),
       };
+      if (hasFp) {
+        auto fpOT = mlir::dyn_cast<emitc::OpaqueType>(fp.getType());
+        if (!fpOT)
+          return rewriter.notifyMatchFailure(
+              op, "textract template lowering expects opaque fp type");
+        args.push_back(emitc::OpaqueAttr::get(ctx, fpOT.getValue().str()));
+      }
       if (hasMode)
         args.push_back(emitc::OpaqueAttr::get(ctx, getAccToVecModeToken(modeAttr.getValue())));
       args.push_back(emitc::OpaqueAttr::get(ctx, getReluPreModeToken(op.getReluPreMode())));
@@ -9652,53 +9697,8 @@ struct PTOExtractToEmitC : public OpConversionPattern<pto::TExtractOp> {
     }
 
     rewriter.create<emitc::CallOpaqueOp>(
-        loc, TypeRange{}, "TEXTRACT", ArrayAttr{}, templateArgs, operands);
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
-struct PTOExtractFPToEmitC : public OpConversionPattern<pto::TExtractFPOp> {
-  using OpConversionPattern<pto::TExtractFPOp>::OpConversionPattern;
-
-  LogicalResult matchAndRewrite(pto::TExtractFPOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-    auto *ctx = rewriter.getContext();
-
-    Value src = peelUnrealized(adaptor.getSrc());
-    Value fp = peelUnrealized(adaptor.getFp());
-    Value dst = peelUnrealized(adaptor.getDst());
-    Value r0 = peelUnrealized(adaptor.getIndexRow());
-    Value c0 = peelUnrealized(adaptor.getIndexCol());
-
-    auto modeAttr = op.getAccToVecModeAttr();
-    const bool hasMode = static_cast<bool>(modeAttr);
-    const bool reluNonDefault =
-        op.getReluPreMode() != pto::ReluPreMode::NoRelu;
-
-    ArrayAttr templateArgs;
-    if (hasMode || reluNonDefault) {
-      auto dstOT = mlir::dyn_cast<emitc::OpaqueType>(dst.getType());
-      auto srcOT = mlir::dyn_cast<emitc::OpaqueType>(src.getType());
-      auto fpOT = mlir::dyn_cast<emitc::OpaqueType>(fp.getType());
-      if (!dstOT || !srcOT || !fpOT)
-        return rewriter.notifyMatchFailure(
-            op, "textract_fp template lowering expects opaque dst/src/fp types");
-      SmallVector<Attribute, 5> args{
-          emitc::OpaqueAttr::get(ctx, dstOT.getValue().str()),
-          emitc::OpaqueAttr::get(ctx, srcOT.getValue().str()),
-          emitc::OpaqueAttr::get(ctx, fpOT.getValue().str()),
-      };
-      if (hasMode)
-        args.push_back(emitc::OpaqueAttr::get(ctx, getAccToVecModeToken(modeAttr.getValue())));
-      args.push_back(emitc::OpaqueAttr::get(ctx, getReluPreModeToken(op.getReluPreMode())));
-      templateArgs = rewriter.getArrayAttr(args);
-    }
-
-    rewriter.create<emitc::CallOpaqueOp>(
-        loc, TypeRange{}, hasMode ? "TEXTRACT" : "TEXTRACT_FP", ArrayAttr{}, templateArgs,
-        ValueRange{dst, src, fp, r0, c0});
+        loc, TypeRange{}, hasFp && !hasMode ? "TEXTRACT_FP" : "TEXTRACT",
+        ArrayAttr{}, templateArgs, operands);
     rewriter.eraseOp(op);
     return success();
   }
@@ -9767,62 +9767,16 @@ struct PTOInsertToEmitC : public OpConversionPattern<pto::TInsertOp> {
       templateArgs = rewriter.getArrayAttr(args);
     }
 
+    if (hasFp && !hasMode && !reluNonDefault)
+      templateArgs = ArrayAttr{};
+
     rewriter.create<emitc::CallOpaqueOp>(
-        loc, TypeRange{}, "TINSERT", ArrayAttr{}, templateArgs, operands);
+        loc, TypeRange{}, hasFp && !hasMode ? "TINSERT_FP" : "TINSERT",
+        ArrayAttr{}, templateArgs, operands);
     rewriter.eraseOp(op);
     return success();
   }
 };
-
-struct PTOInsertFPToEmitC : public OpConversionPattern<pto::TInsertFPOp> {
-  using OpConversionPattern<pto::TInsertFPOp>::OpConversionPattern;
-
-  LogicalResult matchAndRewrite(pto::TInsertFPOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-    auto *ctx = rewriter.getContext();
-
-    Value src = peelUnrealized(adaptor.getSrc());
-    Value fp = peelUnrealized(adaptor.getFp());
-    Value dst = peelUnrealized(adaptor.getDst());
-    Value r0 = peelUnrealized(adaptor.getIndexRow());
-    Value c0 = peelUnrealized(adaptor.getIndexCol());
-
-    auto modeAttr = op.getAccToVecModeAttr();
-    const bool hasMode = static_cast<bool>(modeAttr);
-    const bool reluNonDefault =
-        op.getReluPreMode() != pto::ReluPreMode::NoRelu;
-
-    ArrayAttr templateArgs = ArrayAttr{};
-    if (hasMode || reluNonDefault) {
-      auto dstOT = mlir::dyn_cast<emitc::OpaqueType>(dst.getType());
-      auto srcOT = mlir::dyn_cast<emitc::OpaqueType>(src.getType());
-      auto fpOT = mlir::dyn_cast<emitc::OpaqueType>(fp.getType());
-      if (!dstOT || !srcOT || !fpOT)
-        return rewriter.notifyMatchFailure(
-            op, "tinsert_fp template lowering expects opaque dst/src/fp types");
-      SmallVector<Attribute, 5> args{
-          emitc::OpaqueAttr::get(ctx, dstOT.getValue().str()),
-          emitc::OpaqueAttr::get(ctx, srcOT.getValue().str()),
-          emitc::OpaqueAttr::get(ctx, fpOT.getValue().str()),
-      };
-      if (hasMode)
-        args.push_back(emitc::OpaqueAttr::get(ctx, getAccToVecModeToken(modeAttr.getValue())));
-      args.push_back(emitc::OpaqueAttr::get(ctx, getReluPreModeToken(op.getReluPreMode())));
-      templateArgs = rewriter.getArrayAttr(args);
-    }
-
-    rewriter.create<emitc::CallOpaqueOp>(
-        loc, TypeRange{}, hasMode ? "TINSERT" : "TINSERT_FP", ArrayAttr{}, templateArgs,
-        ValueRange{dst, src, fp, r0, c0});
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
-//===----------------------------------------------------------------------===//
-// pto.tfillpad lowering -> TFILLPAD(dst, src)
-//===----------------------------------------------------------------------===//
 
 static StringRef getTFillPadModeToken(pto::TFillPadMode mode) {
   switch (mode) {
@@ -10300,44 +10254,6 @@ struct PTOMovToEmitC : public OpConversionPattern<pto::TMovOp> {
 //===----------------------------------------------------------------------===//
 // PTOConvert.cpp  (add lowering + patterns.add for TMOV_FP DPS/memref op)
 //===----------------------------------------------------------------------===//
-
-struct PTOMovFPToEmitC : public OpConversionPattern<pto::TMovFPOp> {
-  using OpConversionPattern<pto::TMovFPOp>::OpConversionPattern;
-
-  LogicalResult matchAndRewrite(pto::TMovFPOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-    auto *ctx = rewriter.getContext();
-
-    Value dst = peelUnrealized(adaptor.getDst());
-    Value src = peelUnrealized(adaptor.getSrc());
-    Value fp  = peelUnrealized(adaptor.getFp());
-
-    // TMOV_FP<DstTileData, AccTile, FbTile>(dstTileData, cTile, fbTile)
-    ArrayAttr templateArgs;
-    auto dstOT = mlir::dyn_cast<emitc::OpaqueType>(dst.getType());
-    auto srcOT = mlir::dyn_cast<emitc::OpaqueType>(src.getType());
-    auto fpOT  = mlir::dyn_cast<emitc::OpaqueType>(fp.getType());
-    if (dstOT && srcOT && fpOT) {
-      templateArgs = rewriter.getArrayAttr({
-          emitc::OpaqueAttr::get(ctx, dstOT.getValue().str()),
-          emitc::OpaqueAttr::get(ctx, srcOT.getValue().str()),
-          emitc::OpaqueAttr::get(ctx, fpOT.getValue().str()),
-      });
-    } else {
-      templateArgs = ArrayAttr{};
-    }
-
-    SmallVector<Value, 3> operands{dst, src, fp};
-    rewriter.create<emitc::CallOpaqueOp>(
-        loc, TypeRange{}, "TMOV_FP",
-        /*args=*/ArrayAttr{}, /*templateArgs=*/templateArgs,
-        /*operands=*/operands);
-
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
 
 struct PTOQuantToEmitC : public OpConversionPattern<pto::TQuantOp> {
   using OpConversionPattern<pto::TQuantOp>::OpConversionPattern;
@@ -12070,32 +11986,6 @@ struct PTOSqrtSToEmitC : public OpConversionPattern<pto::TSqrtOp> {
 // PTOConvert.cpp  (add lowering + patterns.add for TSTORE_FP DPS/memref op)
 //===----------------------------------------------------------------------===//
 
-struct PTOStoreFPSToEmitC : public OpConversionPattern<pto::TStoreFPOp> {
-  using OpConversionPattern<pto::TStoreFPOp>::OpConversionPattern;
-
-  LogicalResult matchAndRewrite(pto::TStoreFPOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-
-    Value src = peelUnrealized(adaptor.getSrc());
-    Value fp = peelUnrealized(adaptor.getFp());
-    Value dst = peelUnrealized(adaptor.getDst());
-
-    SmallVector<Value, 4> operands{dst, src, fp};
-    rewriter.create<emitc::CallOpaqueOp>(
-        loc, TypeRange{}, "TSTORE_FP",
-        /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
-        /*operands=*/operands);
-
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
-//===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TSUB DPS/memref op)
-//===----------------------------------------------------------------------===//
-
 struct PTOSubSToEmitC : public OpConversionPattern<pto::TSubOp> {
   using OpConversionPattern<pto::TSubOp>::OpConversionPattern;
 
@@ -13369,7 +13259,6 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOXORToEmitC>(typeConverter, ctx);
   patterns.add<PTOReluToEmitC>(typeConverter, ctx);
   patterns.add<PTOScatterToEmitC>(typeConverter, ctx);
-  patterns.add<PTOStoreFPSToEmitC>(typeConverter, ctx);
   patterns.add<PTOSubSSToEmitC>(typeConverter, ctx);
   patterns.add<PTOSqrtSToEmitC>(typeConverter, ctx);
   patterns.add<PTOTTransToEmitC>(typeConverter, ctx);
@@ -13425,12 +13314,10 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOExpandsToEmitC>(typeConverter, ctx);
   patterns.add<PTOOrToEmitC>(typeConverter, ctx);
   patterns.add<PTOPartAddToEmitC>(typeConverter, ctx);
-  patterns.add<PTOExtractToEmitC, PTOExtractFPToEmitC, PTOInsertToEmitC,
-               PTOInsertFPToEmitC>(typeConverter, ctx);
+  patterns.add<PTOExtractToEmitC, PTOInsertToEmitC>(typeConverter, ctx);
   patterns.add<PTOFillPadToEmitC>(typeConverter, ctx);
   patterns.add<PTOGatherToEmitC>(typeConverter, ctx);
   patterns.add<PTOGatherbToEmitC>(typeConverter, ctx);
-  patterns.add<PTOMovFPToEmitC>(typeConverter, ctx);
   patterns.add<PTOQuantToEmitC,
                PTOQuantMxToEmitC>(typeConverter, ctx);
   patterns.add<PTODequantToEmitC>(typeConverter, ctx);

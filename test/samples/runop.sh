@@ -1036,7 +1036,7 @@ PY
 
     if [[ "$base" == "extract_fp" ]]; then
       if ! grep -Fq "TEXTRACT_FP(" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing TEXTRACT_FP() lowering for pto.textract_fp"
+        echo -e "${A}(${base}.py)\tFAIL\tmissing TEXTRACT_FP() lowering for pto.textract fp form"
         overall=1
         continue
       fi
@@ -1044,7 +1044,7 @@ PY
 
     if [[ "$base" == "tinsert_fp" ]]; then
       if ! grep -Fq "TINSERT_FP(" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing TINSERT_FP() lowering for pto.tinsert_fp"
+        echo -e "${A}(${base}.py)\tFAIL\tmissing TINSERT_FP() lowering for pto.tinsert fp form"
         overall=1
         continue
       fi

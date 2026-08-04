@@ -704,6 +704,29 @@ class VectorCubeSurfaceTest(unittest.TestCase):
             (src, "idx:textract(index_row):7", "idx:textract(index_col):11", dst),
         )
         self.assertEqual(coerce_index.call_count, 2)
+
+    def test_tile_fp_forms_dispatch_through_unified_ops(self):
+        src = object()
+        dst = object()
+        fp = object()
+
+        with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_ops, "_is_partition_tensor_view", return_value=True), \
+             patch.object(_ops, "_coerce_index", side_effect=lambda value, *, context: value), \
+             patch.object(_ops._pto, "TStoreOp") as tstore_op, \
+             patch.object(_ops._pto, "TMovOp") as tmov_op, \
+             patch.object(_ops._pto, "TExtractOp") as textract_op, \
+             patch.object(_ops._pto, "TInsertOp") as tinsert_op:
+            pto.tile.store(src, dst, fp=fp)
+            pto.tile.mov(src, dst, fp=fp)
+            pto.tile.extract(src, dst, 3, 5, fp=fp)
+            pto.tile.insert(src, dst, 3, 5, fp=fp)
+
+        tstore_op.assert_called_once_with(None, src, dst, fp=fp)
+        tmov_op.assert_called_once_with(None, src, dst, fp=fp)
+        textract_op.assert_called_once_with(src, 3, 5, dst, fp=fp)
+        tinsert_op.assert_called_once_with(src, 3, 5, dst, fp=fp)
+
     def test_sync_event_id_rejects_out_of_range_static_values(self):
         cases = [
             (_ops.set_flag, ("MTE2", "V"), {"event_id": 8}, "set_flag(..., event_id=...)"),

@@ -81,9 +81,9 @@ class _TileNamespace:
         return _ops.tload(part, tile)
 
     @staticmethod
-    def store(tile, dst, *, offsets=None, sizes=None):
+    def store(tile, dst, *, offsets=None, sizes=None, fp=None):
         if offsets is None and sizes is None and _ops._is_partition_tensor_view(dst):
-            return _ops.tstore(tile, dst)
+            return _ops.tstore(tile, dst, fp=fp)
         part = _ops._tile_transfer_partition(
             dst,
             tile,
@@ -91,7 +91,7 @@ class _TileNamespace:
             sizes=sizes,
             context="tile.store(...)",
         )
-        return _ops.tstore(tile, part)
+        return _ops.tstore(tile, part, fp=fp)
 
     add = staticmethod(_ops.tadd)
     addrelu = staticmethod(_ops.taddrelu)
