@@ -2410,8 +2410,16 @@ static FailureOr<StringRef> buildPstuCallee(MLIRContext *context, pto::PstuOp op
   return failure();
 }
 
-static StringRef buildVstusCallee(MLIRContext *context) {
-  return StringAttr::get(context, "llvm.hivm.vstus").getValue();
+static FailureOr<StringRef> buildVstusCallee(MLIRContext *context,
+                                              Type valueType) {
+  std::string vec =
+      getMemoryElementTypeFragment(getElementTypeFromVectorLike(valueType));
+  auto lanes = getElementCountFromVectorLike(valueType);
+  if (vec.empty() || !lanes)
+    return failure();
+  return StringAttr::get(context, "llvm.hivm.vstus.v" +
+                                      std::to_string(*lanes) + vec)
+      .getValue();
 }
 
 static FailureOr<StringRef> buildVstusPostCallee(MLIRContext *context,
@@ -7512,7 +7520,8 @@ public:
                                          "unexpected converted vstus operand/result types");
     }
 
-    FailureOr<StringRef> calleeName = buildVstusCallee(op.getContext());
+    FailureOr<StringRef> calleeName =
+        buildVstusCallee(op.getContext(), op.getValue().getType());
     if (usePostIntrinsic)
       calleeName =
           buildVstusPostCallee(op.getContext(), op.getValue().getType());

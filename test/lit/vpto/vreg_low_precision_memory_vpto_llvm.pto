@@ -95,7 +95,8 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 // CHECK: call <32 x i8> @llvm.hivm.vldas
 // CANN: call { <256 x i8>, <32 x i8>, ptr addrspace(6) } @llvm.hivm.vldus.v256s8
 // BETA: call { <256 x i8>, <32 x i8>, ptr addrspace(6) } @llvm.hivm.vldus.v256hif8
-// CHECK: call <32 x i8> @llvm.hivm.vstus
+// CANN: call <32 x i8> @llvm.hivm.vstus.v256s8
+// BETA: call <32 x i8> @llvm.hivm.vstus.v256hif8
 // CHECK: call <32 x i8> @llvm.hivm.vstur
 // CHECK: call void @llvm.hivm.vstar
 
