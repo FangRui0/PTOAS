@@ -35,6 +35,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
 #include <unordered_map>
 
 namespace ptobc {
@@ -55,6 +56,14 @@ constexpr uint8_t kCmpPredicateSltEncoding = 2;
 constexpr uint8_t kCmpPredicateSleEncoding = 3;
 constexpr uint8_t kCmpPredicateSgtEncoding = 4;
 constexpr uint8_t kCmpPredicateSgeEncoding = 5;
+constexpr uint16_t kTExtractOpcode = 0x1021;
+constexpr uint16_t kTExtractFpWireOpcode = 0x1022;
+constexpr uint16_t kTInsertOpcode = 0x102D;
+constexpr uint16_t kTInsertFpWireOpcode = 0x102E;
+constexpr uint16_t kTMovOpcode = 0x1038;
+constexpr uint16_t kTMovFpWireOpcode = 0x1039;
+constexpr uint16_t kTStoreOpcode = 0x1065;
+constexpr uint16_t kTStoreFpWireOpcode = 0x1066;
 
 using NamedAttributeVector =
     llvm::SmallVector<mlir::NamedAttribute, kNamedAttributeInlineCapacity>;
@@ -74,6 +83,15 @@ static bool shouldEncodeViaGenericV0CompatibilityShim(mlir::Operation &op) {
     return static_cast<bool>(tci.getTmp());
   if (auto trowexpandadd = llvm::dyn_cast<mlir::pto::TRowExpandAddOp>(&op))
     return static_cast<bool>(trowexpandadd.getTmp());
+  // The compact v0 schemas for these ops predate their optional pre-quant
+  // operands. Keep the shipped fixed payloads unchanged and use the generic
+  // opcode for forms that cannot be represented by those schemas.
+  if (auto textract = llvm::dyn_cast<mlir::pto::TExtractOp>(&op))
+    return static_cast<bool>(textract.getPreQuantScalar());
+  if (auto tinsert = llvm::dyn_cast<mlir::pto::TInsertOp>(&op))
+    return static_cast<bool>(tinsert.getPreQuantScalar());
+  if (auto tmov = llvm::dyn_cast<mlir::pto::TMovOp>(&op))
+    return static_cast<bool>(tmov.getPreQuantScalar());
   if (llvm::isa<mlir::pto::CmoCacheInvalidOp, mlir::pto::FenceBarrierAllOp>(
           &op))
     return true;
@@ -89,6 +107,39 @@ static bool shouldEncodeViaGenericV0CompatibilityShim(mlir::Operation &op) {
   if (auto pop = llvm::dyn_cast<mlir::pto::TPopOp>(&op))
     return static_cast<bool>(pop.getAivSubblockid());
   return false;
+}
+
+static std::optional<uint16_t>
+getLegacyFpWireOpcode(mlir::Operation &op) {
+  if (auto textract = llvm::dyn_cast<mlir::pto::TExtractOp>(&op))
+    return textract.getFp() ? std::optional<uint16_t>(kTExtractFpWireOpcode)
+                            : std::nullopt;
+  if (auto tinsert = llvm::dyn_cast<mlir::pto::TInsertOp>(&op))
+    return tinsert.getFp() ? std::optional<uint16_t>(kTInsertFpWireOpcode)
+                           : std::nullopt;
+  if (auto tmov = llvm::dyn_cast<mlir::pto::TMovOp>(&op))
+    return tmov.getFp() ? std::optional<uint16_t>(kTMovFpWireOpcode)
+                        : std::nullopt;
+  if (auto tstore = llvm::dyn_cast<mlir::pto::TStoreOp>(&op))
+    return tstore.getFp() ? std::optional<uint16_t>(kTStoreFpWireOpcode)
+                          : std::nullopt;
+  return std::nullopt;
+}
+
+static bool omitsDerivedOperandSegmentsInV0(uint16_t opcode) {
+  switch (opcode) {
+  case kTExtractOpcode:
+  case kTExtractFpWireOpcode:
+  case kTInsertOpcode:
+  case kTInsertFpWireOpcode:
+  case kTMovOpcode:
+  case kTMovFpWireOpcode:
+  case kTStoreOpcode:
+  case kTStoreFpWireOpcode:
+    return true;
+  default:
+    return false;
+  }
 }
 
 static uint64_t internType(PTOBCFile& f, mlir::Type t) {
@@ -553,6 +604,41 @@ void Encoder::encodeKnownOpOperands(
     writeULEB128(getValueId(tscatter.getDst()), out.bytes);
     return true;
   };
+  auto emitLegacyFpOperands = [&]() {
+    auto emit = [&](llvm::ArrayRef<mlir::Value> operands) {
+      for (mlir::Value value : operands)
+        writeULEB128(getValueId(value), out.bytes);
+    };
+    switch (variantInfo.opcode) {
+    case kTExtractFpWireOpcode: {
+      auto fpOp = llvm::cast<mlir::pto::TExtractOp>(&op);
+      emit({fpOp.getSrc(), fpOp.getFp(), fpOp.getIndexRow(), fpOp.getIndexCol(),
+            fpOp.getDst()});
+      return true;
+    }
+    case kTInsertFpWireOpcode: {
+      auto fpOp = llvm::cast<mlir::pto::TInsertOp>(&op);
+      emit({fpOp.getSrc(), fpOp.getFp(), fpOp.getIndexRow(), fpOp.getIndexCol(),
+            fpOp.getDst()});
+      return true;
+    }
+    case kTMovFpWireOpcode: {
+      auto fpOp = llvm::cast<mlir::pto::TMovOp>(&op);
+      emit({fpOp.getSrc(), fpOp.getFp(), fpOp.getDst()});
+      return true;
+    }
+    case kTStoreFpWireOpcode: {
+      auto fpOp = llvm::cast<mlir::pto::TStoreOp>(&op);
+      emit({fpOp.getSrc(), fpOp.getFp(), fpOp.getDst()});
+      return true;
+    }
+    default:
+      return false;
+    }
+  };
+
+  if (emitLegacyFpOperands())
+    return;
 
   switch (info.operand_mode) {
   case 0x00:
@@ -604,6 +690,8 @@ void Encoder::encodeKnownOp(mlir::Operation &op, Buffer &out,
   out.appendU16LE(variantInfo.opcode);
   mlir::DictionaryAttr dict = op.getAttrDictionary();
   dict = stripKnownImmediateAttrs(op.getContext(), dict, info);
+  if (omitsDerivedOperandSegmentsInV0(variantInfo.opcode))
+    dict = stripAttrs(op.getContext(), dict, {"operandSegmentSizes"});
   // The assembly printer omits default pipe ids on transfer/free ops. Keep v0
   // byte roundtrips stable by using the same representation while encoding.
   dict = dropDefaultZeroPipeIdForV0Encoding(op, dict);
@@ -684,6 +772,17 @@ void Encoder::encodeOp(mlir::Operation& op, Buffer& out) {
 
   if (shouldEncodeViaGenericV0CompatibilityShim(op)) {
     encodeGenericOp(op, out);
+    return;
+  }
+
+  if (auto opcode = getLegacyFpWireOpcode(op)) {
+    auto variantInfo =
+        ptobc::v0::OpcodeAndVariant{*opcode, /*hasVariant=*/0, /*variant=*/0};
+    const auto *info = ptobc::v0::lookupByOpcode(*opcode);
+    if (!info)
+      throw std::runtime_error("missing legacy FP v0 opcode schema for op: " +
+                               fullName.str());
+    encodeKnownOp(op, out, *info, variantInfo);
     return;
   }
 
