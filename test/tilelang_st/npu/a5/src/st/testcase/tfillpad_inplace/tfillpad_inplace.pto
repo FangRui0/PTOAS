@@ -13,8 +13,9 @@
 // PadValue encoding: 0=Null, 1=Zero, 2=Max, 3=Min
 // Case 5: float, 260x16, valid=260x7, FillPad=Max (pad=2)
 //
-// After filling the physical padding in place, set the runtime valid shape to
-// the full tile extent so tstore writes the filled columns too.
+// The source and destination tile handles share UB address 0, matching the
+// PTO-ISA Case 5 calling convention. The source keeps the 260x7 valid shape;
+// the destination has the full 260x16 shape consumed by tstore.
 
 module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
   // ========== Float, 260x16 physical, src valid 260x7 ==========
@@ -49,22 +50,22 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
       sizes = [%c1, %c1, %c1, %c260, %c16]
       : !pto.tensor_view<1x1x1x260x16xf32> -> !pto.partition_tensor_view<1x1x1x260x16xf32>
 
-    // Single tile buffer in UB space at address 0.
-    %tile_buf = pto.alloc_tile addr = %c0_i64 valid_row = %c260 valid_col = %c7
-      : !pto.tile_buf<loc=vec, dtype=f32, rows=260, cols=16, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=2>
+    // Distinct tile handles alias the same UB storage. This mirrors
+    // vecTile/vecTileP in the PTO-ISA reference implementation.
+    %src_tile = pto.alloc_tile addr = %c0_i64 valid_row = %c260 valid_col = %c7
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=260, cols=16, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=3>
+    %dst_tile = pto.alloc_tile addr = %c0_i64
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=260, cols=16, v_row=260, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=2>
 
     // Load only the valid 260x7 region.
     pto.tload ins(%src_part : !pto.partition_tensor_view<1x1x1x260x7xf32>)
-              outs(%tile_buf : !pto.tile_buf<loc=vec, dtype=f32, rows=260, cols=16, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=2>)
+              outs(%src_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=260, cols=16, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=3>)
 
-    pto.tfillpad ins(%tile_buf : !pto.tile_buf<loc=vec, dtype=f32, rows=260, cols=16, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=2>)
-                 outs(%tile_buf : !pto.tile_buf<loc=vec, dtype=f32, rows=260, cols=16, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=2>)
+    pto.tfillpad ins(%src_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=260, cols=16, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=3>)
+                 outs(%dst_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=260, cols=16, v_row=260, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=2>)
                  {mode = #pto.tfillpad_mode<in_place>}
 
-    pto.set_validshape %tile_buf, %c260, %c16
-      : !pto.tile_buf<loc=vec, dtype=f32, rows=260, cols=16, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=2>
-
-    pto.tstore ins(%tile_buf : !pto.tile_buf<loc=vec, dtype=f32, rows=260, cols=16, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=2>)
+    pto.tstore ins(%dst_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=260, cols=16, v_row=260, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=2>)
                outs(%dst_part : !pto.partition_tensor_view<1x1x1x260x16xf32>)
     return
   }

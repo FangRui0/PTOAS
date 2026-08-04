@@ -11,7 +11,7 @@
 """Generate golden data for tfillpad_inplace test cases.
 
 For tfillpad_inplace:
-  - Only one tile, valid_shape smaller than tile shape
+  - Source and destination tile handles alias the same UB storage
   - Input: full tile shape (rows x cols), random values in valid region, zeros in padding
   - Golden: full tile shape with valid region copied and padding filled with MAX (PadValue.Max)
 """
