@@ -1,18 +1,5 @@
 # PTOAS (PTO Assembler & Optimizer)
 
-## 未发布
-
-### PTO IR 接口调整
-
-- `pto.tfillpad_inplace` 和 `pto.tfillpad_expand` 已整合到
-  `pto.tfillpad`；通过 `mode` 选择行为，默认值为 `normal`。
-- `pto.textract_fp`、`pto.tinsert_fp`、`pto.tmov.fp` 和
-  `pto.tstore_fp` 已移除。请改用 `pto.textract`、`pto.tinsert`、
-  `pto.tmov` 和 `pto.tstore` 的可选 `fp` operand。旧文本 PTO IR
-  不会自动迁移，需要在升级时替换 op 名称并按新语法传入 `fp`。
-- PTO-BC v0 保留上述 FP op 的历史 opcode 作为 wire 兼容别名；已有
-  `.ptobc` 文件可由新版 decoder 读取并转换为统一后的 PTO IR。
-
 ## 版本
 - 版本号：v0.51
 - 发布日期：2026-02-14
