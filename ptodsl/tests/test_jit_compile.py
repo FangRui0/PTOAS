@@ -2391,6 +2391,28 @@ def public_surface_exports_probe(
         memory_space=pto.MemorySpace.RIGHT,
         valid_shape=[16, 16],
     )
+    pto.load_cbuf_to_ca(
+        lhs_tile.as_ptr(),
+        lhs_l0a.as_ptr(),
+        4,
+        0,
+        4,
+        16,
+        16,
+        4,
+        transpose=True,
+    )
+    pto.load_cbuf_to_cb(
+        rhs_tile.as_ptr(),
+        rhs_l0b.as_ptr(),
+        4,
+        0,
+        4,
+        16,
+        16,
+        4,
+        transpose=True,
+    )
     lhs_l0a_mx = pto.alloc_tile(
         shape=[16, 32],
         dtype=pto.f8e4m3,
@@ -3757,6 +3779,8 @@ def main() -> None:
         "mte_gm_l1_frac",
         "mte_l1_bt",
         "mte_l1_fb",
+        "load_cbuf_to_ca",
+        "load_cbuf_to_cb",
         "vldsx2",
         "vldas",
         "vldus",
@@ -6813,6 +6837,17 @@ def main() -> None:
     expect("pto.vsstb" in vsstb_post_update_surface_text, "vsstb(..., post_update=ON) should still lower through pto.vsstb on the current VPTO IR")
     expect("-> !pto.ptr<f32, ub>" in vsstb_post_update_surface_text, "vsstb(..., post_update=ON) should request the updated destination pointer result")
     expect("pto.mte_l1_l0b" in public_surface_text, "mte_l1_l0b(...) should lower to pto.mte_l1_l0b")
+    expect(public_surface_text.count("pto.load_cbuf_to_ca") == 1, "load_cbuf_to_ca(...) should lower directly to pto.load_cbuf_to_ca")
+    expect(public_surface_text.count("pto.load_cbuf_to_cb") == 1, "load_cbuf_to_cb(...) should lower directly to pto.load_cbuf_to_cb")
+    explicit_ca_controls = (
+        r"pto\.load_cbuf_to_ca .*%c4_i64(?:_\d+)?, %c0_i64(?:_\d+)?, "
+        r"%c4_i64(?:_\d+)?, %c16_i64(?:_\d+)?, "
+        r"%c16_i64(?:_\d+)?, %c4_i64(?:_\d+)? \{transpose = true\}"
+    )
+    expect(
+        re.search(explicit_ca_controls, public_surface_text) is not None,
+        "explicit L1-to-L0 controls should preserve independent source and destination strides",
+    )
     expect("pto.mte_l1_l0a_mx" in public_surface_text, "mte_l1_l0a_mx(...) should lower to pto.mte_l1_l0a_mx")
     expect("pto.mte_l1_l0b_mx" in public_surface_text, "mte_l1_l0b_mx(...) should lower to pto.mte_l1_l0b_mx")
     expect(

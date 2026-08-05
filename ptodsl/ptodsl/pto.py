@@ -127,6 +127,7 @@ from ._ops import (             # noqa: F401
     set_atomic_add, set_atomic_max, set_atomic_min, set_atomic_none,
     set_atomic_f32, set_atomic_f16, set_atomic_bf16,
     set_atomic_s32, set_atomic_s16, set_atomic_s8,
+    load_cbuf_to_ca, load_cbuf_to_cb,
     mte_l1_l0a, mte_l1_l0b, mte_l1_l0a_mx, mte_l1_l0b_mx,
     mte_l0c_l1, mte_l0c_gm, mte_l0c_ub,
     mad, mad_acc, mad_bias, mad_mx, mad_mx_acc, mad_mx_bias,

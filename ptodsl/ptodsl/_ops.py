@@ -5276,6 +5276,60 @@ def mem_bar(barrier_type):
     _pto.MemBarOp(kind=_membar_attr(barrier_name))
 
 
+@_explicit_mode_only("pto.load_cbuf_to_ca(...)")
+def load_cbuf_to_ca(
+    source,
+    destination,
+    m_start,
+    k_start,
+    m_step,
+    k_step,
+    src_stride,
+    dst_stride,
+    *,
+    transpose=False,
+):
+    """``pto.load_cbuf_to_ca`` – explicit-control L1-to-L0A load."""
+    _pto.LoadCbufToCaOp(
+        unwrap_surface_value(source),
+        unwrap_surface_value(destination),
+        _coerce_i64(m_start, context="load_cbuf_to_ca m_start"),
+        _coerce_i64(k_start, context="load_cbuf_to_ca k_start"),
+        _coerce_i64(m_step, context="load_cbuf_to_ca m_step"),
+        _coerce_i64(k_step, context="load_cbuf_to_ca k_step"),
+        _coerce_i64(src_stride, context="load_cbuf_to_ca src_stride"),
+        _coerce_i64(dst_stride, context="load_cbuf_to_ca dst_stride"),
+        transpose=transpose,
+    )
+
+
+@_explicit_mode_only("pto.load_cbuf_to_cb(...)")
+def load_cbuf_to_cb(
+    source,
+    destination,
+    m_start,
+    k_start,
+    m_step,
+    k_step,
+    src_stride,
+    dst_stride,
+    *,
+    transpose=False,
+):
+    """``pto.load_cbuf_to_cb`` – explicit-control L1-to-L0B load."""
+    _pto.LoadCbufToCbOp(
+        unwrap_surface_value(source),
+        unwrap_surface_value(destination),
+        _coerce_i64(m_start, context="load_cbuf_to_cb m_start"),
+        _coerce_i64(k_start, context="load_cbuf_to_cb k_start"),
+        _coerce_i64(m_step, context="load_cbuf_to_cb m_step"),
+        _coerce_i64(k_step, context="load_cbuf_to_cb k_step"),
+        _coerce_i64(src_stride, context="load_cbuf_to_cb src_stride"),
+        _coerce_i64(dst_stride, context="load_cbuf_to_cb dst_stride"),
+        transpose=transpose,
+    )
+
+
 @_explicit_mode_only("pto.mte_l1_l0a(...)")
 def mte_l1_l0a(
     source,
