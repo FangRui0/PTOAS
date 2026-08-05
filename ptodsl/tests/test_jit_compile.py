@@ -2142,16 +2142,16 @@ def public_cube_surface_probe(
     pto.mte_l1_l0a(
         lhs_tile.as_ptr(),
         lhs_l0a.as_ptr(),
-        m,
-        k,
+        m=m,
+        k=k,
         start_row=start_row,
         start_col=start_col,
     )
     pto.mte_l1_l0b(
         rhs_tile.as_ptr(),
         rhs_l0b.as_ptr(),
-        k,
-        n,
+        k=k,
+        n=n,
         start_row=start_col,
         start_col=start_row,
         transpose=True,

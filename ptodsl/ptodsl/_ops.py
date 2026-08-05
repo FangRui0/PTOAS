@@ -5280,34 +5280,30 @@ def mem_bar(barrier_type):
 def mte_l1_l0a(
     source,
     destination,
-    m_start,
-    k_start,
-    m_step=None,
-    k_step=None,
-    src_stride=None,
-    dst_stride=None,
-    *,
+    m,
+    k,
+    *explicit_controls,
     start_row=0,
     start_col=0,
     transpose=False,
 ):
     """``pto.mte_l1_l0a`` – structured or explicit-control L1-to-L0A load."""
-    explicit_controls = (m_step, k_step, src_stride, dst_stride)
-    if any(value is not None for value in explicit_controls):
-        if any(value is None for value in explicit_controls):
+    if explicit_controls:
+        if len(explicit_controls) != 4:
             raise TypeError(
-                "mte_l1_l0a(...) explicit control requires m_step, k_step, "
-                "src_stride, and dst_stride together"
+                "mte_l1_l0a(...) explicit control requires m_start, k_start, "
+                "m_step, k_step, src_stride, and dst_stride"
             )
         if start_row != 0 or start_col != 0:
             raise TypeError(
                 "mte_l1_l0a(...) explicit control does not accept start_row or start_col"
             )
+        m_step, k_step, src_stride, dst_stride = explicit_controls
         _pto.LoadCbufToCaOp(
             unwrap_surface_value(source),
             unwrap_surface_value(destination),
-            _coerce_i64(m_start, context="mte_l1_l0a m_start"),
-            _coerce_i64(k_start, context="mte_l1_l0a k_start"),
+            _coerce_i64(m, context="mte_l1_l0a m_start"),
+            _coerce_i64(k, context="mte_l1_l0a k_start"),
             _coerce_i64(m_step, context="mte_l1_l0a m_step"),
             _coerce_i64(k_step, context="mte_l1_l0a k_step"),
             _coerce_i64(src_stride, context="mte_l1_l0a src_stride"),
@@ -5318,8 +5314,8 @@ def mte_l1_l0a(
     _pto.MteL1L0aOp(
         unwrap_surface_value(source),
         unwrap_surface_value(destination),
-        _coerce_i64(m_start, context="mte_l1_l0a m"),
-        _coerce_i64(k_start, context="mte_l1_l0a k"),
+        _coerce_i64(m, context="mte_l1_l0a m"),
+        _coerce_i64(k, context="mte_l1_l0a k"),
         _coerce_i64(start_row, context="mte_l1_l0a start_row"),
         _coerce_i64(start_col, context="mte_l1_l0a start_col"),
         transpose=transpose,
@@ -5330,34 +5326,30 @@ def mte_l1_l0a(
 def mte_l1_l0b(
     source,
     destination,
-    m_start,
-    k_start,
-    m_step=None,
-    k_step=None,
-    src_stride=None,
-    dst_stride=None,
-    *,
+    k,
+    n,
+    *explicit_controls,
     start_row=0,
     start_col=0,
     transpose=False,
 ):
     """``pto.mte_l1_l0b`` – structured or explicit-control L1-to-L0B load."""
-    explicit_controls = (m_step, k_step, src_stride, dst_stride)
-    if any(value is not None for value in explicit_controls):
-        if any(value is None for value in explicit_controls):
+    if explicit_controls:
+        if len(explicit_controls) != 4:
             raise TypeError(
-                "mte_l1_l0b(...) explicit control requires m_step, k_step, "
-                "src_stride, and dst_stride together"
+                "mte_l1_l0b(...) explicit control requires m_start, k_start, "
+                "m_step, k_step, src_stride, and dst_stride"
             )
         if start_row != 0 or start_col != 0:
             raise TypeError(
                 "mte_l1_l0b(...) explicit control does not accept start_row or start_col"
             )
+        m_step, k_step, src_stride, dst_stride = explicit_controls
         _pto.LoadCbufToCbOp(
             unwrap_surface_value(source),
             unwrap_surface_value(destination),
-            _coerce_i64(m_start, context="mte_l1_l0b m_start"),
-            _coerce_i64(k_start, context="mte_l1_l0b k_start"),
+            _coerce_i64(k, context="mte_l1_l0b m_start"),
+            _coerce_i64(n, context="mte_l1_l0b k_start"),
             _coerce_i64(m_step, context="mte_l1_l0b m_step"),
             _coerce_i64(k_step, context="mte_l1_l0b k_step"),
             _coerce_i64(src_stride, context="mte_l1_l0b src_stride"),
@@ -5368,8 +5360,8 @@ def mte_l1_l0b(
     _pto.MteL1L0bOp(
         unwrap_surface_value(source),
         unwrap_surface_value(destination),
-        _coerce_i64(m_start, context="mte_l1_l0b k"),
-        _coerce_i64(k_start, context="mte_l1_l0b n"),
+        _coerce_i64(k, context="mte_l1_l0b k"),
+        _coerce_i64(n, context="mte_l1_l0b n"),
         _coerce_i64(start_row, context="mte_l1_l0b start_row"),
         _coerce_i64(start_col, context="mte_l1_l0b start_col"),
         transpose=transpose,
