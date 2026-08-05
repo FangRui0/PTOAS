@@ -35,6 +35,7 @@
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
@@ -146,6 +147,8 @@ static Type convertVPTOType(Type type, Builder &builder) {
     return VectorType::get({256}, builder.getI1Type());
   if (isa<pto::AlignType>(type))
     return VectorType::get({32}, builder.getI8Type());
+  if (isa<pto::StructType>(type))
+    return LLVM::LLVMPointerType::get(builder.getContext());
   if (auto ptrType = dyn_cast<pto::PtrType>(type)) {
     return LLVM::LLVMPointerType::get(
         builder.getContext(),
@@ -180,7 +183,15 @@ static unsigned getNaturalByteAlignment(Type type) {
 }
 
 static bool hasVPTOConvertibleType(Type type) {
-  return isa<pto::VRegType, pto::MaskType, pto::AlignType, pto::PtrType>(type);
+  if (!type)
+    return false;
+  if (isa<pto::VRegType, pto::MaskType, pto::AlignType, pto::PtrType,
+          pto::StructType>(type) ||
+      pto::isPTOLowPrecisionType(type))
+    return true;
+  if (auto vecType = dyn_cast<VectorType>(type))
+    return hasVPTOConvertibleType(vecType.getElementType());
+  return false;
 }
 
 static bool hasVPTOConvertibleType(TypeRange types) {
@@ -210,6 +221,72 @@ public:
     addTargetMaterialization(materializeVPTOCast);
   }
 };
+
+// Struct values carry the address of stack-local storage. Keep the pointee
+// type local to struct access lowering so the public type conversion remains
+// an opaque LLVM pointer, consistent with other pointer-like PTO handles.
+static LLVM::LLVMStructType getVPTOStructStorageType(pto::StructType structType,
+                                                      Builder &builder) {
+  struct Frame {
+    pto::StructType type;
+    bool materialize;
+  };
+
+  // PTO structs form an acyclic type tree. Build literal LLVM struct types in
+  // explicit post-order so deeply nested legal structs do not consume the C++
+  // call stack during lowering.
+  SmallVector<Frame> worklist{{structType, false}};
+  llvm::DenseMap<pto::StructType, LLVM::LLVMStructType> storageTypes;
+  while (!worklist.empty()) {
+    Frame frame = worklist.pop_back_val();
+    if (!frame.materialize) {
+      worklist.push_back({frame.type, true});
+      for (Type fieldType : frame.type.getFieldTypes()) {
+        if (auto nestedStruct = dyn_cast<pto::StructType>(fieldType))
+          worklist.push_back({nestedStruct, false});
+      }
+      continue;
+    }
+
+    SmallVector<Type> fieldTypes;
+    fieldTypes.reserve(frame.type.getNumFields());
+    for (Type fieldType : frame.type.getFieldTypes()) {
+      if (auto nestedStruct = dyn_cast<pto::StructType>(fieldType)) {
+        fieldTypes.push_back(storageTypes.find(nestedStruct)->second);
+        continue;
+      }
+      fieldTypes.push_back(convertVPTOType(fieldType, builder));
+    }
+    storageTypes[frame.type] =
+        LLVM::LLVMStructType::getLiteral(builder.getContext(), fieldTypes);
+  }
+  return storageTypes.find(structType)->second;
+}
+
+static FailureOr<Value>
+getVPTOStructFieldAddress(ConversionPatternRewriter &rewriter, Location loc,
+                          Value root, pto::StructType rootType,
+                          ArrayRef<int64_t> path) {
+  auto pointerType = LLVM::LLVMPointerType::get(rewriter.getContext());
+  Value address = root;
+  pto::StructType currentType = rootType;
+  for (auto [depth, index] : llvm::enumerate(path)) {
+    if (index < 0 || index >= static_cast<int64_t>(currentType.getNumFields()))
+      return failure();
+    Type storageType = getVPTOStructStorageType(currentType, rewriter);
+    address = rewriter.create<LLVM::GEPOp>(
+        loc, pointerType, storageType, address,
+        ArrayRef<LLVM::GEPArg>{0, static_cast<int32_t>(index)});
+    Type fieldType = currentType.getFieldType(static_cast<unsigned>(index));
+    if (depth + 1 == path.size())
+      continue;
+    auto nestedStruct = dyn_cast<pto::StructType>(fieldType);
+    if (!nestedStruct)
+      return failure();
+    currentType = nestedStruct;
+  }
+  return address;
+}
 
 struct PlannedDecl {
   std::string name;
@@ -1420,6 +1497,17 @@ static std::optional<uint64_t> parseStoreDistImmediate(StringRef dist,
   if (dist == "MRG2CHN_B16")
     return std::optional<uint64_t>(15);
   return std::nullopt;
+}
+
+static bool isOnePointStoreDist(StringRef dist) {
+  return dist == "1PT_B8" || dist == "1PT_B16" || dist == "1PT_B32";
+}
+
+static bool isMaskOnlyUsedByOnePointStores(Value mask) {
+  return !mask.use_empty() && llvm::all_of(mask.getUsers(), [](Operation *user) {
+    auto store = dyn_cast<pto::VstsOp>(user);
+    return store && store.getDist() && isOnePointStoreDist(*store.getDist());
+  });
 }
 
 static std::optional<uint64_t> parseStoreX2DistImmediate(StringRef dist,
@@ -6607,6 +6695,12 @@ public:
     if (failed(this->getTypeConverter()->convertTypes(op->getResultTypes(), resultTypes)))
       return rewriter.notifyMatchFailure(op, "failed to convert pset result types");
 
+    if (isMaskOnlyUsedByOnePointStores(op.getResult())) {
+      auto undef = rewriter.create<LLVM::UndefOp>(op.getLoc(), resultTypes.front());
+      rewriter.replaceOp(op, undef.getResult());
+      return success();
+    }
+
     StringRef calleeName = buildPsetCallee<PsetOp>(op.getContext());
     Value patternValue = rewriter.create<arith::ConstantOp>(
         op.getLoc(), rewriter.getI32IntegerAttr(*pattern));
@@ -6641,6 +6735,12 @@ public:
     SmallVector<Type> resultTypes;
     if (failed(this->getTypeConverter()->convertTypes(op->getResultTypes(), resultTypes)))
       return rewriter.notifyMatchFailure(op, "failed to convert pge result types");
+
+    if (isMaskOnlyUsedByOnePointStores(op.getResult())) {
+      auto undef = rewriter.create<LLVM::UndefOp>(op.getLoc(), resultTypes.front());
+      rewriter.replaceOp(op, undef.getResult());
+      return success();
+    }
 
     StringRef calleeName = buildPgeCallee<PgeOp>(op.getContext());
     Value patternValue = rewriter.create<arith::ConstantOp>(
@@ -7030,8 +7130,13 @@ public:
     Type elementType = getElementTypeFromVectorLike(op.getValue().getType());
     if (!elementType)
       return rewriter.notifyMatchFailure(op, "unsupported vsts element type");
+    Type offsetElementType = elementType;
+    if (auto ptrType = dyn_cast<pto::PtrType>(op.getDestination().getType()))
+      offsetElementType = ptrType.getElementType();
+    else if (auto memrefType = dyn_cast<BaseMemRefType>(op.getDestination().getType()))
+      offsetElementType = memrefType.getElementType();
     auto offsetBytes =
-        convertElementOffsetToBytes(op, adaptor.getOffset(), elementType);
+        convertElementOffsetToBytes(op, adaptor.getOffset(), offsetElementType);
     auto basePtr = dyn_cast<LLVM::LLVMPointerType>(adaptor.getDestination().getType());
     auto dist =
         parseStoreDistImmediate(op.getDist().value_or(""), elementType);
@@ -7066,12 +7171,19 @@ public:
                                                         usePostIntrinsic ? 1 : 0));
     Value value = castToPayloadABI(
         op.getLoc(), adaptor.getValue(), op.getValue().getType(), rewriter);
-    SmallVector<Value> args{value, adaptor.getDestination(),
-                            *offsetBytes, distValue, zero, adaptor.getMask()};
+    Value mask = adaptor.getMask();
+    // The 1PT store forms keep a mask operand in the LLVM ABI, but the
+    // hardware ignores it.  Do not materialize a pset/pge mask solely for
+    // this dead operand; an LLVM undef is sufficient at this boundary.
+    StringRef distToken = op.getDist().value_or("");
+    if (isOnePointStoreDist(distToken))
+      mask = rewriter.create<LLVM::UndefOp>(op.getLoc(), mask.getType());
+    SmallVector<Value> args{value, adaptor.getDestination(), *offsetBytes,
+                            distValue, zero, mask};
     auto funcType = rewriter.getFunctionType(
         TypeRange{value.getType(), adaptor.getDestination().getType(),
                   rewriter.getI32Type(), rewriter.getI32Type(),
-                  rewriter.getI32Type(), adaptor.getMask().getType()},
+                  rewriter.getI32Type(), mask.getType()},
         resultTypes);
     auto call = rewriter.create<func::CallOp>(op.getLoc(), *calleeName,
                                               resultTypes, args);
@@ -9758,6 +9870,87 @@ public:
   }
 };
 
+class ConvertPtoDeclareStructOp final
+    : public OpConversionPattern<pto::DeclareStructOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(pto::DeclareStructOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    (void)adaptor;
+    auto resultType = dyn_cast<LLVM::LLVMPointerType>(
+        getTypeConverter()->convertType(op.getS().getType()));
+    if (!resultType)
+      return rewriter.notifyMatchFailure(op,
+                                         "expected LLVM pointer result type");
+    auto structType = cast<pto::StructType>(op.getS().getType());
+    Type storageType = getVPTOStructStorageType(structType, rewriter);
+    auto parentFunc = op->getParentOfType<func::FuncOp>();
+    if (!parentFunc)
+      return rewriter.notifyMatchFailure(
+          op, "expected struct declaration inside a function");
+
+    // A non-entry alloca is a dynamic stack allocation. Keep one stack slot per
+    // declaration per function invocation even when the declaration is nested
+    // in a loop or a region.
+    Value storage;
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      Block &entryBlock = parentFunc.getBody().front();
+      rewriter.setInsertionPointToStart(&entryBlock);
+      Value one = rewriter.create<LLVM::ConstantOp>(
+          op.getLoc(), rewriter.getI64Type(), rewriter.getIndexAttr(1));
+      storage = rewriter.create<LLVM::AllocaOp>(
+          op.getLoc(), resultType, storageType, one, /*alignment=*/0);
+    }
+    rewriter.replaceOp(op, storage);
+    return success();
+  }
+};
+
+class ConvertPtoStructGetOp final
+    : public OpConversionPattern<pto::StructGetOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(pto::StructGetOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Type resultType = getTypeConverter()->convertType(op.getValue().getType());
+    if (!resultType)
+      return rewriter.notifyMatchFailure(op, "could not convert result type");
+    FailureOr<Value> address = getVPTOStructFieldAddress(
+        rewriter, op.getLoc(), adaptor.getS(),
+        cast<pto::StructType>(op.getS().getType()), op.getPath());
+    if (failed(address))
+      return rewriter.notifyMatchFailure(op, "invalid struct field path");
+    rewriter.replaceOpWithNewOp<LLVM::LoadOp>(
+        op, resultType, *address, getNaturalByteAlignment(resultType));
+    return success();
+  }
+};
+
+class ConvertPtoStructSetOp final
+    : public OpConversionPattern<pto::StructSetOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(pto::StructSetOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    FailureOr<Value> address = getVPTOStructFieldAddress(
+        rewriter, op.getLoc(), adaptor.getS(),
+        cast<pto::StructType>(op.getS().getType()), op.getPath());
+    if (failed(address))
+      return rewriter.notifyMatchFailure(op, "invalid struct field path");
+    rewriter.replaceOpWithNewOp<LLVM::StoreOp>(
+        op, adaptor.getValue(), *address,
+        getNaturalByteAlignment(adaptor.getValue().getType()));
+    return success();
+  }
+};
+
 class ConvertArithSelectOp final : public OpConversionPattern<arith::SelectOp> {
 public:
   ConvertArithSelectOp(TypeConverter &typeConverter, MLIRContext *context)
@@ -10250,6 +10443,137 @@ private:
   LoweringState &state;
 };
 
+static std::string buildLdDevCalleeName(unsigned width) {
+  return "llvm.hivm.LD.DEV.u" + std::to_string(width) + ".GM";
+}
+
+static std::string buildStDevCalleeName(unsigned width) {
+  return "llvm.hivm.ST.DEV.u" + std::to_string(width);
+}
+
+class ConvertPtoLdDevOp final : public OpConversionPattern<pto::PTOLdDevOp> {
+public:
+  ConvertPtoLdDevOp(TypeConverter &typeConverter, MLIRContext *context,
+                    LoweringState &state)
+      : OpConversionPattern<pto::PTOLdDevOp>(typeConverter, context),
+        state(state) {}
+
+  LogicalResult
+  matchAndRewrite(pto::PTOLdDevOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto llvmPtrType = dyn_cast<LLVM::LLVMPointerType>(adaptor.getPtr().getType());
+    if (!llvmPtrType)
+      return rewriter.notifyMatchFailure(op, "expected LLVM pointer operand");
+
+    auto valueType = dyn_cast<IntegerType>(op.getValue().getType());
+    if (!valueType)
+      return rewriter.notifyMatchFailure(op, "expected integer result type");
+
+    Value offset = adaptor.getOffset();
+    if (offset.getType().isIndex())
+      offset = rewriter.create<arith::IndexCastUIOp>(op.getLoc(),
+                                                     rewriter.getI64Type(), offset);
+
+    Type convertedValueType =
+        getTypeConverter()->convertType(op.getValue().getType());
+    if (!convertedValueType)
+      return rewriter.notifyMatchFailure(op,
+                                         "could not convert ld_dev result type");
+
+    Value elemPtr = adaptor.getPtr();
+    if (!matchPattern(offset, m_Zero())) {
+      elemPtr = rewriter.create<LLVM::GEPOp>(
+          op.getLoc(), llvmPtrType,
+          normalizeGEPElementTypeForLLVMLowering(convertedValueType, rewriter),
+          adaptor.getPtr(), ValueRange{offset});
+    }
+
+    FailureOr<Value> gmPtr = reinterpretPointerToAddrSpace(
+        op, elemPtr, static_cast<unsigned>(pto::AddressSpace::GM));
+    if (failed(gmPtr))
+      return rewriter.notifyMatchFailure(op, "failed to map ld_dev GM pointer");
+
+    std::string calleeName = buildLdDevCalleeName(valueType.getWidth());
+    Value intrinsicOffset = getI64Constant(rewriter, op.getLoc(), 0);
+    auto funcType = rewriter.getFunctionType(
+        TypeRange{gmPtr->getType(), rewriter.getI64Type()},
+        TypeRange{rewriter.getI64Type()});
+    auto call = rewriter.create<func::CallOp>(
+        op.getLoc(), calleeName, TypeRange{rewriter.getI64Type()},
+        ValueRange{*gmPtr, intrinsicOffset});
+    state.plannedDecls.push_back(PlannedDecl{calleeName, funcType});
+
+    Value result = call.getResult(0);
+    if (valueType.getWidth() < 64)
+      result = rewriter.create<arith::TruncIOp>(op.getLoc(), convertedValueType,
+                                                result);
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+
+private:
+  LoweringState &state;
+};
+
+class ConvertPtoStDevOp final : public OpConversionPattern<pto::PTOStDevOp> {
+public:
+  ConvertPtoStDevOp(TypeConverter &typeConverter, MLIRContext *context,
+                    LoweringState &state)
+      : OpConversionPattern<pto::PTOStDevOp>(typeConverter, context),
+        state(state) {}
+
+  LogicalResult
+  matchAndRewrite(pto::PTOStDevOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto llvmPtrType = dyn_cast<LLVM::LLVMPointerType>(adaptor.getPtr().getType());
+    if (!llvmPtrType)
+      return rewriter.notifyMatchFailure(op, "expected LLVM pointer operand");
+
+    auto valueType = dyn_cast<IntegerType>(op.getValue().getType());
+    if (!valueType)
+      return rewriter.notifyMatchFailure(op, "expected integer value type");
+
+    Value offset = adaptor.getOffset();
+    if (offset.getType().isIndex())
+      offset = rewriter.create<arith::IndexCastUIOp>(op.getLoc(),
+                                                     rewriter.getI64Type(), offset);
+
+    Value elemPtr = adaptor.getPtr();
+    if (!matchPattern(offset, m_Zero())) {
+      elemPtr = rewriter.create<LLVM::GEPOp>(
+          op.getLoc(), llvmPtrType,
+          normalizeGEPElementTypeForLLVMLowering(adaptor.getValue().getType(),
+                                                  rewriter),
+          adaptor.getPtr(), ValueRange{offset});
+    }
+
+    FailureOr<Value> gmPtr = reinterpretPointerToAddrSpace(
+        op, elemPtr, static_cast<unsigned>(pto::AddressSpace::GM));
+    if (failed(gmPtr))
+      return rewriter.notifyMatchFailure(op, "failed to map st_dev GM pointer");
+
+    Value payload = adaptor.getValue();
+    if (valueType.getWidth() < 64)
+      payload = rewriter.create<arith::ExtUIOp>(op.getLoc(),
+                                                rewriter.getI64Type(), payload);
+
+    std::string calleeName = buildStDevCalleeName(valueType.getWidth());
+    Value intrinsicOffset = getI64Constant(rewriter, op.getLoc(), 0);
+    auto funcType = rewriter.getFunctionType(
+        TypeRange{rewriter.getI64Type(), gmPtr->getType(),
+                  rewriter.getI64Type()},
+        TypeRange{});
+    rewriter.create<func::CallOp>(op.getLoc(), calleeName, TypeRange{},
+                                  ValueRange{payload, *gmPtr, intrinsicOffset});
+    state.plannedDecls.push_back(PlannedDecl{calleeName, funcType});
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  LoweringState &state;
+};
+
 class ConvertVPTOTypedCarrierOp final : public ConversionPattern {
 public:
   ConvertVPTOTypedCarrierOp(TypeConverter &typeConverter, MLIRContext *context)
@@ -10260,17 +10584,41 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     if (isa<pto::CastPtrOp>(op))
       return failure();
+    Type propertyType;
+    if (auto allocaOp = dyn_cast<LLVM::AllocaOp>(op))
+      propertyType = allocaOp.getElemType();
+    else if (auto gepOp = dyn_cast<LLVM::GEPOp>(op))
+      propertyType = gepOp.getElemType();
     if (!hasVPTOConvertibleType(op->getOperandTypes()) &&
-        !hasVPTOConvertibleType(op->getResultTypes()))
+        !hasVPTOConvertibleType(op->getResultTypes()) &&
+        !hasVPTOConvertibleType(propertyType))
       return failure();
     if (op->getNumRegions() != 0)
       return rewriter.notifyMatchFailure(
           op, "region ops with VPTO types are handled structurally");
 
-    FailureOr<Operation *> converted =
-        convertOpResultTypes(op, operands, *typeConverter, rewriter);
-    if (failed(converted))
-      return failure();
+    SmallVector<Type> convertedResultTypes;
+    if (failed(typeConverter->convertTypes(op->getResultTypes(),
+                                           convertedResultTypes)))
+      return rewriter.notifyMatchFailure(op, "failed to convert result types");
+    OperationState state(op->getLoc(), op->getName());
+    state.addOperands(operands);
+    state.addTypes(convertedResultTypes);
+    state.addAttributes(op->getAttrs());
+    state.addSuccessors(op->getSuccessors());
+    state.propertiesAttr = op->getPropertiesAsAttribute();
+    Operation *converted = rewriter.create(state);
+    if (propertyType) {
+      Type convertedPropertyType = typeConverter->convertType(propertyType);
+      if (!convertedPropertyType)
+        return rewriter.notifyMatchFailure(
+            op, "failed to convert LLVM element type");
+      if (auto allocaOp = dyn_cast<LLVM::AllocaOp>(converted))
+        allocaOp.setElemType(convertedPropertyType);
+      else
+        cast<LLVM::GEPOp>(converted).setElemType(convertedPropertyType);
+    }
+    rewriter.replaceOp(op, converted->getResults());
     return success();
   }
 };
@@ -10693,12 +11041,24 @@ static LogicalResult lowerVPTOTypes(ModuleOp module, llvm::raw_ostream &diagOS) 
       });
   target.addIllegalOp<pto::AddPtrOp, pto::CastPtrOp, pto::LoadScalarOp,
                       pto::StoreScalarOp, pto::PTOLoadOp, pto::PTOStoreOp,
-                      pto::PTOLdgOp, pto::PTOStgOp>();
+                      pto::PTOLdgOp, pto::PTOStgOp, pto::PTOLdDevOp,
+                      pto::PTOStDevOp, pto::DeclareStructOp,
+                      pto::StructGetOp, pto::StructSetOp>();
   target.addDynamicallyLegalOp<UnrealizedConversionCastOp>(
       [&](UnrealizedConversionCastOp op) {
         return !hasVPTOConvertibleType(op->getOperandTypes()) &&
                !hasVPTOConvertibleType(op->getResultTypes());
       });
+  target.addDynamicallyLegalOp<LLVM::AllocaOp>([&](LLVM::AllocaOp op) {
+    return typeConverter.isLegal(op->getOperandTypes()) &&
+           typeConverter.isLegal(op->getResultTypes()) &&
+           typeConverter.isLegal(op.getElemType());
+  });
+  target.addDynamicallyLegalOp<LLVM::GEPOp>([&](LLVM::GEPOp op) {
+    return typeConverter.isLegal(op->getOperandTypes()) &&
+           typeConverter.isLegal(op->getResultTypes()) &&
+           typeConverter.isLegal(op.getElemType());
+  });
   target.markUnknownOpDynamicallyLegal([&](Operation *op) {
     return typeConverter.isLegal(op->getOperandTypes()) &&
            typeConverter.isLegal(op->getResultTypes());
@@ -10706,9 +11066,11 @@ static LogicalResult lowerVPTOTypes(ModuleOp module, llvm::raw_ostream &diagOS) 
 
   populateVPTOStructuralTypePatterns(typeConverter, patterns, target);
   patterns.add<ConvertPtoAddPtrOp, ConvertPtoCastPtrOp, ConvertPtoLoadScalarOp,
-               ConvertPtoStoreScalarOp>(typeConverter, context);
+               ConvertPtoStoreScalarOp, ConvertPtoDeclareStructOp,
+               ConvertPtoStructGetOp,
+               ConvertPtoStructSetOp>(typeConverter, context);
   patterns.add<ConvertPtoLoadOp, ConvertPtoStoreOp, ConvertPtoLdgOp,
-               ConvertPtoStgOp>(
+               ConvertPtoStgOp, ConvertPtoLdDevOp, ConvertPtoStDevOp>(
       typeConverter, context, state);
   patterns.add<ConvertArithSelectOp>(typeConverter, context);
   patterns.add<ConvertVPTOUnrealizedCastOp>(typeConverter, context);

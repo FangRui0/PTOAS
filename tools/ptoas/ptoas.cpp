@@ -577,9 +577,10 @@ buildInsertTemplateAttributesOptions(
 
 static llvm::cl::opt<llvm::cl::boolOrDefault> enableOpFusion(
     "enable-op-fusion",
-    llvm::cl::desc("Control A5 tile fusion on level2/level3. Defaults to "
-                   "enabled on A5, disabled on A3. EmitC uses last-use "
-                   "annotation; VPTO uses fusion-region lifecycle."),
+    llvm::cl::desc("Control A5 tile fusion on level2/level3. Disabled by "
+                   "default; pass --enable-op-fusion=true to opt in. EmitC "
+                   "uses last-use annotation; VPTO uses fusion-region "
+                   "lifecycle."),
     llvm::cl::init(llvm::cl::BOU_UNSET));
 
 static llvm::cl::opt<bool> enableUnrollAfterLoopFusion(
@@ -1267,6 +1268,70 @@ static std::unique_ptr<Pass> createNarrowUnusedMultiResultProvenancePass() {
 }
 
 namespace {
+static SmallVector<func::FuncOp> collectSharedPipelineFunctions(ModuleOp module) {
+  SmallVector<func::FuncOp> functions;
+  // Object compilation promotes backend children to top-level compile units.
+  // Preserve recursive traversal only for user-visible IR modes, which retain
+  // the authored container shape for debugging.
+  if (emitMlirIR) {
+    module.walk([&](func::FuncOp funcOp) { functions.push_back(funcOp); });
+  } else {
+    llvm::append_range(functions, module.getOps<func::FuncOp>());
+  }
+  return functions;
+}
+
+struct SerialAutoSyncPass
+    : public PassWrapper<SerialAutoSyncPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(SerialAutoSyncPass)
+
+  enum class Mode { InsertSync, Bufid, BarrierAll, GraphSolver };
+
+  SerialAutoSyncPass(Mode mode, bool enableBufidDebug,
+                     int64_t graphEventIdMax)
+      : mode(mode), enableBufidDebug(enableBufidDebug),
+        graphEventIdMax(graphEventIdMax) {}
+
+  void runOnOperation() override {
+    OpPassManager functionPM(func::FuncOp::getOperationName());
+    switch (mode) {
+    case Mode::InsertSync:
+      functionPM.addPass(pto::createPTOInsertSyncPass());
+      break;
+    case Mode::Bufid: {
+      PTOBufidSyncOptions options;
+      options.enableBufidSyncDebug = enableBufidDebug;
+      functionPM.addPass(pto::createPTOBufidSyncPass(options));
+      break;
+    }
+    case Mode::BarrierAll:
+      functionPM.addPass(pto::createPTOInjectBarrierAllSyncPass());
+      break;
+    case Mode::GraphSolver: {
+      PTOGraphSyncSolverOptions options;
+      options.eventIdNumMax = graphEventIdMax;
+      functionPM.addPass(pto::createPTOGraphSyncSolverPass(options));
+      break;
+    }
+    }
+
+    for (func::FuncOp funcOp :
+         collectSharedPipelineFunctions(getOperation())) {
+      if (failed(runPipeline(functionPM, funcOp))) {
+        signalPassFailure();
+        return;
+      }
+    }
+  }
+
+private:
+  Mode mode;
+  bool enableBufidDebug;
+  int64_t graphEventIdMax;
+};
+} // namespace
+
+namespace {
 struct SerialFrontendPipeLoweringPass
     : public PassWrapper<SerialFrontendPipeLoweringPass,
                          OperationPass<ModuleOp>> {
@@ -1287,7 +1352,8 @@ struct SerialFrontendPipeLoweringPass
     // adaptor allows one function to be verified while another function is
     // still mutating its pipe ops. Keep these two small passes serial so every
     // verifier observes either the complete frontend or complete lowered form.
-    for (func::FuncOp funcOp : getOperation().getOps<func::FuncOp>()) {
+    for (func::FuncOp funcOp :
+         collectSharedPipelineFunctions(getOperation())) {
       if (failed(runPipeline(functionPM, funcOp))) {
         signalPassFailure();
         return;
@@ -2871,6 +2937,7 @@ static void prepareVPTOForEmission(PassManager &pm) {
   kernelModulePM.addPass(pto::createVPTOPtrNormalizePass());
   kernelModulePM.addPass(pto::createVPTOPtrCastCleanupPass());
   kernelModulePM.addPass(pto::createVPTOOptimizeVcvtPass());
+  kernelModulePM.addPass(pto::createVPTOMaskSimplifyPass());
   kernelModulePM.addPass(createReconcileUnrealizedCastsPass());
   kernelModulePM.addNestedPass<func::FuncOp>(
       createVPTOExpandWrapperOpsPass());
@@ -3075,6 +3142,12 @@ int mlir::pto::compilePTOASModule(
     PTOBackend effectiveBackend, PTOASCompileResult &result,
     bool emitVPTOHostStub) {
   result.reset();
+  // Validate stack-local struct provenance before every output path. In
+  // particular, --emit-pto-ir returns before the EmitC validation pass and
+  // VPTO does not use that pass.
+  if (failed(pto::validateStructProvenance(*module)))
+    return 1;
+
   std::string arch = resolveEffectiveTargetArch(*module, context.getArch());
   int argc = context.getArgc();
   char **argv = context.getArgv();
@@ -3115,10 +3188,7 @@ int mlir::pto::compilePTOASModule(
   }
 
   const bool requestedEnableOpFusion = enableOpFusion == llvm::cl::BOU_TRUE;
-  const bool defaultEnableOpFusion =
-      enableOpFusion == llvm::cl::BOU_UNSET && arch == "a5";
-  const bool opFusionEnabled =
-      (requestedEnableOpFusion || defaultEnableOpFusion);
+  const bool opFusionEnabled = requestedEnableOpFusion;
 
   if (requestedEnableOpFusion && arch != "a5") {
     llvm::errs() << "Error: --enable-op-fusion=true requires --pto-arch=a5.\n";
@@ -3420,21 +3490,40 @@ int mlir::pto::compilePTOASModule(
   // `pto.multi_tile_get` operations and keeps their slot identity for alias
   // and event-id analysis.
   // solvers, while BufidSync is A5-only get_buf/rls_buf synchronization.
-  if (enableInsertSync)
-    pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
+  if (enableInsertSync) {
+    if (emitMlirIR)
+      pm.addPass(std::make_unique<SerialAutoSyncPass>(
+          SerialAutoSyncPass::Mode::InsertSync, false, 0));
+    else
+      pm.addNestedPass<func::FuncOp>(pto::createPTOInsertSyncPass());
+  }
   else if (enableBufidSync) {
-    PTOBufidSyncOptions bufidOptions;
-    bufidOptions.enableBufidSyncDebug = enableBufidSyncDebug;
-    pm.addNestedPass<mlir::func::FuncOp>(
-        pto::createPTOBufidSyncPass(bufidOptions));
-  } else if (enableInjectBarrierAllSync)
-    pm.addNestedPass<mlir::func::FuncOp>(
-        pto::createPTOInjectBarrierAllSyncPass());
-  else if (enableGraphSyncSolver) {
-    PTOGraphSyncSolverOptions graphSyncOpts;
-    graphSyncOpts.eventIdNumMax = graphSyncSolverEventIdMax;
-    pm.addNestedPass<mlir::func::FuncOp>(
-        pto::createPTOGraphSyncSolverPass(graphSyncOpts));
+    if (emitMlirIR) {
+      pm.addPass(std::make_unique<SerialAutoSyncPass>(
+          SerialAutoSyncPass::Mode::Bufid, enableBufidSyncDebug, 0));
+    } else {
+      PTOBufidSyncOptions options;
+      options.enableBufidSyncDebug = enableBufidSyncDebug;
+      pm.addNestedPass<func::FuncOp>(pto::createPTOBufidSyncPass(options));
+    }
+  } else if (enableInjectBarrierAllSync) {
+    if (emitMlirIR)
+      pm.addPass(std::make_unique<SerialAutoSyncPass>(
+          SerialAutoSyncPass::Mode::BarrierAll, false, 0));
+    else
+      pm.addNestedPass<func::FuncOp>(
+          pto::createPTOInjectBarrierAllSyncPass());
+  } else if (enableGraphSyncSolver) {
+    if (emitMlirIR) {
+      pm.addPass(std::make_unique<SerialAutoSyncPass>(
+          SerialAutoSyncPass::Mode::GraphSolver, false,
+          graphSyncSolverEventIdMax));
+    } else {
+      PTOGraphSyncSolverOptions options;
+      options.eventIdNumMax = graphSyncSolverEventIdMax;
+      pm.addNestedPass<func::FuncOp>(
+          pto::createPTOGraphSyncSolverPass(options));
+    }
   }
 
   // Materialize each `pto.multi_tile_get` as an addressed `pto.alloc_tile`;

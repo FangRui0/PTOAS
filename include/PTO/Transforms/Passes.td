@@ -345,7 +345,7 @@ def PTONormalizeUncoveredTileSections
 
     This pass is the shared entry point for inferred-section normalization:
     explicit sections remain in place, while uncovered top-level segments that
-    contain tile operations are identified for later wrapping.
+    contain section-relevant operations are identified for later wrapping.
   }];
 
   let constructor = "mlir::pto::createPTONormalizeUncoveredTileSectionsPass()";
@@ -971,9 +971,10 @@ def VMIPreAssignmentCombine
     still exposing direct semantic operations to the later layout and lowering
     passes.
 
-    The pass currently rewrites the semantic pattern
-    `group_broadcast(group_slot_load(...))` into the equivalent
-    `group_broadcast_load` operation.
+    The pass rewrites a `group_load` whose constant row stride equals its
+    logical group size into an ordinary contiguous `load`. It also rewrites
+    the semantic pattern `group_broadcast(group_slot_load(...))` into the
+    equivalent `group_broadcast_load` operation.
   }];
   let constructor = "mlir::pto::createVMIPreAssignmentCombinePass()";
   let dependentDialects = ["mlir::func::FuncDialect",
@@ -1357,6 +1358,20 @@ def VPTOOptimizeVcvt
     pass can then merge duplicate conversions and remove dead masks.
   }];
   let constructor = "mlir::pto::createVPTOOptimizeVcvtPass()";
+  let dependentDialects = ["mlir::pto::PTODialect"];
+}
+
+def VPTOMaskSimplify
+    : Pass<"vpto-mask-simplify", "ModuleOp"> {
+  let summary = "Simplify provably redundant VPTO mask transformations";
+  let description = [{
+    Replaces the two results of `pto.pintlv_b*` and `pto.pdintlv_b*` with
+    their inputs when both inputs are masks produced with the `PAT_ALL`
+    pattern. Interleaving or deinterleaving an all-true predicate cannot change
+    its value, so this removes redundant predicate values before backend
+    emission. Non-uniform masks are intentionally left unchanged.
+  }];
+  let constructor = "mlir::pto::createVPTOMaskSimplifyPass()";
   let dependentDialects = ["mlir::pto::PTODialect"];
 }
 

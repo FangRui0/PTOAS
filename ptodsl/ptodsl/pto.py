@@ -34,7 +34,7 @@ from ._types import (           # noqa: F401
     si8, si16, si32, si64,
     ui8, ui16, ui32, ui64,
     index,
-    ptr, vreg_type, vec_type, mask_type,
+    ptr, vreg_type, vec_type, mask_type, struct_type,
     _resolve,
 )
 from ._builtin_vector import Vec  # noqa: F401
@@ -84,6 +84,7 @@ from ._vmi_namespace import vmi  # noqa: F401
 # ── Operations ────────────────────────────────────────────────────────────────
 from ._ops import (             # noqa: F401
     const,
+    declare_struct, struct_get, struct_set,
     get_op_attr,
     castptr, addptr,
     vlds, vldas, vldus, vldsx2, vsts, vstsx2,
@@ -157,7 +158,7 @@ from ._ops import (             # noqa: F401
 
 # ── Control flow ──────────────────────────────────────────────────────────────
 from ._control_flow import (    # noqa: F401
-    vecscope,
+    section, vecscope,
     for_, if_, yield_,
     static_range,
     LoopHandle, BranchHandle,

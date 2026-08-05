@@ -3136,6 +3136,8 @@ def MGatherOp : PTO_TOp<"mgather", [
       return isA5Target() ? ::mlir::pto::PIPE::PIPE_V
                           : ::mlir::pto::PIPE::PIPE_MTE2;
     }
+    ::mlir::Value getSource() { return getMem(); }
+    ::mlir::Value getDestination() { return getDst(); }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
 }
@@ -3314,6 +3316,8 @@ def MScatterOp : PTO_TOp<"mscatter", [
       return isA5Target() ? ::mlir::pto::PIPE::PIPE_V
                           : ::mlir::pto::PIPE::PIPE_MTE3;
     }
+    ::mlir::Value getSource() { return getSrc(); }
+    ::mlir::Value getDestination() { return getMem(); }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getMemMutable(); }
   }];
 }
@@ -4753,6 +4757,7 @@ def TGatherOp : PTO_TOp<"tgather", [
     Optional<PTODpsType>:$tmp,
     Optional<ScalarType>:$kValue,
     OptionalAttr<PTO_MaskPatternAttr>:$maskPattern,
+    OptionalAttr<StrAttr>:$axis,
     OptionalAttr<PTO_CmpModeAttr>:$cmpMode,
     OptionalAttr<I32Attr>:$offset
   );
@@ -4766,6 +4771,7 @@ def TGatherOp : PTO_TOp<"tgather", [
     bool hasCompareForm() { return static_cast<bool>(getCdst()) || static_cast<bool>(getKValue()); }
     bool hasIndexForm() { return static_cast<bool>(getIndices()); }
     bool hasMaskForm() { return static_cast<bool>(getMaskPatternAttr()); }
+    bool hasAxis() { return static_cast<bool>(getAxisAttr()); }
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
     ::mlir::MutableOperandRange getDpsInitsMutable() {
       return ::mlir::MutableOperandRange(getOperation(), 1, 1 + (getCdst() ? 1 : 0));

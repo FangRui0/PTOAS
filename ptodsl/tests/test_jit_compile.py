@@ -605,8 +605,8 @@ def tile_sort_gather_surface_probe():
 
     pto.tile.sort32(src, idx, sort)
     pto.tile.mrgsort(sort, tmp, pto.const(64, dtype=pto.i32))
-    pto.tile.gather(tmp, gather_scores, mask_pattern="P0101")
-    pto.tgather(tmp, gather_indices, mask_pattern="P1010")
+    pto.tile.gather(tmp, gather_scores, mask_pattern="P0101", axis="row")
+    pto.tgather(tmp, gather_indices, mask_pattern="P1010", axis="row")
 
 
 @pto.jit(target="a5")
@@ -1287,6 +1287,28 @@ def ast_nested_with_if_merge_probe():
 def ast_runtime_for_probe(rows: pto.i32):
     for row in range(0, rows, 1):
         _ = row
+        pto.pipe_barrier(pto.Pipe.ALL)
+
+
+@pto.jit(target="a5", mode="explicit")
+def ast_nested_runtime_for_induction_scope_probe(rows: pto.i32):
+    for outer in range(rows):
+        _ = outer
+        with pto.vecscope():
+            for lane in range(4):
+                _ = lane
+                pto.mem_bar(pto.BarrierType.VST_VLD)
+
+
+@pto.jit(target="a5", mode="explicit")
+def ast_nested_runtime_for_local_temp_scope_probe(rows: pto.i32):
+    for outer in range(rows):
+        _ = outer
+        with pto.vecscope():
+            for row in range(4):
+                for col in range(2):
+                    ob = row + col
+                    _ = ob
         pto.pipe_barrier(pto.Pipe.ALL)
 
 
@@ -2607,37 +2629,79 @@ def vmi_wrapper_dispatch_probe():
     expanded = pto.vmi.vbrc(compact, size=64, group=8)
     hist_acc = pto.vmi.vload(hist_acc_ptr, offset, size=256)
     hist_src = pto.vmi.vload(hist_src_ptr, offset, size=256)
+    int_lhs = pto.vmi.vload(int_src_ptr, offset, size=64)
+    int_rhs = pto.vmi.vload(int_other_ptr, offset, size=64)
     hist_mask = pto.vmi.create_mask(pto.const(256, dtype=pto.index), size=256)
     added = pto.vmi.vadd(lhs, rhs, mask)
+    subtracted = pto.vmi.vsub(lhs, rhs, mask)
+    multiplied = pto.vmi.vmul(lhs, rhs, mask)
+    divided = pto.vmi.vdiv(lhs, rhs, mask)
+    maximum = pto.vmi.vmax(lhs, rhs, mask)
+    minimum = pto.vmi.vmin(lhs, rhs, mask)
+    absolute = pto.vmi.vabs(lhs, mask)
+    negated = pto.vmi.vneg(lhs, mask)
     relu = pto.vmi.vrelu(added, mask)
-    scaled = pto.vmi.vadd(pto.vmi.vmuls(relu, 2.0, mask), bias, mask)
+    exponent = pto.vmi.vexp(lhs, mask)
+    logarithm = pto.vmi.vln(lhs, mask)
+    square_root = pto.vmi.vsqrt(lhs, mask)
+    int_and = pto.vmi.vand(int_lhs, int_rhs, mask)
+    int_or = pto.vmi.vor(int_lhs, int_rhs, mask)
+    int_xor = pto.vmi.vxor(int_lhs, int_rhs, mask)
+    int_not = pto.vmi.vnot(int_lhs, mask)
+    int_shl = pto.vmi.vshl(int_lhs, int_rhs, mask)
+    int_shr = pto.vmi.vshr(int_lhs, int_rhs, mask)
+    scalar_added = pto.vmi.vadds(relu, 1.0, mask)
+    scalar_multiplied = pto.vmi.vmuls(relu, 2.0, mask)
+    scalar_maximum = pto.vmi.vmaxs(relu, 1.0, mask)
+    scalar_minimum = pto.vmi.vmins(relu, 1.0, mask)
+    scalar_shl = pto.vmi.vshls(int_lhs, pto.i32(1), mask)
+    scalar_shr = pto.vmi.vshrs(int_lhs, pto.i32(1), mask)
+    scaled = pto.vmi.vadd(scalar_multiplied, bias, mask)
     pred = pto.vmi.vcmp(scaled, lhs, mask, "ogt")
+    scalar_pred = pto.vmi.vcmps(scaled, 0.0, mask, "ogt")
     selected = pto.vmi.vsel(pred, scaled, expanded)
     shuffled = pto.vmi.vselr(selected, idx)
-    total = pto.vmi.vcadd(shuffled, mask, reassoc=True)
+    total = pto.vmi.vcadd(shuffled, mask, reassoc=False)
+    explicit_total = pto.vmi.vcadd(shuffled, mask, group=1, reassoc=False)
     peak = pto.vmi.vcmax(shuffled, mask)
+    explicit_peak = pto.vmi.vcmax(shuffled, mask, group=1)
     floor = pto.vmi.vcmin(shuffled, mask)
+    explicit_floor = pto.vmi.vcmin(shuffled, mask, group=1)
     group_peak = pto.vmi.vcmax(shuffled, group_mask, group=8)
     gather = pto.vmi.vgather(src_ptr, idx, mask)
     gatherb = pto.vmi.vgatherb(src_ptr, idx, mask)
     hist = pto.vmi.vdhist(hist_acc, hist_src, hist_mask)
     cumul = pto.vmi.vchist(hist_acc, hist_src, hist_mask)
-    int_lhs = pto.vmi.vload(int_src_ptr, offset, size=64)
-    int_rhs = pto.vmi.vload(int_other_ptr, offset, size=64)
+    exp_difference = pto.vmi.vexpdif(lhs, rhs, mask)
+    axpy = pto.vmi.vaxpy(lhs, rhs, 2.0, mask)
+    leaky_relu = pto.vmi.vlrelu(lhs, 0.125, mask)
+    parametric_relu = pto.vmi.vprelu(lhs, rhs, mask)
     low, high = pto.vmi.vmull(int_lhs, int_rhs, mask)
+    multiply_accumulate = pto.vmi.vmula(lhs, lhs, rhs, mask)
     widened = pto.vmi.vadd(low, high, mask)
     casted = pto.vmi.vcvt(shuffled, pto.f16)
+    casted_r = pto.vmi.vcvt(shuffled, pto.f16, rounding="R", saturate="SAT")
+    casted_a = pto.vmi.vcvt(shuffled, pto.f16, rounding="A", saturate="SAT")
+    casted_h = pto.vmi.vcvt(shuffled, pto.f16, rounding="H", saturate="SAT")
+    casted_z = pto.vmi.vcvt(shuffled, pto.f16, rounding="Z", saturate="SAT")
     recast = pto.vmi.vinterpret_cast(
         lhs,
         pto.i32,
     )
+    recast_narrow = pto.vmi.vinterpret_cast(lhs, pto.f16)
     lo, hi = pto.vmi.vintlv(selected, shuffled, mask)
+    even, odd = pto.vmi.vdintlv(lo, hi, mask)
+    pto.vmi.vscatter(selected, dst_ptr, idx, mask)
     pto.vmi.vstore(lo, dst_ptr, offset, mask)
+    pto.vmi.vsstb(hi, dst_ptr, offset, pto.i16(8), mask)
 
     _ = group_mask
     _ = total
+    _ = explicit_total
     _ = peak
+    _ = explicit_peak
     _ = floor
+    _ = explicit_floor
     _ = group_peak
     _ = gather
     _ = gatherb
@@ -2645,8 +2709,15 @@ def vmi_wrapper_dispatch_probe():
     _ = cumul
     _ = widened
     _ = casted
+    _ = (casted_r, casted_a, casted_h, casted_z)
     _ = recast
+    _ = recast_narrow
     _ = hi
+    _ = (subtracted, multiplied, divided, maximum, minimum, absolute, negated)
+    _ = (exponent, logarithm, square_root, int_and, int_or, int_xor, int_not)
+    _ = (int_shl, int_shr, scalar_added, scalar_maximum, scalar_minimum)
+    _ = (scalar_shl, scalar_shr, scalar_pred, exp_difference, axpy)
+    _ = (leaky_relu, parametric_relu, multiply_accumulate, even, odd)
 
 
 @pto.jit(target="a5", backend="vpto", mode="explicit")
@@ -4279,20 +4350,23 @@ def main() -> None:
     expect("!pto.tile_buf<vec, 1x64xf32>" in block64_text, "BLOCK=64 specialization MLIR missing specialized tile")
     expect("pto.entry" in default_text, "default @pto.jit entry child should carry the explicit entry marker")
     expect("pto.entry" in explicit_text, "explicit @pto.jit entry child should carry the explicit entry marker")
-    expect(default_text.count("module") >= 2, "default @pto.jit should emit an outer container plus one child module")
-    expect(block64_text.count("module") >= 2, "specialized @pto.jit should keep the outer-plus-child container shape")
-    expect('module attributes {pto.target_arch = "a5"}' in default_text, "outer container should carry only shared target-arch metadata")
+    expect(default_text.count("module") == 2, "default @pto.jit should wrap an unspecified-kind kernel in a backend child module")
+    expect(block64_text.count("module") == 2, "specialized @pto.jit should keep the backend child module shape")
+    expect(
+        'module attributes {pto.backend = "vpto", pto.target_arch = "a5"}' in default_text,
+        "unpartitioned VPTO module should carry backend and target metadata",
+    )
     expect('pto.mode = ' not in default_text, "generated PTODSL container IR should no longer expose public pto.mode")
     expect(
         'pto.backend = "vpto"' in default_text
         and 'pto.target_arch = "a5"' in default_text
-        and 'pto.kernel_kind = #pto.kernel_kind<vector>' in default_text,
+        and 'pto.kernel_kind' not in default_text,
         "primary VPTO child module should carry PTOAS-facing backend metadata directly on the child module",
     )
     expect(
         'pto.backend = "vpto"' in explicit_text
         and 'pto.target_arch = "a5"' in explicit_text
-        and 'pto.kernel_kind = #pto.kernel_kind<vector>' in explicit_text,
+        and 'pto.kernel_kind' not in explicit_text,
         "explicit specialization child module should keep the same VPTO child metadata shape",
     )
     expect(
@@ -4389,8 +4463,8 @@ def main() -> None:
         "@pto.jit(entry=False) handles should expose an explicit, stable cache-signature protocol",
     )
     expect(
-        helper_cache_signature[7] == "vector" and helper_cache_signature[8] is False,
-        "default @pto.jit handles should keep vector as the effective kernel kind while recording that it was not explicit",
+        helper_cache_signature[7] is None and helper_cache_signature[8] is False,
+        "default @pto.jit handles should leave the effective kernel kind unspecified",
     )
     expect_raises(
         RuntimeError,
@@ -4454,7 +4528,7 @@ def main() -> None:
     )
     expect(
         kernel_module_call_text.count('pto.backend = "vpto"') >= 2
-        and kernel_module_call_text.count('pto.kernel_kind = #pto.kernel_kind<vector>') >= 2,
+        and 'pto.kernel_kind' not in kernel_module_call_text,
         "entry-plus-helper specialization should materialize separate child modules for caller and callee",
     )
     ast_rewrite_kernel_module_text = entry_calls_ast_rewrite_kernel_module_probe.compile().mlir_text()
@@ -4499,7 +4573,7 @@ def main() -> None:
     expect(
         'pto.backend = "vpto"' in mixed_backend_text
         and 'pto.target_arch = "a5"' in mixed_backend_text
-        and 'pto.kernel_kind = #pto.kernel_kind<vector>' in mixed_backend_text,
+        and 'pto.kernel_kind' not in mixed_backend_text,
         "mixed-backend callee child should preserve the callee's VPTO backend through child pto.backend metadata",
     )
     expect(
@@ -4672,7 +4746,10 @@ def main() -> None:
             export_macro,
         ):
             expect(launch_cpp.is_file(), "native build should materialize launch.cpp before compiling it")
-            expect(kernel_kind in {"vector", "cube"}, "native build should forward the authored kernel kind")
+            expect(
+                kernel_kind in {None, "vector", "cube"},
+                "native build should forward the optional authored kernel kind",
+            )
             launch_target_arches.append(target_arch)
             expect(export_macro.endswith("_EXPORTS"), "native build should preserve launch export macro naming")
             launch_object.write_text("fake launch object\n", encoding="utf-8")
@@ -4680,7 +4757,10 @@ def main() -> None:
         def fake_link_shared_library(launch_object, kernel_object, shared_library, *, kernel_kind):
             expect(launch_object.is_file(), "native build should compile launch.cpp before linking")
             expect(kernel_object.is_file(), "native build should run ptoas before shared-library link")
-            expect(kernel_kind in {"vector", "cube"}, "native build should preserve kernel-kind-aware link flags")
+            expect(
+                kernel_kind in {None, "vector", "cube"},
+                "native build should preserve the optional kernel kind",
+            )
             shared_library.write_text("fake shared library\n", encoding="utf-8")
 
         with mock.patch.object(native_build_runtime, "artifact_paths", side_effect=fake_artifacts), mock.patch.object(
@@ -4745,9 +4825,10 @@ def main() -> None:
             f"{label} native build should hand the backend-partitioned container MLIR to ptoas unchanged",
         )
         if module_spec.jit_source is None:
+            expected_module_count = 2
             expect(
-                observation["mlir_text"].count("module") >= 2,
-                f"{label} native build should route the unified outer+child container through ptoas",
+                observation["mlir_text"].count("module") >= expected_module_count,
+                f"{label} native build should route the authored module shape through ptoas",
             )
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
@@ -4892,7 +4973,7 @@ def main() -> None:
     expect_parse_roundtrip_and_verify(merged_same_mode_text, "merged same-mode PTODSL container")
     expect(
         merged_same_mode_text.count('func.func @host_vec_copy(') == 2,
-        "merge_jit_modules() should preserve both primary child modules in the merged container",
+        "merge_jit_modules() should preserve same-named specializations in independent backend child modules",
     )
 
     runtime_metadata_text = runtime_metadata_kernel.compile().mlir_text()
@@ -5578,6 +5659,26 @@ def main() -> None:
     expect(
         ast_runtime_for_text.count("scf.for") == 1,
         "ast_rewrite=True Python range(...) should lower to one scf.for",
+    )
+
+    ast_nested_runtime_for_induction_scope_text = ast_nested_runtime_for_induction_scope_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ast_nested_runtime_for_induction_scope_text,
+        "AST-rewritten nested runtime induction scope specialization",
+    )
+    expect(
+        ast_nested_runtime_for_induction_scope_text.count("scf.for") == 2,
+        "nested runtime loop induction variables should remain local to their loops",
+    )
+
+    ast_nested_runtime_for_local_temp_scope_text = ast_nested_runtime_for_local_temp_scope_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ast_nested_runtime_for_local_temp_scope_text,
+        "AST-rewritten nested runtime local temp scope specialization",
+    )
+    expect(
+        ast_nested_runtime_for_local_temp_scope_text.count("scf.for") == 3,
+        "nested runtime loop temporaries consumed in-loop should not become live-outs",
     )
 
     ast_runtime_for_carry_text = ast_runtime_for_carry_probe.compile().mlir_text()
@@ -6363,33 +6464,74 @@ def main() -> None:
     )
 
     expected_vmi_ops = [
-        "pto.vmi.create_mask",
-        "pto.vmi.create_group_mask",
         "pto.vmi.vload",
+        "pto.vmi.vstore",
+        "pto.vmi.vsstb",
         "pto.vmi.vci",
         "pto.vmi.vadd",
+        "pto.vmi.vsub",
+        "pto.vmi.vmul",
+        "pto.vmi.vdiv",
+        "pto.vmi.vmax",
+        "pto.vmi.vmin",
+        "pto.vmi.vabs",
+        "pto.vmi.vneg",
         "pto.vmi.vrelu",
+        "pto.vmi.vexp",
+        "pto.vmi.vln",
+        "pto.vmi.vsqrt",
+        "pto.vmi.vand",
+        "pto.vmi.vor",
+        "pto.vmi.vxor",
+        "pto.vmi.vnot",
+        "pto.vmi.vshl",
+        "pto.vmi.vshr",
+        "pto.vmi.vadds",
         "pto.vmi.vmuls",
+        "pto.vmi.vmaxs",
+        "pto.vmi.vmins",
+        "pto.vmi.vshls",
+        "pto.vmi.vshrs",
         "pto.vmi.vcmp",
+        "pto.vmi.vcmps",
         "pto.vmi.vsel",
         "pto.vmi.vselr",
+        "pto.vmi.vbrc",
         "pto.vmi.vcadd",
         "pto.vmi.vcmax",
         "pto.vmi.vcmin",
-        "pto.vmi.vdhist",
-        "pto.vmi.vchist",
-        "pto.vmi.vmull",
-        "pto.vmi.vgather",
         "pto.vmi.vcvt",
         "pto.vmi.vinterpret_cast",
+        "pto.vmi.vexpdif",
+        "pto.vmi.vaxpy",
+        "pto.vmi.vlrelu",
+        "pto.vmi.vprelu",
+        "pto.vmi.vmull",
+        "pto.vmi.vmula",
+        "pto.vmi.vchist",
+        "pto.vmi.vdhist",
+        "pto.vmi.vgather",
+        "pto.vmi.vgatherb",
+        "pto.vmi.vscatter",
+        "pto.vmi.create_mask",
+        "pto.vmi.create_group_mask",
         "pto.vmi.vintlv",
-        "pto.vmi.vstore",
+        "pto.vmi.vdintlv",
     ]
     for op_name in expected_vmi_ops:
         expect(
             op_name in vmi_wrapper_dispatch_text,
             f"representative {op_name} wrapper dispatch should emit the matching generated VMI op",
         )
+    for op_name, expected_count in (("vcadd", 2), ("vcmax", 3), ("vcmin", 2)):
+        expect(
+            vmi_wrapper_dispatch_text.count(f"pto.vmi.{op_name}") == expected_count,
+            f"pto.vmi.{op_name} should emit both omitted-group and explicit-group probes",
+        )
+    expect(
+        vmi_wrapper_dispatch_text.count("group = 1") >= 6,
+        "VMI reductions should make the omitted group equivalent to group=1",
+    )
     expect(
         vmi_wrapper_dispatch_text.count("pto.vmi.vload") == 7,
         "vmi wrapper dispatch probe should lower seven explicit VMI loads",
@@ -6410,9 +6552,22 @@ def main() -> None:
         "!pto.vmi.vreg<64xf16>" in vmi_wrapper_dispatch_text,
         "PTODSL VMI conversion probes should materialize converted logical VMI vector result types in MLIR",
     )
+    for rounding in ("R", "A", "H", "Z"):
+        expect(
+            f'rounding = "{rounding}"' in vmi_wrapper_dispatch_text,
+            f"PTODSL vcvt should preserve canonical {rounding} rounding",
+        )
+    expect(
+        vmi_wrapper_dispatch_text.count('saturate = "SAT"') >= 5,
+        "PTODSL vcvt should preserve explicit SAT and default omitted narrowing saturation to SAT",
+    )
     expect(
         "!pto.vmi.vreg<64xi32>" in vmi_wrapper_dispatch_text,
         "PTODSL VMI index/reinterpret probes should materialize integer logical VMI vector result types in MLIR",
+    )
+    expect(
+        "!pto.vmi.vreg<128xf16>" in vmi_wrapper_dispatch_text,
+        "PTODSL vinterpret_cast should infer lane count by conserving total bits",
     )
     expect(
         "!pto.vmi.mask<64xpred>" in vmi_wrapper_dispatch_text,

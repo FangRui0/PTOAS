@@ -71,8 +71,8 @@
 //   vgather  → gather   (pmode="zero": passthru = zero constant)
 //   vscatter → scatter
 //
-// Category C9 — fused activation / softmax, decomposed to legacy chains (3 ops):
-//   vexpdif → [extf] + subf + exp   (widen f16 x to f32 when needed)
+// Category C9 — fused activation / softmax (3 ops):
+//   vexpdif → kept unified for direct VMI-to-VPTO fused lowering
 //   vlrelu  → maxf + minf + broadcast + mulf + addf
 //   vprelu  → maxf + minf + mulf + addf
 //   Category C7/C8/C9 bypass mask/pmode synthesis here and skip pmode="merge".
@@ -597,6 +597,12 @@ static LogicalResult lowerVLoad(VMIvLoadOp op, OpBuilder &builder) {
 
 /// Lower vstore by dispatching on dist_mode.
 static LogicalResult lowerVStore(VMIvStoreOp op, OpBuilder &builder) {
+  // pmode="merge" (inactive lanes retain the prior destination contents)
+  // cannot be expressed by the legacy store family, whose writes are governed
+  // purely by the mask. Skip instead of silently dropping the attribute.
+  if (hasMergePmode(op))
+    return failure();
+
   // Group mode: vstore {group=C} → group_store
   if (op.getGroupAttr()) {
     builder.create<VMIGroupStoreOp>(
@@ -1057,30 +1063,6 @@ static LogicalResult lowerVscatter(VMIVscatterOp op, OpBuilder &builder) {
 // Category C9 helpers: vexpdif / vlrelu / vprelu (fused → legacy chains)
 //===----------------------------------------------------------------------===//
 
-/// Lower vexpdif (exp(x - max)) to [extf] + subf + exp.
-/// x may be f16 while max and result are always f32 — widen x first when its
-/// element type differs from the result type.
-static LogicalResult lowerVexpdif(VMIVexpdifOp op, OpBuilder &builder) {
-  if (hasMergePmode(op))
-    return failure();
-
-  Location loc = op.getLoc();
-  Type resultType = op.getResult().getType();
-  auto vmiType = cast<VMIVRegType>(resultType);
-  Type resElem = vmiType.getElementType();
-
-  Value x = op.getX();
-  if (getVMIElementType(x) != resElem)
-    x = builder.create<VMIExtFOp>(loc, resultType, x).getResult();
-
-  Value diff =
-      builder.create<VMISubFOp>(loc, resultType, x, op.getMax()).getResult();
-  Value raw = builder.create<VMIExpOp>(loc, resultType, diff).getResult();
-  op.getResult().replaceAllUsesWith(raw);
-  op->erase();
-  return success();
-}
-
 /// Lower vlrelu (x>0 ? x : slope*x) to max(x,0) + slope*min(x,0).
 /// slope is a scalar float broadcast to a vector.
 static LogicalResult lowerVlrelu(VMIVlreluOp op, OpBuilder &builder) {
@@ -1173,7 +1155,7 @@ void VMILowerUnifiedToLegacyPass::runOnOperation() {
         // Category C2
         isa<VMICvtOp>(op) ||
         // Category C3
-        isa<VMIvLoadOp, VMIvStoreOp>(op) ||
+        isa<VMIvLoadOp, VMIvStoreOp, VMIVsstbOp>(op) ||
         // Category C4
         isa<VMIPsetOp, VMIPgeOp, VMIPltOp>(op) ||
         // Category C6 — unified reduce (partial coverage)
@@ -1183,7 +1165,7 @@ void VMILowerUnifiedToLegacyPass::runOnOperation() {
         // Category C8 — indexed gather / scatter
         isa<VMIVgatherOp, VMIVscatterOp>(op) ||
         // Category C9 — fused activation / softmax (legacy chains)
-        isa<VMIVexpdifOp, VMIVlreluOp, VMIVpreluOp>(op))
+        isa<VMIVlreluOp, VMIVpreluOp>(op))
       worklist.push_back(op);
 
     // Category D — no legacy equivalent (require direct VMIToVPTO lowering):
@@ -1319,6 +1301,21 @@ void VMILowerUnifiedToLegacyPass::runOnOperation() {
       continue;
     }
 
+    if (auto vop = dyn_cast<VMIVsstbOp>(op)) {
+      // pmode="merge" cannot be expressed by the legacy stride store; leave
+      // the op for VMIToVPTO (which has no vsstb pattern) so the conversion
+      // fails loudly instead of silently dropping the attribute.
+      if (hasMergePmode(vop))
+        continue;
+      Value repeatStride = builder.create<arith::ConstantOp>(
+          vop.getLoc(), builder.getI16IntegerAttr(0));
+      builder.create<VMIStrideStoreOp>(
+          vop.getLoc(), vop.getValue(), vop.getDestination(), vop.getOffset(),
+          vop.getBlockStride(), repeatStride, vop.getMask());
+      vop->erase();
+      continue;
+    }
+
     // ---- Category C6: unified reduce ----
 
     if (auto vop = dyn_cast<VMIvcaddOp>(op)) {
@@ -1361,11 +1358,6 @@ void VMILowerUnifiedToLegacyPass::runOnOperation() {
     }
 
     // ---- Category C9: fused activation / softmax ----
-
-    if (auto vop = dyn_cast<VMIVexpdifOp>(op)) {
-      (void)lowerVexpdif(vop, builder);
-      continue;
-    }
 
     if (auto vop = dyn_cast<VMIVlreluOp>(op)) {
       (void)lowerVlrelu(vop, builder);

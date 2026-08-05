@@ -669,13 +669,14 @@ class VectorCubeSurfaceTest(unittest.TestCase):
         with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
              patch.object(_ops, "_tile_mask_pattern_attr", return_value=parsed_pattern) as mask_attr, \
              patch.object(_ops._pto, "tgather") as tgather_op:
-            pto.tile.gather(src, dst, mask_pattern="P0101")
+            pto.tile.gather(src, dst, mask_pattern="P0101", axis="row")
         mask_attr.assert_called_once_with("P0101")
         self.assertEqual(tgather_op.call_args.args, (src, dst))
         self.assertEqual(tgather_op.call_args.kwargs["mask_pattern"], parsed_pattern)
+        self.assertEqual(tgather_op.call_args.kwargs["axis"], "row")
 
         with self.assertRaisesRegex(ValueError, "unsupported tile mask pattern"):
-            pto.tile.gather(src, dst, mask_pattern="PAT_ALL")
+            pto.tile.gather(src, dst, mask_pattern="PAT_ALL", axis="row")
 
     def test_tile_mov_accepts_acc_to_vec_mode(self):
         src = object()
@@ -766,8 +767,8 @@ class VectorCubeSurfaceTest(unittest.TestCase):
         cases = [
             (_ops.set_cross_flag, (pto.Pipe.V, 0), "set_cross_flag(pipe, event_id)", "<PIPE_FIX>", "<PIPE_V>"),
             (_ops.wait_cross_flag, (pto.Pipe.MTE3, 0), "wait_cross_flag(pipe, event_id)", "<PIPE_FIX>", "<PIPE_MTE3>"),
-            (_ops.set_intra_flag, (pto.Pipe.V, 0), "set_intra_flag(pipe, event_id)", "<PIPE_FIX>, <PIPE_MTE3>", "<PIPE_V>"),
-            (_ops.wait_intra_flag, (pto.Pipe.MTE2, 0), "wait_intra_flag(pipe, event_id)", "<PIPE_FIX>, <PIPE_MTE3>, <PIPE_V>", "<PIPE_MTE2>"),
+            (_ops.set_intra_flag, ("M", 0), "set_intra_flag(pipe, event_id)", "<PIPE_FIX>, <PIPE_MTE1>, <PIPE_MTE2>, <PIPE_MTE3>, <PIPE_V>", "<PIPE_M>"),
+            (_ops.wait_intra_flag, (pto.Pipe.M, 0), "wait_intra_flag(pipe, event_id)", "<PIPE_FIX>, <PIPE_MTE1>, <PIPE_MTE2>, <PIPE_MTE3>, <PIPE_V>", "<PIPE_M>"),
         ]
 
         with patch.object(_ops._pto, "sync_set") as sync_set_op, \
