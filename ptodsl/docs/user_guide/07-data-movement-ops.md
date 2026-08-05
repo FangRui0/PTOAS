@@ -939,8 +939,8 @@ Cube compute step; it does not issue those transfers itself.
 
 ### Operand loading: L1 → L0A / L0B
 
-#### `pto.mte_l1_l0a(src: PtrType, dst: PtrType, m_start: int, k_start: int, m_step: int, k_step: int, src_stride: int, dst_stride: int, *, transpose: bool = False) -> None`
-#### `pto.mte_l1_l0b(src: PtrType, dst: PtrType, m_start: int, k_start: int, m_step: int, k_step: int, src_stride: int, dst_stride: int, *, transpose: bool = False) -> None`
+#### `pto.mte_l1_l0a(src: PtrType, dst: PtrType, *, m_start: int, k_start: int, m_step: int, k_step: int, src_stride: int, dst_stride: int, transpose: bool = False) -> None`
+#### `pto.mte_l1_l0b(src: PtrType, dst: PtrType, *, m_start: int, k_start: int, m_step: int, k_step: int, src_stride: int, dst_stride: int, transpose: bool = False) -> None`
 
 **Description**: Explicit-control L1-to-L0A/L0B loads. This overload preserves
 the authored fractal-block control fields and does not infer strides from a
