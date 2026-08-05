@@ -3490,8 +3490,8 @@ def trowsum(src, tmp, dst):
     """``pto.trowsum ins(src, tmp) outs(dst)``."""
     _pto.trowsum(
         unwrap_surface_value(src),
-        unwrap_surface_value(tmp),
         unwrap_surface_value(dst),
+        tmp=unwrap_surface_value(tmp),
     )
 
 
@@ -3499,8 +3499,8 @@ def trowmax(src, tmp, dst):
     """``pto.trowmax ins(src, tmp) outs(dst)``."""
     _pto.trowmax(
         unwrap_surface_value(src),
-        unwrap_surface_value(tmp),
         unwrap_surface_value(dst),
+        tmp=unwrap_surface_value(tmp),
     )
 
 
@@ -3508,8 +3508,8 @@ def trowmin(src, tmp, dst):
     """``pto.trowmin ins(src, tmp) outs(dst)``."""
     _pto.trowmin(
         unwrap_surface_value(src),
-        unwrap_surface_value(tmp),
         unwrap_surface_value(dst),
+        tmp=unwrap_surface_value(tmp),
     )
 
 
@@ -3517,8 +3517,8 @@ def trowprod(src, tmp, dst):
     """``pto.trowprod ins(src, tmp) outs(dst)``."""
     _pto.trowprod(
         unwrap_surface_value(src),
-        unwrap_surface_value(tmp),
         unwrap_surface_value(dst),
+        tmp=unwrap_surface_value(tmp),
     )
 
 
@@ -3526,8 +3526,8 @@ def trowargmax(src, tmp, dst):
     """``pto.trowargmax ins(src, tmp) outs(dst)``."""
     _pto.trowargmax(
         unwrap_surface_value(src),
-        unwrap_surface_value(tmp),
         unwrap_surface_value(dst),
+        tmp=unwrap_surface_value(tmp),
     )
 
 
@@ -3535,8 +3535,8 @@ def trowargmin(src, tmp, dst):
     """``pto.trowargmin ins(src, tmp) outs(dst)``."""
     _pto.trowargmin(
         unwrap_surface_value(src),
-        unwrap_surface_value(tmp),
         unwrap_surface_value(dst),
+        tmp=unwrap_surface_value(tmp),
     )
 
 
@@ -3578,8 +3578,8 @@ def tcolargmax(src, tmp, dst):
     """``pto.tcolargmax ins(src, tmp) outs(dst)``."""
     _pto.tcolargmax(
         unwrap_surface_value(src),
-        unwrap_surface_value(tmp),
         unwrap_surface_value(dst),
+        tmp=unwrap_surface_value(tmp),
     )
 
 
@@ -3587,8 +3587,8 @@ def tcolargmin(src, tmp, dst):
     """``pto.tcolargmin ins(src, tmp) outs(dst)``."""
     _pto.tcolargmin(
         unwrap_surface_value(src),
-        unwrap_surface_value(tmp),
         unwrap_surface_value(dst),
+        tmp=unwrap_surface_value(tmp),
     )
 
 
@@ -4118,8 +4118,8 @@ def txor(src0, src1, tmp, dst):
     _pto.txor(
         unwrap_surface_value(src0),
         unwrap_surface_value(src1),
-        unwrap_surface_value(tmp),
         unwrap_surface_value(dst),
+        tmp=unwrap_surface_value(tmp),
     )
 
 
@@ -4128,8 +4128,8 @@ def txors(src, scalar, tmp, dst):
     _pto.txors(
         unwrap_surface_value(src),
         _coerce_tile_scalar_operand(src, scalar, context="txors"),
-        unwrap_surface_value(tmp),
         unwrap_surface_value(dst),
+        tmp=unwrap_surface_value(tmp),
     )
 
 

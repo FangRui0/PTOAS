@@ -6337,7 +6337,7 @@ void mlir::pto::TColSumOp::print(OpAsmPrinter &p) {
     // Format 2: ins(%src, %tmp {isBinary = ...}: type, type) outs(%dst : type)
     p << " ins(" << getSrc() << ", " << getTmp();
     // Print isBinary attribute if present
-    SmallVector<StringRef, 1> elidedAttrs;
+    SmallVector<StringRef, 2> elidedAttrs = {"operandSegmentSizes"};
     if (!getIsBinaryAttr() || getIsBinaryAttr().getValue() == false) {
       elidedAttrs.push_back("isBinary");
     }
@@ -6352,7 +6352,7 @@ void mlir::pto::TColSumOp::print(OpAsmPrinter &p) {
 
   // Print remaining attributes for format 1 (excluding isBinary)
   if (!getTmp()) {
-    SmallVector<StringRef, 1> elidedAttrs = {"isBinary"};
+    SmallVector<StringRef, 2> elidedAttrs = {"isBinary", "operandSegmentSizes"};
     p.printOptionalAttrDict((*this)->getAttrs(), elidedAttrs);
   }
 }
@@ -9645,7 +9645,8 @@ void mlir::pto::TCvtOp::print(OpAsmPrinter &p) {
     }
     attrs.set(attr.getName(), attr.getValue());
   }
-  p.printOptionalAttrDict(attrs.getAttrs());
+  p.printOptionalAttrDict(attrs.getAttrs(),
+                          /*elidedAttrs=*/{"operandSegmentSizes"});
   p << " : " << getSrc().getType();
   if (getTmp())
     p << ", " << getTmp().getType();
@@ -11710,7 +11711,8 @@ void mlir::pto::TPowOp::print(OpAsmPrinter &p) {
     p << ", " << getTmp().getType();
   p << ")";
   p << " outs(" << getDst() << " : " << getDst().getType() << ")";
-  p.printOptionalAttrDict((*this)->getAttrs());
+  p.printOptionalAttrDict((*this)->getAttrs(),
+                          /*elidedAttrs=*/{"operandSegmentSizes"});
 }
 
 // TPOWS assembly format:
@@ -11767,7 +11769,8 @@ void mlir::pto::TPowSOp::print(OpAsmPrinter &p) {
     p << ", " << getTmp().getType();
   p << ")";
   p << " outs(" << getDst() << " : " << getDst().getType() << ")";
-  p.printOptionalAttrDict((*this)->getAttrs());
+  p.printOptionalAttrDict((*this)->getAttrs(),
+                          /*elidedAttrs=*/{"operandSegmentSizes"});
 }
 
 static ParseResult parseTRowExpandBinaryLikeOp(OpAsmParser &parser,
