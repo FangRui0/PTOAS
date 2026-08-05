@@ -63,7 +63,6 @@ from ._types import (
     _materialize_integer_literal,
     _normalize_address_space,
     _resolve,
-    _strip_integer_signedness,
     mask_type,
     part_tensor_view_type,
     part_tensor_view_type_from_dims,
@@ -2040,13 +2039,12 @@ def _infer_vdup_scalar_result_type(input_value, mask_value, *, context: str):
     scalar_type = scalar_raw.type
     mask_bits = _mask_granularity_bits(mask_value, context=context)
     if IntegerType.isinstance(scalar_type):
-        scalar_type = _strip_integer_signedness(scalar_raw)
-        scalar_width = IntegerType(scalar_type.type).width
+        scalar_width = IntegerType(scalar_type).width
         if scalar_width != mask_bits:
             raise TypeError(
                 f"{context} expects scalar input width {scalar_width} to match mask granularity b{mask_bits}"
             )
-        element_type = scalar_type.type
+        element_type = scalar_type
     elif F16Type.isinstance(scalar_type) or BF16Type.isinstance(scalar_type):
         if mask_bits != 16:
             raise TypeError(f"{context} expects f16/bf16 scalar input to pair with mask_b16, got mask_b{mask_bits}")
