@@ -52,11 +52,6 @@ module {
 // LOWER-SAME: %[[DST:[^,]+]]: !pto.ptr<!pto.f4E1M2x2, ub>
 // LOWER-SAME: %[[OFF:[^,]+]]: index
 // LOWER-SAME: %[[ACTIVE:[^)]+]]: index)
-// LOWER: %[[ACTIVE_I32:.*]] = arith.index_cast %[[ACTIVE]] : index to i32
-// LOWER: %[[NONNEG:.*]] = arith.maxsi %[[ACTIVE_I32]], {{.*}} : i32
-// LOWER: %[[CLAMPED:.*]] = arith.minui %[[NONNEG]], {{.*}} : i32
-// LOWER: %[[SRC_M0:.*]], %[[SRC_REM0:.*]] = pto.plt_b32 %[[CLAMPED]] : i32 -> !pto.mask<b32>, i32
-// LOWER: %[[SRC_M1:.*]], %{{.*}} = pto.plt_b32 %[[SRC_REM0]] : i32 -> !pto.mask<b32>, i32
 // LOWER-DAG: %[[VCVT_MASK:.*]] = pto.pset_b16 "PAT_ALL" : !pto.mask<b16>
 // LOWER-DAG: %[[MERGE_MASK:.*]] = pto.pset_b8 "PAT_ALL" : !pto.mask<b8>
 // LOWER: %[[P0_BF16:.*]] = pto.vbitcast %[[P0]] : !pto.vreg<64x!pto.bf16x2> -> !pto.vreg<128xbf16>

@@ -1654,9 +1654,8 @@ static LogicalResult materializePlannedOffsets(
                                                     buffer2Offsets);
   patterns.add<AllocMultiTileOpAddPlannedAddressesPattern>(
       patterns.getContext(), buffer2Offsets);
-  if (mlir::failed(applyPatternsGreedily(func, std::move(patterns)))) {
+  if (mlir::failed(applyPatternsAndFoldGreedily(func, std::move(patterns))))
     return failure();
-  }
   return success();
 }
 

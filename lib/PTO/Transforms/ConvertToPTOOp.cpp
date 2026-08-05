@@ -204,7 +204,7 @@ void ConvertToPTOOpPass::runOnOperation() {
   moduleOp->walk([&](func::FuncOp funcOp) {
     RewritePatternSet patterns(ctx);
     populatePTOOpRewritingRule(patterns);
-    (void)applyPatternsGreedily(funcOp, std::move(patterns));
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   });
 }
 

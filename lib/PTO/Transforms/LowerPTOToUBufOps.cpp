@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "PTO/IR/PTO.h"
+#include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -1326,7 +1327,10 @@ private:
     if (!memTy) {
       return false;
     }
-    auto strides = memTy.getStridesAndOffset().first;
+    SmallVector<int64_t> strides;
+    int64_t offset = 0;
+    if (failed(pto::getPTOMemRefStridesAndOffset(memTy, strides, offset)))
+      return false;
     return !strides.empty() && strides.back() == 1;
   }
 

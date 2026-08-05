@@ -93,9 +93,17 @@ static Type getLowPrecisionLLVMType(Type type, MLIRContext *context) {
   return {};
 }
 
+static bool isLLVMExtensionVectorElementType(Type type) {
+  return isa<LLVM::LLVMHiFloat8Type, LLVM::LLVMFloat8E4M3Type,
+             LLVM::LLVMFloat8E5M2Type, LLVM::LLVMFloat4E1M2x2Type,
+             LLVM::LLVMFloat4E2M1x2Type>(type);
+}
+
 static Type getLLVMCompatibleVectorType(ArrayRef<int64_t> shape,
                                         Type elementType,
                                         ArrayRef<bool> scalableDims = {}) {
+  if (shape.size() == 1 && isLLVMExtensionVectorElementType(elementType))
+    return LLVM::LLVMFixedVectorType::get(elementType, shape.front());
   return VectorType::get(shape, elementType, scalableDims);
 }
 
@@ -165,6 +173,16 @@ static Type normalizeGEPElementTypeForLLVMLowering(Type type,
                                        vecType.getScalableDims());
   }
 
+  if (auto vecType = dyn_cast<LLVM::LLVMFixedVectorType>(type)) {
+    Type normalizedElement =
+        normalizeGEPElementTypeForLLVMLowering(vecType.getElementType(),
+                                               builder);
+    if (normalizedElement == vecType.getElementType())
+      return normalizePayloadTypeForLLVMLowering(type, builder);
+    return getLLVMCompatibleVectorType({vecType.getNumElements()},
+                                       normalizedElement);
+  }
+
   return normalizePayloadTypeForLLVMLowering(type, builder);
 }
 
@@ -204,6 +222,12 @@ static unsigned getNaturalByteAlignment(Type type) {
       elems *= dim;
     }
     return elemAlign * static_cast<unsigned>(elems);
+  }
+  if (auto vecType = dyn_cast<LLVM::LLVMFixedVectorType>(type)) {
+    unsigned elemAlign = getNaturalByteAlignment(vecType.getElementType());
+    if (!elemAlign)
+      return 0;
+    return elemAlign * vecType.getNumElements();
   }
   if (auto intType = dyn_cast<IntegerType>(type))
   {
@@ -979,6 +1003,8 @@ static Type getElementTypeFromVectorLike(Type type) {
   {
     return vecType.getElementType();
   }
+  if (auto vecType = dyn_cast<LLVM::LLVMFixedVectorType>(type))
+    return vecType.getElementType();
   return {};
 }
 
@@ -994,6 +1020,8 @@ static std::optional<int64_t> getElementCountFromVectorLike(Type type) {
     }
     return vecType.getShape().front();
   }
+  if (auto vecType = dyn_cast<LLVM::LLVMFixedVectorType>(type))
+    return vecType.getNumElements();
   return std::nullopt;
 }
 
@@ -10692,7 +10720,6 @@ public:
     rewriter.create<LLVM::InlineAsmOp>(
         op.getLoc(), TypeRange{asmResultType}, payloads, "",
         buildSimtKeepResumeConstraints(*physicalRegs, true), true, false,
-        LLVM::tailcallkind::TailCallKind::None,
         LLVM::AsmDialectAttr::get(op.getContext(), LLVM::AsmDialect::AD_ATT),
         ArrayAttr{});
     for (pto::KeepOp keep : llvm::reverse(keepOps))
@@ -10750,7 +10777,6 @@ public:
     auto asmOp = rewriter.create<LLVM::InlineAsmOp>(
         op.getLoc(), TypeRange{asmResultType}, ValueRange{}, "",
         buildSimtKeepResumeConstraints(*physicalRegs, false), true, false,
-        LLVM::tailcallkind::TailCallKind::None,
         LLVM::AsmDialectAttr::get(op.getContext(), LLVM::AsmDialect::AD_ATT),
         ArrayAttr{});
 
@@ -13789,7 +13815,7 @@ static LogicalResult runPipeline(ModuleOp module, const std::string &march,
   kernelModulePM.addPass(
       std::make_unique<NormalizeFuncSignaturesForLLVMLoweringPass>());
   kernelModulePM.addPass(arith::createArithExpandOpsPass());
-  kernelModulePM.addPass(createSCFToControlFlowPass());
+  kernelModulePM.addPass(createConvertSCFToCFPass());
   kernelModulePM.addPass(createArithToLLVMConversionPass());
   kernelModulePM.addPass(createConvertIndexToLLVMPass());
   kernelModulePM.addPass(createFinalizeMemRefToLLVMConversionPass());

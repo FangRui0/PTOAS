@@ -110,6 +110,7 @@ std::unique_ptr<Pass> createPTOUnrollAfterLoopFusionPass();
 std::unique_ptr<Pass> createPTOFlattenFusionRegionPass();
 std::unique_ptr<Pass> createVPTOPtrNormalizePass();
 std::unique_ptr<Pass> createVPTOPtrCastCleanupPass();
+std::unique_ptr<Pass> createVPTOCombineReductionsPass();
 std::unique_ptr<Pass> createVPTOOptimizeVcvtPass();
 std::unique_ptr<Pass> createVPTOMaskSimplifyPass();
 std::unique_ptr<Pass>

@@ -156,7 +156,7 @@ struct VMINormalizeSignlessIntToUnsignedPass
     MLIRContext *ctx = &getContext();
     RewritePatternSet patterns(ctx);
     patterns.add<NormalizeSignlessPattern>(ctx);
-    if (failed(applyPatternsGreedily(func, std::move(patterns))))
+    if (failed(applyPatternsAndFoldGreedily(func, std::move(patterns))))
       signalPassFailure();
   }
 };

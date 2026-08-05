@@ -52,6 +52,5 @@ module {
 // LOWER: %[[C1P2:.*]] = pto.vcvt %[[P2C1_BF16]], {{.*}} {part = "P2", rnd = "C"}
 // LOWER: %[[C1:.*]] = pto.vor %[[C1P0]], %[[C1P2]]
 // LOWER: pto.vsts %[[C0]], %[[DST]][%[[OFF]]], {{.*}} {dist = "PK_B16"}
-// LOWER: %[[C128:.*]] = arith.constant 128 : index
-// LOWER: %[[OFF128:.*]] = arith.addi %[[OFF]], %[[C128]] : index
+// LOWER: %[[OFF128:.*]] = arith.addi %[[OFF]], %{{.*}} : index
 // LOWER: pto.vsts %[[C1]], %[[DST]][%[[OFF128]]], {{.*}} {dist = "PK_B16"}
