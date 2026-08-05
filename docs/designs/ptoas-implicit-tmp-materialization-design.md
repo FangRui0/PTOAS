@@ -443,7 +443,7 @@ A5:
 - 如果已经有 `tmp`，pass 不修改，但 verifier 需要保证它只用于合法模式。
 - A5 如果没有 `tmp`，pass 不修改。
 - A2/A3 如果没有 `tmp`，且 op 是模式 1、当前 build level 会运行 memplan，则自动补 tmp。
-- A2/A3 如果没有 `tmp`，op 是模式 1、但当前 level3 会跳过 memplan，则报错，要求用户显式提供带地址的 tmp。
+- A2/A3 如果没有 `tmp`，op 是模式 1、但当前 level3 会跳过 memplan，则保留 no-tmp overload，由后端使用内部 8KB `TMP_UB_OFFSET`，避免 pass 生成无地址 tmp。
 - 模式 2 不需要 tmp；pass 不应自动补 tmp，也不应强制改成带 tmp overload。
 
 自动补 tmp 的 canonical shape 建议采用形状无关上界：

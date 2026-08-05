@@ -235,8 +235,12 @@ static LogicalResult materializeTRowExpandTmp(OpTy op, bool requireExplicitTmp,
     return success();
 
   if (requireExplicitTmp) {
-    return op.emitOpError(
-        "requires explicit tmp for A2/A3 row-expand mode 1 when PlanMemory is skipped");
+    // Row-expand is the one A2/A3 tmp-aware family whose no-tmp overload is
+    // still a valid backend contract: mode 1 falls back to pto-isa's internal
+    // 8KB TMP_UB_OFFSET scratch area, while mode 2 does not need tmp.  Level3
+    // inputs are already memory-planned by the frontend, so preserve their
+    // no-tmp form instead of creating an unaddressed alloc_tile.
+    return success();
   }
 
   auto dstTy = dyn_cast<pto::TileBufType>(op.getDst().getType());
