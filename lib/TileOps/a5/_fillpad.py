@@ -149,13 +149,33 @@ def _fill(dst, row_start, row_stop, col_start, col_stop, scalar_tail_start=None)
 
 def _fill_inplace(dst, src_valid_rows, src_valid_cols, dst_valid_rows, dst_valid_cols):
     fill_scalar = _fill_scalar(dst)
-    # TileDSL v1 has no vstus/vstas equivalent for unaligned right padding.
-    # A masked vsts starting at src_valid_cols can overwrite valid elements.
-    with pto.for_(0, src_valid_rows, step=1) as row:
-        with pto.for_(src_valid_cols, dst_valid_cols, step=1) as col:
-            scalar.store(fill_scalar, dst[row, col])
+    dtype = dst.dtype
+    lanes = pto.elements_per_vreg(dtype)
+    cols = dst.shape[1]
+    dst_ptr = dst.as_ptr()
 
-    lanes = pto.elements_per_vreg(dst.dtype)
+    # Keep each store base vector-aligned and mask out the source prefix. This
+    # matches vstus/vstas semantics without issuing an unaligned vector store.
+    with pto.for_(0, src_valid_rows, step=1) as row:
+        dst_remained = dst_valid_cols
+        src_remained = src_valid_cols
+        col_loop = pto.for_(0, dst_valid_cols, step=lanes).carry(
+            dst_remained=dst_remained,
+            src_remained=src_remained,
+        )
+        with col_loop:
+            col = col_loop.iv
+            dst_mask, dst_remained = pto.make_mask(dtype, dst_remained)
+            src_mask, src_remained = pto.make_mask(dtype, src_remained)
+            fill_mask = pto.pxor(dst_mask, src_mask, dst_mask)
+            vec = pto.vdup(fill_scalar, fill_mask)
+            addr = pto.addptr(dst_ptr, row * cols + col)
+            pto.vsts(vec, addr, 0, fill_mask)
+            col_loop.update(
+                dst_remained=dst_remained,
+                src_remained=src_remained,
+            )
+
     scalar_tail_start = _scalar_tail_start(dst, lanes)
     _fill(
         dst,

@@ -17,12 +17,13 @@
 // pto.tfillpad (inplace) should be lowered to vector-style VPTO IR.
 // CHECK: func.func @TFILLPAD_INPLACE
 // CHECK-NOT: pto.tfillpad ins
-// CHECK: pto.castptr
-// Unaligned right padding must use scalar stores because TileDSL v1 has no
-// vstus/vstas equivalent and a masked vsts would overwrite valid elements.
-// CHECK: pto.store %
+// CHECK: %[[MAX:.*]] = arith.constant 3.40282347E+38 : f32
+// Unaligned right padding uses an aligned store base and masks out the source
+// prefix, matching vstus/vstas behavior without overwriting valid elements.
 // CHECK: pto.vecscope
-// CHECK-DAG: pto.vdup
+// CHECK: pto.castptr
+// CHECK-DAG: pto.pxor
+// CHECK-DAG: pto.vdup %[[MAX]],
 // CHECK-DAG: pto.vsts
 
 module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
@@ -32,14 +33,14 @@ module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
                       blayout=row_major, slayout=none_box, fractal=512, pad=3>
     %dst = pto.alloc_tile
       : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16,
-                      blayout=row_major, slayout=none_box, fractal=512, pad=1>
+                      blayout=row_major, slayout=none_box, fractal=512, pad=2>
 
     // Column 7 is deliberately unaligned. The runtime ST separately models
     // the PTO-ISA in-place calling convention with aliased tile addresses.
     pto.tfillpad ins(%src : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=8, v_col=7,
                               blayout=row_major, slayout=none_box, fractal=512, pad=3>)
                  outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16,
-                                   blayout=row_major, slayout=none_box, fractal=512, pad=1>)
+                                   blayout=row_major, slayout=none_box, fractal=512, pad=2>)
                  {mode = #pto.tfillpad_mode<in_place>}
     return
   }
