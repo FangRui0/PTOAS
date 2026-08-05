@@ -376,9 +376,9 @@ static LogicalResult replaceTPowSWithTmp(pto::TPowSOp op,
   return success();
 }
 
-static LogicalResult replaceTGatherWithTmp(pto::TGatherOp op,
-                                           bool requireExplicitTmp,
-                                           MLIRContext *ctx) {
+[[maybe_unused]] static LogicalResult
+replaceTGatherWithTmp(pto::TGatherOp op, bool requireExplicitTmp,
+                      MLIRContext *ctx) {
   if (op.getTmp() || op.hasMaskForm())
     return success();
   if (!op.hasIndexForm() && !op.hasCompareForm())
@@ -881,7 +881,7 @@ struct PTOMaterializeImplicitTmpPass
 
     SmallVector<Operation *> optionalTmpOps;
     func.walk([&](Operation *op) {
-      if (isa<pto::TColSumOp, pto::TGatherOp, pto::TQuantOp, pto::TPowOp,
+      if (isa<pto::TColSumOp, pto::TQuantOp, pto::TPowOp,
               pto::TPowSOp, pto::TSort32Op, pto::TXorOp,
               pto::TXorSOp, pto::TCvtOp, pto::TMrgSortOp>(op))
         optionalTmpOps.push_back(op);
@@ -892,9 +892,6 @@ struct PTOMaterializeImplicitTmpPass
           llvm::TypeSwitch<Operation *, LogicalResult>(op)
               .Case<pto::TColSumOp>([&](auto typedOp) {
                 return replaceTColSumWithTmp(typedOp, requireExplicitTmp, ctx);
-              })
-              .Case<pto::TGatherOp>([&](auto typedOp) {
-                return replaceTGatherWithTmp(typedOp, requireExplicitTmp, ctx);
               })
               .Case<pto::TQuantOp>([&](auto typedOp) {
                 return replaceTQuantWithTmp(typedOp, requireExplicitTmp, ctx);

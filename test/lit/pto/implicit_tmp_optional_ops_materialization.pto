@@ -18,15 +18,6 @@ module {
     return
   }
 
-  func.func @implicit_tgather_tmp() {
-    %src = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f16, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    %indices = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=i32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    %dst = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f16, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    pto.tgather ins(%src, %indices : !pto.tile_buf<loc=vec, dtype=f16, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=i32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-      outs(%dst : !pto.tile_buf<loc=vec, dtype=f16, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    return
-  }
-
   func.func @implicit_tquant_tmp() {
     %src = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=8, v_row=8, v_col=8, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     %fp = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=1, v_row=8, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>
@@ -59,9 +50,6 @@ module {
 // CHECK: pto.alloc_tile addr = {{.*}} : !pto.tile_buf<vec, 2x8xf32>
 // CHECK: pto.tcolsum ins(%{{.*}}, %{{.*}} {{.*}}isBinary = true
 
-// CHECK-LABEL: func.func @implicit_tgather_tmp
-// CHECK: pto.tgather ins(%{{.*}}, %{{.*}}, %{{.*}} : !pto.tile_buf<vec, 1x32xf16>, !pto.tile_buf<vec, 1x32xi32>, !pto.tile_buf<vec, 1x32xi32>)
-
 // CHECK-LABEL: func.func @implicit_tquant_tmp
 // CHECK: pto.tquant ins(%{{.*}}, %{{.*}} : !pto.tile_buf<vec, 8x8xf32>, !pto.tile_buf<vec, 8x1xf32, blayout=col_major>) outs(%{{.*}}, %{{.*}} : !pto.tile_buf<vec, 8x32xi8, valid=8x8>, !pto.tile_buf<vec, 8x8xf32>)
 
@@ -71,8 +59,6 @@ module {
 // CHECK-LABEL: func.func @implicit_tsort32_tmp
 // CHECK: pto.tsort32 ins(%{{.*}}, %{{.*}}, %{{.*}} : !pto.tile_buf<vec, 1x48xf16, valid=1x33>, !pto.tile_buf<vec, 1x40xui32, valid=1x33>, !pto.tile_buf<vec, 1x48xf16, valid=1x33>)
 
-// A5-LABEL: func.func @implicit_tgather_tmp
-// A5: pto.tgather ins(%{{.*}}, %{{.*}}, %{{.*}} :
 // A5-LABEL: func.func @implicit_tquant_tmp
 // A5: pto.tquant ins(%{{.*}}, %{{.*}} : {{.*}}) outs(%{{.*}} :
 // A5-NOT: pto.tquant ins({{.*}}) outs(%{{.*}}, %{{.*}}

@@ -7845,18 +7845,14 @@ llvm::LogicalResult mlir::pto::TGatherOp::verify() {
     if (getAxisAttr())
       return emitOpError("axis attribute must not be provided without maskPattern");
     if (getCdst() || getKValue()) {
-      if (!getCdst() || !getKValue())
-        return emitOpError("compare-form tgather expects dst, cdst, and kValue");
+      if (!getCdst() || !getKValue() || !getTmp())
+        return emitOpError("compare-form tgather expects dst, cdst, kValue, and tmp");
       if (getIndices())
         return emitOpError("compare-form tgather does not take indices");
-      if (!getTmp())
-        return success();
       return verifyCompareForm(/*allowA5SrcTypes=*/false);
     }
-    if (!getIndices())
-      return emitOpError("index-form tgather expects indices");
-    if (!getTmp())
-      return success();
+    if (!getIndices() || !getTmp())
+      return emitOpError("index-form tgather expects both indices and tmp");
     return verifyIndexForm(/*allow16BitIndices=*/false, /*allowA5ElemTypes=*/false);
   };
 
@@ -7869,18 +7865,14 @@ llvm::LogicalResult mlir::pto::TGatherOp::verify() {
     if (getAxisAttr())
       return emitOpError("axis attribute must not be provided without maskPattern");
     if (getCdst() || getKValue()) {
-      if (!getCdst() || !getKValue())
-        return emitOpError("compare-form tgather expects dst, cdst, and kValue");
+      if (!getCdst() || !getKValue() || !getTmp())
+        return emitOpError("compare-form tgather expects dst, cdst, kValue, and tmp");
       if (getIndices())
         return emitOpError("compare-form tgather does not take indices");
-      if (!getTmp())
-        return success();
       return verifyCompareForm(/*allowA5SrcTypes=*/true);
     }
     if (!getIndices())
       return emitOpError("index-form tgather expects indices");
-    if (!getTmp())
-      return success();
     return verifyIndexForm(/*allow16BitIndices=*/true, /*allowA5ElemTypes=*/true);
   };
 
