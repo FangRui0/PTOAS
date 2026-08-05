@@ -148,8 +148,23 @@ def _fill(dst, row_start, row_stop, col_start, col_stop, scalar_tail_start=None)
 
 
 def _fill_inplace(dst, src_valid_rows, src_valid_cols, dst_valid_rows, dst_valid_cols):
-    _fill(dst, 0, src_valid_rows, src_valid_cols, dst_valid_cols)
-    _fill(dst, src_valid_rows, dst_valid_rows, 0, dst_valid_cols)
+    fill_scalar = _fill_scalar(dst)
+    # TileDSL v1 has no vstus/vstas equivalent for unaligned right padding.
+    # A masked vsts starting at src_valid_cols can overwrite valid elements.
+    with pto.for_(0, src_valid_rows, step=1) as row:
+        with pto.for_(src_valid_cols, dst_valid_cols, step=1) as col:
+            scalar.store(fill_scalar, dst[row, col])
+
+    lanes = pto.elements_per_vreg(dst.dtype)
+    scalar_tail_start = _scalar_tail_start(dst, lanes)
+    _fill(
+        dst,
+        src_valid_rows,
+        dst_valid_rows,
+        0,
+        dst_valid_cols,
+        scalar_tail_start=scalar_tail_start,
+    )
 
 
 def register_fillpad():

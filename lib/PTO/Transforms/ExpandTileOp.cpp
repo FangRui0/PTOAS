@@ -522,6 +522,10 @@ static void appendOpContextAttrs(
   if (auto tci = dyn_cast<pto::TCIOp>(op)) {
     attrs.emplace_back("descending", tci.getDescending() ? "true" : "false");
   }
+  if (auto tfillpad = dyn_cast<pto::TFillPadOp>(op)) {
+    attrs.emplace_back(
+        "mode", pto::stringifyTFillPadMode(tfillpad.getMode()).str());
+  }
   if (auto tscatter = dyn_cast<pto::TScatterOp>(op)) {
     if (auto maskPatternAttr = tscatter.getMaskPatternAttr()) {
       attrs.emplace_back(
