@@ -33,16 +33,17 @@ PTOAS 前端 IR 中很多 tile op 的 `tmp` operand 是可选的。当前如果�
 pto-materialize-implicit-tmp
 ```
 
-该 pass 运行在 `PTOViewToMemref` 之后、`pto-plan-memory` 之前：
+该 pass 运行在 fusion/调度 pass 之后、`pto-plan-memory` 之前：
 
 ```text
-PTOViewToMemref
+PTOFusionRegionGen
   -> pto-materialize-implicit-tmp
-  -> pto-plan-memory
+  -> PTORematerializeFixpipeVectorQuant
+  -> pto-plan-memory (level1/level2 only; skipped at level3)
   -> PTOResolveReservedBuffers
-  -> sync passes
-  -> PTOMaterializeTileHandles
-  -> PTOToEmitC
+  -> sync passes (InsertSync / GraphSyncSolver / BarrierAll ...)
+  -> PTOResolveBufferSelect
+  -> EmitPTOManual (PTO -> EmitC lowering)
 ```
 
 pass 的职责是扫描所有已纳入改造的目标 op。如果 op 没有 tmp operand，就根据该 op 的 `TmpRequirement` 在 op 前插入 `pto.alloc_tile(no addr)`，并重写原 op，使其显式携带 tmp。
@@ -72,8 +73,6 @@ bool requireExplicitAtLevel3;
 对自动生成的 tmp：
 
 - 使用 tile-native `pto.alloc_tile(no addr)`。
-- 不创建 `memref.alloc`。
-- 不创建 `pto.pointer_cast` / `pto.bind_tile`。
 - 不设置 `addr`，由 memplan 统一规划。
 - 尽量使用静态 full-valid shape，即 `v_row/v_col` 与 `rows/cols` 一致，不额外携带 `valid_row` / `valid_col` operand。
 - 定义位置必须支配目标 op。
@@ -140,7 +139,7 @@ level3 + target_op(no tmp) => pass/verifier 报错
 
 引入 `pto-materialize-implicit-tmp` 后，level1/level2 的目标 op 在 EmitC 前都会携带 tmp，因此会自然走带 tmp 的 overload。
 
-不建议在 PTOToEmitC 中补 tmp，原因：
+不建议在 `EmitPTOManual`（PTO -> EmitC lowering）中补 tmp，原因：
 
 - EmitC 阶段已经错过 memplan。
 - 临时生成 tmp 无法获得 local addr。
@@ -158,7 +157,7 @@ level3 + target_op(no tmp) => pass/verifier 报错
 Optional<PTODpsType>:$tmp
 ```
 
-PTOToEmitC 也已经根据 `op.getTmp()` 选择带 tmp 或不带 tmp 的 C++ 调用。因此 TCI 改造不需要改 `pto.tci` 的 IR 语法，关键是保证进入 EmitC 前缺省 tmp 已经被显式 materialize。
+`EmitPTOManual`（PTO -> EmitC lowering）也已经根据 `op.getTmp()` 选择带 tmp 或不带 tmp 的 C++ 调用。因此 TCI 改造不需要改 `pto.tci` 的 IR 语法，关键是保证进入 EmitC 前缺省 tmp 已经被显式 materialize。
 
 TCI 后端 C++ 接口存在两类 overload：
 
@@ -326,8 +325,9 @@ test/lit/pto/tci_implicit_tmp_materialization.pto
 CHECK: pto.alloc_tile
 CHECK-SAME: dtype=f32
 CHECK: pto.tci ins(%{{.*}}, %{{.*}}
-CHECK-NOT: memref.alloc
 ```
+
+可选地检查 IR 不打印 `operandSegmentSizes`（可选 tmp 的自定义 assembly printer 已 elide 该属性，保证 round-trip 稳定）。
 
 可以额外检查自动生成 shape：b32 dst 为 `f32 1x192`，b16 dst 为 `f32 1x448`。同时应覆盖 A5 下不自动生成 tmp。
 
@@ -527,7 +527,6 @@ forbidAlias(tmp, dst)
 ```text
 CHECK: pto.alloc_tile
 CHECK: pto.trowexpandadd ins(%{{.*}}, %{{.*}}, %{{.*}}
-CHECK-NOT: memref.alloc
 ```
 
 同时检查 A5 下不自动生成 tmp。
@@ -584,11 +583,12 @@ TSORT32, TQUANT
 
 | 分类 | Op / 模式 | 设计结论 |
 | --- | --- | --- |
-| A2/A3 使用 tmp，A5 接受但不使用 | `TCOLARGMAX`、`TCOLARGMIN`、`TROWARGMAX`、`TROWARGMIN`、`TGATHER`、`TROWPROD`、`TROWSUM`、`TROWMAX`、`TROWMIN`、`TSEL`、`TSELS`、`TREM`、`TREMS`、`TQUANT`、`TADDDEQRELU` | level1/2 在 A2/A3 生成真实 scratch；若 A5 C++ 签名仍要求 tmp，则生成不带 MemoryEffects 的 ABI placeholder。 |
+| A2/A3 使用 tmp，A5 接受但不使用 | `TCOLARGMAX`、`TCOLARGMIN`、`TROWARGMAX`、`TROWARGMIN`、`TROWPROD`、`TROWSUM`、`TROWMAX`、`TROWMIN`、`TSEL`、`TSELS`、`TREM`、`TREMS`、`TQUANT`、`TADDDEQRELU` | level1/2 在 A2/A3 生成真实 scratch；若 A5 C++ 签名仍要求 tmp，则生成不带 MemoryEffects 的 ABI placeholder。 |
 | A2/A3 和 A5 都可能使用 tmp | `TCOLSUM(isBinary=true)`、`TSORT32` 非 32 对齐尾部、`TMRGSORT` 多列表归并 format2 | tmp 使用由 op 模式决定，不能只按 arch 判断。 |
 | 条件性 tmp，不应无条件 materialize | `TTRANS`、`TCVT`、`TPOW`、`TPOWS`、`TRSQRT`、`TMRGSORT`、`TSORT32` | 需要先判断精度、dtype、layout、format 或尾部条件。 |
 | 已从 mandatory tmp 改为 optional tmp | `TTRANS`、`TXOR`、`TXORS`、`TPRELU`、`TROWPROD`、`TROWSUM`、`TROWMAX`、`TROWMIN`、`TROWARGMAX`、`TROWARGMIN`、`TCOLARGMAX`、`TCOLARGMIN`、`TSEL`、`TSELS`、`TREM`、`TREMS` | ODS、parse/print、verifier、MemoryEffects、materialize 和 lowering 已接入。 |
-| 当前 PTOAS IR 已有 optional tmp | `TGATHER`、`TCOLSUM`、`TRSQRT`、`TPOW`、`TPOWS`、`TSORT32`、`TQUANT` | 可直接纳入 `pto-materialize-implicit-tmp` 的后续实现。 |
+| 当前 PTOAS IR 已有 optional tmp | `TCOLSUM`、`TRSQRT`、`TPOW`、`TPOWS`、`TSORT32`、`TQUANT` | 可直接纳入 `pto-materialize-implicit-tmp` 的后续实现。 |
+| 已有 optional tmp 但不纳入 implicit-tmp materialize | `TGATHER` | main 分支要求 A2/A3 显式 tmp（verifier 拒绝省略），A5 index-form 设计为无 tmp；`replaceTGatherWithTmp` 实现保留但当前不在 dispatch 中启用。 |
 | 当前 PTOAS IR 暂无对应 op | `TADDDEQRELU` | 需先完成 PTOAS IR 接入；`TCVT` 已新增 optional tmp operand。 |
 
 ### 通用规则
@@ -766,11 +766,13 @@ TGATHER, TTRANS, TCVT
 
 TGATHER：
 
-- 当前 PTOAS IR 已支持 optional tmp。
+- 当前 PTOAS IR 已支持 optional tmp，但 **tgather 不纳入 implicit-tmp materialize 范围**。
+- main 分支（PR #1080 "Add TGATHER indices and mask"）对 tgather 的 tmp 契约更严：A2/A3 index-form 和所有 compare-form 都要求显式 `tmp`（verifier 报 `index-form tgather expects both indices and tmp` / `compare-form tgather expects dst, cdst, kValue, and tmp`）；A5 index-form 设计为不带 tmp（emit `TGATHER(src, indices, dst)` 三参数）。
+- 因此 tgather 省略 tmp 时不由 `pto-materialize-implicit-tmp` 自动补齐，而是由 verifier 直接拒绝（A2/A3）或允许无 tmp（A5 index-form）。
 - index form：A2/A3 C++ API 需要 tmp；tmp dtype 与 indices dtype 一致，shape 覆盖 indices；A5 不使用 tmp。
 - compare form：A2/A3 tmp 是合并暂存缓冲区，包含 `cmpsTmp`、`indexTmp`、`cvtTmp` 三个区域；最小字节数按 PTO-ISA 文档公式计算；A5 不使用 tmp。
-- mask form 不使用 tmp，不应自动补 tmp。
-- A2/A3 level3 下 index / compare form 缺省 tmp 报错。
+- mask form 不使用 tmp。
+- A2/A3 index / compare form 必须显式提供 tmp；A5 index-form 不带 tmp。
 
 TTRANS：
 
