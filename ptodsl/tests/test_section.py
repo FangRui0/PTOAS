@@ -10,6 +10,7 @@
 """Focused tracing coverage for explicit physical section hints."""
 
 from ptodsl import pto
+from ptodsl._ast_rewrite import PTODSLAstRewriteError
 from ptodsl._context import make_context
 from ptodsl._tracing.active import current_session
 from ptoas.mlir.ir import Module
@@ -120,6 +121,17 @@ def lexical_section_rebinding_probe():
         pto.wait_flag("MTE2", "S", event_id=event_id)
 
 
+@pto.jit(target="a5")
+def lexical_non_section_conditional_rebinding_probe():
+    one = pto.const(1, dtype=pto.i32)
+    value = pto.const(0, dtype=pto.i32)
+    if pto.get_block_idx() < one:
+        value = one
+    else:
+        value = pto.const(2, dtype=pto.i32)
+    pto.wait_flag("S", "MTE2", event_id=value)
+
+
 @pto.jit(target="a5", mode="explicit")
 def lexical_section_conditional_rebinding_probe():
     one = pto.const(1, dtype=pto.i32)
@@ -185,6 +197,30 @@ def lexical_section_sibling_single_sided_conditional_rebinding_probe():
             n_tile_2 = n_tile
         pto.wait_flag("MTE2", "S", event_id=m_tile_2)
         pto.wait_flag("MTE2", "S", event_id=n_tile_2)
+
+
+@pto.jit(target="a5", mode="explicit")
+def lexical_section_uninitialized_conditional_probe():
+    one = pto.const(1, dtype=pto.i32)
+    with pto.section("cube"):
+        if pto.get_block_idx() < one:
+            value = one
+        pto.wait_flag("S", "MTE2", event_id=value)
+
+
+@pto.jit(target="a5", mode="explicit")
+def lexical_section_nested_conditional_rebinding_probe():
+    one = pto.const(1, dtype=pto.i32)
+    value = pto.const(0, dtype=pto.i32)
+    with pto.section("cube"):
+        if pto.get_block_idx() < one:
+            if pto.get_block_idx() < one:
+                value = one
+            else:
+                value = pto.const(2, dtype=pto.i32)
+        else:
+            value = pto.const(3, dtype=pto.i32)
+        pto.wait_flag("S", "MTE2", event_id=value)
 
 
 @pto.jit(target="a5", mode="explicit")
@@ -280,6 +316,12 @@ def main() -> None:
     assert lexical_text.count("pto.section.cube {") == 1
     assert lexical_text.count("pto.section.vector {") == 1
 
+    non_section_lexical_text = lexical_non_section_conditional_rebinding_probe.compile().mlir_text()
+    assert non_section_lexical_text.count("scf.if") == 1
+    with make_context() as context:
+        module = Module.parse(non_section_lexical_text, context)
+        module.operation.verify()
+
     conditional_lexical_text = lexical_section_conditional_rebinding_probe.compile().mlir_text()
     assert conditional_lexical_text.count("pto.section.cube {") == 1
     assert "scf.if" in conditional_lexical_text
@@ -299,6 +341,19 @@ def main() -> None:
     with make_context() as context:
         module = Module.parse(sibling_single_sided_text, context)
         module.operation.verify()
+
+    nested_conditional_text = lexical_section_nested_conditional_rebinding_probe.compile().mlir_text()
+    assert nested_conditional_text.count("pto.section.cube {") == 1
+    assert nested_conditional_text.count("scf.if") == 2
+    with make_context() as context:
+        module = Module.parse(nested_conditional_text, context)
+        module.operation.verify()
+
+    _expect_raises(
+        PTODSLAstRewriteError,
+        lambda: lexical_section_uninitialized_conditional_probe.compile(),
+        "reads a section-local value before it is initialized",
+    )
 
     loop_carry_text = lexical_section_loop_carry_probe.compile().mlir_text()
     assert loop_carry_text.count("pto.section.cube {") == 1
