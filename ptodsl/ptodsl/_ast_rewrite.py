@@ -59,6 +59,7 @@ def rewrite_jit_function(fn, *, static_bindings=None, rewrite_control_flow=True)
         rewriter = _ControlFlowRewriter(
             static_env,
             section_entry_bindings=section_rewriter.section_entry_bindings,
+            section_uninitialized_aliases=section_rewriter.section_uninitialized_aliases,
         )
         function_def.body = rewriter.rewrite_block(function_def.body, live_after=set())
     tree = ast.Module(body=[function_def], type_ignores=[])
@@ -101,6 +102,7 @@ class _SectionLexicalRewriter(ast.NodeTransformer):
         self._known_bindings = set()
         self._section_outer_bindings = None
         self.section_entry_bindings = {}
+        self.section_uninitialized_aliases = set()
 
     @staticmethod
     def _is_section_with(node):
@@ -118,7 +120,9 @@ class _SectionLexicalRewriter(ast.NodeTransformer):
 
     def _activate_targets(self, targets):
         for name in targets & self._local_names:
-            alias = self._env.setdefault(name, self._fresh_alias(name))
+            if name not in self._env:
+                self._env[name] = self._fresh_alias(name)
+            alias = self._env[name]
             if self._section_outer_bindings is not None and name in self._section_outer_bindings:
                 self.section_entry_bindings.setdefault(alias, name)
 
@@ -200,9 +204,22 @@ class _SectionLexicalRewriter(ast.NodeTransformer):
 
     def visit_If(self, node):
         node.test = self.visit(node.test)
+        # Both branches of a runtime conditional share one authored binding.
+        # Any future env-forking visitor must apply the same invariant: reserve
+        # common targets before visiting either branch. For section-local
+        # bindings this prevents the branch merge from creating two aliases.
+        common_targets = _name_info(node.body).stores & _name_info(node.orelse).stores
+        self._activate_targets(common_targets)
         entry_env = dict(self._env)
         node.body, body_env = self._visit_block(node.body, entry_env)
         node.orelse, else_env = self._visit_block(node.orelse, entry_env)
+        entry_aliases = set(entry_env.values())
+        branch_only_aliases = set(body_env.values()) ^ set(else_env.values())
+        self.section_uninitialized_aliases.update(
+            alias
+            for alias in branch_only_aliases - entry_aliases
+            if alias not in self.section_entry_bindings
+        )
         self._env.update(body_env)
         self._env.update(else_env)
         return node
@@ -942,15 +959,24 @@ class _SlotCarryRewriter(ast.NodeTransformer):
 
 
 class _ControlFlowRewriter:
-    def __init__(self, static_env=None, *, section_entry_bindings=None):
+    def __init__(self, static_env=None, *, section_entry_bindings=None, section_uninitialized_aliases=None):
         self._static_env = dict(static_env or {})
         self._section_entry_bindings = dict(section_entry_bindings or {})
+        self._section_uninitialized_aliases = set(section_uninitialized_aliases or ())
         self._counter = 0
 
     def _fresh(self, prefix: str) -> str:
         value = f"__pto_ast_{prefix}_{self._counter}"
         self._counter += 1
         return value
+
+    def _section_entry_value(self, name):
+        if name in self._section_uninitialized_aliases:
+            raise PTODSLAstRewriteError(
+                "ast_rewrite=True runtime if reads a section-local value before it is initialized; "
+                f"initialize {name!r} before the conditional"
+            )
+        return _name(self._section_entry_bindings.get(name, name))
 
     def rewrite_block(self, stmts, *, live_after, live_after_slots=None, allow_loop_control=False, static_iters=None):
         rewritten_reversed = []
@@ -1206,7 +1232,7 @@ class _ControlFlowRewriter:
         result.extend(
             ast.Assign(
                 targets=[_name(old_name, ast.Store())],
-                value=_name(name),
+                value=self._section_entry_value(name),
             )
             for name, old_name in old_value_names.items()
         )
