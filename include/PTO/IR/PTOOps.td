@@ -4697,13 +4697,12 @@ def TFillPadOp : PTO_TOp<"tfillpad", [
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
-  let summary = "Fill padding in normal, in-place, or expand mode (tilebuf, DPS)";
+  let summary = "Fill padding with compiler-inferred lowering semantics (tilebuf, DPS)";
 
   let arguments = (ins
     PTODpsType:$src,
     PTODpsType:$dst,
-    OptionalAttr<PTO_PadValueAttr>:$padValue,
-    DefaultValuedAttr<PTO_TFillPadModeAttr, "::mlir::pto::TFillPadMode::Normal">:$mode
+    OptionalAttr<PTO_PadValueAttr>:$padValue
   );
 
   let results = (outs);

@@ -9778,16 +9778,16 @@ struct PTOInsertToEmitC : public OpConversionPattern<pto::TInsertOp> {
   }
 };
 
-static StringRef getTFillPadModeToken(pto::TFillPadMode mode) {
-  switch (mode) {
-  case pto::TFillPadMode::Normal:
+static StringRef getTFillPadModeToken(pto::TFillPadLoweringKind loweringKind) {
+  switch (loweringKind) {
+  case pto::TFillPadLoweringKind::Normal:
     return "pto::TFillPadMode::Normal";
-  case pto::TFillPadMode::InPlace:
+  case pto::TFillPadLoweringKind::InPlace:
     return "pto::TFillPadMode::InPlace";
-  case pto::TFillPadMode::Expand:
+  case pto::TFillPadLoweringKind::Expand:
     return "pto::TFillPadMode::Expand";
   }
-  llvm_unreachable("unknown TFillPadMode");
+  llvm_unreachable("unknown TFillPadLoweringKind");
 }
 
 struct PTOFillPadToEmitC : public OpConversionPattern<pto::TFillPadOp> {
@@ -9800,6 +9800,15 @@ struct PTOFillPadToEmitC : public OpConversionPattern<pto::TFillPadOp> {
 
     Value src = peelUnrealized(adaptor.getSrc());
     Value dst = peelUnrealized(adaptor.getDst());
+
+    auto loweringKind = pto::inferTFillPadLoweringKindAfterMemoryPlanning(op);
+    if (failed(loweringKind)) {
+      op.emitOpError(
+          "cannot infer a supported lowering; expand and in-place forms "
+          "require loc=vec, statically comparable physical shapes, and "
+          "resolved planned addresses");
+      return failure();
+    }
 
     auto padValueTok = [&](pto::PadValue mode) -> StringRef {
       switch (mode) {
@@ -9821,9 +9830,9 @@ struct PTOFillPadToEmitC : public OpConversionPattern<pto::TFillPadOp> {
       // tfillpad, so lowering can trust the preserved semantic contract.
       templateArgs = rewriter.getArrayAttr(
           {emitc::OpaqueAttr::get(ctx, padValueTok(padValueAttr.getValue()))});
-    } else if (op.getMode() != pto::TFillPadMode::Normal) {
+    } else if (*loweringKind != pto::TFillPadLoweringKind::Normal) {
       templateArgs = rewriter.getArrayAttr(
-          {emitc::OpaqueAttr::get(ctx, getTFillPadModeToken(op.getMode()))});
+          {emitc::OpaqueAttr::get(ctx, getTFillPadModeToken(*loweringKind))});
     }
 
     rewriter.create<emitc::CallOpaqueOp>(

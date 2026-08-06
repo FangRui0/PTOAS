@@ -203,16 +203,18 @@ def register_fillpad():
         tags=("fillpad",),
     )
     def template(src: pto.Tile, dst: pto.Tile):
-        mode = pto.get_op_attr("mode", "normal")
+        lowering_kind = pto.get_op_attr("lowering_kind", "normal")
         src_valid_rows, src_valid_cols = src.valid_shape
         dst_valid_rows, dst_valid_cols = dst.valid_shape
         lanes = pto.elements_per_vreg(dst.dtype)
         aligned_cols = (src_valid_cols // lanes) * lanes
-        if mode == "in_place":
+        if lowering_kind == "in_place":
             _fill_inplace(dst, src_valid_rows, src_valid_cols, dst_valid_rows, dst_valid_cols)
             return
         _copy_region(src, dst, src_valid_rows, 0, aligned_cols)
-        fill_row_stop = dst_valid_rows if mode == "expand" else src_valid_rows
+        fill_row_stop = (
+            dst_valid_rows if lowering_kind == "expand" else src_valid_rows
+        )
         scalar_tail_start = _scalar_tail_start(dst, lanes)
         _fill(dst, 0, fill_row_stop, aligned_cols, dst_valid_cols, scalar_tail_start=scalar_tail_start)
         _copy_region(src, dst, src_valid_rows, aligned_cols, src_valid_cols)

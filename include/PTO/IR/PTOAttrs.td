@@ -1190,19 +1190,6 @@ def PTO_PadValueAttr : PTO_Attr<"PadValue", "pad_value"> {
   let assemblyFormat = "`<` params `>`";
 }
 
-def PTO_TFillPadModeEnum : PTO_I32Enum<
-  "TFillPadMode", "PTO TFILLPAD execution mode", [
-    I32EnumAttrCase<"Normal", 0, "normal">,
-    I32EnumAttrCase<"InPlace", 1, "in_place">,
-    I32EnumAttrCase<"Expand", 2, "expand">
-  ]>;
-
-def PTO_TFillPadModeAttr
-    : EnumAttr<PTO_Dialect, PTO_TFillPadModeEnum, "tfillpad_mode"> {
-  let assemblyFormat = "`<` params `>`";
-  let summary = "TFILLPAD normal, in-place, or expand execution mode";
-}
-
 def PTO_CompactMode_Enum : PTO_I32Enum<"CompactMode", "Tile compact mode", [
   I32EnumAttrCase<"Null", 0, "null">,
   I32EnumAttrCase<"Normal", 1, "normal">,

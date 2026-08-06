@@ -15,9 +15,8 @@ The destination tile's `pad` / `pad_value` configuration determines which value 
 ```mlir
 pto.tfillpad ins(%src : !pto.tile_buf<...>)
              outs(%dst : !pto.tile_buf<...>)
-             {mode = #pto.tfillpad_mode<normal>}
 ```
-- **semantics:** the `mode` attribute selects normal, in-place, or expand behavior. It defaults to `normal`; PTOAS does not infer it from aliasing or shape.
+- **semantics:** PTOAS infers normal, in-place, or expand behavior from the physical tile shapes and the addresses produced by memory planning. Users do not specify a mode.
 
 **Parameter Table:**
 
@@ -25,24 +24,25 @@ pto.tfillpad ins(%src : !pto.tile_buf<...>)
 |-----------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile. |
 | `dst` | `pto.tile_buf` | Destination tile carrying the pad configuration. |
-| `mode` | `#pto.tfillpad_mode<normal\|in_place\|expand>` | ISA mode; defaults to `normal`. |
-| `padValue` | `#pto.pad_value<...>` (optional) | Explicit MAT `TFILLPAD<PadValue>` argument; only valid in normal mode. |
+| `padValue` | `#pto.pad_value<...>` (optional) | Explicit MAT `TFILLPAD<PadValue>` argument. |
 
-**Mode Table:**
+**Inference Table:**
 
-| Mode | Behavior | PTO-ISA mapping |
-|------|----------|-----------------|
-| `normal` | Copy valid data from `src`, then fill padding in `dst`. | `TFILLPAD(dst, src)` |
-| `in_place` | Skip the copy phase and fill padding on shared storage. | `TFILLPAD<pto::TFillPadMode::InPlace>(dst, src)` |
-| `expand` | Copy `src` into a destination whose static shape may be larger, then fill the expanded region. | `TFILLPAD<pto::TFillPadMode::Expand>(dst, src)` |
+| Compiler condition | Behavior | PTO-ISA mapping |
+|--------------------|----------|-----------------|
+| VEC, equal physical shapes, and different or unprovable addresses | Copy valid data from `src`, then fill padding in `dst`. | `TFILLPAD(dst, src)` |
+| VEC, equal physical shapes, and identical starting addresses after memory planning | Skip the copy phase and fill padding on shared storage. | `TFILLPAD<pto::TFillPadMode::InPlace>(dst, src)` |
+| VEC, every `dst` physical dimension is at least the corresponding `src` dimension, and at least one is larger | Copy `src` into the larger destination and fill the expanded region. | `TFILLPAD<pto::TFillPadMode::Expand>(dst, src)` |
+| Supported non-VEC form, regardless of address equality | Use the architecture's normal overload. | `TFILLPAD(dst, src)` |
 
 **Constraints:**
 
 - Source and destination element types must be compatible.
 - The destination tile must carry a meaningful pad configuration.
-- `in_place` and `expand` are VEC-only. Normal mode also supports the homogeneous MAT overload.
-- Normal and in-place modes require equal source and destination static shapes.
-- Expand mode requires each destination static dimension to be greater than or equal to the source dimension.
+- In-place and expand lowering are VEC-only. Normal lowering also supports the homogeneous MAT overload.
+- Expand inference compares physical `shape`, not `valid_shape`.
+- When physical shapes are equal, PTOAS compares exact starting addresses after PlanMemory. If equality cannot be proven, it conservatively chooses normal lowering.
+- MAT always uses Normal lowering, including when source and destination share the same starting address.
 
 **Example:**
 
@@ -52,9 +52,7 @@ pto.tfillpad ins(%src : !pto.tile_buf<vec, 8x64xf32, valid=?x?>)
 
 pto.tfillpad ins(%tile : !pto.tile_buf<vec, 32x32xf32, pad=1>)
              outs(%tile : !pto.tile_buf<vec, 32x32xf32, pad=1>)
-             {mode = #pto.tfillpad_mode<in_place>}
 
 pto.tfillpad ins(%src_small : !pto.tile_buf<vec, 4x32xf32>)
              outs(%dst_large : !pto.tile_buf<vec, 8x64xf32, pad=1>)
-             {mode = #pto.tfillpad_mode<expand>}
 ```

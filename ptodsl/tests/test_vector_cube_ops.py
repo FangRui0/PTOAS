@@ -134,22 +134,19 @@ class VectorCubeSurfaceTest(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertFalse(hasattr(pto.tile, name), name)
 
-    def test_tile_fillpad_dispatches_one_op_with_mode(self):
+    def test_tile_fillpad_dispatches_one_op_without_mode(self):
         src = object()
         dst = object()
-        mode_attr = object()
 
         with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
-             patch.object(_ops, "_tfillpad_mode_attr", return_value=mode_attr) as build_mode, \
              patch.object(_ops._pto, "tfillpad") as tfillpad:
-            pto.tile.fillpad(src, dst, mode="expand")
+            pto.tile.fillpad(src, dst)
 
-        build_mode.assert_called_once_with("expand")
-        tfillpad.assert_called_once_with(src, dst, mode=mode_attr)
+        tfillpad.assert_called_once_with(src, dst)
 
-    def test_tile_fillpad_rejects_unknown_mode(self):
-        with self.assertRaisesRegex(ValueError, "normal.*in_place.*expand"):
-            _ops._tfillpad_mode_attr("automatic")
+    def test_tile_fillpad_rejects_mode_argument(self):
+        with self.assertRaises(TypeError):
+            pto.tile.fillpad(object(), object(), mode="expand")
 
     def test_sync_flag_names_are_exposed_without_legacy_aliases(self):
         preferred_names = [

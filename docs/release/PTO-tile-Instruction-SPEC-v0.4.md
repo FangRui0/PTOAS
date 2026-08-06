@@ -1769,9 +1769,8 @@ The destination tile's `pad` / `pad_value` configuration determines which value 
 ```mlir
 pto.tfillpad ins(%src : !pto.tile_buf<...>)
              outs(%dst : !pto.tile_buf<...>)
-             {mode = #pto.tfillpad_mode<normal>}
 ```
-- **semantics:** `mode` selects normal, in-place, or expand behavior and defaults to `normal`. PTOAS does not infer the mode from shapes or aliasing.
+- **semantics:** PTOAS infers normal, in-place, or expand behavior from physical tile shapes and post-PlanMemory addresses. Users do not specify a mode.
 
 **Parameter Table:**
 
@@ -1779,22 +1778,24 @@ pto.tfillpad ins(%src : !pto.tile_buf<...>)
 |-----------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile. |
 | `dst` | `pto.tile_buf` | Destination tile carrying the pad configuration. |
-| `mode` | `#pto.tfillpad_mode<normal\|in_place\|expand>` | PTO-ISA execution mode. |
 
-**Mode Table:**
+**Inference Table:**
 
-| Mode | Behavior | PTO-ISA mapping |
-|------|----------|-----------------|
-| `normal` | Copy valid data, then fill padding. | `TFILLPAD(dst, src)` |
-| `in_place` | Skip the copy phase and fill padding on shared storage. | `TFILLPAD<pto::TFillPadMode::InPlace>(dst, src)` |
-| `expand` | Copy into a possibly larger destination and fill the expanded region. | `TFILLPAD<pto::TFillPadMode::Expand>(dst, src)` |
+| Compiler condition | Behavior | PTO-ISA mapping |
+|--------------------|----------|-----------------|
+| VEC, equal physical shapes, and different or unprovable addresses | Copy valid data, then fill padding. | `TFILLPAD(dst, src)` |
+| VEC, equal physical shapes, and identical starting addresses after memory planning | Skip the copy phase and fill padding on shared storage. | `TFILLPAD<pto::TFillPadMode::InPlace>(dst, src)` |
+| VEC, destination physical shape is at least the source shape in every dimension and larger in at least one | Copy into the larger destination and fill the expanded region. | `TFILLPAD<pto::TFillPadMode::Expand>(dst, src)` |
+| Supported non-VEC form, regardless of address equality | Use the architecture's normal overload. | `TFILLPAD(dst, src)` |
 
 **Constraints:**
 
 - Source and destination element types must be compatible.
 - The destination tile must carry a meaningful pad configuration.
-- Non-normal modes are VEC-only. Normal mode also supports the homogeneous MAT overload.
-- Normal and in-place modes require equal static shapes; expand requires each destination dimension to be greater than or equal to the source dimension.
+- In-place and expand lowering are VEC-only. Normal lowering also supports the homogeneous MAT overload.
+- Expand inference compares physical `shape`, not `valid_shape`.
+- Equal physical shapes use exact starting-address equality after PlanMemory to select in-place lowering; an unprovable address relationship selects normal lowering.
+- MAT always uses Normal lowering, including when source and destination share the same starting address.
 
 **Example:**
 
@@ -1804,9 +1805,7 @@ pto.tfillpad ins(%src : !pto.tile_buf<vec, 8x64xf32, valid=?x?>)
 
 pto.tfillpad ins(%tile : !pto.tile_buf<vec, 32x32xf32, pad=1>)
              outs(%tile : !pto.tile_buf<vec, 32x32xf32, pad=1>)
-             {mode = #pto.tfillpad_mode<in_place>}
 
 pto.tfillpad ins(%src_small : !pto.tile_buf<vec, 4x32xf32>)
              outs(%dst_large : !pto.tile_buf<vec, 8x64xf32, pad=1>)
-             {mode = #pto.tfillpad_mode<expand>}
 ```

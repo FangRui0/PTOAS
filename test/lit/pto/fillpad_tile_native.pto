@@ -14,9 +14,10 @@
 
 module {
   func.func private @tfillpad_arg(
-      %tile: !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=1>) {
-    pto.tfillpad ins(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=1>)
-                 outs(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=1>)
+      %src: !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=1>,
+      %dst: !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=1>) {
+    pto.tfillpad ins(%src : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=1>)
+                 outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=1>)
     return
   }
 
@@ -24,16 +25,17 @@ module {
       %tile: !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=1>) {
     pto.tfillpad ins(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=1>)
                  outs(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=1>)
-                 {mode = #pto.tfillpad_mode<in_place>}
     return
   }
 }
 
 // NATIVE-LABEL: func.func private @tfillpad_arg(
 // NATIVE: pto.tfillpad ins(%arg0
+// NATIVE-SAME: outs(%arg1
 // NATIVE-LABEL: func.func private @tfillpad_inplace_arg(
 // NATIVE: pto.tfillpad ins(%arg0
-// NATIVE-SAME: mode = #pto.tfillpad_mode<in_place>
+// NATIVE-SAME: outs(%arg0
+// NATIVE-NOT: mode
 // NATIVE-NOT: memref<
 
 // EMITC-LABEL: tfillpad_arg(

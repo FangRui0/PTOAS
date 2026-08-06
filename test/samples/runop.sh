@@ -988,13 +988,8 @@ PY
     fi
 
     if [[ "$base" == "fillpad" ]]; then
-      if ! grep -Fq "TFILLPAD(" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing TFILLPAD() lowering for pto.tfillpad"
-        overall=1
-        continue
-      fi
-      if grep -Fq "TFillPadMode::" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tnormal pto.tfillpad should use the default ISA mode"
+      if ! grep -Fq "TFILLPAD" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing compiler-inferred TFILLPAD lowering"
         overall=1
         continue
       fi

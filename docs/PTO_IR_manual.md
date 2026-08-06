@@ -8053,7 +8053,7 @@ pto.textract ins(%src, %row, %col : !pto.tile_buf<...>, index, index fp %fp : !p
 
 ##### `pto.tfillpad` - Fill Padding Region
 
-**Summary:** Unified normal, in-place, and expand padding operation. `mode` defaults to `normal` and is never inferred from SSA aliasing or shapes.
+**Summary:** Unified padding operation. PTOAS infers normal, in-place, or expand lowering from physical shapes and post-PlanMemory addresses.
 
 **Semantics:**
 
@@ -8069,7 +8069,6 @@ expand:   copy src into a possibly larger dst, then fill the expanded region
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile |
 | `dst` | `pto.tile_buf` | Destination tile (with pad config) |
-| `mode` | `#pto.tfillpad_mode<normal\|in_place\|expand>` | PTO-ISA execution mode; defaults to `normal` |
 | `padValue` | `#pto.pad_value<...>` (optional) | Explicit `TFILLPAD<PadValue>` template argument for `loc=mat`. When present, it must match `dst`'s tile pad configuration. |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -8078,17 +8077,19 @@ expand:   copy src into a possibly larger dst, then fill the expanded region
 
 - `dst.pad` must not be `null`.
 - `src` and `dst` element sizes must match, and the element size must be `1`, `2`, or `4` bytes.
-- Normal and in-place modes require equal source and destination static shapes.
-- Expand mode requires `dst.rows >= src.rows` and `dst.cols >= src.cols`.
-- Non-normal modes require both operands to use `loc=vec`.
-- If `padValue` is present, mode must be normal, `dst` must be `loc=mat`, and `padValue` must equal the tile type's `pad`.
+- If source and destination physical shapes differ, every destination dimension must be at least the corresponding source dimension; PTOAS then infers expand lowering.
+- If physical shapes are equal, exact starting-address equality after PlanMemory selects in-place lowering; otherwise PTOAS selects normal lowering.
+- `valid_shape` does not participate in expand inference.
+- In-place and expand lowering require both operands to use `loc=vec`.
+- If `padValue` is present, `dst` must be `loc=mat`, and `padValue` must equal the tile type's `pad`.
+- MAT always uses Normal lowering, including when source and destination share the same starting address.
 - For `loc=mat`, `src` and `dst` must be lowerable to the same `TFILLPAD` tile specialization, i.e. `validShape` and `pad` must be identical.
 
 **Hardware Mapping:**
 
 - VEC forms execute on the **Vector pipeline** (`PIPE_V`).
 - The normal homogeneous MAT form executes on `PIPE_MTE1`.
-- Normal lowers to `TFILLPAD(dst, src)`; non-normal modes lower one-to-one to `TFILLPAD<pto::TFillPadMode::InPlace/Expand>(dst, src)`.
+- Normal lowers to `TFILLPAD(dst, src)`; compiler-inferred in-place and expand forms lower to `TFILLPAD<pto::TFillPadMode::InPlace/Expand>(dst, src)`.
 
 **Basic Example:**
 
@@ -8097,11 +8098,9 @@ pto.tfillpad ins(%src : !pto.tile_buf<...>) outs(%dst : !pto.tile_buf<...>)
 
 pto.tfillpad ins(%tile : !pto.tile_buf<vec, 32x32xf32, pad=1>)
              outs(%tile : !pto.tile_buf<vec, 32x32xf32, pad=1>)
-             {mode = #pto.tfillpad_mode<in_place>}
 
 pto.tfillpad ins(%src_small : !pto.tile_buf<vec, 16x16xf32>)
              outs(%dst_large : !pto.tile_buf<vec, 32x32xf32, pad=1>)
-             {mode = #pto.tfillpad_mode<expand>}
 ```
 
 ---

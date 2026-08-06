@@ -32,6 +32,7 @@
 #include "PTO/Support/PythonExecutable.h"
 #include "PTO/Transforms/Passes.h"
 #include "PTO/Transforms/TileOpExpansionUtils.h"
+#include "Utils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -482,7 +483,7 @@ static std::string getTRandomRoundsString(pto::TRandomOp op) {
   return std::to_string(op.getRounds());
 }
 
-static void appendOpContextAttrs(
+static LogicalResult appendOpContextAttrs(
     Operation *op,
     SmallVectorImpl<std::pair<std::string, std::string>> &attrs) {
   if (auto tcvt = dyn_cast<pto::TCvtOp>(op)) {
@@ -527,8 +528,25 @@ static void appendOpContextAttrs(
     attrs.emplace_back("descending", tci.getDescending() ? "true" : "false");
   }
   if (auto tfillpad = dyn_cast<pto::TFillPadOp>(op)) {
-    attrs.emplace_back(
-        "mode", pto::stringifyTFillPadMode(tfillpad.getMode()).str());
+    auto kind = pto::inferTFillPadLoweringKindAfterMemoryPlanning(tfillpad);
+    if (failed(kind))
+      return tfillpad.emitOpError(
+          "cannot infer a supported lowering; expand and in-place forms "
+          "require loc=vec, statically comparable physical shapes, and "
+          "resolved planned addresses");
+    StringRef token;
+    switch (*kind) {
+    case pto::TFillPadLoweringKind::Normal:
+      token = "normal";
+      break;
+    case pto::TFillPadLoweringKind::InPlace:
+      token = "in_place";
+      break;
+    case pto::TFillPadLoweringKind::Expand:
+      token = "expand";
+      break;
+    }
+    attrs.emplace_back("lowering_kind", token.str());
   }
   if (auto tscatter = dyn_cast<pto::TScatterOp>(op)) {
     if (auto maskPatternAttr = tscatter.getMaskPatternAttr()) {
@@ -558,6 +576,7 @@ static void appendOpContextAttrs(
              op, attrs, pto::DivPrecision::HighPrecision) ||
          tryAppendPrecisionType<pto::TColExpandDivOp>(
              op, attrs, pto::DivPrecision::HighPrecision));
+  return success();
 }
 
 static bool getStaticIntFromValue(Value value, int64_t &out) {
@@ -774,21 +793,28 @@ static std::optional<OperandTypeInfo> buildOperandTypeInfo(Value value) {
   return info;
 }
 
-static std::optional<SpecKey> buildSpecKey(Operation *op) {
+static FailureOr<SpecKey> buildSpecKey(Operation *op) {
   SpecKey key;
   key.opName = getTileOpName(op).str();
   key.targetArch = getTargetArchString(op);
 
   for (unsigned i = 0; i < op->getNumOperands(); ++i) {
     auto info = buildOperandTypeInfo(op->getOperand(i));
-    if (!info)
-      return std::nullopt;
+    if (!info) {
+      op->emitError("ExpandTileOp: cannot build specialization key for this "
+                    "operand schema");
+      return failure();
+    }
     key.operands.push_back(*info);
   }
-  if (key.operands.empty())
-    return std::nullopt;
+  if (key.operands.empty()) {
+    op->emitError(
+        "ExpandTileOp: cannot build a specialization key without operands");
+    return failure();
+  }
 
-  appendOpContextAttrs(op, key.contextAttrs);
+  if (failed(appendOpContextAttrs(op, key.contextAttrs)))
+    return failure();
   return key;
 }
 
@@ -1219,15 +1245,12 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
   });
 
   for (auto *op : tileOps) {
-    auto specKeyOpt = buildSpecKey(op);
-    if (!specKeyOpt) {
-      op->emitError(
-          "ExpandTileOp: cannot build specialization key for this operand schema");
+    auto specKey = buildSpecKey(op);
+    if (failed(specKey))
       return failure();
-    }
 
     // Invoke the selected TileLib backend (with daemon-side caching).
-    func::FuncOp dslFn = invokeTileLib(*specKeyOpt, op, mod, ctx);
+    func::FuncOp dslFn = invokeTileLib(*specKey, op, mod, ctx);
     if (!dslFn) {
       StringRef opName = getTileOpName(op);
       op->emitError("ExpandTileOp: failed to instantiate TileLib template for " +

@@ -257,12 +257,6 @@ void mlir::pto::python::populatePTODialectBindings(pybind11::module_ &m) {
       .value("DualModeSplitN", mlir::pto::AccToVecMode::DualModeSplitN)
       .export_values();
 
-    py::enum_<mlir::pto::TFillPadMode>(m, "TFillPadMode")
-      .value("Normal", mlir::pto::TFillPadMode::Normal)
-      .value("InPlace", mlir::pto::TFillPadMode::InPlace)
-      .value("Expand", mlir::pto::TFillPadMode::Expand)
-      .export_values();
-
     py::enum_<mlir::pto::TInsertMode>(m, "TInsertMode")
       .value("SPLIT2", mlir::pto::TInsertMode::SPLIT2)
       .value("SPLIT4", mlir::pto::TInsertMode::SPLIT4)
@@ -394,19 +388,6 @@ void mlir::pto::python::populatePTODialectBindings(pybind11::module_ &m) {
             "get",
             [](py::object cls, mlir::pto::AccToVecMode value, MlirContext ctx) -> py::object {
             MlirAttribute a = mlirPTOAccToVecModeAttrGet(ctx, static_cast<int32_t>(value));
-            if (mlirAttributeIsNull(a)) return py::none();
-            return cls(a);
-            },
-            py::arg("cls"), py::arg("value"), py::arg("context") = py::none());
-
-    mlir_attribute_subclass(m, "TFillPadModeAttr",
-                            [](MlirAttribute a) -> bool {
-                            return mlirPTOAttrIsATFillPadModeAttr(a);
-                            })
-        .def_classmethod(
-            "get",
-            [](py::object cls, mlir::pto::TFillPadMode value, MlirContext ctx) -> py::object {
-            MlirAttribute a = mlirPTOTFillPadModeAttrGet(ctx, static_cast<int32_t>(value));
             if (mlirAttributeIsNull(a)) return py::none();
             return cls(a);
             },

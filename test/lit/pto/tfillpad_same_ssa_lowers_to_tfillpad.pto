@@ -10,5 +10,4 @@ module {
 }
 
 // CHECK-LABEL: AICORE void tfillpad_same_ssa(
-// CHECK: TFILLPAD(
-// CHECK-NOT: TFillPadMode::InPlace
+// CHECK: TFILLPAD<pto::TFillPadMode::InPlace>(

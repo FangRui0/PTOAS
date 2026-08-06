@@ -187,7 +187,7 @@ PTO tile/view IR
 | `pto.texpands` | shape扩展和 scalar operand |
 | `pto.textract` | tile role、offset、fp tile 地址空间和可选 pre-quant |
 | `pto.tinsert` | materialize pass 当前对 tile config 有特殊推断；包含 fp/pre-quant tile role，目标是由 result type 完整携带 |
-| `pto.tfillpad` | 显式 mode、src/dst alias、MemoryEffects 和 A5 MAT/PIPE 选择 |
+| `pto.tfillpad` | 基于 physical shape 和 PlanMemory 地址推导 lowering、src/dst alias、MemoryEffects 和 A5 MAT/PIPE 选择 |
 | `pto.tsetval` | tile writer 和 result type |
 | `pto.tgetval` | tile reader和 scalar result |
 | `pto.tgather` | optional tmp、compare/index form 和 sync macro model |

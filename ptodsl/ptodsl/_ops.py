@@ -4150,31 +4150,11 @@ def tpartmin(src0, src1, dst):
     )
 
 
-def _tfillpad_mode_attr(mode):
-    if isinstance(mode, Attribute):
-        return mode
-    if isinstance(mode, str):
-        token = mode.strip().lower().replace("-", "_")
-        aliases = {
-            "normal": _pto.TFillPadMode.Normal,
-            "inplace": _pto.TFillPadMode.InPlace,
-            "in_place": _pto.TFillPadMode.InPlace,
-            "expand": _pto.TFillPadMode.Expand,
-        }
-        if token not in aliases:
-            raise ValueError(
-                "tfillpad mode must be 'normal', 'in_place', or 'expand'"
-            )
-        mode = aliases[token]
-    return _pto.TFillPadModeAttr.get(mode)
-
-
-def tfillpad(src, dst, *, mode="normal"):
-    """``pto.tfillpad ins(src) outs(dst)`` with an explicit ISA mode."""
+def tfillpad(src, dst):
+    """``pto.tfillpad ins(src) outs(dst)`` with compiler-inferred lowering."""
     _pto.tfillpad(
         unwrap_surface_value(src),
         unwrap_surface_value(dst),
-        mode=_tfillpad_mode_attr(mode),
     )
 
 

@@ -6,7 +6,7 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// TileLang ST kernels for pto.tfillpad (inplace mode).
+// TileLang ST kernels for compiler-inferred pto.tfillpad in-place lowering.
 // Matches C++ reference test case: Case 5
 // Compiled by ptoas --enable-insert-sync --enable-tile-op-expand --pto-backend=vpto
 //
@@ -63,7 +63,6 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 
     pto.tfillpad ins(%src_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=260, cols=16, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=3>)
                  outs(%dst_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=260, cols=16, v_row=260, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=2>)
-                 {mode = #pto.tfillpad_mode<in_place>}
 
     pto.tstore ins(%dst_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=260, cols=16, v_row=260, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=2>)
                outs(%dst_part : !pto.partition_tensor_view<1x1x1x260x16xf32>)

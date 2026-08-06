@@ -7113,8 +7113,7 @@ static bool isA5VectorPreQuantTypePair(Type srcElem, Type dstElem) {
 }
 
 static mlir::LogicalResult verifyTFillPadLike(Operation *op, Type srcTy,
-                                              Type dstTy,
-                                              pto::TFillPadMode mode) {
+                                              Type dstTy) {
   if (!isPTOShapedLike(srcTy) || !isPTOShapedLike(dstTy))
     return op->emitError("expects src/dst to be PTO shaped-like types");
 
@@ -7142,11 +7141,23 @@ static mlir::LogicalResult verifyTFillPadLike(Operation *op, Type srcTy,
 
   auto srcSpace = getPTOMemorySpaceEnum(srcTy);
   auto dstSpace = getPTOMemorySpaceEnum(dstTy);
-  if (mode != pto::TFillPadMode::Normal &&
+
+  bool expanded = false;
+  for (auto [srcDim, dstDim] : llvm::zip_equal(srcShape, dstShape)) {
+    if (srcDim == dstDim)
+      continue;
+    if (ShapedType::isDynamic(srcDim) || ShapedType::isDynamic(dstDim))
+      return op->emitError("cannot infer TFILLPAD lowering from mismatched "
+                           "dynamic physical shapes");
+    if (srcDim > dstDim)
+      return op->emitError(
+          "expects each dst physical shape dimension to be >= src");
+    expanded = true;
+  }
+  if (expanded &&
       (!srcSpace || !dstSpace || *srcSpace != pto::AddressSpace::VEC ||
        *dstSpace != pto::AddressSpace::VEC))
-    return op->emitError()
-           << "expects non-normal TFILLPAD mode only for loc=vec";
+    return op->emitError("expects expanded TFILLPAD only for loc=vec");
 
   // pto.tfillpad lowers to TFILLPAD(dst, src). For loc=mat, pto-isa only
   // exposes the homogeneous overload, so src/dst must use the same Tile<...>
@@ -7192,29 +7203,19 @@ static mlir::LogicalResult verifyTFillPadLike(Operation *op, Type srcTy,
       return op->emitError("expects dst PadVal != Null for tfillpad");
   }
 
-  if (mode != pto::TFillPadMode::Expand) {
-    if (srcShape != dstShape)
-      return op->emitError("expects src and dst to have the same static shape "
-                           "unless mode is expand");
-    return mlir::success();
-  }
-
-  if (srcShape[0] > dstShape[0] || srcShape[1] > dstShape[1]) {
-    return op->emitError(
-        "expects dst static shape to be >= src static shape for expand mode");
-  }
-
   return mlir::success();
 }
 
 mlir::LogicalResult mlir::pto::TFillPadOp::verify() {
-  if (failed(verifyTFillPadLike(getOperation(), getSrc().getType(), getDst().getType(),
-                                getMode())))
+  if (getOperation()->getAttr("mode"))
+    return emitOpError("does not accept 'mode'; PTOAS infers TFILLPAD lowering "
+                       "from physical shape and planned addresses");
+
+  if (failed(verifyTFillPadLike(getOperation(), getSrc().getType(),
+                                getDst().getType())))
     return failure();
 
   if (auto padValueAttr = getPadValueAttr()) {
-    if (getMode() != pto::TFillPadMode::Normal)
-      return emitOpError("expects padValue attribute only for normal mode");
     auto dstSpace = getPTOMemorySpaceEnum(getDst().getType());
     if (!dstSpace || *dstSpace != pto::AddressSpace::MAT)
       return emitOpError("expects padValue attribute only for loc=mat tfillpad");

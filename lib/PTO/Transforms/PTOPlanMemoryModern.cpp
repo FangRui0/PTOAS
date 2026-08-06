@@ -11,6 +11,7 @@
 #include "PTO/IR/PTOMultiBuffer.h"
 #include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/Transforms/Passes.h"
+#include "Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
@@ -270,8 +271,10 @@ static InplacePolicy getInplacePolicy(Operation *op) {
                 "pto.tcolargmin", "pto.tcvt",            "pto.txors",
             });
 
-  if (auto fillPad = dyn_cast<TFillPadOp>(op))
-    policy.notInplaceSafe |= fillPad.getMode() == TFillPadMode::Expand;
+  if (auto fillPad = dyn_cast<TFillPadOp>(op)) {
+    auto expanded = hasTFillPadExpandedPhysicalShape(fillPad);
+    policy.notInplaceSafe |= failed(expanded) || *expanded;
+  }
 
   if (name == "pto.tsel") {
     policy.forbidOutputAliasOperands.push_back(0); // mask

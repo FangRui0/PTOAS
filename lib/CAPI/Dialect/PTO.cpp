@@ -734,21 +734,6 @@ int32_t mlirPTOCompactModeAttrGetValue(MlirAttribute attr) {
   return static_cast<int32_t>(a.getValue());
 }
 
-bool mlirPTOAttrIsATFillPadModeAttr(MlirAttribute attr) {
-  return mlir::isa<mlir::pto::TFillPadModeAttr>(unwrap(attr));
-}
-
-MlirAttribute mlirPTOTFillPadModeAttrGet(MlirContext ctx, int32_t value) {
-  auto *c = unwrap(ctx);
-  return wrap(mlir::pto::TFillPadModeAttr::get(
-      c, static_cast<mlir::pto::TFillPadMode>(value)));
-}
-
-int32_t mlirPTOTFillPadModeAttrGetValue(MlirAttribute attr) {
-  auto a = mlir::cast<mlir::pto::TFillPadModeAttr>(unwrap(attr));
-  return static_cast<int32_t>(a.getValue());
-}
-
 bool mlirPTOAttrIsAAccToVecModeAttr(MlirAttribute attr) {
   return mlir::isa<mlir::pto::AccToVecModeAttr>(unwrap(attr));
 }
