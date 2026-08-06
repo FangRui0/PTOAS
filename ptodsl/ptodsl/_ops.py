@@ -3136,10 +3136,10 @@ def tmov(src, dst, *, mode=None):
 
 def ttrans(src, tmp, dst):
     """``pto.ttrans ins(src, tmp) outs(dst)`` – tile transpose (DPS)."""
-    _pto.ttrans(
+    _pto.TTransOp(
         unwrap_surface_value(src),
-        unwrap_surface_value(tmp),
         unwrap_surface_value(dst),
+        tmp=unwrap_surface_value(tmp),
     )
 
 

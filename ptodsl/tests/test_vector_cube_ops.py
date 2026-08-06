@@ -764,6 +764,17 @@ class VectorCubeSurfaceTest(unittest.TestCase):
                     getattr(pto.tile, name)(src, dst, tmp=tmp)
                 low_level_op.assert_called_once_with(src, tmp, dst)
 
+    def test_tile_transpose_wrapper_uses_tmp_keyword_builder(self):
+        src = object()
+        tmp = object()
+        dst = object()
+
+        with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_ops._pto, "TTransOp") as ttrans_op:
+            pto.tile.transpose(src, tmp, dst)
+
+        ttrans_op.assert_called_once_with(src, dst, tmp=tmp)
+
     def test_tile_sort_gather_wrappers_call_low_level_ops(self):
         src = object()
         idx = object()
