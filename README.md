@@ -215,6 +215,21 @@ ninja -C "$PTO_SOURCE_DIR/build" check-pto
 发布 wheel 自带运行时依赖，不使用外部 LLVM build tree 时无需设置上述
 `LD_LIBRARY_PATH`。无论哪种安装方式，都不需要手工拼接 `PYTHONPATH`。
 
+### Daily wheel
+
+定时构建会将最新 wheel 发布到 GitHub 的 `nightly` release。开发者可以查看
+[Nightly Build](https://github.com/hw-native-sys/PTOAS/releases/tag/nightly)，
+或在仓库 checkout 中运行下面的命令自动选择当前 Python 和平台对应的 wheel：
+
+```bash
+python tools/install_nightly_wheel.py
+```
+
+目前 daily workflow 提供 Python 3.10、3.11、3.12 的 Linux 和 macOS wheel。
+
+如需先查看将要安装的文件，可以加上 `--dry-run`。脚本使用当前 Python
+环境执行安装，并会替换该环境中已安装的同名 nightly wheel。
+
 需要 CANN、Bisheng、simulator 或 NPU 时，再加载 CANN 对外提供的环境脚本。
 常见安装位置如下，按实际环境选择一个：
 

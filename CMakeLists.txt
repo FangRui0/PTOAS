@@ -237,6 +237,15 @@ if(BUILD_TESTING)
       LABELS "PTO"
       ENVIRONMENT "${_pto_python_test_env}"
     )
+    add_test(
+      NAME pto_install_nightly_wheel
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/test/python/install_nightly_wheel.py"
+    )
+    set_tests_properties(pto_install_nightly_wheel PROPERTIES
+      LABELS "PTO"
+      ENVIRONMENT "${_pto_python_test_env}"
+    )
   endif()
   add_subdirectory(tools/ptobc/tests)
 endif()
