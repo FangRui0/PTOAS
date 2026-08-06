@@ -32,6 +32,11 @@ permissions:
   contents: read
 
 concurrency:
+  # Linux and macOS publish to the same rolling release. The schedules are
+  # offset by 30 minutes; this non-canceling group prevents asset upload races.
+  # GitHub keeps at most one pending run in a group, so a run that spans the
+  # next daily schedule may replace an older pending run by design. Manual
+  # workflow_dispatch runs are dry-runs and do not publish the nightly release.
   group: ${{ github.event_name == 'schedule' && 'nightly-wheel-publish' || format('build-wheel-{0}', github.event.pull_request.number || github.ref) }}
   cancel-in-progress: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
 

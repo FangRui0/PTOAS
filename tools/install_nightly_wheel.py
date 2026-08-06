@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 import argparse
+import datetime
+import hashlib
 import json
 import os
 import subprocess
@@ -24,6 +26,22 @@ from pathlib import Path
 
 DEFAULT_REPOSITORY = "hw-native-sys/PTOAS"
 DEFAULT_TAG = "nightly"
+NETWORK_TIMEOUT_SECONDS = 30
+STALE_WHEEL_AGE = datetime.timedelta(hours=48)
+
+
+class WheelSelection:
+    def __init__(
+        self,
+        name: str,
+        url: str,
+        updated_at: datetime.datetime | None,
+        digest: str | None,
+    ) -> None:
+        self.name = name
+        self.url = url
+        self.updated_at = updated_at
+        self.digest = digest
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,6 +68,10 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Resolve and print the wheel without installing it",
     )
+    parser.add_argument(
+        "--sha256",
+        help="Expected SHA-256 digest of the selected wheel",
+    )
     return parser.parse_args()
 
 
@@ -63,20 +85,53 @@ def github_request(url: str) -> object:
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(request) as response:
+        with urllib.request.urlopen(request, timeout=NETWORK_TIMEOUT_SECONDS) as response:
             return json.load(response)
     except urllib.error.HTTPError as error:
+        detail = ""
+        if error.code in (403, 429):
+            detail = " Set GITHUB_TOKEN if GitHub API rate limiting is suspected."
+        try:
+            response_body = error.read().decode("utf-8", errors="replace")
+            response_json = json.loads(response_body)
+            message = response_json.get("message") if isinstance(response_json, dict) else None
+            if message:
+                detail += f" GitHub message: {message}."
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            pass
         raise RuntimeError(
-            f"GitHub API request failed with HTTP {error.code}: {error.reason}"
+            f"GitHub API request failed with HTTP {error.code}: {error.reason}.{detail}"
+        ) from error
+    except TimeoutError as error:
+        raise RuntimeError(
+            f"GitHub API request timed out after {NETWORK_TIMEOUT_SECONDS} seconds"
         ) from error
     except urllib.error.URLError as error:
         raise RuntimeError(f"unable to reach GitHub API: {error.reason}") from error
 
 
-def select_wheel(release: object, package: str) -> tuple[str, str]:
+def parse_updated_at(value: object) -> datetime.datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def parse_digest(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    digest = value.removeprefix("sha256:")
+    if len(digest) == 64 and all(character in "0123456789abcdefABCDEF" for character in digest):
+        return digest.lower()
+    return None
+
+
+def select_wheel(release: object, package: str = "ptoas") -> WheelSelection:
     try:
         from packaging.tags import sys_tags
-        from packaging.utils import parse_wheel_filename
+        from packaging.utils import canonicalize_name, parse_wheel_filename
     except ImportError as error:
         raise RuntimeError(
             "the packaging module is required; install it with 'python -m pip install packaging'"
@@ -87,6 +142,7 @@ def select_wheel(release: object, package: str) -> tuple[str, str]:
 
     supported_tags = list(sys_tags())
     tag_rank = {tag: rank for rank, tag in enumerate(supported_tags)}
+    canonical_package = canonicalize_name(package)
     candidates = []
     for asset in release["assets"]:
         if not isinstance(asset, dict):
@@ -96,34 +152,63 @@ def select_wheel(release: object, package: str) -> tuple[str, str]:
         if not isinstance(name, str) or not name.endswith(".whl") or not isinstance(url, str):
             continue
         try:
-            distribution, version, _, wheel_tags = parse_wheel_filename(name)
+            distribution, version, build, wheel_tags = parse_wheel_filename(name)
         except (TypeError, ValueError):
             continue
-        if str(distribution) != package.replace("_", "-").lower():
+        if canonicalize_name(str(distribution)) != canonical_package:
             continue
         matching_ranks = [tag_rank[tag] for tag in wheel_tags if tag in tag_rank]
         if matching_ranks:
-            candidates.append((version, min(matching_ranks), name, url))
+            candidates.append(
+                (
+                    parse_updated_at(asset.get("updated_at")),
+                    version,
+                    build or (-1, ""),
+                    min(matching_ranks),
+                    name,
+                    url,
+                    parse_digest(asset.get("digest")),
+                )
+            )
 
     if not candidates:
         raise RuntimeError(
             f"no compatible {package} wheel found in the {release.get('tag_name', 'requested')} release"
         )
-    _, _, name, url = max(candidates, key=lambda item: (item[0], -item[1], item[2]))
-    return name, url
+    selected = max(
+        candidates,
+        key=lambda item: (
+            item[0] or datetime.datetime.min.replace(tzinfo=datetime.timezone.utc),
+            item[1],
+            item[2],
+            -item[3],
+            item[4],
+        ),
+    )
+    return WheelSelection(selected[4], selected[5], selected[0], selected[6])
 
 
-def download(url: str, destination: Path) -> None:
+def download(url: str, destination: Path, expected_sha256: str | None = None) -> None:
     request = urllib.request.Request(
         url,
         headers={"User-Agent": "ptoas-nightly-wheel-installer"},
     )
     try:
-        with urllib.request.urlopen(request) as response, destination.open("wb") as output:
+        with urllib.request.urlopen(request, timeout=NETWORK_TIMEOUT_SECONDS) as response, destination.open(
+            "wb"
+        ) as output:
+            digest = hashlib.sha256()
             while chunk := response.read(1024 * 1024):
                 output.write(chunk)
+                digest.update(chunk)
+    except TimeoutError as error:
+        raise RuntimeError(
+            f"wheel download timed out after {NETWORK_TIMEOUT_SECONDS} seconds"
+        ) from error
     except (OSError, urllib.error.URLError) as error:
         raise RuntimeError(f"failed to download wheel: {error}") from error
+    if expected_sha256 and digest.hexdigest() != expected_sha256.lower().removeprefix("sha256:"):
+        raise RuntimeError(f"SHA-256 mismatch for downloaded wheel {destination.name}")
 
 
 def main() -> int:
@@ -133,21 +218,30 @@ def main() -> int:
             f"https://api.github.com/repos/{args.repository}/releases/tags/{args.tag}"
         )
         release = github_request(release_url)
-        wheel_name, wheel_url = select_wheel(release, args.package)
-        print(f"Selected wheel: {wheel_name}")
+        selection = select_wheel(release, args.package)
+        print(f"Selected wheel: {selection.name}")
+        if selection.updated_at:
+            age = datetime.datetime.now(datetime.timezone.utc) - selection.updated_at
+            if age > STALE_WHEEL_AGE:
+                print(
+                    f"warning: selected wheel was last updated {age.total_seconds() / 3600:.1f} hours ago",
+                    file=sys.stderr,
+                )
         if args.dry_run:
-            print(wheel_url)
+            print(selection.url)
             return 0
 
         with tempfile.TemporaryDirectory(prefix="ptoas-nightly-") as directory:
-            wheel_path = Path(directory) / wheel_name
-            download(wheel_url, wheel_path)
+            wheel_path = Path(directory) / selection.name
+            expected_sha256 = args.sha256 or selection.digest
+            download(selection.url, wheel_path, expected_sha256)
             command = [
                 sys.executable,
                 "-m",
                 "pip",
                 "install",
                 "--force-reinstall",
+                "--no-deps",
                 str(wheel_path),
             ]
             subprocess.run(command, check=True)
