@@ -114,7 +114,10 @@ def parse_updated_at(value: object) -> datetime.datetime | None:
     if not isinstance(value, str):
         return None
     try:
-        return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        timestamp = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=datetime.timezone.utc)
+        return timestamp
     except ValueError:
         return None
 
