@@ -316,7 +316,7 @@ private:
   void RecursionIR(Region *region, Liveness live);
 
   /// Get the buffer used within the loop and defined outside the loop.
-  SmallVector<Value> GetLiveBuffersInLoop(scf::ForOp forOp, Liveness live);
+  SmallVector<Value> GetLiveBuffersInLoop(Operation *loopOp, Liveness live);
 
   /// Update for Op tensor init args and tensor result args alias info.
   void UpdateInitAndResAlias(DestinationStyleOpInterface dstStyleOp);
@@ -324,11 +324,17 @@ private:
   /// Recursive operation for.
   void RecursiveForOp(scf::ForOp forOp, Liveness live);
 
+  /// Recursive operation for a generic scf.while loop.
+  void RecursiveWhileOp(scf::WhileOp whileOp, Liveness live);
+
   /// Update for Op init args region iter args alias info.
   void UpdateForOpInitArgsAlias(scf::ForOp forOp);
 
   /// Update forOp result buffer/region iter arg/yielded buffer args alias info.
   void UpdateForOpBufferAlias(scf::ForOp forOp);
+
+  /// Update aliases crossing both regions of an scf.while loop.
+  void UpdateWhileOpBufferAlias(scf::WhileOp whileOp);
 
   /// Recursive operation if.
   void RecursiveIfOp(scf::IfOp ifOp, Liveness live);

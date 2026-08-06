@@ -688,6 +688,20 @@ void BufidSyncAnalysis::mergeGetRls() {
             continue;
           }
 
+          // A while loop has two regions and a back-edge. Keep release/get
+          // state local to each region and do not carry a linear-scan map
+          // across the loop boundary: the loop may execute zero or many
+          // times, so keeping an outer linear state would be unsound.
+          if (auto whileOp = dyn_cast<scf::WhileOp>(&op)) {
+            for (auto &region : whileOp->getRegions()) {
+              RlsMap freshMap;
+              for (auto &subBlock : region.getBlocks())
+                processBlock(&subBlock, freshMap);
+            }
+            rlsMap.clear();
+            continue;
+          }
+
           if (auto ifOp = dyn_cast<scf::IfOp>(&op)) {
             for (auto &region : ifOp->getRegions()) {
               RlsMap freshMap;

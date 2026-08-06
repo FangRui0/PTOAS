@@ -124,7 +124,10 @@ static bool requiresVectorScope(Operation *op) {
 }
 
 static bool isAtomicControlFlowCandidate(Operation *op) {
-  return isa<scf::IfOp, scf::ForOp>(op);
+  // Structured control flow is kept as one inference unit. In particular,
+  // scf.while carries vector-scope values through both regions and must not
+  // be split into a resultless vecscope around only one of its regions.
+  return isa<scf::IfOp, scf::ForOp, scf::WhileOp>(op);
 }
 
 static bool isSafeScalarOperation(Operation *op) {

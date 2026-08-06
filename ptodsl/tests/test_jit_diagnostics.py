@@ -918,10 +918,9 @@ def main() -> None:
         NameError,
         "value",
     )
-    expect_raises(
-        lambda: define_ast_for_else_probe().compile(),
-        PTODSLAstRewriteError,
-        "does not support for-else",
+    expect(
+        "scf.while" in define_ast_for_else_probe().compile().mlir_text(),
+        "runtime for-else must lower through scf.while",
     )
     expect_raises(
         lambda: define_ast_for_non_range_probe().compile(),
@@ -933,16 +932,11 @@ def main() -> None:
         PTODSLAstRewriteError,
         "runtime for-loops require a simple name target",
     )
-    expect_raises(
-        lambda: define_ast_for_break_probe().compile(),
-        PTODSLAstRewriteError,
-        "does not support break/continue",
-    )
-    expect_raises(
-        lambda: define_ast_runtime_for_constexpr_break_probe().compile(),
-        PTODSLAstRewriteError,
-        "does not support break/continue",
-    )
+    for probe in (define_ast_for_break_probe, define_ast_runtime_for_constexpr_break_probe):
+        expect(
+            "scf.while" in probe().compile().mlir_text(),
+            "runtime for-break must lower through scf.while",
+        )
     expect_raises(
         lambda: define_ast_for_last_value_probe().compile(),
         PTODSLAstRewriteError,

@@ -704,6 +704,13 @@ Solver::checkCVMultiBufferPreloadEventIdInfo(RWOperation *rwOp1,
     return {};
   }
 
+  // Preload offsets are derived from a counted-loop induction variable. A
+  // dynamic scf.while has no equivalent first/last iteration formula; leave
+  // this optional optimization disabled and let ordinary synchronization
+  // planning handle the pair.
+  if (!isa<scf::ForOp>(parentLoop1->op))
+    return {};
+
   assert(parentScope1->preloadNum.has_value());
   assert(parentScope2->preloadNum.has_value());
   assert(parentScope1->maxPreloadNum.value() ==
