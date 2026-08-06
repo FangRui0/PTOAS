@@ -65,7 +65,7 @@ def _make_kernel(case: str):
         ub = pto.castptr(pto.i64(0), pto.ptr(dtype, "ub"))
         mask = pto.vmi.create_mask(size, size=size)
         idx = pto.vmi.vci(dtype(0), size=size, group=group)
-        out_idx = pto.vmi.vadds(idx, dtype(ADD_SCALAR), mask)
+        out_idx = pto.vmi.vadd(idx, dtype(ADD_SCALAR), mask)
         pto.vmi.vstore(out_idx, ub, pto.const(0, dtype=pto.index))
         pto.set_flag("V", "MTE3", event_id=0)
         pto.wait_flag("V", "MTE3", event_id=0)

@@ -570,15 +570,20 @@ operands. They form the arithmetic core of VMI SIMD kernels.
 #### `pto.vmi.vshl(lhs, rhs, mask=None, *, pmode=None) -> VRegType`
 #### `pto.vmi.vshr(lhs, rhs, mask=None, *, pmode=None) -> VRegType`
 
-**Description**: Element-wise binary operation: `result[i] = lhs[i] <op> rhs[i]`
-for lanes where `mask[i]` is true (or all lanes when `mask` is omitted).
+**Description**: These are element-wise binary operations. For `pto.vmi.vadd`,
+when `rhs` is a VMI vector, `result[i] = lhs[i] + rhs[i]` and the VMI `vadd`
+operation is emitted. When `rhs` is a scalar, the scalar is applied to every
+lane and the VMI `vadds` operation is emitted. The other operations require a
+VMI vector `rhs`. Operations are restricted to lanes where `mask[i]` is true
+(or all lanes when `mask` is omitted and the selected form permits an omitted
+mask).
 
 **Parameters**:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `lhs` | `VRegType` | First operand vector |
-| `rhs` | `VRegType` | Second operand vector |
+| `rhs` | `VRegType` or `ScalarType` | Second vector operand or scalar addend |
 | `mask` | VMI mask or `None` | Optional predicate mask gating lane participation |
 | `pmode` | `str` or `None` | Optional predicate mode: `"merge"` keeps predicate-inactive lanes at their prior value; `"zero"` writes 0 |
 
@@ -596,7 +601,9 @@ out = pto.vmi.vmul(scale, data, full_mask)
 ```
 
 **Constraints**:
-- `lhs` and `rhs` must have compatible shapes and element types.
+- For vector-vector form, `lhs` and `rhs` must have compatible shapes and
+  element types.
+- For vector-scalar form, the scalar is coerced to the element type of `lhs`.
 - The result type is inferred from `lhs`.
 - For bitwise ops (`vand`, `vor`, `vxor`, `vshl`, `vshr`), integer element
   types are expected. Floating-point usage is rejected.
@@ -646,12 +653,20 @@ inverted = pto.vmi.vnot(int_vec)
 
 Formal `pto.vmi` vector-scalar ops in VMI v0.1:
 
-#### `pto.vmi.vadds(source, scalar, mask, *, pmode=None) -> VRegType`
-#### `pto.vmi.vmuls(source, scalar, mask, *, pmode=None) -> VRegType`
-#### `pto.vmi.vmaxs(source, scalar, mask, *, pmode=None) -> VRegType`
-#### `pto.vmi.vmins(source, scalar, mask, *, pmode=None) -> VRegType`
-#### `pto.vmi.vshls(source, scalar, mask, *, pmode=None) -> VRegType`
-#### `pto.vmi.vshrs(source, scalar, mask, *, pmode=None) -> VRegType`
+#### `pto.vmi.vadds(source, scalar, mask, *, pmode=None) -> VRegType` (deprecated)
+#### `pto.vmi.vmuls(source, scalar, mask, *, pmode=None) -> VRegType` (deprecated)
+#### `pto.vmi.vmaxs(source, scalar, mask, *, pmode=None) -> VRegType` (deprecated)
+#### `pto.vmi.vmins(source, scalar, mask, *, pmode=None) -> VRegType` (deprecated)
+#### `pto.vmi.vshls(source, scalar, mask, *, pmode=None) -> VRegType` (deprecated)
+#### `pto.vmi.vshrs(source, scalar, mask, *, pmode=None) -> VRegType` (deprecated)
+
+These `*s` functions remain available as compatibility entry points and emit a
+`PTODSLDeprecationWarning`. Use the matching unified entry point for new
+PTODSL code, for example `pto.vmi.vmul(source, scalar, mask)` or
+`pto.vmi.vshr(source, scalar, mask)`. The warning applies only to the Python
+compatibility entry points; the underlying VMI `vadds`, `vmuls`, `vmaxs`,
+`vmins`, `vshls`, and `vshrs` operations remain part of the instruction set
+and are unchanged.
 
 The following are **PTODSL syntax sugar** — convenience wrappers provided by the
 PTODSL authoring layer. They have **no corresponding VMI instruction**; PTODSL lowers
@@ -1452,7 +1467,7 @@ def vmi_elementwise(
 | Index / Broadcast | `vci`, `vbrc` |
 | Binary vector-vector | `vadd`, `vsub`, `vmul`, `vdiv`, `vmax`, `vmin`, `vand`, `vor`, `vxor`, `vshl`, `vshr` |
 | Unary vector | `vabs`, `vneg`, `vrelu`, `vexp`, `vln`, `vsqrt`, `vnot` |
-| Vector-scalar | formal `pto.vmi`: `vadds`, `vmuls`, `vmaxs`, `vmins`, `vshls`, `vshrs`; DSL convenience: `vsubs`, `vands`, `vors`, `vxors` |
+| Vector-scalar | `pto.vmi.vadd(vector, scalar, mask)` emits `vadds`; other formal `pto.vmi` helpers are `vmuls`, `vmaxs`, `vmins`, `vshls`, `vshrs`; DSL convenience: `vsubs`, `vands`, `vors`, `vxors` |
 | Compare / Select | `vcmp`, `vcmps`, `vsel`, `vselr` |
 | Reduction | `vcadd`, `vcmax`, `vcmin` |
 | Conversion | `vcvt`, `vinterpret_cast` |

@@ -64,7 +64,7 @@ def _make_kernel(num_groups: int):
         mask = pto.vmi.create_mask(vl, size=vl)
         for _k in range(K_REMAT):
             idx = pto.vmi.vci(pto.i32(0), size=vl, group=num_groups)
-            out_idx = pto.vmi.vadds(idx, pto.i32(ADD_SCALAR), mask)
+            out_idx = pto.vmi.vadd(idx, pto.i32(ADD_SCALAR), mask)
             pto.vmi.vstore(out_idx, ub, pto.const(0, dtype=pto.index))
         pto.set_flag("V", "MTE3", event_id=0)
         pto.wait_flag("V", "MTE3", event_id=0)
