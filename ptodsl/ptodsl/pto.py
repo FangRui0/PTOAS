@@ -20,7 +20,7 @@ All user-facing symbols live here.  Low-level MLIR bindings are accessed
 internally as ``_pto`` (``from ptoas.mlir.dialects import pto as _pto``).
 """
 
-from ._diagnostics import unsupported_public_surface_error
+from ._diagnostics import deprecated, unsupported_public_surface_error
 
 # ── Types ─────────────────────────────────────────────────────────────────────
 from ._types import (           # noqa: F401
