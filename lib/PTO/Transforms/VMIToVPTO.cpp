@@ -3338,6 +3338,13 @@ std::optional<std::string> getPointStoreDistToken(Type elementType) {
   return (Twine("1PT_B") + Twine(elementBits)).str();
 }
 
+std::optional<std::string> getScalarBroadcastLoadDistToken(Type elementType) {
+  unsigned elementBits = pto::getPTOStorageElemBitWidth(elementType);
+  if (elementBits != 8 && elementBits != 16 && elementBits != 32)
+    return std::nullopt;
+  return (Twine("BRC_B") + Twine(elementBits)).str();
+}
+
 struct VPTOCmpMode {
   StringRef mode;
   std::optional<IntegerType::SignednessSemantics> signedness;
@@ -6492,6 +6499,35 @@ static LogicalResult lowerGroupSlotLoadParts(
     if (!stride || *stride != 1)
       return rewriter.notifyMatchFailure(
           op, "slots=8 group_slot_load requires constant unit stride");
+
+    // A single logical group only needs one scalar source element.  VSLDB is
+    // a 32B block load and requires its base operand to be 32B aligned, which
+    // is too strong for a valid element-aligned pointer such as base + k.
+    // VLD BRC loads that scalar from the effective element address and
+    // broadcasts it; only lane 0 is semantically live in this layout.
+    if (numGroups == 1) {
+      std::optional<std::string> dist =
+          getScalarBroadcastLoadDistToken(resultVMIType.getElementType());
+      if (!dist)
+        return rewriter.notifyMatchFailure(
+            op, "single-slot group_slot_load requires supported BRC load "
+                "element width");
+      if (resultTypes.size() != 1)
+        return rewriter.notifyMatchFailure(
+            op, "single-slot group_slot_load arity mismatch");
+      auto vregType = dyn_cast<VRegType>(resultTypes.front());
+      if (!vregType)
+        return rewriter.notifyMatchFailure(
+            op, "single-slot group_slot_load result must be vreg");
+      results.push_back(rewriter
+                            .create<VldsOp>(op->getLoc(), vregType,
+                                            /*updated_base=*/Type{}, source,
+                                            offset,
+                                            rewriter.getStringAttr(*dist))
+                            .getResult());
+      return success();
+    }
+
     for (auto [chunk, resultType] : llvm::enumerate(resultTypes)) {
       auto vregType = dyn_cast<VRegType>(resultType);
       if (!vregType)
