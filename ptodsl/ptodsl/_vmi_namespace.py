@@ -572,11 +572,16 @@ def _emit_binary_or_vec_scalar(
     lhs,
     rhs,
     mask=None,
+    *,
+    commutative=False,
     **kw,
 ):
-    """Dispatch a VMI binary family from the second operand kind."""
+    """Dispatch a VMI binary family from the operand kinds."""
+    lhs_type = getattr(_raw(lhs), "type", None)
     rhs_type = getattr(_raw(rhs), "type", None)
     if rhs_type is not None and _is_vmi_vreg_type(rhs_type):
+        if commutative and (lhs_type is None or not _is_vmi_vreg_type(lhs_type)):
+            return _emit_vec_scalar(vec_scalar_op_name, rhs, lhs, mask, **kw)
         return _emit_binary(binary_op_name, lhs, rhs, mask, **kw)
     return _emit_vec_scalar(vec_scalar_op_name, lhs, rhs, mask, **kw)
 
@@ -754,26 +759,26 @@ class _VMINamespace:
     @staticmethod
     def vadd(lhs, rhs, mask=None, **kw):
         """Emit VMI vector addition, selecting vector or scalar form by type."""
-        return _emit_binary_or_vec_scalar("vadd", "vadds", lhs, rhs, mask, **kw)
+        return _emit_binary_or_vec_scalar("vadd", "vadds", lhs, rhs, mask, commutative=True, **kw)
 
     vsub = staticmethod(lambda lhs, rhs, mask=None, **kw: _emit_binary("vsub", lhs, rhs, mask, **kw))
 
     @staticmethod
     def vmul(lhs, rhs, mask=None, **kw):
         """Emit VMI vector multiplication, selecting vector or scalar form by type."""
-        return _emit_binary_or_vec_scalar("vmul", "vmuls", lhs, rhs, mask, **kw)
+        return _emit_binary_or_vec_scalar("vmul", "vmuls", lhs, rhs, mask, commutative=True, **kw)
 
     vdiv = staticmethod(lambda lhs, rhs, mask=None, **kw: _emit_binary("vdiv", lhs, rhs, mask, **kw))
 
     @staticmethod
     def vmax(lhs, rhs, mask=None, **kw):
         """Emit VMI maximum, selecting vector or scalar form by type."""
-        return _emit_binary_or_vec_scalar("vmax", "vmaxs", lhs, rhs, mask, **kw)
+        return _emit_binary_or_vec_scalar("vmax", "vmaxs", lhs, rhs, mask, commutative=True, **kw)
 
     @staticmethod
     def vmin(lhs, rhs, mask=None, **kw):
         """Emit VMI minimum, selecting vector or scalar form by type."""
-        return _emit_binary_or_vec_scalar("vmin", "vmins", lhs, rhs, mask, **kw)
+        return _emit_binary_or_vec_scalar("vmin", "vmins", lhs, rhs, mask, commutative=True, **kw)
 
     vand = staticmethod(lambda lhs, rhs, mask=None, **kw: _emit_binary("vand", lhs, rhs, mask, **kw))
     vor = staticmethod(lambda lhs, rhs, mask=None, **kw: _emit_binary("vor", lhs, rhs, mask, **kw))

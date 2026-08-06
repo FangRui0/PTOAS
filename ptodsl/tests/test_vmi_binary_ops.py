@@ -46,6 +46,17 @@ def vmi_binary_vector_scalar_probe():
 
 
 @pto.jit(target="a5", backend="vpto", mode="explicit")
+def vmi_binary_scalar_vector_probe():
+    source_tile = pto.alloc_tile(shape=[1, 64], dtype=pto.f32)
+    mask = pto.vmi.create_mask(64, size=64)
+    source = pto.vmi.vload(source_tile.as_ptr(), 0, size=64)
+    _ = pto.vmi.vadd(1.0, source, mask)
+    _ = pto.vmi.vmul(2.0, source, mask)
+    _ = pto.vmi.vmax(1.0, source, mask)
+    _ = pto.vmi.vmin(1.0, source, mask)
+
+
+@pto.jit(target="a5", backend="vpto", mode="explicit")
 def vmi_deprecated_binary_scalar_probe():
     source_tile = pto.alloc_tile(shape=[1, 64], dtype=pto.f32)
     integer_tile = pto.alloc_tile(shape=[1, 64], dtype=pto.i32)
@@ -95,6 +106,13 @@ def main() -> None:
         expect(
             f"pto.vmi.{op_name}" in vector_scalar_text,
             f"unified VMI scalar form should emit pto.vmi.{op_name}",
+        )
+
+    scalar_vector_text = vmi_binary_scalar_vector_probe.compile().mlir_text()
+    for op_name in ("vadds", "vmuls", "vmaxs", "vmins"):
+        expect(
+            f"pto.vmi.{op_name}" in scalar_vector_text,
+            f"commutative VMI scalar-vector form should emit pto.vmi.{op_name}",
         )
 
     with warnings.catch_warnings(record=True) as captured:

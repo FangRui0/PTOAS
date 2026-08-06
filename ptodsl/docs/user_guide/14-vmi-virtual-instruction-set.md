@@ -573,8 +573,10 @@ operands. They form the arithmetic core of VMI SIMD kernels.
 **Description**: These are element-wise binary operations. For `pto.vmi.vadd`,
 when `rhs` is a VMI vector, `result[i] = lhs[i] + rhs[i]` and the VMI `vadd`
 operation is emitted. When `rhs` is a scalar, the scalar is applied to every
-lane and the VMI `vadds` operation is emitted. The other operations require a
-VMI vector `rhs`. Operations are restricted to lanes where `mask[i]` is true
+lane and the VMI `vadds` operation is emitted. For commutative operations
+(`vadd`, `vmul`, `vmax`, and `vmin`), a scalar `lhs` with a vector `rhs` is also
+accepted and normalized to the corresponding vector-scalar operation. The
+other operations require a VMI vector `rhs`. Operations are restricted to lanes where `mask[i]` is true
 (or all lanes when `mask` is omitted and the selected form permits an omitted
 mask).
 
