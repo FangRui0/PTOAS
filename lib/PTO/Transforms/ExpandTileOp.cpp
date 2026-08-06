@@ -505,6 +505,14 @@ static LogicalResult appendOpContextAttrs(
                          stringifyCmpMode(cmpModeAttr.getValue()).str());
     }
   }
+  if (auto tinsert = dyn_cast<pto::TInsertOp>(op)) {
+    if (auto modeAttr = tinsert.getAccToVecModeAttr()) {
+      attrs.emplace_back("acc_to_vec_mode",
+                         stringifyAccToVecMode(modeAttr.getValue()).str());
+    }
+    attrs.emplace_back("relu_pre_mode",
+                       stringifyReluPreMode(tinsert.getReluPreMode()).str());
+  }
   if (auto tgather = dyn_cast<pto::TGatherOp>(op)) {
     if (auto maskPatternAttr = tgather.getMaskPatternAttr()) {
       attrs.emplace_back(

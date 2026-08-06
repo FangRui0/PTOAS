@@ -502,6 +502,14 @@ static void appendOpContextAttrs(
       attrs.emplace_back("cmp_mode",
                          stringifyCmpMode(cmpModeAttr.getValue()).str());
   }
+  if (auto tinsert = dyn_cast<pto::TInsertOp>(op)) {
+    if (auto modeAttr = tinsert.getAccToVecModeAttr()) {
+      attrs.emplace_back("acc_to_vec_mode",
+                         stringifyAccToVecMode(modeAttr.getValue()).str());
+    }
+    attrs.emplace_back("relu_pre_mode",
+                       stringifyReluPreMode(tinsert.getReluPreMode()).str());
+  }
   if (auto tmrgsort = dyn_cast<pto::TMrgSortOp>(op))
     attrs.emplace_back("exhausted",
                        tmrgsort.getExhausted() ? "1" : "0");

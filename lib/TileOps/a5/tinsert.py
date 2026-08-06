@@ -80,24 +80,43 @@ def _vec_to_vec_nd_scalar(src_memory_space, dst_memory_space, src_config, dst_co
 _DTYPES = [(dtype, "i32", "i32", dtype) for dtype in NUMERIC_DTYPES]
 
 
-_FP_DTYPES = (
-    ("f32", "i32", "i32", "i8", "f32"),
-    ("f32", "i32", "i32", "si8", "f32"),
-    ("f32", "i32", "i32", "ui8", "f32"),
-    ("f32", "i32", "i32", "f16", "f32"),
-    ("f32", "i32", "i32", "bf16", "f32"),
-    ("f32", "i32", "i32", "f32", "f32"),
-    ("i32", "i32", "i32", "i8", "f32"),
-    ("si32", "i32", "i32", "i8", "f32"),
-    ("i32", "i32", "i32", "si8", "f32"),
-    ("si32", "i32", "i32", "si8", "f32"),
-    ("i32", "i32", "i32", "ui8", "f32"),
-    ("si32", "i32", "i32", "ui8", "f32"),
-    ("i32", "i32", "i32", "f16", "f32"),
-    ("si32", "i32", "i32", "f16", "f32"),
-    ("i32", "i32", "i32", "bf16", "f32"),
-    ("si32", "i32", "i32", "bf16", "f32"),
+_FP_DATA_DTYPES = (
+    ("f32", "i32", "i32", "i8"),
+    ("f32", "i32", "i32", "si8"),
+    ("f32", "i32", "i32", "ui8"),
+    ("f32", "i32", "i32", "f8e4m3"),
+    ("f32", "i32", "i32", "hif8"),
+    ("f32", "i32", "i32", "f16"),
+    ("f32", "i32", "i32", "bf16"),
+    ("f32", "i32", "i32", "f32"),
+    ("i32", "i32", "i32", "i8"),
+    ("si32", "i32", "i32", "i8"),
+    ("i32", "i32", "i32", "si8"),
+    ("si32", "i32", "i32", "si8"),
+    ("i32", "i32", "i32", "ui8"),
+    ("si32", "i32", "i32", "ui8"),
+    ("i32", "i32", "i32", "f16"),
+    ("si32", "i32", "i32", "f16"),
+    ("i32", "i32", "i32", "bf16"),
+    ("si32", "i32", "i32", "bf16"),
 )
+_FP_SCALING_DTYPES = ("f16", "bf16", "f32")
+_FP_DTYPES = tuple(
+    (*signature, fp_dtype)
+    for signature in _FP_DATA_DTYPES
+    for fp_dtype in _FP_SCALING_DTYPES
+)
+_FP_NZ_DTYPES = tuple(
+    signature for signature in _FP_DTYPES if signature[3] == "f32"
+)
+
+
+def _canonical_dtype_name(dtype):
+    name = str(dtype)
+    return {
+        "f8E4M3FN": "f8e4m3",
+        "!pto.hif8": "hif8",
+    }.get(name, name)
 
 
 def _tinsert_fp_quant_mode(src_dtype, dst_dtype):
@@ -105,6 +124,8 @@ def _tinsert_fp_quant_mode(src_dtype, dst_dtype):
         ("f32", "i8"): "qf322b8_pre_vec",
         ("f32", "si8"): "qf322b8_pre_vec",
         ("f32", "ui8"): "qf322b8_pre_vec",
+        ("f32", "f8e4m3"): "qf322fp8_pre_vec",
+        ("f32", "hif8"): "qf322hif8_pre_vec",
         ("f32", "f16"): "qf322f16_pre_vec",
         ("f32", "bf16"): "qf322bf16_pre_vec",
         ("f32", "f32"): "qf322f32_pre_vec",
@@ -119,7 +140,21 @@ def _tinsert_fp_quant_mode(src_dtype, dst_dtype):
         ("i32", "bf16"): "qs322bf16_pre_vec",
         ("si32", "bf16"): "qs322bf16_pre_vec",
     }
-    return modes[(str(src_dtype), str(dst_dtype))]
+    return modes[
+        (_canonical_dtype_name(src_dtype), _canonical_dtype_name(dst_dtype))
+    ]
+
+
+def _acc_src_ptr(src):
+    src_ptr = src.as_ptr()
+    if str(src.dtype) == "si32":
+        src_ptr = pto.castptr(src_ptr, pto.ptr(pto.i32, "acc"))
+    return src_ptr
+
+
+def _tinsert_pre_relu():
+    mode = pto.get_op_attr("relu_pre_mode", "no_relu")
+    return None if mode == "no_relu" else (mode, None, None)
 
 
 def _acc_to_mat_fp(
@@ -252,6 +287,7 @@ def template_tinsert_acc_to_mat_basic(
         n_size,
         src.shape[0] * pto.bytewidth(src.dtype),
         dst.shape[0] * c0_size * elem_bytes,
+        pre_relu=_tinsert_pre_relu(),
     )
 
 
@@ -286,13 +322,14 @@ def template_tinsert_fp_acc_to_mat(
     dst_offset = dst.shape[0] * c0_size * col_block + index_row * c0_size + col_mod
 
     pto.mte_l0c_l1(
-        src.as_ptr(),
+        _acc_src_ptr(src),
         pto.addptr(dst.as_ptr(), dst_offset),
         valid_rows,
         n_size,
         src.shape[0] * pto.bytewidth(src.dtype),
         dst.shape[0] * c0_size * elem_bytes,
         pre_quant=(fp.as_ptr(), _tinsert_fp_quant_mode(src.dtype, dst.dtype)),
+        pre_relu=_tinsert_pre_relu(),
     )
 
 
@@ -340,6 +377,7 @@ def template_tinsert_acc_to_vec_nd_basic(
             dst.shape[1],
             dst_mode,
             pre_quant=(pto.f16(1.0), "f32_f16"),
+            pre_relu=_tinsert_pre_relu(),
             **kwargs,
         )
     elif str(src.dtype) == "f32" and str(dst.dtype) == "bf16":
@@ -352,6 +390,7 @@ def template_tinsert_acc_to_vec_nd_basic(
             dst.shape[1],
             dst_mode,
             pre_quant=(pto.bf16(1.0), "f32_bf16"),
+            pre_relu=_tinsert_pre_relu(),
             **kwargs,
         )
     else:
@@ -363,6 +402,7 @@ def template_tinsert_acc_to_vec_nd_basic(
             (valid_rows + 15) // 16 * 16,
             dst.shape[1],
             dst_mode,
+            pre_relu=_tinsert_pre_relu(),
             **kwargs,
         )
 
@@ -398,7 +438,7 @@ def template_tinsert_fp_acc_to_vec_nd(
     kwargs["layout"] = "nz2nd"
 
     pto.mte_l0c_ub(
-        src.as_ptr(),
+        _acc_src_ptr(src),
         dst_ptr,
         valid_rows,
         valid_cols,
@@ -406,6 +446,7 @@ def template_tinsert_fp_acc_to_vec_nd(
         dst.shape[1],
         dst_mode,
         pre_quant=(fp.as_ptr(), _tinsert_fp_quant_mode(src.dtype, dst.dtype)),
+        pre_relu=_tinsert_pre_relu(),
         **kwargs,
     )
 
@@ -456,6 +497,7 @@ def template_tinsert_acc_to_vec_nz_basic(
         (valid_rows + 15) // 16 * 16 * pto.bytewidth(src.dtype),
         dst.shape[0] * c0_size * elem_bytes,
         dst_mode,
+        pre_relu=_tinsert_pre_relu(),
         **kwargs,
     )
 
@@ -464,7 +506,7 @@ def template_tinsert_acc_to_vec_nz_basic(
     op="pto.tinsert",
     target="a5",
     name="template_tinsert_fp_acc_to_vec_nz",
-    dtypes=_FP_DTYPES,
+    dtypes=_FP_NZ_DTYPES,
     iteration_axis="none",
     op_engine="other",
     op_class="movement",
@@ -501,7 +543,7 @@ def template_tinsert_fp_acc_to_vec_nz(
     kwargs["layout"] = ("nz2nz", 0)
 
     pto.mte_l0c_ub(
-        src.as_ptr(),
+        _acc_src_ptr(src),
         pto.addptr(dst.as_ptr(), dst_offset),
         valid_rows,
         valid_cols,
@@ -509,6 +551,7 @@ def template_tinsert_fp_acc_to_vec_nz(
         dst.shape[0] * c0_size * elem_bytes,
         dst_mode,
         pre_quant=(fp.as_ptr(), _tinsert_fp_quant_mode(src.dtype, dst.dtype)),
+        pre_relu=_tinsert_pre_relu(),
         **kwargs,
     )
 
