@@ -159,6 +159,35 @@ def lexical_section_sibling_conditional_rebinding_probe():
 
 
 @pto.jit(target="a5", mode="explicit")
+def lexical_section_sibling_single_sided_conditional_rebinding_probe():
+    one = pto.const(1, dtype=pto.i32)
+    m_tile = pto.const(0, dtype=pto.i32)
+    n_tile = pto.const(0, dtype=pto.i32)
+    with pto.section("cube"):
+        if pto.get_block_idx() < one:
+            m_tile = one
+            n_tile = one
+        m_tile_1 = pto.const(0, dtype=pto.i32)
+        n_tile_1 = pto.const(0, dtype=pto.i32)
+        if pto.get_block_idx() < one:
+            m_tile_1 = m_tile
+            n_tile_1 = n_tile
+        pto.wait_flag("S", "MTE2", event_id=m_tile_1)
+        pto.wait_flag("S", "MTE2", event_id=n_tile_1)
+    with pto.section("vector"):
+        if pto.get_block_idx() < one:
+            m_tile = one
+            n_tile = one
+        m_tile_2 = pto.const(0, dtype=pto.i32)
+        n_tile_2 = pto.const(0, dtype=pto.i32)
+        if pto.get_block_idx() < one:
+            m_tile_2 = m_tile
+            n_tile_2 = n_tile
+        pto.wait_flag("MTE2", "S", event_id=m_tile_2)
+        pto.wait_flag("MTE2", "S", event_id=n_tile_2)
+
+
+@pto.jit(target="a5", mode="explicit")
 def lexical_section_loop_carry_probe():
     one = pto.const(1, dtype=pto.i32)
     m_tile = pto.const(0, dtype=pto.i64)
@@ -261,6 +290,14 @@ def main() -> None:
     assert sibling_conditional_text.count("scf.if") == 2
     with make_context() as context:
         module = Module.parse(sibling_conditional_text, context)
+        module.operation.verify()
+
+    sibling_single_sided_text = lexical_section_sibling_single_sided_conditional_rebinding_probe.compile().mlir_text()
+    assert sibling_single_sided_text.count("pto.section.cube {") == 1
+    assert sibling_single_sided_text.count("pto.section.vector {") == 1
+    assert sibling_single_sided_text.count("scf.if") == 4
+    with make_context() as context:
+        module = Module.parse(sibling_single_sided_text, context)
         module.operation.verify()
 
     loop_carry_text = lexical_section_loop_carry_probe.compile().mlir_text()

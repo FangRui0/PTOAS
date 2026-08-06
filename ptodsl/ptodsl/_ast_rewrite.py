@@ -1211,7 +1211,7 @@ class _ControlFlowRewriter:
         result.extend(
             ast.Assign(
                 targets=[_name(old_name, ast.Store())],
-                value=_name(name),
+                value=_name(self._section_entry_bindings.get(name, name)),
             )
             for name, old_name in old_value_names.items()
         )
