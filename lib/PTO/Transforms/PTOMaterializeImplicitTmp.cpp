@@ -19,6 +19,8 @@
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/TypeSwitch.h"
 
+#include <cassert>
+
 using namespace mlir;
 
 namespace {
@@ -125,6 +127,21 @@ static void copyAttrsExceptOperandSegments(Operation *from, OperationState &to) 
   }
 }
 
+static void rebuildWithOperands(Operation *op, ArrayRef<Value> operands,
+                                std::optional<ArrayRef<int32_t>> segments) {
+  OpBuilder builder(op);
+  OperationState state(op->getLoc(), op->getName());
+  state.addOperands(operands);
+  if (op->hasTrait<OpTrait::AttrSizedOperandSegments>()) {
+    assert(segments && "AttrSizedOperandSegments op must supply segments");
+    state.addAttribute("operandSegmentSizes",
+                       builder.getDenseI32ArrayAttr(*segments));
+  }
+  copyAttrsExceptOperandSegments(op, state);
+  builder.create(state);
+  op->erase();
+}
+
 static bool validShapesCompatible(ArrayRef<int64_t> lhs,
                                   ArrayRef<int64_t> rhs) {
   if (lhs.size() != rhs.size())
@@ -205,20 +222,23 @@ static pto::TileBufType makeTRowExpandTmpType(MLIRContext *ctx,
       makeRowMajorNoneBoxConfig(ctx));
 }
 
+static FailureOr<pto::TileBufType> makeA5PlaceholderTmpType(
+    MLIRContext *ctx, Value like, Type elementType = {}) {
+  auto likeTy = dyn_cast<pto::TileBufType>(like.getType());
+  if (!likeTy)
+    return failure();
+  if (!elementType)
+    elementType = likeTy.getElementType();
+  auto elemBytes = getElemBytes(elementType);
+  if (!elemBytes || *elemBytes <= 0)
+    return failure();
+  int64_t cols = std::max<int64_t>(1, 32 / *elemBytes);
+  return makeVecTmpType(ctx, {1, cols}, elementType, {1, cols});
+}
+
 static void replaceTRowExpandBinaryOpWithTmp(Operation *op, Value src0,
                                              Value src1, Value tmp, Value dst) {
-  OpBuilder builder(op);
-  OperationState state(op->getLoc(), op->getName());
-  state.addOperands({src0, src1, tmp, dst});
-  state.addAttribute("operandSegmentSizes",
-                     builder.getDenseI32ArrayAttr({1, 1, 1, 1}));
-  for (NamedAttribute attr : op->getAttrs()) {
-    if (attr.getName() == "operandSegmentSizes")
-      continue;
-    state.addAttribute(attr.getName(), attr.getValue());
-  }
-  builder.create(state);
-  op->erase();
+  rebuildWithOperands(op, {src0, src1, tmp, dst}, ArrayRef<int32_t>{1, 1, 1, 1});
 }
 
 template <typename OpTy>
@@ -283,11 +303,8 @@ static LogicalResult replaceTColSumWithTmp(pto::TColSumOp op,
   if (failed(tmp))
     return failure();
 
-  OperationState state(op.getLoc(), op->getName());
-  state.addOperands({op.getSrc(), *tmp, op.getDst()});
-  copyAttrsExceptOperandSegments(op.getOperation(), state);
-  builder.create(state);
-  op.erase();
+  rebuildWithOperands(op.getOperation(), {op.getSrc(), *tmp, op.getDst()},
+                      ArrayRef<int32_t>{1, 1, 1});
   return success();
 }
 
@@ -309,19 +326,13 @@ static LogicalResult replaceTQuantWithTmp(pto::TQuantOp op,
   if (failed(tmp))
     return failure();
 
-  OperationState state(op.getLoc(), op->getName());
   SmallVector<Value> operands{op.getSrc(), op.getFp()};
   if (op.getOffset())
     operands.push_back(op.getOffset());
   operands.push_back(*tmp);
   operands.push_back(op.getDst());
-  state.addOperands(operands);
-  state.addAttribute("operandSegmentSizes",
-                     builder.getDenseI32ArrayAttr(
-                         {1, 1, op.getOffset() ? 1 : 0, 1, 1}));
-  copyAttrsExceptOperandSegments(op.getOperation(), state);
-  builder.create(state);
-  op.erase();
+  rebuildWithOperands(op.getOperation(), operands,
+                      ArrayRef<int32_t>{1, 1, op.getOffset() ? 1 : 0, 1, 1});
   return success();
 }
 
@@ -347,11 +358,9 @@ static LogicalResult replaceTPowWithTmp(pto::TPowOp op,
   if (failed(tmp))
     return failure();
 
-  OperationState state(op.getLoc(), op->getName());
-  state.addOperands({op.getBase(), op.getExp(), op.getDst(), *tmp});
-  copyAttrsExceptOperandSegments(op.getOperation(), state);
-  builder.create(state);
-  op.erase();
+  rebuildWithOperands(op.getOperation(),
+                      {op.getBase(), op.getExp(), op.getDst(), *tmp},
+                      ArrayRef<int32_t>{1, 1, 1, 1});
   return success();
 }
 
@@ -372,68 +381,9 @@ static LogicalResult replaceTPowSWithTmp(pto::TPowSOp op,
   if (failed(tmp))
     return failure();
 
-  OperationState state(op.getLoc(), op->getName());
-  state.addOperands({op.getSrc(), op.getScalar(), op.getDst(), *tmp});
-  copyAttrsExceptOperandSegments(op.getOperation(), state);
-  builder.create(state);
-  op.erase();
-  return success();
-}
-
-[[maybe_unused]] static LogicalResult
-replaceTGatherWithTmp(pto::TGatherOp op, bool requireExplicitTmp,
-                      MLIRContext *ctx) {
-  if (op.getTmp() || op.hasMaskForm())
-    return success();
-  if (!op.hasIndexForm() && !op.hasCompareForm())
-    return success();
-  if (requireExplicitTmp)
-    return op.emitOpError("requires explicit tmp when PlanMemory is skipped");
-
-  FailureOr<pto::TileBufType> tmpType = failure();
-  if (op.hasIndexForm()) {
-    tmpType = makeSameShapeTmpType(ctx, op.getIndices());
-  } else {
-    auto srcTy = dyn_cast<pto::TileBufType>(op.getSrc().getType());
-    auto dstTy = dyn_cast<pto::TileBufType>(op.getDst().getType());
-    if (!srcTy || !dstTy)
-      return op.emitOpError(
-          "expects tile_buf operands when materializing compare-form tgather tmp");
-    auto srcShape = getShapeVec(op.getSrc().getType());
-    if (srcShape.size() != 2 || hasDynamicDim(srcShape))
-      return op.emitOpError(
-          "requires static src shape to materialize compare-form tgather tmp");
-    int64_t bytes = srcShape[0] * srcShape[1] * 4 + srcShape[0] * 4;
-    tmpType = makeVecTmpType(ctx, {1, bytes}, IntegerType::get(ctx, 8),
-                             {1, bytes});
-  }
-  if (failed(tmpType))
-    return op.emitOpError(
-        "requires static tile_buf indices/src to materialize implicit tgather tmp");
-
-  OpBuilder builder(op);
-  FailureOr<Value> tmp = createAllocTmp(builder, op.getLoc(), *tmpType);
-  if (failed(tmp))
-    return failure();
-
-  OperationState state(op.getLoc(), op->getName());
-  SmallVector<Value> operands{op.getSrc(), op.getDst()};
-  if (op.getCdst())
-    operands.push_back(op.getCdst());
-  if (op.getIndices())
-    operands.push_back(op.getIndices());
-  operands.push_back(*tmp);
-  if (op.getKValue())
-    operands.push_back(op.getKValue());
-  state.addOperands(operands);
-  state.addAttribute(
-      "operandSegmentSizes",
-      builder.getDenseI32ArrayAttr({1, 1, op.getCdst() ? 1 : 0,
-                                    op.getIndices() ? 1 : 0, 1,
-                                    op.getKValue() ? 1 : 0}));
-  copyAttrsExceptOperandSegments(op.getOperation(), state);
-  builder.create(state);
-  op.erase();
+  rebuildWithOperands(op.getOperation(),
+                      {op.getSrc(), op.getScalar(), op.getDst(), *tmp},
+                      ArrayRef<int32_t>{1, 1, 1, 1});
   return success();
 }
 
@@ -459,13 +409,8 @@ static LogicalResult replaceTSort32WithTmp(pto::TSort32Op op,
   if (failed(tmp))
     return failure();
 
-  OperationState state(op.getLoc(), op->getName());
-  state.addOperands({op.getSrc(), op.getIdx(), *tmp, op.getDst()});
-  state.addAttribute("operandSegmentSizes",
-                     builder.getDenseI32ArrayAttr({1, 1, 1, 1}));
-  copyAttrsExceptOperandSegments(op.getOperation(), state);
-  builder.create(state);
-  op.erase();
+  rebuildWithOperands(op.getOperation(), {op.getSrc(), op.getIdx(), *tmp, op.getDst()},
+                      ArrayRef<int32_t>{1, 1, 1, 1});
   return success();
 }
 
@@ -475,10 +420,14 @@ static LogicalResult replaceRowReductionWithTmp(OpTy op,
                                                  MLIRContext *ctx) {
   if (op.getTmp())
     return success();
-  if (requireExplicitTmp)
+
+  bool isA5 = pto::getTargetArch(op.getOperation()) == pto::PTOArch::A5;
+  if (requireExplicitTmp && !isA5)
     return op.emitOpError("requires explicit tmp when PlanMemory is skipped");
 
-  FailureOr<pto::TileBufType> tmpType = makeSameShapeTmpType(ctx, op.getSrc());
+  FailureOr<pto::TileBufType> tmpType =
+      isA5 ? makeA5PlaceholderTmpType(ctx, op.getSrc())
+           : makeSameShapeTmpType(ctx, op.getSrc());
   if (failed(tmpType))
     return op.emitOpError(
         "requires static tile_buf src to materialize implicit row-reduction tmp");
@@ -487,13 +436,8 @@ static LogicalResult replaceRowReductionWithTmp(OpTy op,
   if (failed(tmp))
     return failure();
 
-  OperationState state(op.getLoc(), op->getName());
-  state.addOperands({op.getSrc(), *tmp, op.getDst()});
-  state.addAttribute("operandSegmentSizes",
-                     builder.getDenseI32ArrayAttr({1, 1, 1}));
-  copyAttrsExceptOperandSegments(op.getOperation(), state);
-  builder.create(state);
-  op.erase();
+  rebuildWithOperands(op.getOperation(), {op.getSrc(), *tmp, op.getDst()},
+                      ArrayRef<int32_t>{1, 1, 1});
   return success();
 }
 
@@ -502,9 +446,12 @@ static LogicalResult replaceTXorWithTmp(pto::TXorOp op,
                                         MLIRContext *ctx) {
   if (op.getTmp())
     return success();
-  if (requireExplicitTmp)
+  bool isA5 = pto::getTargetArch(op.getOperation()) == pto::PTOArch::A5;
+  if (requireExplicitTmp && !isA5)
     return op.emitOpError("requires explicit tmp when PlanMemory is skipped");
-  FailureOr<pto::TileBufType> tmpType = makeSameShapeTmpType(ctx, op.getDst());
+  FailureOr<pto::TileBufType> tmpType =
+      isA5 ? makeA5PlaceholderTmpType(ctx, op.getDst())
+           : makeSameShapeTmpType(ctx, op.getDst());
   if (failed(tmpType))
     return op.emitOpError(
         "requires static tile_buf dst to materialize implicit txor tmp");
@@ -512,13 +459,9 @@ static LogicalResult replaceTXorWithTmp(pto::TXorOp op,
   FailureOr<Value> tmp = createAllocTmp(builder, op.getLoc(), *tmpType);
   if (failed(tmp))
     return failure();
-  OperationState state(op.getLoc(), op->getName());
-  state.addOperands({op.getSrc0(), op.getSrc1(), *tmp, op.getDst()});
-  state.addAttribute("operandSegmentSizes",
-                     builder.getDenseI32ArrayAttr({1, 1, 1, 1}));
-  copyAttrsExceptOperandSegments(op.getOperation(), state);
-  builder.create(state);
-  op.erase();
+  rebuildWithOperands(op.getOperation(),
+                      {op.getSrc0(), op.getSrc1(), *tmp, op.getDst()},
+                      ArrayRef<int32_t>{1, 1, 1, 1});
   return success();
 }
 
@@ -527,9 +470,12 @@ static LogicalResult replaceTXorSWithTmp(pto::TXorSOp op,
                                          MLIRContext *ctx) {
   if (op.getTmp())
     return success();
-  if (requireExplicitTmp)
+  bool isA5 = pto::getTargetArch(op.getOperation()) == pto::PTOArch::A5;
+  if (requireExplicitTmp && !isA5)
     return op.emitOpError("requires explicit tmp when PlanMemory is skipped");
-  FailureOr<pto::TileBufType> tmpType = makeSameShapeTmpType(ctx, op.getDst());
+  FailureOr<pto::TileBufType> tmpType =
+      isA5 ? makeA5PlaceholderTmpType(ctx, op.getDst())
+           : makeSameShapeTmpType(ctx, op.getDst());
   if (failed(tmpType))
     return op.emitOpError(
         "requires static tile_buf dst to materialize implicit txors tmp");
@@ -537,13 +483,9 @@ static LogicalResult replaceTXorSWithTmp(pto::TXorSOp op,
   FailureOr<Value> tmp = createAllocTmp(builder, op.getLoc(), *tmpType);
   if (failed(tmp))
     return failure();
-  OperationState state(op.getLoc(), op->getName());
-  state.addOperands({op.getSrc(), op.getScalar(), *tmp, op.getDst()});
-  state.addAttribute("operandSegmentSizes",
-                     builder.getDenseI32ArrayAttr({1, 1, 1, 1}));
-  copyAttrsExceptOperandSegments(op.getOperation(), state);
-  builder.create(state);
-  op.erase();
+  rebuildWithOperands(op.getOperation(),
+                      {op.getSrc(), op.getScalar(), *tmp, op.getDst()},
+                      ArrayRef<int32_t>{1, 1, 1, 1});
   return success();
 }
 
@@ -566,13 +508,7 @@ static LogicalResult replaceFixedDpsOpWithTmp(
     else
       finalOperands.push_back(*tmp);
   }
-  OperationState state(op->getLoc(), op->getName());
-  state.addOperands(finalOperands);
-  state.addAttribute("operandSegmentSizes",
-                     builder.getDenseI32ArrayAttr(operandSegments));
-  copyAttrsExceptOperandSegments(op, state);
-  builder.create(state);
-  op->erase();
+  rebuildWithOperands(op, finalOperands, operandSegments);
   (void)opName;
   return success();
 }
@@ -610,60 +546,83 @@ static LogicalResult materializeFixedMandatoryTmp(Operation *op,
       .Case<pto::TPReluOp>([&](auto typedOp) -> LogicalResult {
         if (typedOp.getTmp())
           return success();
-        auto type = makeTPReluTmpType(ctx, typedOp.getDst());
+        bool isA5 =
+            pto::getTargetArch(op) == pto::PTOArch::A5;
+        auto type = isA5 ? makeA5PlaceholderTmpType(
+                               ctx, typedOp.getDst(),
+                               IntegerType::get(ctx, 8))
+                         : makeTPReluTmpType(ctx, typedOp.getDst());
         if (failed(type))
           return typedOp.emitOpError(
               "requires static tile_buf dst to materialize implicit tprelu tmp");
         return replaceFixedDpsOpWithTmp(
             op, {typedOp.getSrc0(), typedOp.getSrc1(), Value(),
                  typedOp.getDst()},
-            *type, {1, 1, 1, 1}, requireExplicitTmp, "tprelu");
+            *type, {1, 1, 1, 1}, isA5 ? false : requireExplicitTmp,
+            "tprelu");
       })
       .Case<pto::TRemOp>([&](auto typedOp) -> LogicalResult {
         if (typedOp.getTmp())
           return success();
-        auto type = makeRowsTmpType(ctx, typedOp.getDst(), 2);
+        bool isA5 =
+            pto::getTargetArch(op) == pto::PTOArch::A5;
+        auto type = isA5 ? makeA5PlaceholderTmpType(ctx, typedOp.getDst())
+                         : makeRowsTmpType(ctx, typedOp.getDst(), 2);
         if (failed(type))
           return typedOp.emitOpError(
               "requires static tile_buf dst to materialize implicit trem tmp");
         return replaceFixedDpsOpWithTmp(
             op, {typedOp.getSrc0(), typedOp.getSrc1(), Value(),
                  typedOp.getDst()},
-            *type, {1, 1, 1, 1}, requireExplicitTmp, "trem");
+            *type, {1, 1, 1, 1}, isA5 ? false : requireExplicitTmp, "trem");
       })
       .Case<pto::TRemSOp>([&](auto typedOp) -> LogicalResult {
         if (typedOp.getTmp())
           return success();
-        auto type = makeRowsTmpType(ctx, typedOp.getDst(), 1);
+        bool isA5 =
+            pto::getTargetArch(op) == pto::PTOArch::A5;
+        auto type = isA5 ? makeA5PlaceholderTmpType(ctx, typedOp.getDst())
+                         : makeRowsTmpType(ctx, typedOp.getDst(), 1);
         if (failed(type))
           return typedOp.emitOpError(
               "requires static tile_buf dst to materialize implicit trems tmp");
         return replaceFixedDpsOpWithTmp(
             op, {typedOp.getSrc(), typedOp.getScalar(), Value(),
                  typedOp.getDst()},
-            *type, {1, 1, 1, 1}, requireExplicitTmp, "trems");
+            *type, {1, 1, 1, 1}, isA5 ? false : requireExplicitTmp, "trems");
       })
       .Case<pto::TSelOp>([&](auto typedOp) -> LogicalResult {
         if (typedOp.getTmp())
           return success();
-        auto type = makeVecTmpType(ctx, {1, 16}, IntegerType::get(ctx, 32),
-                                   {1, 16});
+        bool isA5 =
+            pto::getTargetArch(op) == pto::PTOArch::A5;
+        auto type = isA5 ? makeA5PlaceholderTmpType(
+                               ctx, typedOp.getDst(),
+                               IntegerType::get(ctx, 32))
+                         : makeVecTmpType(ctx, {1, 16},
+                                          IntegerType::get(ctx, 32), {1, 16});
+        if (failed(type))
+          return typedOp.emitOpError(
+              "requires static tile_buf dst to materialize implicit tsel tmp");
         return replaceFixedDpsOpWithTmp(
             op, {typedOp.getMask(), typedOp.getSrc0(), typedOp.getSrc1(),
                  Value(), typedOp.getDst()},
-            type, {1, 1, 1, 1, 1}, requireExplicitTmp, "tsel");
+            *type, {1, 1, 1, 1, 1}, isA5 ? false : requireExplicitTmp, "tsel");
       })
       .Case<pto::TSelSOp>([&](auto typedOp) -> LogicalResult {
         if (typedOp.getTmp())
           return success();
-        auto type = makeRowsTmpType(ctx, typedOp.getSrc(), 1);
+        bool isA5 =
+            pto::getTargetArch(op) == pto::PTOArch::A5;
+        auto type = isA5 ? makeA5PlaceholderTmpType(ctx, typedOp.getSrc())
+                         : makeRowsTmpType(ctx, typedOp.getSrc(), 1);
         if (failed(type))
           return typedOp.emitOpError(
               "requires static tile_buf src to materialize implicit tsels tmp");
         return replaceFixedDpsOpWithTmp(
             op, {typedOp.getMask(), typedOp.getSrc(), Value(),
                  typedOp.getScalar(), typedOp.getDst()},
-            *type, {1, 1, 1, 1, 1}, requireExplicitTmp, "tsels");
+            *type, {1, 1, 1, 1, 1}, isA5 ? false : requireExplicitTmp, "tsels");
       })
       .Case<pto::TTransOp>([&](auto typedOp) -> LogicalResult {
         if (typedOp.getTmp())
@@ -791,18 +750,14 @@ static LogicalResult materializeTMrgSortTmp(pto::TMrgSortOp op,
   FailureOr<Value> tmp = createAllocTmp(builder, op.getLoc(), tmpType);
   if (failed(tmp))
     return failure();
-  OperationState state(op.getLoc(), op->getName());
-  state.addOperands(operands);
-  state.addOperands(op.getDsts());
-  state.addOperands(*tmp);
-  state.addOperands(op.getExcuted());
-  state.addAttribute(
-      "operandSegmentSizes",
-      builder.getDenseI32ArrayAttr(
-          {static_cast<int32_t>(op.getSrcs().size()), 0, 1, 1, 1}));
-  copyAttrsExceptOperandSegments(op.getOperation(), state);
-  builder.create(state);
-  op.erase();
+  SmallVector<Value> finalOperands;
+  finalOperands.append(operands.begin(), operands.end());
+  finalOperands.append(op.getDsts().begin(), op.getDsts().end());
+  finalOperands.push_back(*tmp);
+  finalOperands.push_back(op.getExcuted());
+  rebuildWithOperands(op.getOperation(), finalOperands,
+                      ArrayRef<int32_t>{static_cast<int32_t>(op.getSrcs().size()),
+                                        0, 1, 1, 1});
   return success();
 }
 

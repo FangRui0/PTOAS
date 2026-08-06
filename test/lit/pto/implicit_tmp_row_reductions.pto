@@ -6,8 +6,8 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// RUN: ptoas --pto-arch=a3 --pto-level=level2 --emit-pto-ir %s 2>&1 | FileCheck %s --check-prefix=IR
-// RUN: ptoas --pto-arch=a5 --pto-level=level2 --emit-pto-ir %s 2>&1 | FileCheck %s --check-prefix=IR
+// RUN: ptoas --pto-arch=a3 --pto-level=level2 --emit-pto-ir %s 2>&1 | FileCheck %s --check-prefix=A3
+// RUN: ptoas --pto-arch=a5 --pto-level=level2 --emit-pto-ir %s 2>&1 | FileCheck %s --check-prefix=A5
 
 module {
   func.func @implicit_row_reduction_tmps() {
@@ -24,8 +24,13 @@ module {
   }
 }
 
-// IR-LABEL: func.func @implicit_row_reduction_tmps
-// IR: pto.trowmax ins(%{{.*}}, %{{.*}} : !pto.tile_buf<vec, 2x16xf32>, !pto.tile_buf<vec, 2x16xf32>)
-// IR: pto.trowmin ins(%{{.*}}, %{{.*}} : !pto.tile_buf<vec, 2x16xf32>, !pto.tile_buf<vec, 2x16xf32>)
-// IR: pto.trowsum ins(%{{.*}}, %{{.*}} : !pto.tile_buf<vec, 2x16xf32>, !pto.tile_buf<vec, 2x16xf32>)
-// IR: pto.trowprod ins(%{{.*}}, %{{.*}} : !pto.tile_buf<vec, 2x16xf32>, !pto.tile_buf<vec, 2x16xf32>)
+// A3-LABEL: func.func @implicit_row_reduction_tmps
+// A3: pto.trowmax ins(%{{.*}}, %{{.*}} : !pto.tile_buf<vec, 2x16xf32>, !pto.tile_buf<vec, 2x16xf32>)
+// A3: pto.trowmin ins(%{{.*}}, %{{.*}} : !pto.tile_buf<vec, 2x16xf32>, !pto.tile_buf<vec, 2x16xf32>)
+// A3: pto.trowsum ins(%{{.*}}, %{{.*}} : !pto.tile_buf<vec, 2x16xf32>, !pto.tile_buf<vec, 2x16xf32>)
+// A3: pto.trowprod ins(%{{.*}}, %{{.*}} : !pto.tile_buf<vec, 2x16xf32>, !pto.tile_buf<vec, 2x16xf32>)
+// A5-LABEL: func.func @implicit_row_reduction_tmps
+// A5: pto.trowmax ins(%{{.*}}, %{{.*}} : !pto.tile_buf<vec, 2x16xf32>, !pto.tile_buf<vec, 1x8xf32>)
+// A5: pto.trowmin ins(%{{.*}}, %{{.*}} : !pto.tile_buf<vec, 2x16xf32>, !pto.tile_buf<vec, 1x8xf32>)
+// A5: pto.trowsum ins(%{{.*}}, %{{.*}} : !pto.tile_buf<vec, 2x16xf32>, !pto.tile_buf<vec, 1x8xf32>)
+// A5: pto.trowprod ins(%{{.*}}, %{{.*}} : !pto.tile_buf<vec, 2x16xf32>, !pto.tile_buf<vec, 1x8xf32>)

@@ -6,8 +6,8 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// RUN: ptoas --pto-arch=a3 --pto-level=level2 --emit-pto-ir %s 2>&1 | FileCheck %s --check-prefix=IR
-// RUN: ptoas --pto-arch=a5 --pto-level=level2 --emit-pto-ir %s 2>&1 | FileCheck %s --check-prefix=IR
+// RUN: ptoas --pto-arch=a3 --pto-level=level2 --emit-pto-ir %s 2>&1 | FileCheck %s --check-prefix=A3
+// RUN: ptoas --pto-arch=a5 --pto-level=level2 --emit-pto-ir %s 2>&1 | FileCheck %s --check-prefix=A5
 
 module {
   func.func @implicit_xor_tmps() {
@@ -22,6 +22,9 @@ module {
   }
 }
 
-// IR-LABEL: func.func @implicit_xor_tmps
-// IR: pto.txor ins(%{{.*}}, %{{.*}}, %{{.*}} : !pto.tile_buf<vec, 2x16xi16>, !pto.tile_buf<vec, 2x16xi16>, !pto.tile_buf<vec, 2x16xi16>)
-// IR: pto.txors ins(%{{.*}}, %{{.*}}, %{{.*}} : !pto.tile_buf<vec, 2x16xi16>, i16, !pto.tile_buf<vec, 2x16xi16>)
+// A3-LABEL: func.func @implicit_xor_tmps
+// A3: pto.txor ins(%{{.*}}, %{{.*}}, %{{.*}} : !pto.tile_buf<vec, 2x16xi16>, !pto.tile_buf<vec, 2x16xi16>, !pto.tile_buf<vec, 2x16xi16>)
+// A3: pto.txors ins(%{{.*}}, %{{.*}}, %{{.*}} : !pto.tile_buf<vec, 2x16xi16>, i16, !pto.tile_buf<vec, 2x16xi16>)
+// A5-LABEL: func.func @implicit_xor_tmps
+// A5: pto.txor ins(%{{.*}}, %{{.*}}, %{{.*}} : !pto.tile_buf<vec, 2x16xi16>, !pto.tile_buf<vec, 2x16xi16>, !pto.tile_buf<vec, 1x16xi16>)
+// A5: pto.txors ins(%{{.*}}, %{{.*}}, %{{.*}} : !pto.tile_buf<vec, 2x16xi16>, i16, !pto.tile_buf<vec, 1x16xi16>)

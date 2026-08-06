@@ -122,6 +122,9 @@ static bool isKnownZeroOrUnitExtent(int64_t value);
 static bool isByteIntegerType(Type ty);
 static LogicalResult verifyTileBufCommon(Operation *op, Type ty, StringRef name,
                                          bool allowLowPrecision = false);
+static LogicalResult verifyTmpCapacityAtLeast(Operation *op, Type tmpTy,
+                                              uint64_t requiredBytes,
+                                              StringRef tmpName = "tmp");
 
 namespace {
 struct PTOInlinerInterface : public DialectInlinerInterface {
@@ -2144,11 +2147,17 @@ static LogicalResult verifyTRowReductionWithTmpCommon(Operation *op, Type srcTy,
     return failure();
   if (getElemTy(srcTy) != getElemTy(dstTy))
     return op->emitOpError("expects src and dst to have the same element type");
+  if (getTargetArch(op) != PTOArch::A5 &&
+      getElemTy(srcTy) != getElemTy(tmpTy))
+    return op->emitOpError("expects A2/A3 tmp to have the same element type as src and dst");
   if (failed(verifyRowReductionValidRegion(op, srcTy, dstTy,
                                            /*allowEmptyMarker=*/true)))
     return failure();
   if (!isSupportedRowReductionElemType(getElemTy(srcTy)))
     return op->emitOpError(elemTypeError);
+  if (getTargetArch(op) != PTOArch::A5 &&
+      failed(verifyTmpCapacityAtLeast(op, tmpTy, 32)))
+    return failure();
   return success();
 }
 
@@ -2197,7 +2206,7 @@ static LogicalResult verifyTColArgTmpA2A3(Operation *op, Type srcTy,
     return failure();
 
   if (hasExactKnownValidShape(srcTy, tmpTy))
-    return success();
+    return verifyTmpCapacityAtLeast(op, tmpTy, 32);
 
   auto srcValid = getValidShapeVec(srcTy);
   auto tmpValid = getValidShapeVec(tmpTy);
@@ -2214,7 +2223,7 @@ static LogicalResult verifyTColArgTmpA2A3(Operation *op, Type srcTy,
              << "expects A2/A3 tmp valid_shape[1] to be at least "
              << *minStride << " for src valid_shape[1] = " << srcValid[1];
   }
-  return success();
+  return verifyTmpCapacityAtLeast(op, tmpTy, 32);
 }
 
 static LogicalResult verifyTColArgReductionOpA2A3(Operation *op, Type srcTy,
@@ -2307,7 +2316,7 @@ static LogicalResult verifyTRowArgTmpA2A3(Operation *op, Type srcTy,
     return failure();
 
   if (hasExactKnownValidShape(srcTy, tmpTy))
-    return success();
+    return verifyTmpCapacityAtLeast(op, tmpTy, 32);
 
   auto srcShape = getShapeVec(srcTy);
   auto tmpShape = getShapeVec(tmpTy);
@@ -2335,7 +2344,7 @@ static LogicalResult verifyTRowArgTmpA2A3(Operation *op, Type srcTy,
         return op->emitOpError()
                << "expects A2/A3 tmp DN layout to have valid_shape[0] >= "
                << (srcValid[0] * 2);
-      return success();
+      return verifyTmpCapacityAtLeast(op, tmpTy, 32);
     }
 
     if (!layout || *layout != pto::Layout::ND)
@@ -2349,7 +2358,7 @@ static LogicalResult verifyTRowArgTmpA2A3(Operation *op, Type srcTy,
     if (tmpValid[1] != ShapedType::kDynamic && tmpValid[1] < 2)
       return op->emitOpError(
           "expects A2/A3 tmp valid_shape[1] to be at least 2 in the small-col ND path");
-    return success();
+    return verifyTmpCapacityAtLeast(op, tmpTy, 32);
   }
 
   if (failed(verifyVecTileCommon(op, tmpTy, "tmp")))
@@ -2369,7 +2378,7 @@ static LogicalResult verifyTRowArgTmpA2A3(Operation *op, Type srcTy,
              << "expects A2/A3 tmp valid_shape[1] to be at least "
              << *minStride << " for src valid_shape[1] = " << srcValid[1];
   }
-  return success();
+  return verifyTmpCapacityAtLeast(op, tmpTy, 32);
 }
 
 static LogicalResult verifyTRowArgReductionOpA2A3(Operation *op, Type srcTy,
@@ -4162,6 +4171,20 @@ static std::optional<uint64_t> getStaticByteSize(Type ty) {
     total *= static_cast<uint64_t>(dim);
   }
   return total;
+}
+
+static LogicalResult verifyTmpCapacityAtLeast(Operation *op, Type tmpTy,
+                                              uint64_t requiredBytes,
+                                              StringRef tmpName) {
+  auto actualBytes = getStaticByteSize(tmpTy);
+  if (!actualBytes)
+    return op->emitOpError()
+           << "expects " << tmpName << " to have statically known byte capacity";
+  if (*actualBytes < requiredBytes)
+    return op->emitOpError()
+           << "expects " << tmpName << " capacity to be at least "
+           << requiredBytes << " bytes, but got " << *actualBytes << " bytes";
+  return success();
 }
 
 static std::optional<pto::AddressSpace> getPTOMemorySpaceEnum(Type ty) {
@@ -6376,6 +6399,19 @@ LogicalResult pto::TColSumOp::verify() {
         return emitOpError("expects src/tmp/dst element types to match");
       if (failed(verifyTColSumTmpStride(*this, srcTy, tmpTy, getIsBinary())))
         return failure();
+      if (getIsBinary()) {
+        auto srcValid = getValidShapeVec(srcTy);
+        auto elemBytes = getElemByteSize(getElemTy(srcTy));
+        if (srcValid.size() != 2 || srcValid[0] == ShapedType::kDynamic ||
+            srcValid[1] == ShapedType::kDynamic || elemBytes == 0)
+          return emitOpError(
+              "expects static src valid_shape and element size to verify tcolsum tmp");
+        uint64_t requiredBytes =
+            static_cast<uint64_t>(ceilDivInt64(srcValid[0], 2)) *
+            static_cast<uint64_t>(srcValid[1]) * elemBytes;
+        if (failed(verifyTmpCapacityAtLeast(*this, tmpTy, requiredBytes)))
+          return failure();
+      }
     }
     if (getElemTy(srcTy) != getElemTy(dstTy))
       return emitOpError("expects src/dst element types to match");
@@ -6405,6 +6441,19 @@ LogicalResult pto::TColSumOp::verify() {
         return emitOpError("expects src/tmp/dst element types to match");
       if (failed(verifyTColSumTmpStride(*this, srcTy, tmpTy, getIsBinary())))
         return failure();
+      if (getIsBinary()) {
+        auto srcValid = getValidShapeVec(srcTy);
+        auto elemBytes = getElemByteSize(getElemTy(srcTy));
+        if (srcValid.size() != 2 || srcValid[0] == ShapedType::kDynamic ||
+            srcValid[1] == ShapedType::kDynamic || elemBytes == 0)
+          return emitOpError(
+              "expects static src valid_shape and element size to verify tcolsum tmp");
+        uint64_t requiredBytes =
+            static_cast<uint64_t>(ceilDivInt64(srcValid[0], 2)) *
+            static_cast<uint64_t>(srcValid[1]) * elemBytes;
+        if (failed(verifyTmpCapacityAtLeast(*this, tmpTy, requiredBytes)))
+          return failure();
+      }
     }
     if (getElemTy(srcTy) != getElemTy(dstTy))
       return emitOpError("expects src/dst element types to match");
@@ -10473,6 +10522,18 @@ mlir::LogicalResult mlir::pto::TPReluOp::verify() {
                << "expects A2/A3 tmp valid_shape[1] to be at least ceil(dst valid_shape[1] / 8) ("
                << packedMaskCols << ")";
     }
+    if (dstValid[0] == ShapedType::kDynamic ||
+        dstValid[1] == ShapedType::kDynamic)
+      return emitOpError(
+          "expects A2/A3 tprelu dst valid_shape to be static when tmp is provided");
+    int64_t packedCols = std::max<int64_t>(
+        32, llvm::divideCeil(llvm::divideCeil(dstValid[1], int64_t{8}),
+                             int64_t{32}) *
+                32);
+    if (failed(verifyTmpCapacityAtLeast(
+            *this, tt, static_cast<uint64_t>(dstValid[0] + 1) *
+                          static_cast<uint64_t>(packedCols))))
+      return failure();
     if (auto arch = getVerifierArchName(getOperation());
         arch && arch->equals_insensitive("a3")) {
       if (getSrc0() == getSrc1() || getSrc0() == getTmp() || getSrc0() == getDst() ||
@@ -10740,7 +10801,11 @@ mlir::LogicalResult mlir::pto::TQuantOp::verify() {
         return emitOpError() << "expects A2/A3 tmp to have the same shape as src";
       if (failed(verifyTileBufSameValidShape(*this, srcTy, tmpTy, "src", "tmp")))
         return failure();
-      return success();
+      auto requiredBytes = getStaticByteSize(srcTy);
+      if (!requiredBytes)
+        return emitOpError(
+            "expects A2/A3 tquant src shape to be static when tmp is provided");
+      return verifyTmpCapacityAtLeast(*this, tmpTy, *requiredBytes);
     };
     if (getTmp() && failed(verifyA2A3Tmp(getTmp().getType())))
       return failure();
@@ -11040,6 +11105,16 @@ mlir::LogicalResult mlir::pto::TRemOp::verify() {
     if (dstValid[1] != ShapedType::kDynamic && tmpValid[1] != ShapedType::kDynamic &&
         tmpValid[1] < dstValid[1])
       return emitOpError("expects A2/A3 tmp valid columns to cover dst valid columns");
+    auto dstShape = getShapeVec(dstTy);
+    auto elemBytes = getElemByteSize(elem);
+    if (dstShape.size() != 2 || dstShape[1] == ShapedType::kDynamic ||
+        elemBytes == 0)
+      return emitOpError(
+          "expects A2/A3 trem dst shape and element size to be static when tmp is provided");
+    if (failed(verifyTmpCapacityAtLeast(
+            *this, tmpTy, static_cast<uint64_t>(2) *
+                              static_cast<uint64_t>(dstShape[1]) * elemBytes)))
+      return failure();
     if (!(elem.isInteger(32) || elem.isF32()))
       return emitOpError("expects A2/A3 trem element type to be i32/f32");
     return success();
@@ -11110,6 +11185,15 @@ mlir::LogicalResult mlir::pto::TRemSOp::verify() {
     if (dstValid[1] != ShapedType::kDynamic && tmpValid[1] != ShapedType::kDynamic &&
         tmpValid[1] < dstValid[1])
       return emitOpError("expects A2/A3 tmp valid columns to cover dst valid columns");
+    auto dstShape = getShapeVec(td);
+    auto elemBytes = getElemByteSize(elem);
+    if (dstShape.size() != 2 || dstShape[1] == ShapedType::kDynamic ||
+        elemBytes == 0)
+      return emitOpError(
+          "expects A2/A3 trems dst shape and element size to be static when tmp is provided");
+    if (failed(verifyTmpCapacityAtLeast(
+            *this, tt, static_cast<uint64_t>(dstShape[1]) * elemBytes)))
+      return failure();
     if (!(elem.isInteger(32) || elem.isF32()))
       return emitOpError("expects A2/A3 trems element type to be i32/f32");
     return success();
@@ -11218,6 +11302,14 @@ mlir::LogicalResult mlir::pto::TPowOp::verify() {
       return failure();
     if (failed(verifyTPowTmpShape(getOperation(), tmpTy, dstTy)))
       return failure();
+    if (getTargetArch(getOperation()) != PTOArch::A5) {
+      auto requiredBytes = getStaticByteSize(dstTy);
+      if (!requiredBytes)
+        return emitOpError(
+            "expects A2/A3 tpow dst shape to be static when tmp is provided");
+      if (failed(verifyTmpCapacityAtLeast(*this, tmpTy, *requiredBytes)))
+        return failure();
+    }
   }
   return success();
 }
@@ -11276,6 +11368,14 @@ mlir::LogicalResult mlir::pto::TPowSOp::verify() {
       return failure();
     if (failed(verifyTPowTmpShape(getOperation(), tmpTy, dstTy)))
       return failure();
+    if (getTargetArch(getOperation()) != PTOArch::A5) {
+      auto requiredBytes = getStaticByteSize(dstTy);
+      if (!requiredBytes)
+        return emitOpError(
+            "expects A2/A3 tpows dst shape to be static when tmp is provided");
+      if (failed(verifyTmpCapacityAtLeast(*this, tmpTy, *requiredBytes)))
+        return failure();
+    }
   }
   return success();
 }
@@ -12934,6 +13034,9 @@ mlir::LogicalResult mlir::pto::TSelOp::verify() {
         failed(verifyTileBufCommon(*this, t1, "src1")) ||
         failed(verifyTileBufCommon(*this, td, "dst")))
       return failure();
+    if (getTmp() &&
+        failed(verifyVecTileCommon(*this, getTmp().getType(), "tmp")))
+      return failure();
 
     Type srcElem = getElemTy(t0);
     Type src1Elem = getElemTy(t1);
@@ -12967,6 +13070,18 @@ mlir::LogicalResult mlir::pto::TSelOp::verify() {
     if (!ok)
       return emitOpError(
           "expects A2/A3 tsel src0, src1, and dst element type to be i16/i32/f16/bf16/f32");
+    if (getTmp()) {
+      Type tmpTy = getTmp().getType();
+      auto tmpElem = dyn_cast<IntegerType>(getElemTy(tmpTy));
+      if (!tmpElem || tmpElem.getWidth() != 32)
+        return emitOpError("expects A2/A3 tsel tmp element type to be i32");
+      unsigned elemBits = getPTOStorageElemBitWidth(elem);
+      if (elemBits != 16 && elemBits != 32)
+        return emitOpError("expects A2/A3 tsel data element type to be 16 or 32 bits");
+      uint64_t minBytes = elemBits == 16 ? 64 : 32;
+      if (failed(verifyTmpCapacityAtLeast(*this, tmpTy, minBytes)))
+        return failure();
+    }
     return success();
   };
 
@@ -13025,6 +13140,22 @@ mlir::LogicalResult mlir::pto::TSelSOp::verify() {
     if (!isRowMajorTileBuf(tSrc) || !isRowMajorTileBuf(tDst))
       return emitOpError("expects src and dst to use row-major layout");
     Type elem = *elemOr;
+    if (getTmp()) {
+      Type tmpTy = getTmp().getType();
+      if (getElemTy(tmpTy) != elem)
+        return emitOpError("expects A2/A3 tsels tmp to have the same element type as src and dst");
+      if (!isRowMajorTileBuf(tmpTy))
+        return emitOpError("expects A2/A3 tsels tmp to use row-major layout");
+      auto srcShape = getShapeVec(tSrc);
+      if (srcShape.size() != 2 || srcShape[1] == ShapedType::kDynamic)
+        return emitOpError(
+            "expects A2/A3 tsels src shape to be static when tmp is provided");
+      auto elemBytes = getElemByteSize(elem);
+      if (elemBytes == 0 ||
+          failed(verifyTmpCapacityAtLeast(
+              *this, tmpTy, static_cast<uint64_t>(srcShape[1]) * elemBytes)))
+        return failure();
+    }
     bool ok = elem.isF16() || elem.isF32();
     if (auto it = mlir::dyn_cast<mlir::IntegerType>(elem))
       ok = (it.getWidth() == 16 || it.getWidth() == 32);
@@ -13104,6 +13235,15 @@ mlir::LogicalResult mlir::pto::TSort32Op::verify() {
   if (getTmp() &&
       failed(verifyVecTileCommon(*this, getTmp().getType(), "tmp")))
     return failure();
+  if (getTmp() && getTargetArch(getOperation()) != PTOArch::A5) {
+    auto requiredBytes = getStaticByteSize(srcTy);
+    if (!requiredBytes)
+      return emitOpError(
+          "expects A2/A3 tsort32 src shape to be static when tmp is provided");
+    if (failed(verifyTmpCapacityAtLeast(*this, getTmp().getType(),
+                                        *requiredBytes)))
+      return failure();
+  }
 
   auto srcElem = getElemTy(srcTy);
   auto dstElem = getElemTy(dstTy);
@@ -13329,6 +13469,18 @@ mlir::LogicalResult mlir::pto::TTransOp::verify() {
     };
     if (!isAllowedWidthType(srcElem))
       return emitOpError() << "expects transpose element type to match the supported set for its width";
+    if (tmpTy) {
+      uint64_t requiredBytes = 32;
+      if (ttransUsesTmp(srcTy, dstTy)) {
+        auto srcBytes = getStaticByteSize(srcTy);
+        if (!srcBytes)
+          return emitOpError(
+              "expects A2/A3 transpose src shape to be static when tmp is used");
+        requiredBytes = *srcBytes;
+      }
+      if (failed(verifyTmpCapacityAtLeast(*this, tmpTy, requiredBytes)))
+        return failure();
+    }
     return mlir::success();
   };
   auto verifyA5 = [&]() -> LogicalResult {
@@ -13359,6 +13511,8 @@ mlir::LogicalResult mlir::pto::TTransOp::verify() {
     };
     if (!isAllowedWidthType(srcElem))
       return emitOpError() << "expects transpose element type to match the supported set for its width";
+    if (tmpTy && failed(verifyTmpCapacityAtLeast(*this, tmpTy, 32)))
+      return failure();
     auto checkAlignedMajor = [&](Type ty, StringRef name) -> LogicalResult {
       auto tb = mlir::dyn_cast<pto::TileBufType>(ty);
       if (!tb)
@@ -13497,6 +13651,12 @@ mlir::LogicalResult mlir::pto::TXorOp::verify() {
       if (failed(verifyTileBufSameValidShape(
               *this, tmpTy, getDst().getType(), "tmp", "dst")))
         return failure();
+      auto requiredBytes = getStaticByteSize(getDst().getType());
+      if (!requiredBytes)
+        return emitOpError(
+            "expects A2/A3 txor dst shape to be static when tmp is provided");
+      if (failed(verifyTmpCapacityAtLeast(*this, tmpTy, *requiredBytes)))
+        return failure();
     }
     auto it = mlir::dyn_cast<IntegerType>(elem);
     if (!it || (it.getWidth() != 8 && it.getWidth() != 16 &&
@@ -13542,6 +13702,12 @@ mlir::LogicalResult mlir::pto::TXorSOp::verify() {
             "expects tmp to have the same element type as src and dst");
       if (!isRowMajorTileBuf(tmpTy))
         return emitOpError("expects tmp to use row-major layout");
+      auto requiredBytes = getStaticByteSize(getDst().getType());
+      if (!requiredBytes)
+        return emitOpError(
+            "expects A2/A3 txors dst shape to be static when tmp is provided");
+      if (failed(verifyTmpCapacityAtLeast(*this, tmpTy, *requiredBytes)))
+        return failure();
     }
     auto it = mlir::dyn_cast<IntegerType>(elem);
     if (!it || (it.getWidth() != 8 && it.getWidth() != 16))
