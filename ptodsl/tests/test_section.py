@@ -133,6 +133,32 @@ def lexical_section_conditional_rebinding_probe():
 
 
 @pto.jit(target="a5", mode="explicit")
+def lexical_section_sibling_conditional_rebinding_probe():
+    one = pto.const(1, dtype=pto.i32)
+    two = pto.const(2, dtype=pto.i32)
+    m_tile = pto.const(0, dtype=pto.i32)
+    n_tile = pto.const(0, dtype=pto.i32)
+    with pto.section("cube"):
+        if pto.get_block_idx() < one:
+            m_tile = one
+            n_tile = one
+        else:
+            m_tile = two
+            n_tile = two
+        pto.wait_flag("S", "MTE2", event_id=m_tile)
+        pto.wait_flag("S", "MTE2", event_id=n_tile)
+    with pto.section("vector"):
+        if pto.get_block_idx() < one:
+            m_tile = one
+            n_tile = one
+        else:
+            m_tile = two
+            n_tile = two
+        pto.wait_flag("MTE2", "S", event_id=m_tile)
+        pto.wait_flag("MTE2", "S", event_id=n_tile)
+
+
+@pto.jit(target="a5", mode="explicit")
 def lexical_section_loop_carry_probe():
     one = pto.const(1, dtype=pto.i32)
     m_tile = pto.const(0, dtype=pto.i64)
@@ -228,6 +254,14 @@ def main() -> None:
     conditional_lexical_text = lexical_section_conditional_rebinding_probe.compile().mlir_text()
     assert conditional_lexical_text.count("pto.section.cube {") == 1
     assert "scf.if" in conditional_lexical_text
+
+    sibling_conditional_text = lexical_section_sibling_conditional_rebinding_probe.compile().mlir_text()
+    assert sibling_conditional_text.count("pto.section.cube {") == 1
+    assert sibling_conditional_text.count("pto.section.vector {") == 1
+    assert sibling_conditional_text.count("scf.if") == 2
+    with make_context() as context:
+        module = Module.parse(sibling_conditional_text, context)
+        module.operation.verify()
 
     loop_carry_text = lexical_section_loop_carry_probe.compile().mlir_text()
     assert loop_carry_text.count("pto.section.cube {") == 1

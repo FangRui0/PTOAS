@@ -200,6 +200,11 @@ class _SectionLexicalRewriter(ast.NodeTransformer):
 
     def visit_If(self, node):
         node.test = self.visit(node.test)
+        # Both branches of a runtime conditional share one authored binding.
+        # Reserve its section-local alias before visiting either branch so the
+        # branch merge does not treat the second branch as a new binding.
+        common_targets = _name_info(node.body).stores & _name_info(node.orelse).stores
+        self._activate_targets(common_targets)
         entry_env = dict(self._env)
         node.body, body_env = self._visit_block(node.body, entry_env)
         node.orelse, else_env = self._visit_block(node.orelse, entry_env)
