@@ -7,17 +7,22 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-import importlib.util
 import hashlib
+import importlib.util
 import tempfile
+import sys
 import unittest
 from pathlib import Path
 from unittest import mock
 
+
 try:
     from packaging.tags import Tag
 except ImportError:  # pragma: no cover - exercised only in minimal build environments.
-    Tag = None
+    try:
+        from pip._vendor.packaging.tags import Tag
+    except ImportError:
+        Tag = None
 
 
 SCRIPT = Path(__file__).resolve().parents[2] / "tools" / "install_nightly_wheel.py"
@@ -27,8 +32,35 @@ INSTALLER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(INSTALLER)
 
 
-@unittest.skipIf(Tag is None, "packaging is not installed")
 class NightlyWheelSelectionTests(unittest.TestCase):
+    @unittest.skipIf(Tag is None, "packaging is not available in this Python environment")
+    def test_falls_back_to_pip_vendor_packaging(self):
+        from pip._vendor.packaging.tags import Tag as PipTag
+
+        compatible = PipTag("cp312", "cp312", "manylinux_2_34_x86_64")
+        release = {
+            "tag_name": "nightly",
+            "assets": [
+                {
+                    "name": "ptoas-0.57-cp312-cp312-manylinux_2_34_x86_64.whl",
+                    "browser_download_url": "https://example.invalid/new.whl",
+                }
+            ],
+        }
+        from pip._vendor.packaging import tags as pip_tags
+
+        with mock.patch.dict(
+            sys.modules,
+            {"packaging": None, "packaging.tags": None, "packaging.utils": None},
+        ):
+            with mock.patch.object(
+                pip_tags, "sys_tags", return_value=iter([compatible])
+            ):
+                selection = INSTALLER.select_wheel(release)
+
+        self.assertEqual(selection.name, "ptoas-0.57-cp312-cp312-manylinux_2_34_x86_64.whl")
+
+    @unittest.skipIf(Tag is None, "packaging is not available in this Python environment")
     def test_selects_latest_compatible_version(self):
         compatible = Tag("cp312", "cp312", "manylinux_2_34_x86_64")
         release = {
@@ -57,6 +89,7 @@ class NightlyWheelSelectionTests(unittest.TestCase):
         self.assertEqual(selection.name, "ptoas-0.57-cp312-cp312-manylinux_2_34_x86_64.whl")
         self.assertEqual(selection.url, "https://example.invalid/new.whl")
 
+    @unittest.skipIf(Tag is None, "packaging is not available in this Python environment")
     def test_prefers_newer_asset_over_higher_version(self):
         compatible = Tag("cp312", "cp312", "manylinux_2_34_x86_64")
         release = {
@@ -80,6 +113,7 @@ class NightlyWheelSelectionTests(unittest.TestCase):
 
         self.assertEqual(selection.name, "ptoas-0.57-cp312-cp312-manylinux_2_34_x86_64.whl")
 
+    @unittest.skipIf(Tag is None, "packaging is not available in this Python environment")
     def test_prefers_higher_build_number(self):
         compatible = Tag("cp312", "cp312", "manylinux_2_34_x86_64")
         release = {
@@ -103,6 +137,7 @@ class NightlyWheelSelectionTests(unittest.TestCase):
 
         self.assertEqual(selection.name, "ptoas-0.57-2-cp312-cp312-manylinux_2_34_x86_64.whl")
 
+    @unittest.skipIf(Tag is None, "packaging is not available in this Python environment")
     def test_normalizes_distribution_name(self):
         compatible = Tag("cp312", "cp312", "manylinux_2_34_x86_64")
         release = {
@@ -120,6 +155,7 @@ class NightlyWheelSelectionTests(unittest.TestCase):
 
         self.assertEqual(selection.name, "pto_as-0.57-cp312-cp312-manylinux_2_34_x86_64.whl")
 
+    @unittest.skipIf(Tag is None, "packaging is not available in this Python environment")
     def test_prefers_better_supported_tag(self):
         platform_tag = Tag("cp312", "cp312", "manylinux_2_34_x86_64")
         universal_tag = Tag("py3", "none", "any")
@@ -144,6 +180,7 @@ class NightlyWheelSelectionTests(unittest.TestCase):
 
         self.assertEqual(selection.name, "ptoas-0.57-cp312-cp312-manylinux_2_34_x86_64.whl")
 
+    @unittest.skipIf(Tag is None, "packaging is not available in this Python environment")
     def test_rejects_missing_compatible_wheel(self):
         release = {"tag_name": "nightly", "assets": []}
         with self.assertRaisesRegex(RuntimeError, "no compatible ptoas wheel"):

@@ -131,13 +131,29 @@ def parse_digest(value: object) -> str | None:
     return None
 
 
-def select_wheel(release: object, package: str = "ptoas") -> WheelSelection:
+def packaging_modules():
     try:
         from packaging.tags import sys_tags
         from packaging.utils import canonicalize_name, parse_wheel_filename
-    except ImportError as error:
+        return sys_tags, canonicalize_name, parse_wheel_filename
+    except ImportError:
+        try:
+            from pip._vendor.packaging.tags import sys_tags
+            from pip._vendor.packaging.utils import canonicalize_name, parse_wheel_filename
+            return sys_tags, canonicalize_name, parse_wheel_filename
+        except ImportError as error:
+            raise RuntimeError(
+                "packaging support is required; use a Python environment with pip "
+                "or install it with 'python -m pip install packaging'"
+            ) from error
+
+
+def select_wheel(release: object, package: str = "ptoas") -> WheelSelection:
+    try:
+        sys_tags, canonicalize_name, parse_wheel_filename = packaging_modules()
+    except RuntimeError as error:
         raise RuntimeError(
-            "the packaging module is required; install it with 'python -m pip install packaging'"
+            str(error)
         ) from error
 
     if not isinstance(release, dict) or not isinstance(release.get("assets"), list):

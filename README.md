@@ -225,6 +225,9 @@ ninja -C "$PTO_SOURCE_DIR/build" check-pto
 python tools/install_nightly_wheel.py
 ```
 
+脚本使用当前 Python 自带的 pip packaging 支持选择 wheel，无需预先单独安装
+`packaging`。
+
 daily workflow 的实际 Python 版本、平台和架构以 nightly release 中当前发布的
 wheel 为准。
 
@@ -233,6 +236,8 @@ wheel 为准。
 nightly wheel。GitHub Release 提供 asset digest 时脚本会自动校验 SHA-256，也可
 通过 `--sha256` 显式指定摘要。nightly wheel 来自 GitHub Release，使用前请确认
 下载来源和当前环境符合预期。若选中的 asset 超过 48 小时未更新，脚本会给出警告。
+Linux 和 macOS nightly release 同时附带 manifest，其中记录各平台 wheel 对应的
+源码 commit 和构建任务，跨平台版本不一致时可据此核对。
 
 需要 CANN、Bisheng、simulator 或 NPU 时，再加载 CANN 对外提供的环境脚本。
 常见安装位置如下，按实际环境选择一个：

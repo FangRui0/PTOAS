@@ -409,6 +409,34 @@ jobs:
           mv "release-artifacts/ptoas-bin-aarch64/ptoas-bin-aarch64.tar.gz" \
             "release-artifacts/ptoas-bin-aarch64.tar.gz"
 
+      - name: Create nightly build manifest
+        if: github.event_name == 'schedule'
+        env:
+          MANIFEST_PATH: release-artifacts/nightly-manifest-linux.json
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          root = Path("release-artifacts")
+          assets = sorted(path.name for path in root.iterdir() if path.is_file())
+          manifest = {
+              "platform": "linux",
+              "source_commit": os.environ["GITHUB_SHA"],
+              "workflow": os.environ["GITHUB_WORKFLOW"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_url": f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+              "assets": assets,
+          }
+          Path(os.environ["MANIFEST_PATH"]).write_text(
+              json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+
       - name: Upload wheel assets to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -432,6 +460,19 @@ jobs:
           body: ${{ env.RELEASE_BODY }}
           overwrite_files: true
           files: release-artifacts/*.tar.gz
+
+      - name: Upload nightly build manifest
+        if: github.event_name == 'schedule'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_NAME }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ env.RELEASE_PRERELEASE }}
+          make_latest: ${{ env.RELEASE_MAKE_LATEST }}
+          body: ${{ env.RELEASE_BODY }}
+          overwrite_files: true
+          files: release-artifacts/nightly-manifest-linux.json
 
   bump_base_version:
     name: Bump base version after release
