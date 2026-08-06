@@ -6,19 +6,22 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// RUN: not ptoas --pto-arch=a3 --pto-level=level3 %s 2>&1 | FileCheck %s
+// RUN: ptoas --pto-arch=a3 --pto-level=level3 --emit-pto-ir %s 2>&1 | FileCheck %s
 
 module {
-  func.func @trowexpand_mode1_level3_requires_tmp() {
+  func.func @trowexpand_mode1_level3_preserves_no_tmp() {
     %addr0 = arith.constant 0 : i64
     %addr1 = arith.constant 1024 : i64
     %addr2 = arith.constant 2048 : i64
     %src0 = pto.alloc_tile addr = %addr0 : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     %src1 = pto.alloc_tile addr = %addr1 : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=1, v_row=8, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>
     %dst = pto.alloc_tile addr = %addr2 : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    // CHECK: error: 'pto.trowexpandadd' op requires explicit tmp for A2/A3 row-expand mode 1 when PlanMemory is skipped
     pto.trowexpandadd ins(%src0, %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=1, v_row=8, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>)
                        outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     return
   }
 }
+
+// CHECK-LABEL: func.func @trowexpand_mode1_level3_preserves_no_tmp
+// CHECK: pto.trowexpandadd ins(%{{.*}}, %{{.*}} :
+// CHECK-NOT: pto.trowexpandadd ins(%{{.*}}, %{{.*}}, %{{.*}} :
