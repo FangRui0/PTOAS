@@ -9,6 +9,7 @@
 > ops (including `vmull`, whose 64-bit product is split into a pair of `i32`
 > results at the VMI surface) are Category A `vreg→vreg`.
 
+
 ---
 
 ## 7.1 Fused Arithmetic
@@ -249,6 +250,7 @@
         !pto.vmi.mask<64> -> !pto.vmi.vreg<64×f32>
   ```
 
+
 ---
 
 ## 7.2 Histogram
@@ -400,6 +402,7 @@
       : !pto.vmi.vreg<256×i16>, !pto.vmi.vreg<256×i8>, !pto.vmi.mask<256>
      -> !pto.vmi.vreg<256×i16>
   ```
+
 
 ---
 
