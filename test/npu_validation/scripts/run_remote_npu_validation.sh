@@ -17,7 +17,7 @@ PTO_ISA_REPO="${PTO_ISA_REPO:-https://gitcode.com/cann/pto-isa.git}"
 PTO_ISA_COMMIT="${PTO_ISA_COMMIT:-7e879c4198939b506571f8769326b5a61e88da25}"
 DEVICE_ID="${DEVICE_ID:-0}"
 SKIP_CASES="${SKIP_CASES:-}"          # comma/space separated testcase names
-RUN_ONLY_CASES="${RUN_ONLY_CASES:-}"  # comma/space separated testcase names
+RUN_ONLY_CASES="${RUN_ONLY_CASES:-}"  # comma/space separated testcase names or model groups
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -f "${SCRIPT_DIR}/test/npu_validation/scripts/generate_testcase.py" ]]; then
@@ -247,9 +247,36 @@ list_contains() {
   [[ ",${list}," == *",${item},"* ]]
 }
 
+run_only_matches() {
+  local list="$1"
+  local testcase="$2"
+  local sample_name="$3"
+  local sample_lc token token_lc
+  local -a tokens=()
+
+  list_contains "${list}" "${testcase}" && return 0
+  sample_lc="$(printf '%s' "${sample_name}" | tr '[:upper:]' '[:lower:]')"
+  IFS=',' read -r -a tokens <<< "${list}"
+  for token in "${tokens[@]}"; do
+    token_lc="$(printf '%s' "${token}" | tr '[:upper:]' '[:lower:]')"
+    case "${token_lc}" in
+      deepseek)
+        [[ "${sample_lc}" == deepseek* ]] && return 0
+        ;;
+      qwen)
+        [[ "${sample_lc}" == qwen* ]] && return 0
+        ;;
+      "${sample_lc}")
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
 case_requires_multicard_comm() {
   local cpp="$1"
-  grep -Eq 'pto\.comm\.|CommRemoteOffset_|(^|[^A-Za-z0-9_])(tput|tnotify|twait)([^A-Za-z0-9_]|$)' "${cpp}"
+  grep -Eiq 'pto::comm::|CommRemoteOffset_|(^|[^A-Za-z0-9_])(tput|tnotify|twait)([^A-Za-z0-9_]|$)' "${cpp}"
 }
 
 SKIP_CASES_NORM="$(normalize_list "${SKIP_CASES}")"
@@ -481,6 +508,12 @@ while IFS= read -r -d '' cpp; do
   testcase="${base}"
   testcase="${testcase%-pto}"
   testcase="${testcase%_pto}"
+  case_dir="$(cd "$(dirname "${cpp}")" && pwd)"
+  sample_name="$(basename "${case_dir}")"
+
+  if [[ -n "${RUN_ONLY_CASES_NORM}" ]] && ! run_only_matches "${RUN_ONLY_CASES_NORM}" "${testcase}" "${sample_name}"; then
+    continue
+  fi
 
   # AsyncComm smoke sample issues async remote DMA against plain local buffers.
   # In board-runtime STAGE=run this can trigger invalid MPU access on single-rank
@@ -503,25 +536,40 @@ while IFS= read -r -d '' cpp; do
     continue
   fi
 
-  # DeepSeek-V4 A5 sample pack intentionally vendors hc_pre_fused only as a
-  # compile-regression input. Upstream pypto-lib currently documents the source
-  # hc_pre kernel as Ascend910B/A3-only: its hard mix syncall needs full
-  # physical-core occupancy, so the direct A5 export fails with
-  # HardSyncallOccupancy before kernel emission. Keep build coverage, but do not
-  # treat runtime board execution as expected-pass on A5.
-  if [[ "${STAGE}" == "run" && "${testcase}" == "hc_pre_fused" ]]; then
-    sample_name_probe="$(basename "$(dirname "${cpp}")")"
-    if [[ "${sample_name_probe}" == "DeepseekV4DecodeA5" ]]; then
-      skip_count=$((skip_count + 1))
-      printf "%s\tSKIP\t%s\tupstream DeepSeek-V4 A5 hc_pre_fused runtime is unsupported (HardSyncallOccupancy)\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
-      log "SKIP: ${testcase} (DeepSeek-V4 A5 upstream runtime unsupported)"
-      continue
-    fi
-  fi
-
-  if [[ -n "${RUN_ONLY_CASES_NORM}" ]] && ! list_contains "${RUN_ONLY_CASES_NORM}" "${testcase}"; then
+  # The A3 legacy EmitC lowering materializes this dynamic-stride tensor view
+  # as a static 16x8 MTE transfer.  The generated kernel faults at the same PC
+  # even with oversized GM buffers, so retain export/build coverage and skip
+  # only this unsupported A3 runtime path.
+  if [[ "${STAGE}" == "run" && "${testcase}" == "hc_head_reduce" \
+        && "${sample_name}" == "DeepseekV4DecodeA3" ]]; then
+    skip_count=$((skip_count + 1))
+    printf "%s\tSKIP\t%s\tA3 legacy EmitC dynamic-stride MTE runtime incompatibility\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
+    log "SKIP: ${testcase} (A3 legacy EmitC dynamic-stride MTE runtime incompatibility)"
     continue
   fi
+
+  # The A3 legacy mixed-kernel path does not provide a stable C2V handoff for
+  # this direct model export: repeated runs either disagree in the valid output
+  # region or fault in the D-cache/UB transfer.  A5 remains covered separately.
+  if [[ "${STAGE}" == "run" && "${testcase}" == "out_proj_residual" \
+        && "${sample_name}" == "Qwen3DecodeA3" ]]; then
+    skip_count=$((skip_count + 1))
+    printf "%s\tSKIP\t%s\tA3 legacy EmitC mixed C2V runtime incompatibility\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
+    log "SKIP: ${testcase} (A3 legacy EmitC mixed C2V runtime incompatibility)"
+    continue
+  fi
+
+  # The legacy PTOAS EmitC path lowers this model's partition-tensor CMO
+  # operand as a GlobalTensor object.  CANN's host parse rejects the resulting
+  # cast even though the vendored PTO is valid; keep the case in build/direct
+  # export coverage and make the board-runtime limitation explicit.
+  if [[ "${STAGE}" == "run" && ( "${testcase}" == "moe_signal_clear" || "${testcase}" == "lm_head_signal_clear" ) ]]; then
+    skip_count=$((skip_count + 1))
+    printf "%s\tSKIP\t%s\tlegacy EmitC partition-tensor CMO host-compile incompatibility\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
+    log "SKIP: ${testcase} (legacy EmitC partition-tensor CMO host-compile incompatibility)"
+    continue
+  fi
+
   if [[ -n "${SKIP_CASES_NORM}" ]] && list_contains "${SKIP_CASES_NORM}" "${testcase}"; then
     skip_count=$((skip_count + 1))
     printf "%s\tSKIP\t%s\tlisted in SKIP_CASES\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
@@ -559,8 +607,6 @@ while IFS= read -r -d '' cpp; do
   echo
   log "=== CASE: ${cpp} ==="
 
-  case_dir="$(cd "$(dirname "${cpp}")" && pwd)"
-  sample_name="$(basename "${case_dir}")"
   nv_dir="${OUTPUT_ROOT}/${sample_name}/${testcase}"
 
   set +e

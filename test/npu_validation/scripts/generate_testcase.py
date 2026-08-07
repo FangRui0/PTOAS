@@ -103,10 +103,31 @@ CASE_INT_SCALAR_DEFAULTS = {
     for testcase in DEEPSEEK_V4_DIRECT_CASES
 }
 
+CASE_INT_SCALAR_DEFAULTS["hc_head_reduce"] = {"v9": 0, "v10": 1}
+
+# Qwen3 decode exports use compact per-block inputs.  The generic fallback of
+# `1` for every dynamic integer selects the second batch/pair and makes the
+# golden builders address beyond those compact buffers.  Keep one context
+# block for the attention reductions, but select the first batch/block/pair.
+CASE_INT_SCALAR_DEFAULTS.update({
+    "down_proj_residual": {"v6": 0, "v7": 0},
+    "gate_proj": {"v4": 0, "v5": 0, "v6": 0},
+    "kv_proj": {"v6": 0, "v7": 0},
+    "online_softmax": {"v6": 0},
+    "out_proj_residual": {"v6": 0, "v7": 0},
+    "q_proj": {"v4": 0, "v5": 0},
+    "qk_matmul": {"v4": 0, "v6": 0},
+    "rope_kv_cache": {"v11": 0, "v12": 1},
+    "silu": {"v4": 0, "v5": 0, "v6": 0},
+    "softmax": {"v7": 0, "v8": 0},
+    "sv_matmul": {"v5": 0, "v6": 0},
+    "up_proj": {"v4": 0, "v5": 0, "v6": 0},
+})
+
 CASE_BOOL_SCALAR_DEFAULTS = {}
 
 CASE_POINTER_COUNT_MINIMUMS = {
-    "aiv_merge_norm": {
+    "merge_norm": {
         # The packed sparse output is written through a large tiled GM address
         # space even though each individual store only covers 448 bf16 values.
         # Keep the backing buffer large enough for the maximum `v7=1` testcase
@@ -121,6 +142,28 @@ CASE_POINTER_COUNT_MINIMUMS = {
         "v1": 123648,
         "v2": 123648,
     },
+    # These model kernels select GM subviews with dynamic base offsets.  The
+    # best-effort EmitC analysis sees the tile footprint but cannot always
+    # prove the enclosing loop/offset maxima, so use the complete PTO tensor
+    # view sizes as the validation backing-buffer lower bounds.
+    "exp_gate_mm": {"v1": 32_768, "v2": 2_097_152, "v3": 268_435_456},
+    "exp_up_mm": {"v1": 32_768, "v2": 2_097_152, "v3": 268_435_456},
+    "exp_w2_mm": {"v1": 65_536, "v2": 32_768, "v3": 268_435_456},
+    "gate": {"v1": 64, "v2": 65_536, "v3": 262_144, "v4": 16, "v5": 4_096, "v6": 16},
+    "hc_head_reduce": {
+        "v1": 1,
+        "v2": 8,
+        "v3": 128,
+        "v4": 128,
+        "v5": 32_768,
+        "v6": 131_072,
+    },
+    "idx_qr_proj_matmul": {"v1": 131_072, "v2": 8_192, "v3": 8_388_608},
+    "lm_head_matmul": {"v1": 1_034_240, "v2": 65_536, "v3": 264_765_440},
+    "proj_a_mm": {"v1": 262_144, "v2": 33_554_432, "v3": 131_072},
+    "proj_b_mm": {"v1": 524_288, "v2": 131_072, "v3": 33_554_432},
+    "sh_gate_mm": {"v1": 32_768, "v2": 8_388_608, "v3": 32_768},
+    "sh_up_mm": {"v1": 32_768, "v2": 8_388_608, "v3": 32_768},
     "tquant_mx": {
         # The generated MX auxiliary tiles use 1x32 Vec storage even though
         # the logical tensor views are 1x16. Keep the GM backing buffers large
@@ -136,6 +179,101 @@ CASE_POINTER_COUNT_MINIMUMS = {
             "v3": 8192 * 64,
         }
         for testcase in DEEPSEEK_V4_DIRECT_CASES
+    },
+}
+
+CASE_COMPARE_PREFIX_COUNTS = {
+    # The dynamic output has shape [arg5, 32].  With the validation default
+    # arg5=1, only the first row is defined; the remaining physical ACC tile
+    # rows must not participate in the determinism comparison.
+    "hc_pre_linear": {"v3": 32},
+}
+
+QWEN3_DECODE_POINTER_COUNT_MINIMUMS = {
+    "down_proj_residual": {
+        "v1": 131072,
+        "v2": 131072,
+        "v3": 409600,
+        "v4": 209715200,
+        "v5": 8192,
+    },
+    "gate_proj": {
+        "v1": 131072,
+        "v2": 209715200,
+        "v3": 409600,
+    },
+    "kv_proj": {
+        "v1": 131072,
+        "v2": 8388608,
+        "v3": 8388608,
+        "v4": 16384,
+        "v5": 16384,
+    },
+    "online_softmax": {
+        "v1": 131072,
+        "v2": 1024,
+        "v3": 1024,
+        "v4": 8192,
+    },
+    "out_proj_residual": {
+        "v1": 131072,
+        "v2": 131072,
+        "v3": 131072,
+        "v4": 67108864,
+        "v5": 8192,
+    },
+    "post_rmsnorm": {
+        "v1": 131072,
+        "v2": 131072,
+        "v3": 8192,
+    },
+    "q_proj": {
+        "v1": 131072,
+        "v2": 67108864,
+        "v3": 131072,
+    },
+    "qk_matmul": {
+        "v1": 16384,
+        "v2": 524288,
+        "v3": 4194304,
+    },
+    "rmsnorm": {
+        "v1": 131072,
+        "v2": 131072,
+        "v3": 8192,
+    },
+    "rope_kv_cache": {
+        "v1": 16384,
+        "v2": 4194304,
+        "v3": 4194304,
+        "v4": 16384,
+        "v5": 64,
+        "v6": 64,
+        "v7": 64,
+        "v8": 64,
+        "v9": 16384,
+        "v10": 131072,
+    },
+    "silu": {
+        "v1": 409600,
+        "v2": 409600,
+        "v3": 409600,
+    },
+    "softmax": {
+        "v1": 1024,
+        "v2": 1024,
+        "v3": 524288,
+        "v4": 524288,
+    },
+    "sv_matmul": {
+        "v1": 65536,
+        "v2": 524288,
+        "v3": 4194304,
+    },
+    "up_proj": {
+        "v1": 131072,
+        "v2": 209715200,
+        "v3": 409600,
     },
 }
 
@@ -1829,7 +1967,13 @@ def generate_testcase(
         partial_counts = _infer_gm_pointer_elem_counts(analysis_text, pointer_param_names, seed_int_env=scalar_int_defaults)
         for name, count in partial_counts.items():
             inferred_counts[name] = max(inferred_counts.get(name, 0), count)
-    for name, count in CASE_POINTER_COUNT_MINIMUMS.get(testcase, {}).items():
+    pointer_count_minimums = CASE_POINTER_COUNT_MINIMUMS.get(testcase, {})
+    if sample_root.name.lower().startswith("qwen3decode"):
+        pointer_count_minimums = {
+            **pointer_count_minimums,
+            **QWEN3_DECODE_POINTER_COUNT_MINIMUMS.get(testcase, {}),
+        }
+    for name, count in pointer_count_minimums.items():
         inferred_counts[name] = max(inferred_counts.get(name, 0), int(count))
     ptr_elem_counts = {}
     for p in data_ptrs:
@@ -2530,6 +2674,9 @@ endif()
         file_cnt = ptr_elem_counts.get(name, logical_elem_count)
         if file_cnt and req < int(file_cnt):
             compare_prefix_counts[name] = req
+    for name, count in CASE_COMPARE_PREFIX_COUNTS.get(testcase, {}).items():
+        file_cnt = int(ptr_elem_counts.get(name, logical_elem_count))
+        compare_prefix_counts[name] = min(file_cnt, int(count))
     # TMRGSORT format2 testcase writes three contiguous regions:
     # 2-way (256) + 3-way (384) + 4-way (up to 512).
     # With 4-way exhausted mode, the stable worst-case valid prefix for 4-way

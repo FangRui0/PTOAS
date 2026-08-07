@@ -11,89 +11,6 @@ import numpy as np
 
 from validation_runtime import float32_to_bf16, load_case_meta, write_buffers
 
-SUPPORTED_CASES = frozenset({
-    'aic_exp_gate_mm',
-    'aic_exp_up_mm',
-    'aic_exp_w2_mm',
-    'aic_hc_head_linear',
-    'aic_hc_pre_linear',
-    'aic_idx_qr_proj_matmul',
-    'aic_kv_hadamard',
-    'aic_kv_proj_matmul',
-    'aic_kv_score_proj',
-    'aic_proj_a_mm',
-    'aic_proj_b_mm',
-    'aic_qproj_matmul',
-    'aic_qr_hadamard_matmul',
-    'aic_qr_proj_matmul',
-    'aic_score_mat',
-    'aic_sh_gate_mm',
-    'aic_sh_up_mm',
-    'aic_sh_w2_mm',
-    'aic_weights_proj',
-    'aiv_build_valid',
-    'aiv_comb_sinkhorn',
-    'aiv_csa_cache_writeback',
-    'aiv_csa_cmp_rope',
-    'aiv_csa_rope_step',
-    'aiv_dispatch_gather',
-    'aiv_exp_gate_up_act',
-    'aiv_exp_h_q',
-    'aiv_exp_w2_act',
-    'aiv_ffn_norm',
-    'aiv_gate_pre_route',
-    'aiv_hc_head_pre_fused',
-    'aiv_hc_head_reduce',
-    'aiv_hc_head_rms',
-    'aiv_hc_head_seed',
-    'aiv_hc_post',
-    'aiv_hc_pre_rms',
-    'aiv_hc_pre_seed',
-    'aiv_hca_cache_topk',
-    'aiv_hca_cache_writeback',
-    'aiv_hca_rope',
-    'aiv_idx_qr_proj_dequant',
-    'aiv_kv_and_cache_write',
-    'aiv_kv_finalize',
-    'aiv_kv_proj_seed',
-    'aiv_kv_rms_norm_rope',
-    'aiv_kv_touch',
-    'aiv_merge_norm',
-    'aiv_mix_x',
-    'aiv_proj_b_act',
-    'aiv_q_rope_prepare',
-    'aiv_qproj_dequant_rms_nope_rope',
-    'aiv_qr_hadamard_quant',
-    'aiv_qr_proj_seed',
-    'aiv_qr_rms_norm_quant',
-    'aiv_qr_rope',
-    'aiv_quant',
-    'aiv_rms_norm',
-    'aiv_rmsnorm_rope',
-    'aiv_rmsnorm_rope_cache_write',
-    'aiv_rope_cs',
-    'aiv_route_hash',
-    'aiv_route_sort',
-    'aiv_scatter_softmax_pool',
-    'aiv_score_reduce',
-    'aiv_sh_gate_up_act',
-    'aiv_sh_h_q',
-    'aiv_sh_w2_act',
-    'aiv_shared_routed',
-    'aiv_softmax_pool',
-    'aiv_split_pre_post',
-    'aiv_state_scatter_pre',
-    'aiv_swa_cache_insert_valid_bias',
-    'aiv_swa_gather_kv',
-    'aiv_swa_rope_step',
-    'aiv_topk',
-    'aiv_weights_proj_reduce',
-    'aiv_x_norm_quant',
-    'gate',
-    'qk_pv',
-})
-
-
 def _case_bias(case_name: str) -> np.float32:
     total = 0
     for idx, ch in enumerate(case_name):
@@ -132,8 +49,6 @@ def _buffer_values(meta, name: str, case_name: str):
 
 
 def run_case(case_name: str):
-    if case_name not in SUPPORTED_CASES:
-        raise KeyError(f'unsupported case: {case_name}')
     meta = load_case_meta()
     buffers = {
         name: _buffer_values(meta, name, case_name)

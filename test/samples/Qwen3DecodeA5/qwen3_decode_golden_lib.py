@@ -569,18 +569,18 @@ def build_down_proj_residual(meta, generator, ints):
 
 BUILDERS = {
     "rmsnorm": build_rmsnorm,
-    "qwen3_decode_incore_1": build_q_proj,
-    "qwen3_decode_incore_2": build_kv_proj,
+    "q_proj": build_q_proj,
+    "kv_proj": build_kv_proj,
     "rope_kv_cache": build_rope_kv_cache,
-    "qwen3_decode_incore_4": build_qk_matmul,
-    "qwen3_decode_incore_5": build_softmax,
-    "qwen3_decode_incore_6": build_sv_matmul,
-    "qwen3_decode_incore_7": build_online_softmax,
+    "qk_matmul": build_qk_matmul,
+    "softmax": build_softmax,
+    "sv_matmul": build_sv_matmul,
+    "online_softmax": build_online_softmax,
     "out_proj_residual": build_out_proj_residual,
     "post_rmsnorm": build_post_rmsnorm,
-    "qwen3_decode_incore_10": build_gate_proj,
-    "qwen3_decode_incore_11": build_up_proj,
-    "qwen3_decode_incore_12": build_silu,
+    "gate_proj": build_gate_proj,
+    "up_proj": build_up_proj,
+    "silu": build_silu,
     "down_proj_residual": build_down_proj_residual,
 }
 

@@ -151,6 +151,13 @@ copy_validation_assets() {
   fi
 }
 
+direct_pto_files() {
+  local sample_dir="$1"
+  find "${sample_dir}" -type f -name '*.pto' \
+    ! -path '*/npu_validation/*' \
+    ! -name '*-pto-ir.pto' -print0
+}
+
 process_one_dir() {
   local A="$1" # folder name (e.g. Abs)
   local out_dir="$2"
@@ -253,46 +260,30 @@ process_one_dir() {
   soc_lc="$(printf '%s' "${soc_lc}" | tr '[:upper:]' '[:lower:]')"
   if [[ ( "$A" == "Qwen3DecodeA3" || "$A" == "DeepseekV4DecodeA3" ) && "${target_arch_lc}" != "a3" ]]; then
     local direct_case
-    for direct_case in "$dir"/*.pto; do
-      [[ -f "$direct_case" ]] || continue
-      case "$direct_case" in
-        *-pto-ir.pto) continue ;;
-      esac
+    while IFS= read -r -d '' direct_case; do
       echo -e "${A}($(basename "$direct_case"))\tSKIP\trequires --pto-arch=a3"
-    done
+    done < <(direct_pto_files "$dir")
     return 0
   fi
   if [[ ( "$A" == "Qwen3DecodeA3" || "$A" == "DeepseekV4DecodeA3" ) && -n "${soc_lc}" && ( "${soc_lc}" == *"a5"* || "${soc_lc}" == *"950"* ) ]]; then
     local direct_case
-    for direct_case in "$dir"/*.pto; do
-      [[ -f "$direct_case" ]] || continue
-      case "$direct_case" in
-        *-pto-ir.pto) continue ;;
-      esac
+    while IFS= read -r -d '' direct_case; do
       echo -e "${A}($(basename "$direct_case"))\tSKIP\trequires A3 target SOC"
-    done
+    done < <(direct_pto_files "$dir")
     return 0
   fi
   if [[ ( "$A" == "Qwen3DecodeA5" || "$A" == "DeepseekV4DecodeA5" ) && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a5" ]]; then
     local direct_case
-    for direct_case in "$dir"/*.pto; do
-      [[ -f "$direct_case" ]] || continue
-      case "$direct_case" in
-        *-pto-ir.pto) continue ;;
-      esac
+    while IFS= read -r -d '' direct_case; do
       echo -e "${A}($(basename "$direct_case"))\tSKIP\trequires --pto-arch=a5"
-    done
+    done < <(direct_pto_files "$dir")
     return 0
   fi
   if [[ ( "$A" == "Qwen3DecodeA5" || "$A" == "DeepseekV4DecodeA5" ) && -n "${soc_lc}" && "${soc_lc}" != *"a5"* && "${soc_lc}" != *"950"* ]]; then
     local direct_case
-    for direct_case in "$dir"/*.pto; do
-      [[ -f "$direct_case" ]] || continue
-      case "$direct_case" in
-        *-pto-ir.pto) continue ;;
-      esac
+    while IFS= read -r -d '' direct_case; do
       echo -e "${A}($(basename "$direct_case"))\tSKIP\trequires A5 target SOC"
-    done
+    done < <(direct_pto_files "$dir")
     return 0
   fi
 
@@ -1315,11 +1306,7 @@ PY
   done
 
   if [[ $allow_pto -eq 1 ]]; then
-    for f in "$dir"/*.pto; do
-      [[ -f "$f" ]] || continue
-      case "$f" in
-        *-pto-ir.pto) continue ;;
-      esac
+    while IFS= read -r -d '' f; do
       base="$(basename "$f" .pto)"
       local expect_fail=0
       case "$base" in
@@ -1455,7 +1442,7 @@ PY
       fi
 
       echo -e "${A}(${base}.pto)\tOK\tgenerated: $(basename "$cpp")"
-    done
+    done < <(direct_pto_files "$dir")
   fi
 
   return $overall
