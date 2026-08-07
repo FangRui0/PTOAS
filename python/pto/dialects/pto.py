@@ -6,14 +6,10 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-import importlib
-import importlib.util
 import functools
-import os
-from pathlib import Path
 from typing import Optional
 
-from mlir import ir as _ods_ir
+from ptoas.mlir import ir as _ods_ir
 
 from . import _pto_ops_gen as _pto_ops_gen
 from ._ods_common import (
@@ -21,63 +17,7 @@ from ._ods_common import (
     get_op_result_or_value as _get_op_result_or_value,
     get_op_results_or_values as _get_op_results_or_values,
 )
-
-
-def _candidate_pto_ext_dirs():
-    candidates = []
-    env_roots = (
-        os.environ.get("PTO_PYTHON_BUILD_ROOT"),
-        os.environ.get("PTO_PYTHON_ROOT"),
-        os.environ.get("PTO_INSTALL_DIR"),
-    )
-    for root in env_roots:
-        if not root:
-            continue
-        candidates.append(Path(root) / "mlir" / "_mlir_libs")
-
-    # Fallback to the sibling extension that ships with the current wrapper.
-    candidates.append(Path(__file__).resolve().parent.parent / "_mlir_libs")
-
-    seen = set()
-    ordered = []
-    for candidate in candidates:
-        candidate = candidate.resolve()
-        candidate_text = str(candidate)
-        if candidate_text in seen:
-            continue
-        seen.add(candidate_text)
-        ordered.append(candidate)
-    return ordered
-
-
-def _load_local_pto_ext():
-    candidates = []
-    for lib_dir in _candidate_pto_ext_dirs():
-        for suffix in ("*.so", "*.pyd", "*.dll", "*.dylib"):
-            candidates.extend(lib_dir.glob(f"_pto{suffix}"))
-    if not candidates:
-        raise FileNotFoundError("cannot locate local _pto extension in candidate _mlir_libs directories")
-
-    first_error = None
-    for so_path in candidates:
-        try:
-            spec = importlib.util.spec_from_file_location(
-                "mlir._mlir_libs._pto", so_path
-            )
-            if spec and spec.loader:
-                mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(mod)
-                return mod
-        except ImportError as exc:
-            if first_error is None:
-                first_error = exc
-    raise ImportError("failed to load local _pto extension from candidate _mlir_libs directories") from first_error
-
-
-try:
-    _pto_mod = _load_local_pto_ext()
-except FileNotFoundError:
-    _pto_mod = importlib.import_module(".._mlir_libs._pto", __package__)
+from ptoas import _core as _pto_mod
 
 
 def _export_generated_symbols():
@@ -104,11 +44,16 @@ register_dialect = _pto_mod.register_dialect
 PtrType = _pto_mod.PtrType
 VRegType = _pto_mod.VRegType
 MaskType = _pto_mod.MaskType
+VMIVRegType = _pto_mod.VMIVRegType
+VMIMaskType = _pto_mod.VMIMaskType
 AlignType = _pto_mod.AlignType
+StructType = _export_optional_cext_symbol("StructType")
 AsyncSessionType = _pto_mod.AsyncSessionType
 AsyncEventType = _pto_mod.AsyncEventType
 PrefetchAsyncContextType = _export_optional_cext_symbol("PrefetchAsyncContextType")
 HiF8Type = _pto_mod.HiF8Type
+HiF8x2Type = _pto_mod.HiF8x2Type
+F8E8M0Type = _pto_mod.F8E8M0Type
 F4E1M2x2Type = _pto_mod.F4E1M2x2Type
 F4E2M1x2Type = _pto_mod.F4E2M1x2Type
 TensorViewType = _pto_mod.TensorViewType
@@ -117,6 +62,8 @@ TileType = _pto_mod.TileType
 TileBufType = _pto_mod.TileBufType
 AddressSpace = _pto_mod.AddressSpace
 AddressSpaceAttr = _pto_mod.AddressSpaceAttr
+FenceScope = _pto_mod.FenceScope
+FenceScopeAttr = _pto_mod.FenceScopeAttr
 TileBufConfigAttr = _pto_mod.TileBufConfigAttr
 BLayout = _pto_mod.BLayout
 BLayoutAttr = _pto_mod.BLayoutAttr
@@ -254,6 +201,24 @@ def _install_default_precision_type_compat():
 
 _install_default_precision_type_compat()
 
+
+def _install_enum_attr_builders():
+    def address_space_attr_builder(value, context=None):
+        return AddressSpaceAttr.get(value, context)
+
+    def fence_scope_attr_builder(value, context=None):
+        return FenceScopeAttr.get(value, context)
+
+    _ods_ir.AttrBuilder.insert(
+        "PTO_AddressSpaceAttr", address_space_attr_builder, replace=True
+    )
+    _ods_ir.AttrBuilder.insert(
+        "PTO_FenceScopeAttr", fence_scope_attr_builder, replace=True
+    )
+
+
+_install_enum_attr_builders()
+
 __all__ = [
     # Dialect utilities
     "register_dialect",
@@ -261,10 +226,14 @@ __all__ = [
     "PtrType",
     "VRegType",
     "MaskType",
+    "VMIVRegType",
+    "VMIMaskType",
     "AlignType",
     "AsyncSessionType",
     "AsyncEventType",
     "HiF8Type",
+    "HiF8x2Type",
+    "F8E8M0Type",
     "F4E1M2x2Type",
     "F4E2M1x2Type",
     "TensorViewType",
@@ -273,6 +242,8 @@ __all__ = [
     "TileBufType",
     "AddressSpace",
     "AddressSpaceAttr",
+    "FenceScope",
+    "FenceScopeAttr",
     "BLayout",
     "BLayoutAttr",
     "SLayout",
@@ -923,6 +894,7 @@ class TScatterOp(_GeneratedTScatterOp):
         dst=_TSCATTER_UNSET,
         indexes=_TSCATTER_UNSET,
         maskPattern=_TSCATTER_UNSET,
+        axis=None,
         loc=None,
         ip=None,
     ):
@@ -994,6 +966,8 @@ class TScatterOp(_GeneratedTScatterOp):
             kwargs["indexes"] = indexes
         if maskPattern is not _TSCATTER_UNSET:
             kwargs["maskPattern"] = maskPattern
+        if axis is not None:
+            kwargs["axis"] = axis
         super().__init__(src, **kwargs, loc=loc, ip=ip)
 
 
@@ -1172,9 +1146,9 @@ def _project_result(group, index, ty):
 
 def _load_standard_dialects():
     try:
-        from mlir.dialects import arith as _mlir_arith  # noqa: F401
-        from mlir.dialects import func as _mlir_func  # noqa: F401
-        from mlir.dialects import scf as _mlir_scf  # noqa: F401
+        from ptoas.mlir.dialects import arith as _mlir_arith  # noqa: F401
+        from ptoas.mlir.dialects import func as _mlir_func  # noqa: F401
+        from ptoas.mlir.dialects import scf as _mlir_scf  # noqa: F401
     except ImportError as exc:
         raise RuntimeError("mlir standard dialect python bindings are required for vkernel parsing") from exc
 

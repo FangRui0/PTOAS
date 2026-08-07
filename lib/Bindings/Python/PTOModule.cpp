@@ -8,14 +8,14 @@
 
 //===- DialectPTO.cpp -----------------------------------------------------===//
 //
-// Python bindings for the PTO dialect types (pybind11 version).
-//
-// This file is intended to be built via declare_mlir_python_extension(...)
-// with PYTHON_BINDINGS_LIBRARY pybind11, and linked with MLIRCAPIPTO.
+// Python bindings for the PTO dialect types embedded in PTOASCompiler. The
+// thin ptoas._core entry point calls this implementation, while the public
+// Python facade remains ptoas.mlir.dialects.pto.
 //
 //===----------------------------------------------------------------------===//
 
-#include "pybind11/pybind11.h"
+#include "PTOModule.h"
+
 #include "pybind11/stl.h"
 #include "mlir/Bindings/Python/PybindAdaptors.h"
 #include "mlir/CAPI/IR.h"
@@ -108,13 +108,18 @@ static py::object wrapAttributeAs(const py::module_ &m, const char *className,
   return cls.attr("__call__")(attr);
 }
 
+static MlirAttribute optionalAttributeFromPy(py::object attr) {
+  if (attr.is_none())
+    return MlirAttribute{nullptr};
+  return py::cast<MlirAttribute>(attr);
+}
+
 void populatePTODialectSubmodule(pybind11::module &m);
 void populatePTODialectSubmodule(pybind11::module &m) {
   (void)m;
 }
 
-static void bindPTOModule(pybind11::module &m) {
-    m.doc() = "PTO dialect Python bindings (pybind11).";
+void mlir::pto::python::populatePTODialectBindings(pybind11::module_ &m) {
 
     // --------------------------------------------------------------------------
     // Dialect registration helper
@@ -140,6 +145,11 @@ static void bindPTOModule(pybind11::module &m) {
     .value("VEC",   mlir::pto::AddressSpace::VEC)
     .value("BIAS",   mlir::pto::AddressSpace::BIAS)
     .value("SCALING", mlir::pto::AddressSpace::SCALING)
+    .export_values();
+    py::enum_<mlir::pto::FenceScope>(m, "FenceScope")
+    .value("LocalMemory", mlir::pto::FenceScope::LocalMemory)
+    .value("GM", mlir::pto::FenceScope::GM)
+    .value("All", mlir::pto::FenceScope::All)
     .export_values();
     py::enum_<mlir::pto::BLayout>(m, "BLayout")
     .value("RowMajor", mlir::pto::BLayout::RowMajor)
@@ -483,6 +493,29 @@ static void bindPTOModule(pybind11::module &m) {
         "value",
         [](MlirAttribute self) -> int32_t {
         return mlirPTOAddressSpaceAttrGetValue(self);
+        });
+
+    mlir_attribute_subclass(
+        m, "FenceScopeAttr",
+        [](MlirAttribute a) { return mlirPTOAttrIsAFenceScopeAttr(a); })
+    .def_classmethod(
+        "get",
+        [](py::object cls, py::object value, MlirContext context) -> py::object {
+        int32_t v = 0;
+        if (py::isinstance<py::int_>(value)) {
+            v = py::cast<int32_t>(value);
+        } else {
+            v = py::cast<int32_t>(value.attr("value").cast<py::int_>());
+        }
+        MlirAttribute a = mlirPTOFenceScopeAttrGet(context, v);
+        if (mlirAttributeIsNull(a)) return py::none();
+        return cls.attr("__call__")(a);
+        },
+        py::arg("cls"), py::arg("value"), py::arg("context") = py::none())
+    .def_property_readonly(
+        "value",
+        [](MlirAttribute self) -> int32_t {
+        return mlirPTOFenceScopeAttrGetValue(self);
         });
 
     mlir_attribute_subclass(
@@ -942,6 +975,82 @@ static void bindPTOModule(pybind11::module &m) {
             });
 
     mlir_type_subclass(
+        m, "VMIVRegType",
+        [](MlirType type) -> bool {
+            return isa<mlir::pto::VMIVRegType>(unwrap(type));
+        })
+        .def_classmethod(
+            "get",
+            [](py::object cls, int64_t elementCount, MlirType elementType,
+               py::object layout, MlirContext context) -> py::object {
+                context = inferContextFromElementType(context, elementType);
+                MlirAttribute layoutAttr = optionalAttributeFromPy(layout);
+                MlirType t = wrap(mlir::pto::VMIVRegType::get(
+                    unwrap(context), elementCount, unwrap(elementType),
+                    unwrap(layoutAttr)));
+                return cls.attr("__call__")(t);
+            },
+            py::arg("cls"), py::arg("element_count"), py::arg("element_type"),
+            py::arg("layout") = py::none(), py::arg("context") = py::none())
+        .def_property_readonly(
+            "element_count",
+            [](MlirType self) -> int64_t {
+                return cast<mlir::pto::VMIVRegType>(unwrap(self)).getElementCount();
+            })
+        .def_property_readonly(
+            "element_type",
+            [](MlirType self) -> MlirType {
+                return wrap(cast<mlir::pto::VMIVRegType>(unwrap(self)).getElementType());
+            })
+        .def_property_readonly(
+            "layout",
+            [](MlirType self) -> py::object {
+                mlir::Attribute attr =
+                    cast<mlir::pto::VMIVRegType>(unwrap(self)).getLayout();
+                if (!attr)
+                    return py::none();
+                return py::cast(wrap(attr));
+            });
+
+    mlir_type_subclass(
+        m, "VMIMaskType",
+        [](MlirType type) -> bool {
+            return isa<mlir::pto::VMIMaskType>(unwrap(type));
+        })
+        .def_classmethod(
+            "get",
+            [](py::object cls, int64_t elementCount, std::string granularity,
+               py::object layout, MlirContext context) -> py::object {
+                MlirAttribute layoutAttr = optionalAttributeFromPy(layout);
+                MlirType t = wrap(mlir::pto::VMIMaskType::get(
+                    unwrap(context), elementCount, granularity,
+                    unwrap(layoutAttr)));
+                return cls.attr("__call__")(t);
+            },
+            py::arg("cls"), py::arg("element_count"),
+            py::arg("granularity") = "pred", py::arg("layout") = py::none(),
+            py::arg("context") = py::none())
+        .def_property_readonly(
+            "element_count",
+            [](MlirType self) -> int64_t {
+                return cast<mlir::pto::VMIMaskType>(unwrap(self)).getElementCount();
+            })
+        .def_property_readonly(
+            "granularity",
+            [](MlirType self) -> std::string {
+                return cast<mlir::pto::VMIMaskType>(unwrap(self)).getGranularity().str();
+            })
+        .def_property_readonly(
+            "layout",
+            [](MlirType self) -> py::object {
+                mlir::Attribute attr =
+                    cast<mlir::pto::VMIMaskType>(unwrap(self)).getLayout();
+                if (!attr)
+                    return py::none();
+                return py::cast(wrap(attr));
+            });
+
+    mlir_type_subclass(
         m, "AlignType",
         [](MlirType type) -> bool { return isa<mlir::pto::AlignType>(unwrap(type)); })
         .def_classmethod(
@@ -951,6 +1060,47 @@ static void bindPTOModule(pybind11::module &m) {
                 return cls.attr("__call__")(t);
             },
             py::arg("cls"), py::arg("context") = py::none());
+
+    mlir_type_subclass(
+        m, "StructType",
+        [](MlirType type) -> bool { return isa<mlir::pto::StructType>(unwrap(type)); })
+        .def_classmethod(
+            "get",
+            [](py::object cls, py::sequence fieldTypes, MlirContext context) -> py::object {
+                std::vector<MlirType> fields;
+                fields.reserve(fieldTypes.size());
+                for (py::handle field : fieldTypes)
+                  fields.push_back(py::cast<MlirType>(field));
+                if (fields.empty())
+                  throw py::value_error("StructType.get requires at least one field type");
+                if (!context.ptr)
+                  context = mlirTypeGetContext(fields.front());
+                llvm::SmallVector<mlir::Type> unwrappedFields;
+                unwrappedFields.reserve(fields.size());
+                for (MlirType field : fields)
+                  unwrappedFields.push_back(unwrap(field));
+                auto structType = mlir::pto::StructType::getChecked(
+                    [&]() {
+                      return mlir::emitError(
+                          mlir::UnknownLoc::get(unwrap(context)));
+                    },
+                    unwrap(context), llvm::ArrayRef<mlir::Type>(unwrappedFields));
+                if (!structType)
+                  throw py::value_error(
+                      "StructType.get received invalid struct field types");
+                return cls.attr("__call__")(
+                    wrap(structType));
+            },
+            py::arg("cls"), py::arg("field_types"), py::arg("context") = py::none())
+        .def_property_readonly(
+            "field_types",
+            [](MlirType self) -> py::list {
+                auto structType = cast<mlir::pto::StructType>(unwrap(self));
+                py::list fields;
+                for (mlir::Type field : structType.getFieldTypes())
+                  fields.append(wrap(field));
+                return fields;
+            });
 
     mlir_type_subclass(
         m, "AsyncSessionType",
@@ -1329,8 +1479,4 @@ static void bindPTOModule(pybind11::module &m) {
             });
 	
 	populatePTODialectSubmodule(m);
-}
-
-PYBIND11_MODULE(_pto, m) {
-  bindPTOModule(m);
 }

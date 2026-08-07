@@ -9,9 +9,7 @@
 
 from enum import Enum
 
-from ._bootstrap import make_context  # noqa: F401
-
-from mlir.dialects import pto as _pto
+from ptoas.mlir.dialects import pto as _pto
 
 
 class _ConstExprHelper:
@@ -39,6 +37,21 @@ class MemorySpace:
     ACC = _pto.AddressSpace.ACC
     BIAS = _pto.AddressSpace.BIAS
     SCALING = _pto.AddressSpace.SCALING
+
+
+class BLayout(str, Enum):
+    """Public tile block-layout aliases used by TileLib constraints."""
+
+    ROW_MAJOR = "row_major"
+    COL_MAJOR = "col_major"
+
+
+class SLayout(str, Enum):
+    """Public tile storage-layout aliases used by TileLib constraints."""
+
+    NONE_BOX = "none_box"
+    ROW_MAJOR = "row_major"
+    COL_MAJOR = "col_major"
 
 
 class BarrierType:
@@ -290,6 +303,8 @@ class Tile:
 __all__ = [
     "const_expr",
     "MemorySpace",
+    "BLayout",
+    "SLayout",
     "BarrierType",
     "Pipe",
     "MaskPattern",

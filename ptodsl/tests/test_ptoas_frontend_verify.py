@@ -8,7 +8,6 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -18,29 +17,14 @@ from importlib.util import module_from_spec, spec_from_file_location
 REPO_ROOT = Path(__file__).resolve().parents[2]
 from ptodsl import pto
 from ptodsl import scalar
-from ptodsl._bootstrap import make_context
-from mlir.ir import Module
+from ptodsl._context import make_context
+from ptodsl._runtime.toolchain import resolve_ptoas_binary
+from ptoas.mlir.ir import Module
 
 
 def expect(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
-
-
-def resolve_ptoas_binary() -> Path:
-    candidates = [
-        REPO_ROOT / "build" / "tools" / "ptoas" / "ptoas",
-        REPO_ROOT / "install" / "bin" / "ptoas",
-    ]
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-
-    from_path = shutil.which("ptoas")
-    if from_path:
-        return Path(from_path)
-
-    raise FileNotFoundError("unable to locate a ptoas binary under build/, install/, or PATH")
 
 
 def emit_example_mlir(example_path: Path) -> str:
@@ -172,6 +156,39 @@ def run_ptoas_frontend_verify_whole(ptoas_bin: Path, mlir_text: str, label: str)
     return result.stdout
 
 
+def run_ptoas_emitc(ptoas_bin: Path, mlir_text: str, label: str) -> list[str]:
+    child_modules = extract_child_module_texts(mlir_text, label)
+    cpp_texts: list[str] = []
+
+    for index, child_text in enumerate(child_modules, start=1):
+        with tempfile.NamedTemporaryFile("w", suffix=".mlir", delete=False, encoding="utf-8") as handle:
+            handle.write(child_text)
+            input_path = Path(handle.name)
+
+        try:
+            result = subprocess.run(
+                [str(ptoas_bin), str(input_path), "--pto-backend=emitc", "-o", "-"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        finally:
+            input_path.unlink(missing_ok=True)
+
+        expect(
+            result.returncode == 0,
+            f"{label} [child {index}] should lower through EmitC.\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+        expect(
+            result.stdout.strip(),
+            f"{label} [child {index}] should emit non-empty C++ through EmitC",
+        )
+        cpp_texts.append(result.stdout)
+
+    return cpp_texts
+
+
 def run_ptoas_frontend_expect_failure(
     ptoas_bin: Path,
     mlir_text: str,
@@ -243,21 +260,20 @@ def process_row_ptr_kernel_module(
     dst_gm: pto.ptr(pto.f32, "gm"),
     row: pto.i32,
 ):
-    with pto.simd():
-        c0_i64 = pto.const(0, dtype=pto.i64)
-        row_offset = row * 16
-        src_row = pto.addptr(src_gm, row_offset)
-        dst_row = pto.addptr(dst_gm, row_offset)
-        ub_ptr = pto.castptr(c0_i64, pto.ptr(pto.f32, "ub"))
+    c0_i64 = pto.const(0, dtype=pto.i64)
+    row_offset = row * 16
+    src_row = pto.addptr(src_gm, row_offset)
+    dst_row = pto.addptr(dst_gm, row_offset)
+    ub_ptr = pto.castptr(c0_i64, pto.ptr(pto.f32, "ub"))
 
-        pto.get_buf(pto.Pipe.MTE2, 0)
-        pto.mte_gm_ub(src_row, ub_ptr, 0, 64, nburst=(1, 64, 64))
-        pto.rls_buf(pto.Pipe.MTE2, 0)
+    pto.get_buf(pto.Pipe.MTE2, 0)
+    pto.mte_gm_ub(src_row, ub_ptr, 0, 64, nburst=(1, 64, 64))
+    pto.rls_buf(pto.Pipe.MTE2, 0)
 
-        pto.get_buf(pto.Pipe.MTE3, 0)
-        pto.mte_ub_gm(ub_ptr, dst_row, 64, nburst=(1, 64, 64))
-        pto.rls_buf(pto.Pipe.MTE3, 0)
-        pto.pipe_barrier(pto.Pipe.ALL)
+    pto.get_buf(pto.Pipe.MTE3, 0)
+    pto.mte_ub_gm(ub_ptr, dst_row, 64, nburst=(1, 64, 64))
+    pto.rls_buf(pto.Pipe.MTE3, 0)
+    pto.pipe_barrier(pto.Pipe.ALL)
 
 
 @pto.jit(target="a5", backend="emitc")
@@ -313,6 +329,39 @@ def low_precision_vcvt_frontend():
     pto.vsts(roundtrip, dst_ptr, pto.const(0), mask_b32)
 
 
+@pto.jit(target="a5", backend="emitc")
+def struct_frontend_verify_probe():
+    state_ty = pto.struct_type(pto.i32, pto.struct_type(pto.f32, pto.i16))
+    state = pto.declare_struct(state_ty)
+    pto.struct_set(state, 0, 1)
+    pto.struct_set(state, (1, 0), 3.5)
+    pto.struct_set(state, (1, 1), 7)
+    _ = pto.struct_get(state, (1, 0))
+
+
+@pto.simt
+def vec_value_arith_simt_body(
+    A_ptr: pto.ptr(pto.f32, "gm"),
+    O_ptr: pto.ptr(pto.f32, "gm"),
+):
+    tid = pto.get_tid_x()
+    base = tid * 4
+    x4 = scalar.load(A_ptr, base, contiguous=4)
+    y4 = scalar.load(A_ptr, 32 + base, contiguous=4)
+    scalar.store(x4 + y4, O_ptr, base)
+    scalar.store(x4 - y4, O_ptr, 32 + base)
+    scalar.store(x4 * y4, O_ptr, 64 + base)
+
+
+@pto.jit(target="a5", mode="explicit")
+def vec_value_arith_frontend(
+    A_ptr: pto.ptr(pto.f32, "gm"),
+    O_ptr: pto.ptr(pto.f32, "gm"),
+):
+    vec_value_arith_simt_body[8, 1, 1](A_ptr, O_ptr)
+    pto.pipe_barrier(pto.Pipe.ALL)
+
+
 def main() -> None:
     ptoas_bin = resolve_ptoas_binary()
     mixed_backend_example = REPO_ROOT / "ptodsl" / "examples" / "mixed_backend_kernel_module.py"
@@ -336,6 +385,51 @@ def main() -> None:
     expect(
         "pto.tload" in simple_frontend_text and "pto.tstore" in simple_frontend_text,
         "host_vec_copy frontend verification output should keep the tile IO contract visible",
+    )
+
+    struct_text = struct_frontend_verify_probe.compile().mlir_text()
+    expect(
+        "pto.declare_struct" in struct_text and "pto.struct_get" in struct_text,
+        "struct_frontend_verify_probe source MLIR should contain the PTODSL struct surface before frontend verification",
+    )
+    struct_frontend_texts = run_ptoas_frontend_verify(
+        ptoas_bin,
+        struct_text,
+        "struct_frontend_verify_probe PTODSL artifact",
+    )
+    expect(
+        len(struct_frontend_texts) == 1,
+        "struct_frontend_verify_probe should lower to exactly one backend child module",
+    )
+    struct_frontend_text = struct_frontend_texts[0]
+    expect(
+        "func.func @struct_frontend_verify_probe" in struct_frontend_text,
+        "struct_frontend_verify_probe frontend verification should preserve the kernel symbol",
+    )
+    expect(
+        "pto.declare_struct" in struct_frontend_text
+        and "pto.struct_set" in struct_frontend_text
+        and "pto.struct_get" in struct_frontend_text,
+        "struct_frontend_verify_probe frontend verification should preserve the struct IR contract",
+    )
+
+    struct_emitc_cpp_texts = run_ptoas_emitc(
+        ptoas_bin,
+        struct_text,
+        "struct_frontend_verify_probe PTODSL EmitC artifact",
+    )
+    expect(
+        len(struct_emitc_cpp_texts) == 1,
+        "struct PTODSL probe should materialize one EmitC module",
+    )
+    joined_struct_emitc_cpp = "\n".join(struct_emitc_cpp_texts)
+    expect(
+        "struct PtoStruct_i32_S_f32_i16_E" in joined_struct_emitc_cpp,
+        "PTODSL struct probe should lower to a named EmitC struct",
+    )
+    expect(
+        ".f0" in joined_struct_emitc_cpp and ".f1.f0" in joined_struct_emitc_cpp,
+        "EmitC should lower PTODSL struct writes and nested reads to direct field access",
     )
 
     simt_gm_memory_text = simt_gm_memory_core_kernel.compile().mlir_text()
@@ -428,12 +522,13 @@ def main() -> None:
         "ptr_like_tile_buf_addr_probe frontend verification output should preserve the kernel symbol",
     )
     expect(
-        "memref<?xf32" in ptr_like_addr_frontend_text,
-        "ptr-like tile_buf_addr lowering should materialize one memref<?xf32> address view during PTOViewToMemref",
+        "pto.alloc_tile addr" in ptr_like_addr_frontend_text
+        and "pto.tile_buf_addr" in ptr_like_addr_frontend_text,
+        "ptr-like tile_buf_addr lowering should keep the tile-native address path until PTOPlanMemory materializes alloc_tile addr",
     )
     expect(
         "call @consume" in ptr_like_addr_frontend_text,
-        "ptr-like tile_buf_addr lowering should preserve call users after converting pointer-like operands",
+        "ptr-like tile_buf_addr lowering should preserve call users without half-converting pointer-like operands",
     )
 
     example_mlir_text = emit_example_mlir(mixed_backend_example)
@@ -472,8 +567,11 @@ def main() -> None:
     expect(
         "func.func public @scale_row_kernel_module__ptodsl_" in example_vpto_child
         and 'pto.visibility = "external"' in example_vpto_child
-        and "pto.section.vector {" in example_vpto_child,
-        "mixed_backend_kernel_module.py VPTO child should expose a public helper definition with explicit vector authoring, matching the vector-helper side of mixed-external-vadd",
+        and "pto.kernel_kind" not in example_vpto_child
+        and "pto.section.vector {" not in example_vpto_child
+        and "pto.mte_gm_ub" in example_vpto_child
+        and "pto.vmuls" in example_vpto_child,
+        "mixed_backend_kernel_module.py VPTO child should defer vector inference without a legacy inline section",
     )
 
     example_frontend_texts = run_ptoas_frontend_verify(
@@ -528,10 +626,10 @@ def main() -> None:
         "cv-split frontend verification should preserve the cube helper public ABI-specialized symbol and kernel_kind",
     )
     expect(
-        cv_split_frontend_text.count("pto.aic_initialize_pipe") >= 3
-        and cv_split_frontend_text.count("pto.tpush_to_aiv") >= 2
-        and "pto.tpop_from_aiv" in cv_split_frontend_text,
-        "cv-split frontend verification should keep the cube helper pipe init, push, and receive paths intact",
+        "pto.initialize_l2g2l_pipe" in cv_split_frontend_text
+        and "pto.tpush(" in cv_split_frontend_text
+        and "pto.tpop(" in cv_split_frontend_text,
+        "cv-split frontend verification should lower the helper pipe init, push, and receive paths",
     )
     expect(
         'pto.kernel_kind = #pto.kernel_kind<vector>' in cv_split_frontend_text
@@ -543,10 +641,12 @@ def main() -> None:
         "cv-split frontend verification should preserve the vector helper public ABI-specialized symbol and kernel_kind",
     )
     expect(
-        cv_split_frontend_text.count("pto.aiv_initialize_pipe") >= 3
-        and cv_split_frontend_text.count("pto.tpush_to_aic") >= 2
-        and "pto.tpop_from_aic" in cv_split_frontend_text,
-        "cv-split frontend verification should keep the vector helper pipe init, push, and receive paths intact",
+        "pto.tfree(" in cv_split_frontend_text
+        and "pto.aic_initialize_pipe" not in cv_split_frontend_text
+        and "pto.aiv_initialize_pipe" not in cv_split_frontend_text
+        and "pto.tpush_to_" not in cv_split_frontend_text
+        and "pto.tpop_from_" not in cv_split_frontend_text,
+        "cv-split frontend verification should remove directional pipe ops after lowering",
     )
 
     lowp_text = low_precision_vcvt_frontend.compile().mlir_text()
@@ -593,6 +693,34 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
         "'pto.vcvt' op unsupported vcvt source/result element type pair" in invalid_lowp_stderr,
         "invalid low-precision vcvt artifact should fail specifically on vcvt pair verification",
     )
+
+    vec_arith_text = vec_value_arith_frontend.compile().mlir_text()
+    expect("vector<4xf32>" in vec_arith_text, "vec_value_arith_frontend source MLIR should contain vector<4xf32> values")
+    expect(
+        "pto.simt_launch" in vec_arith_text,
+        "vec_value_arith_frontend source MLIR should lower through a SIMT launch",
+    )
+    expect(
+        "arith.addf" in vec_arith_text
+        and "arith.subf" in vec_arith_text
+        and "arith.mulf" in vec_arith_text,
+        "vec_value_arith_frontend source MLIR should contain all three VecValue arithmetic ops before frontend verification",
+    )
+    vec_arith_frontend_texts = run_ptoas_frontend_verify(
+        ptoas_bin,
+        vec_arith_text,
+        "vec_value_arith_frontend PTODSL artifact",
+    )
+    expect(
+        len(vec_arith_frontend_texts) == 1,
+        "vec_value_arith_frontend PTODSL artifact should lower to exactly one backend child module",
+    )
+    vec_arith_frontend_text = vec_arith_frontend_texts[0]
+    expect(
+        vec_arith_frontend_text == "",
+        "vec_value_arith_frontend should compile through the VPTO fallback object path when --emit-pto-ir is unavailable",
+    )
+
     print("ptodsl_ptoas_frontend_verify: PASS")
 
 

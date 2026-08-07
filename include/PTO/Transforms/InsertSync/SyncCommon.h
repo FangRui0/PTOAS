@@ -86,9 +86,13 @@ enum class TCoreType {
 struct BaseMemInfo {
   BaseMemInfo(
       Value baseBuffer, Value rootBuffer, pto::AddressSpace scope,
-      SmallVector<uint64_t> baseAddresses, uint64_t allocateSize)
+      SmallVector<uint64_t> baseAddresses, uint64_t allocateSize,
+      bool hasKnownPhysicalAddresses = false,
+      bool aliasesUnknownRange = false)
       : baseBuffer(baseBuffer), rootBuffer(rootBuffer), scope(scope),
-        baseAddresses(std::move(baseAddresses)), allocateSize(allocateSize) {}
+        baseAddresses(std::move(baseAddresses)), allocateSize(allocateSize),
+        hasKnownPhysicalAddresses(hasKnownPhysicalAddresses),
+        aliasesUnknownRange(aliasesUnknownRange) {}
  
   /// baseBuffer: 当前操作直接使用的 Buffer (可能是 View 或 Alias)
   Value baseBuffer;
@@ -98,6 +102,13 @@ struct BaseMemInfo {
   pto::AddressSpace scope;
   SmallVector<uint64_t> baseAddresses; // 用于 Offset 分析
   uint64_t allocateSize;
+  // PlanMemory materializes static local allocations as physical addresses.
+  // This distinguishes their physical addresses from root-relative offsets.
+  bool hasKnownPhysicalAddresses;
+  // Address-preserving provenance can be lost when a pointer is round-tripped
+  // through integer IR. When set, this memory object aliases any range in the
+  // same address space.
+  bool aliasesUnknownRange;
  
   bool areVectorEqual(const SmallVector<uint64_t>& vec1,
                       const SmallVector<uint64_t>& vec2) const {
@@ -112,6 +123,10 @@ struct BaseMemInfo {
     if (!areVectorEqual(baseAddresses, other.baseAddresses)) return false;
     if (rootBuffer != other.rootBuffer) return false;
     if (scope != other.scope) return false;
+    if (hasKnownPhysicalAddresses != other.hasKnownPhysicalAddresses)
+      return false;
+    if (aliasesUnknownRange != other.aliasesUnknownRange)
+      return false;
     // allocateSize 和 baseBuffer 的严格相等性在某些别名分析中可能太强了，
     // 但为了保持原有逻辑，先保留。重点是 rootBuffer 必须一致。
     if (allocateSize != other.allocateSize) return false;
@@ -121,12 +136,14 @@ struct BaseMemInfo {
  
   std::unique_ptr<BaseMemInfo> clone() const {
     return std::make_unique<BaseMemInfo>(
-        baseBuffer, rootBuffer, scope, baseAddresses, allocateSize);
+        baseBuffer, rootBuffer, scope, baseAddresses, allocateSize,
+        hasKnownPhysicalAddresses, aliasesUnknownRange);
   }
- 
+
   std::unique_ptr<BaseMemInfo> clone(Value cloneBaseBuffer) const {
     return std::make_unique<BaseMemInfo>(
-        cloneBaseBuffer, rootBuffer, scope, baseAddresses, allocateSize);
+        cloneBaseBuffer, rootBuffer, scope, baseAddresses, allocateSize,
+        hasKnownPhysicalAddresses, aliasesUnknownRange);
   }
 };
  
@@ -230,6 +247,27 @@ SmallVector<const void *>
 canonicalizeSyncDepRoots(const SmallVector<Value> &roots);
 
 bool hasSameSyncDepRoots(const SyncOperation *lhs, const SyncOperation *rhs);
+
+/// True when `sync` lowers to `pto.set_flag_dyn` / `pto.wait_flag_dyn`, i.e.
+/// its rendezvous is keyed on the runtime slot index rather than on a fixed
+/// event id.
+///
+/// Such a sync orders ONLY the accesses that resolve to its own event lane
+/// (`slotSSAExpr % slotCount`); it does not serialize its (src, dst) pipe pair
+/// the way a static flag does. Every place that reasons about one sync
+/// "covering" another must therefore exclude it, or a second access through a
+/// different slot is left unguarded (issue #1118).
+///
+/// `slotSSAExpr` is the discriminator, NOT `GetForEndIndex()`. Slot keying is
+/// only ever established for a back-edge dependency (InsertSyncOperation), so
+/// it may be tempting to test for one -- but the synthetic prologue-prime and
+/// epilogue-drain pairs that SyncEventIdAllocation::UpdateBackwardMatchSync
+/// derives from such a pair inherit both `forEndIndex` and `eventIdNum` while
+/// deliberately carrying no slot, and they lower to STATIC flags. Keying off
+/// the back edge would misclassify exactly those.
+inline bool isSlotKeyedSync(const SyncOperation *sync) {
+  return sync && sync->eventIdNum > 1 && sync->slotSSAExpr;
+}
  
 using SyncOps = std::deque<SyncOperation *>;
  

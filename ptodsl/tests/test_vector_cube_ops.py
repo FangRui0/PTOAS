@@ -9,18 +9,163 @@
 import unittest
 import inspect
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import ptodsl._ops as _ops
 import ptodsl._pipe_namespace as _pipe_namespace
-from ptodsl._bootstrap import make_context
+from ptodsl._context import make_context
 from ptodsl import pto
-from mlir.ir import F32Type
+from ptoas.mlir.ir import F32Type
 def _identity(value):
     return value
 
 
 class VectorCubeSurfaceTest(unittest.TestCase):
+    def test_mte_mx_full_operands_preserve_all_values(self):
+        source = object()
+        destination = object()
+        controls = {
+            "x_start": 3,
+            "y_start": 5,
+            "x_step": 16,
+            "y_step": 2,
+            "src_stride": 8,
+            "dst_stride": 2,
+        }
+
+        def coerce(value, *, context):
+            return f"{context}:{value}"
+
+        with patch.object(_ops, "_require_explicit_mode"), \
+             patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_ops, "_coerce_i64", side_effect=coerce), \
+             patch.object(_ops._pto, "MteL1L0aMxOp") as load_ca:
+            pto.mte_l1_l0a_mx(source, destination, **controls)
+        load_ca.assert_called_once_with(
+            source,
+            destination,
+            x_start="mte_l1_l0a_mx x_start:3",
+            y_start="mte_l1_l0a_mx y_start:5",
+            x_step="mte_l1_l0a_mx x_step:16",
+            y_step="mte_l1_l0a_mx y_step:2",
+            src_stride="mte_l1_l0a_mx src_stride:8",
+            dst_stride="mte_l1_l0a_mx dst_stride:2",
+        )
+
+        with patch.object(_ops, "_require_explicit_mode"), \
+             patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_ops, "_coerce_i64", side_effect=coerce), \
+             patch.object(_ops._pto, "MteL1L0bMxOp") as load_cb:
+            pto.mte_l1_l0b_mx(source, destination, **controls)
+        load_cb.assert_called_once_with(
+            source,
+            destination,
+            x_start="mte_l1_l0b_mx x_start:3",
+            y_start="mte_l1_l0b_mx y_start:5",
+            x_step="mte_l1_l0b_mx x_step:16",
+            y_step="mte_l1_l0b_mx y_step:2",
+            src_stride="mte_l1_l0b_mx src_stride:8",
+            dst_stride="mte_l1_l0b_mx dst_stride:2",
+        )
+
+    def test_mte_mx_shape_operands_are_named(self):
+        source = object()
+        destination = object()
+
+        def coerce(value, *, context):
+            return f"{context}:{value}"
+
+        with patch.object(_ops, "_require_explicit_mode"), \
+             patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_ops, "_coerce_i64", side_effect=coerce), \
+             patch.object(_ops._pto, "MteL1L0aMxOp") as load_ca:
+            pto.mte_l1_l0a_mx(
+                source, destination, 128, 256, start_row=3, start_col=5
+            )
+        load_ca.assert_called_once_with(
+            source,
+            destination,
+            m="mte_l1_l0a_mx m:128",
+            k="mte_l1_l0a_mx k:256",
+            start_row="mte_l1_l0a_mx start_row:3",
+            start_col="mte_l1_l0a_mx start_col:5",
+        )
+
+        with patch.object(_ops, "_require_explicit_mode"), \
+             patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_ops, "_coerce_i64", side_effect=coerce), \
+             patch.object(_ops._pto, "MteL1L0bMxOp") as load_cb:
+            pto.mte_l1_l0b_mx(
+                source, destination, 256, 128, start_row=5, start_col=3
+            )
+        load_cb.assert_called_once_with(
+            source,
+            destination,
+            k="mte_l1_l0b_mx k:256",
+            n="mte_l1_l0b_mx n:128",
+            start_row="mte_l1_l0b_mx start_row:5",
+            start_col="mte_l1_l0b_mx start_col:3",
+        )
+
+    def test_mte_mx_shape_operands_default_starts_to_zero(self):
+        source = object()
+        destination = object()
+
+        def coerce(value, *, context):
+            return f"{context}:{value}"
+
+        with patch.object(_ops, "_require_explicit_mode"), \
+             patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_ops, "_coerce_i64", side_effect=coerce), \
+             patch.object(_ops._pto, "MteL1L0aMxOp") as load_ca:
+            pto.mte_l1_l0a_mx(source, destination, 128, 256)
+        load_ca.assert_called_once_with(
+            source,
+            destination,
+            m="mte_l1_l0a_mx m:128",
+            k="mte_l1_l0a_mx k:256",
+            start_row="mte_l1_l0a_mx start_row:0",
+            start_col="mte_l1_l0a_mx start_col:0",
+        )
+
+    def test_mte_mx_full_operands_require_a_complete_mode(self):
+        source = object()
+        destination = object()
+        complete_controls = {
+            "x_start": 3,
+            "y_start": 5,
+            "x_step": 16,
+            "y_step": 2,
+            "src_stride": 8,
+            "dst_stride": 2,
+        }
+
+        with patch.object(_ops, "_require_explicit_mode"):
+            with self.assertRaisesRegex(TypeError, "require x_start"):
+                pto.mte_l1_l0a_mx(source, destination, x_start=3)
+            with self.assertRaisesRegex(TypeError, "either k/n or full"):
+                pto.mte_l1_l0b_mx(source, destination, 128, 256, **complete_controls)
+        with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_ops, "_coerce_i64", side_effect=lambda value, *, context: f"{context}:{value}"), \
+             patch.object(_ops._pto, "MteL1L0aMxOp") as load_ca:
+            pto.mte_l1_l0a_mx(
+                source, destination, start_row=0, start_col=0,
+                **complete_controls
+            )
+        load_ca.assert_called_once_with(
+            source,
+            destination,
+            x_start="mte_l1_l0a_mx x_start:3",
+            y_start="mte_l1_l0a_mx y_start:5",
+            x_step="mte_l1_l0a_mx x_step:16",
+            y_step="mte_l1_l0a_mx y_step:2",
+            src_stride="mte_l1_l0a_mx src_stride:8",
+            dst_stride="mte_l1_l0a_mx dst_stride:2",
+        )
+
+        self.assertFalse(hasattr(pto, "load_cbuf_to_ca_mx"))
+        self.assertFalse(hasattr(pto, "load_cbuf_to_cb_mx"))
+
     def test_row_reduction_auto_tmp_prefers_surface_metadata(self):
         src = SimpleNamespace(
             type="ignored_type",
@@ -86,9 +231,10 @@ class VectorCubeSurfaceTest(unittest.TestCase):
         names = [
             "vsub", "vmin", "vand", "vor", "vxor", "vshl", "vshr",
             "vln", "vsqrt", "vabs", "vneg", "vrec", "vrsqrt", "vrelu", "vnot",
+            "vsqz",
             "vcmin", "vcgmin", "vcpadd",
-            "vadds", "vmuls", "vmaxs", "vmins", "vlrelu",
-            "vaxpy", "vaddrelu", "vsubrelu", "vsel",
+            "vadds", "vmuls", "vmaxs", "vmins", "vlrelu", "vshls", "vshrs", "vands", "vors", "vxors",
+            "vaxpy", "vmula", "vci", "vaddrelu", "vsubrelu", "vsel",
             "mte_gm_l1", "mte_l1_ub", "mte_gm_l1_frac", "mte_l1_bt", "mte_l1_fb",
             "mad_acc", "mad_bias", "mad_mx", "mad_mx_acc", "mad_mx_bias",
             "FractalMode", "AccStoreUnitFlagCtrl", "MadUnitFlagMode", "SatMode", "Tf32Mode", "SplitMode",
@@ -258,22 +404,38 @@ class VectorCubeSurfaceTest(unittest.TestCase):
             vsub.assert_called_once_with(vec, rhs, mask)
             vrelu.assert_called_once_with(sub_vec, mask)
 
+    def test_vsqz_dispatches_to_generated_op_with_source_type(self):
+        inp = SimpleNamespace(type="vec_ty")
+        mask = SimpleNamespace(type="mask_ty")
+        result = object()
+
+        with patch.object(
+            _ops, "unwrap_surface_value", side_effect=_identity
+        ), patch.object(
+            _ops, "wrap_surface_value", side_effect=_identity
+        ), patch.object(
+            _ops._pto,
+            "VsqzOp",
+            return_value=SimpleNamespace(result=result),
+        ) as op_ctor:
+            output = _ops.vsqz(inp, mask)
+
+        self.assertIs(output, result)
+        op_ctor.assert_called_once_with("vec_ty", inp, mask)
+
     def test_vcgmin_and_vsel_dispatch_correctly(self):
         vec = SimpleNamespace(type="vec_ty")
         other = SimpleNamespace(type="vec_ty")
         mask = SimpleNamespace(type="mask_ty")
         reduced = object()
-        scalar = object()
         selected = object()
 
         with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
              patch.object(_ops, "wrap_surface_value", side_effect=_identity), \
-             patch.object(_ops, "_extract_lowest_lane_scalar", return_value=scalar) as extract_scalar, \
              patch.object(_ops._pto, "VcgminOp", return_value=SimpleNamespace(result=reduced)) as vcgmin_op:
             output = _ops.vcgmin(vec, mask)
-        self.assertIs(output, scalar)
+        self.assertIs(output, reduced)
         self.assertEqual(vcgmin_op.call_args.args, ("vec_ty", vec, mask))
-        extract_scalar.assert_called_once_with(reduced, mask)
 
         with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
              patch.object(_ops, "wrap_surface_value", side_effect=_identity), \
@@ -281,6 +443,98 @@ class VectorCubeSurfaceTest(unittest.TestCase):
             output = _ops.vsel(vec, other, mask)
         self.assertIs(output, selected)
         self.assertEqual(vsel_op.call_args.args, ("vec_ty", vec, other, mask))
+
+    def test_vector_scalar_helper_dispatches_cover_shift_and_bitwise_scalar_helpers(self):
+        vec = SimpleNamespace(type="vec_ty")
+        mask = SimpleNamespace(type="mask_ty")
+        scalar = SimpleNamespace(type="scalar_ty")
+        scalar_i16 = SimpleNamespace(type="i16_ty")
+        shifted = object()
+        anded = object()
+        ored = object()
+        xored = object()
+        broadcast = object()
+
+        with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_ops, "wrap_surface_value", side_effect=_identity), \
+             patch.object(_ops, "_reject_low_precision_vreg_operands") as reject_lp, \
+             patch.object(_ops.IntegerType, "get_signless", return_value="i16_ty") as get_signless, \
+             patch.object(_ops, "coerce_scalar_to_type", return_value=scalar_i16) as coerce_i16, \
+             patch.object(_ops._pto, "VshlsOp", return_value=SimpleNamespace(result=shifted)) as vshls_op, \
+             patch.object(_ops._pto, "VshrsOp", return_value=SimpleNamespace(result=shifted)) as vshrs_op:
+            self.assertIs(_ops.vshls(vec, scalar, mask), shifted)
+            self.assertIs(_ops.vshrs(vec, scalar, mask), shifted)
+        self.assertEqual(reject_lp.call_count, 2)
+        self.assertEqual(get_signless.call_count, 2)
+        self.assertEqual(coerce_i16.call_count, 2)
+        self.assertEqual(vshls_op.call_args.args, ("vec_ty", vec, scalar_i16, mask))
+        self.assertEqual(vshrs_op.call_args.args, ("vec_ty", vec, scalar_i16, mask))
+
+        with patch.object(_ops, "_coerce_scalar_like_vector_element", return_value=scalar) as coerce_scalar, \
+             patch.object(_ops, "vbr", return_value=broadcast) as vbr, \
+             patch.object(_ops, "vand", return_value=anded) as vand:
+            self.assertIs(_ops.vands(vec, scalar, mask), anded)
+        coerce_scalar.assert_called_once_with(vec, scalar, context="vands")
+        vbr.assert_called_once_with(scalar)
+        vand.assert_called_once_with(vec, broadcast, mask)
+
+        with patch.object(_ops, "_coerce_scalar_like_vector_element", return_value=scalar) as coerce_scalar, \
+             patch.object(_ops, "vbr", return_value=broadcast) as vbr, \
+             patch.object(_ops, "vor", return_value=ored) as vor:
+            self.assertIs(_ops.vors(vec, scalar, mask), ored)
+        coerce_scalar.assert_called_once_with(vec, scalar, context="vors")
+        vbr.assert_called_once_with(scalar)
+        vor.assert_called_once_with(vec, broadcast, mask)
+
+        with patch.object(_ops, "_coerce_scalar_like_vector_element", return_value=scalar) as coerce_scalar, \
+             patch.object(_ops, "vbr", return_value=broadcast) as vbr, \
+             patch.object(_ops, "vxor", return_value=xored) as vxor:
+            self.assertIs(_ops.vxors(vec, scalar, mask), xored)
+        coerce_scalar.assert_called_once_with(vec, scalar, context="vxors")
+        vbr.assert_called_once_with(scalar)
+        vxor.assert_called_once_with(vec, broadcast, mask)
+
+
+    def test_vlds_accepts_extended_distribution_tokens(self):
+        ptr = SimpleNamespace(type="ptr_ty")
+        vec = object()
+
+        with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_ops, "wrap_surface_value", side_effect=_identity), \
+             patch.object(_ops, "_infer_vreg_type_from_address_source", return_value="vec_ty"), \
+             patch.object(_ops, "_coerce_index", return_value="idx"), \
+             patch.object(_ops, "_normalize_post_update_mode", return_value="NO_POST_UPDATE"), \
+             patch.object(_ops, "_normalize_dist_token", side_effect=lambda dist, *, allowed, context: dist) as normalize_dist, \
+             patch.object(_ops._pto, "VldsOp", return_value=SimpleNamespace(result=vec)) as vlds_op:
+            self.assertIs(_ops.vlds(ptr, 0, dist="E2B_B16"), vec)
+            self.assertIs(_ops.vlds(ptr, 0, dist="BRC_BLK"), vec)
+        self.assertEqual(normalize_dist.call_args_list[0].args[0], "E2B_B16")
+        self.assertEqual(normalize_dist.call_args_list[1].args[0], "BRC_BLK")
+        self.assertEqual(vlds_op.call_count, 2)
+
+    def test_f32_to_fp8_vcvt_contract_accepts_rahz_rounding(self):
+        contract = _ops._VCVT_CONTRACTS[("f32", "f8e4m3")]
+        for rnd in ("R", "A", "H", "Z"):
+            with self.subTest(rnd=rnd):
+                _ops._validate_vcvt_attrs(
+                    "f32",
+                    "f8e4m3",
+                    contract,
+                    rnd=rnd,
+                    sat="SAT",
+                    part="P0",
+                    context="pto.vcvt",
+                )
+        with self.assertRaisesRegex(ValueError, r"expected one of A, H, R, Z"):
+            _ops._validate_vcvt_attrs(
+                "f32",
+                "f8e4m3",
+                contract,
+                rnd="F",
+                sat="SAT",
+                part="P0",
+                context="pto.vcvt",
+            )
 
     def test_cube_variant_wrappers_dispatch_to_generated_ops(self):
         lhs = object()
@@ -418,6 +672,15 @@ class VectorCubeSurfaceTest(unittest.TestCase):
             self.assertEqual(_ops._mad_sat_attr(pto.SatMode.OFF), "#pto<mad_sat_mode nosat>")
             self.assertEqual(_ops._acc_store_sat_attr(pto.SatMode.PRESERVE_NAN), "#pto<acc_store_sat_mode sat_preserve_nan>")
 
+    def test_acc_store_no_convert_skips_payload_kind_check(self):
+        payload = object()
+        with patch.object(_ops, "Attribute") as attr:
+            attr.parse.side_effect = lambda text: text
+            value, mode = _ops._acc_store_pre_quant((payload, "no_convert"))
+
+        self.assertIs(value, payload)
+        self.assertEqual(mode, "#pto<quant_pre_mode no_convert>")
+
     def test_tile_selection_surface_exposes_optional_tmp(self):
         for func, expected in [
             (_ops.tsel, ["mask", "src0", "src1", "dst", "tmp"]),
@@ -533,13 +796,14 @@ class VectorCubeSurfaceTest(unittest.TestCase):
         with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
              patch.object(_ops, "_tile_mask_pattern_attr", return_value=parsed_pattern) as mask_attr, \
              patch.object(_ops._pto, "tgather") as tgather_op:
-            pto.tile.gather(src, dst, mask_pattern="P0101")
+            pto.tile.gather(src, dst, mask_pattern="P0101", axis="row")
         mask_attr.assert_called_once_with("P0101")
         self.assertEqual(tgather_op.call_args.args, (src, dst))
         self.assertEqual(tgather_op.call_args.kwargs["mask_pattern"], parsed_pattern)
+        self.assertEqual(tgather_op.call_args.kwargs["axis"], "row")
 
         with self.assertRaisesRegex(ValueError, "unsupported tile mask pattern"):
-            pto.tile.gather(src, dst, mask_pattern="PAT_ALL")
+            pto.tile.gather(src, dst, mask_pattern="PAT_ALL", axis="row")
 
     def test_tile_mov_accepts_acc_to_vec_mode(self):
         src = object()
@@ -574,8 +838,11 @@ class VectorCubeSurfaceTest(unittest.TestCase):
             (_ops.wait_flag, ("MTE2", "V"), {"event_id": -1}, "wait_flag(..., event_id=...)"),
             (_ops.set_cross_flag, (pto.Pipe.FIX, 8), {}, "set_cross_flag(..., event_id=...)"),
             (_ops.wait_cross_flag, (pto.Pipe.FIX, -1), {}, "wait_cross_flag(..., event_id=...)"),
-            (_ops.set_intra_flag, (pto.Pipe.MTE3, 9), {}, "set_intra_flag(..., event_id=...)"),
-            (_ops.wait_intra_flag, (pto.Pipe.V, -2), {}, "wait_intra_flag(..., event_id=...)"),
+            (_ops.set_intra_flag, (pto.Pipe.FIX, 32), {}, "set_intra_flag(..., event_id=...)", "[0, 31]"),
+            (_ops.set_intra_flag, (pto.Pipe.MTE3, 32), {}, "set_intra_flag(..., event_id=...)", "[0, 31]"),
+            (_ops.wait_intra_flag, (pto.Pipe.V, -2), {}, "wait_intra_flag(..., event_id=...)", "[0, 31]"),
+            (_ops.wait_intra_flag, (pto.Pipe.FIX, 32), {}, "wait_intra_flag(..., event_id=...)", "[0, 31]"),
+            (_ops.wait_intra_flag, (pto.Pipe.MTE3, 32), {}, "wait_intra_flag(..., event_id=...)", "[0, 31]"),
         ]
 
         with patch.object(_ops._pto, "set_flag") as set_flag_op, \
@@ -584,13 +851,14 @@ class VectorCubeSurfaceTest(unittest.TestCase):
              patch.object(_ops._pto, "wait_flag_dyn") as wait_flag_dyn_op, \
              patch.object(_ops._pto, "sync_set") as sync_set_op, \
              patch.object(_ops._pto, "sync_wait") as sync_wait_op:
-            for func, args, kwargs, context in cases:
+            for case in cases:
+                func, args, kwargs, context, *expected_range = case
                 with self.subTest(func=func.__name__, event_id=kwargs.get("event_id", args[-1])):
                     with self.assertRaises(ValueError) as exc:
                         func(*args, **kwargs)
                     message = str(exc.exception)
                     self.assertIn(context, message)
-                    self.assertIn("[0, 7]", message)
+                    self.assertIn(expected_range[0] if expected_range else "[0, 7]", message)
 
         set_flag_op.assert_not_called()
         set_flag_dyn_op.assert_not_called()
@@ -603,8 +871,8 @@ class VectorCubeSurfaceTest(unittest.TestCase):
         cases = [
             (_ops.set_cross_flag, (pto.Pipe.V, 0), "set_cross_flag(pipe, event_id)", "<PIPE_FIX>", "<PIPE_V>"),
             (_ops.wait_cross_flag, (pto.Pipe.MTE3, 0), "wait_cross_flag(pipe, event_id)", "<PIPE_FIX>", "<PIPE_MTE3>"),
-            (_ops.set_intra_flag, (pto.Pipe.FIX, 0), "set_intra_flag(pipe, event_id)", "<PIPE_MTE3>", "<PIPE_FIX>"),
-            (_ops.wait_intra_flag, (pto.Pipe.MTE3, 0), "wait_intra_flag(pipe, event_id)", "<PIPE_V>", "<PIPE_MTE3>"),
+            (_ops.set_intra_flag, ("M", 0), "set_intra_flag(pipe, event_id)", "<PIPE_FIX>, <PIPE_MTE1>, <PIPE_MTE2>, <PIPE_MTE3>, <PIPE_V>", "<PIPE_M>"),
+            (_ops.wait_intra_flag, (pto.Pipe.M, 0), "wait_intra_flag(pipe, event_id)", "<PIPE_FIX>, <PIPE_MTE1>, <PIPE_MTE2>, <PIPE_MTE3>, <PIPE_V>", "<PIPE_M>"),
         ]
 
         with patch.object(_ops._pto, "sync_set") as sync_set_op, \
@@ -620,6 +888,30 @@ class VectorCubeSurfaceTest(unittest.TestCase):
 
         sync_set_op.assert_not_called()
         sync_wait_op.assert_not_called()
+
+    def test_intra_sync_mixed_writeback_event_ranges(self):
+        dynamic_event = object()
+        dynamic_event_operand = object()
+        with patch.object(_ops, "_pipe_attr", side_effect=lambda pipe: f"pipe:{pipe}") as pipe_attr, \
+             patch.object(_ops, "unwrap_surface_value", return_value=dynamic_event_operand) as unwrap_surface_value, \
+             patch.object(_ops._pto, "sync_set") as sync_set_op, \
+             patch.object(_ops._pto, "sync_wait") as sync_wait_op:
+            _ops.set_intra_flag(pto.Pipe.FIX, 31)
+            _ops.set_intra_flag(pto.Pipe.MTE3, 31)
+            _ops.wait_intra_flag(pto.Pipe.FIX, 16)
+            _ops.wait_intra_flag(pto.Pipe.V, 31)
+            _ops.wait_intra_flag(pto.Pipe.MTE3, 31)
+            _ops.wait_intra_flag(pto.Pipe.MTE3, dynamic_event)
+
+        self.assertEqual(pipe_attr.call_count, 6)
+        self.assertEqual(sync_set_op.call_count, 2)
+        sync_wait_op.assert_has_calls([
+            call(f"pipe:{pto.Pipe.FIX}", 16),
+            call(f"pipe:{pto.Pipe.V}", 31),
+            call(f"pipe:{pto.Pipe.MTE3}", 31),
+            call(f"pipe:{pto.Pipe.MTE3}", dynamic_event_operand),
+        ])
+        unwrap_surface_value.assert_called_once_with(dynamic_event)
 
     def test_pipe_namespace_and_buffer_helpers_are_exposed(self):
         names = [

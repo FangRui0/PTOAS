@@ -13,15 +13,19 @@ import re
 from dataclasses import dataclass
 
 from ._diagnostics import native_python_control_flow_error
-from ._runtime_scalar_ops import emit_runtime_binary_op, emit_runtime_bitwise_op, emit_runtime_compare
-from ._scalar_adaptation import coerce_runtime_index_value
+from ._runtime_scalar_ops import (
+    emit_runtime_binary_op,
+    emit_runtime_bitwise_op,
+    emit_runtime_compare,
+)
+from ._scalar_adaptation import coerce_runtime_index_value, normalize_runtime_binary_operands
 from ._surface_types import PartitionTensorView, TensorView, Tile
 from ._types import _normalize_address_space, _resolve, ptr
 
-from mlir.dialects import arith
-from mlir.dialects import memref
-from mlir.dialects import pto as _pto
-from mlir.ir import IndexType, IntegerAttr, MemRefType, ShapedType, StridedLayoutAttr, Type
+from ptoas.mlir.dialects import arith
+from ptoas.mlir.dialects import memref
+from ptoas.mlir.dialects import pto as _pto
+from ptoas.mlir.ir import IndexType, IntegerAttr, IntegerType, MemRefType, ShapedType, StridedLayoutAttr, Type, VectorType
 
 
 def _validate_surface_value_access(value):
@@ -41,6 +45,26 @@ def unwrap_surface_value(value):
     if isinstance(value, _SurfaceValue):
         return value.value
     return _validate_surface_value_access(value)
+
+
+def is_tile_ir_type(type_obj) -> bool:
+    """Return whether *type_obj* is a TileOp-compatible Tile boundary type."""
+    return _maybe_cast_tile_buf_type(type_obj) is not None
+
+
+def is_runtime_scalar_ir_type(type_obj) -> bool:
+    """Return whether *type_obj* is a TileOp-compatible PTO scalar type."""
+    type_text = str(type_obj)
+    return not (
+        is_tile_ir_type(type_obj)
+        or VectorType.isinstance(type_obj)
+        or type_text.startswith("!pto.ptr<")
+        or type_text.startswith("memref<")
+        or type_text.startswith("!pto.tensor_view<")
+        or type_text.startswith("!pto.partition_tensor_view<")
+        or type_text.startswith("!pto.vreg<")
+        or type_text.startswith("!pto.mask<")
+    )
 
 
 def _is_python_index_literal(value) -> bool:
@@ -143,6 +167,20 @@ def _maybe_cast_tile_buf_type(type_obj):
         return None
 
 
+def _maybe_cast_mask_type(type_obj):
+    try:
+        return _pto.MaskType(type_obj)
+    except Exception:
+        return None
+
+
+def _maybe_cast_vmi_mask_type(type_obj):
+    try:
+        return _pto.VMIMaskType(type_obj)
+    except Exception:
+        return None
+
+
 def wrap_surface_value(
     value,
     *,
@@ -165,6 +203,8 @@ def wrap_surface_value(
             offsets=offsets,
             sizes=sizes,
         )
+    if _maybe_cast_mask_type(type_obj) is not None or _maybe_cast_vmi_mask_type(type_obj) is not None:
+        return MaskValue(value)
     if _maybe_cast_tile_buf_type(type_obj) is not None:
         return TileValue(value, **(tile_metadata or {}))
     try:
@@ -172,6 +212,8 @@ def wrap_surface_value(
         return AddressValue(value)
     except Exception:
         pass
+    if VectorType.isinstance(type_obj):
+        return VecValue(value)
     return RuntimeValue(value)
 
 
@@ -285,6 +327,53 @@ class RuntimeValue(_SurfaceValue):
         return wrap_surface_value(emit_runtime_bitwise_op("xor", unwrap_surface_value(other), self.value))
 
 
+class VecValue(_SurfaceValue):
+    """Author-facing builtin vector value backed by an MLIR vector SSA value."""
+
+    def __init__(self, value):
+        if not VectorType.isinstance(value.type):
+            raise TypeError(f"VecValue expects an MLIR vector value, got {value.type}")
+        super().__init__(value)
+        vec_type = VectorType(value.type)
+        if vec_type.rank != 1:
+            raise TypeError(f"PTODSL builtin vectors must be rank-1, got {value.type}")
+        self.size = int(vec_type.shape[0])
+        self.element_type = vec_type.element_type
+
+    def __add__(self, other):
+        return _emit_vec_binary_op("add", self, other)
+
+    def __radd__(self, other):
+        return _emit_vec_binary_op("add", other, self)
+
+    def __sub__(self, other):
+        return _emit_vec_binary_op("sub", self, other)
+
+    def __rsub__(self, other):
+        return _emit_vec_binary_op("sub", other, self)
+
+    def __mul__(self, other):
+        return _emit_vec_binary_op("mul", self, other)
+
+    def __rmul__(self, other):
+        return _emit_vec_binary_op("mul", other, self)
+
+
+def _emit_vec_binary_op(op_name: str, lhs, rhs):
+    lhs_raw = unwrap_surface_value(lhs)
+    rhs_raw = unwrap_surface_value(rhs)
+    if not (VectorType.isinstance(lhs_raw.type) and VectorType.isinstance(rhs_raw.type)):
+        raise TypeError("PTODSL VecValue arithmetic expects compatible vector operands")
+    lhs_raw, rhs_raw, kind = normalize_runtime_binary_operands(lhs_raw, rhs_raw)
+    if kind != "float":
+        raise TypeError(f"PTODSL VecValue operator '{op_name}' currently supports only floating-point vectors")
+    return VecValue(emit_runtime_binary_op(op_name, lhs_raw, rhs_raw))
+
+
+class MaskValue(_SurfaceValue):
+    """Concrete authored wrapper for PTO / VMI mask SSA values."""
+
+
 class MaskResultValue(_SurfaceValue):
     """Mask value that also supports `(mask, remained)` unpacking."""
 
@@ -298,13 +387,44 @@ class MaskResultValue(_SurfaceValue):
 
 
 class AddressValue(_SurfaceValue):
-    """Author-facing address view backed by either a PTO ptr or a memref."""
+    """Author-facing address view backed by a PTO ptr."""
 
     def __add__(self, offset):
         return AddressOffsetValue(self, offset)
 
     def __radd__(self, offset):
         return AddressOffsetValue(self, offset)
+
+
+class AllocatedBufferValue(AddressValue):
+    """Address returned by ``pto.alloc_buffer`` with allocation metadata."""
+
+    def __init__(
+        self,
+        value,
+        *,
+        shape,
+        dtype,
+        element_type,
+        element_count,
+        byte_size,
+    ):
+        super().__init__(value)
+        self.shape = tuple(shape)
+        self.dtype = dtype
+        self.element_type = element_type
+        self.element_count = element_count
+        self.byte_size = byte_size
+
+    @property
+    def surface_metadata(self):
+        return {
+            "shape": self.shape,
+            "dtype": self.dtype,
+            "element_type": self.element_type,
+            "element_count": self.element_count,
+            "byte_size": self.byte_size,
+        }
 
 
 @dataclass(frozen=True)
@@ -342,7 +462,7 @@ class TileElementRef:
 
 
 class TileSliceValue(_SurfaceValue):
-    """Author-facing memref view produced by `tile[row, col:]` style indexing."""
+    """Author-facing tile slice descriptor produced by `tile[row, col:]` indexing."""
 
     def __init__(self, value, *, tile: "TileValue", offsets, shape):
         super().__init__(value)
@@ -555,6 +675,8 @@ def wrap_like_surface_value(template, value):
                 for dim in valid_shape
             )
         return TileValue(value, **metadata)
+    if isinstance(template, AllocatedBufferValue):
+        return AllocatedBufferValue(value, **template.surface_metadata)
     if isinstance(template, AddressValue):
         return AddressValue(value)
     return wrap_surface_value(value)
@@ -608,6 +730,21 @@ def infer_ptr_type_from_surface_value(surface_value):
     part_type = _maybe_cast_partition_tensor_view_type(value_type)
     if part_type is not None:
         return _resolve(ptr(part_type.element_type, "gm"))
+
+    try:
+        memref_type = MemRefType(value_type)
+    except Exception:
+        memref_type = None
+    if memref_type is not None:
+        space_attr = memref_type.memory_space
+        space_enum = "gm"
+        if space_attr is not None:
+            space_value = getattr(space_attr, "value", None)
+            if space_value is not None:
+                space_enum = _ADDRESS_SPACE_VALUE_TO_KEYWORD.get(space_value, "gm")
+            else:
+                space_enum = str(space_attr).split("<")[-1].rstrip(">")
+        return _resolve(ptr(memref_type.element_type, space_enum))
 
     tile_type = _maybe_cast_tile_buf_type(value_type)
     if tile_type is None:
@@ -663,7 +800,11 @@ def emit_as_ptr(surface_value):
 
 
 _TILE_TYPE_RE = re.compile(
-    r"!pto\.tile_buf<(?P<space>[^,]+),\s*(?P<shape>.+?)x(?P<elem>[^,x>]+),\s*valid=(?P<valid>[^,>]+)(?:,.*)?>"
+    r"!pto\.tile_buf<(?P<space>[^,]+),\s*"
+    r"(?P<shape>(?:\?|[0-9]+)(?:x(?:\?|[0-9]+))*)x"
+    r"(?P<elem>[^,>]+),\s*"
+    r"valid=(?P<valid>(?:\?|[0-9]+)(?:x(?:\?|[0-9]+))*)"
+    r"(?:,.*)?>"
 )
 
 
@@ -863,112 +1004,13 @@ def _materialize_tile_slice(tile: TileValue, key):
 
 
 def _build_tile_slice_view(tile: TileValue, *, raw_offsets, shape):
-    base_memref = _emit_tile_memref(tile)
-    base_type = MemRefType(base_memref.type)
-    rank = len(base_type.shape)
-    offset_operands, static_offsets = _split_dynamic_index_operands(raw_offsets)
-    shape_operands, static_shape = _split_dynamic_index_operands(shape)
-    base_strides, base_offset = base_type.get_strides_and_offset()
-    if rank == 1:
-        slice_type = _make_strided_memref_type(
-            [_static_extent_if_known(shape[0])],
-            base_type.element_type,
-            [base_strides[0]],
-            base_type.memory_space,
-            offset=_compose_static_subview_offset(base_offset, base_strides, raw_offsets),
-        )
-        slice_value = memref.SubViewOp(
-            slice_type,
-            base_memref,
-            offset_operands,
-            shape_operands,
-            [],
-            static_offsets,
-            static_shape,
-            [1],
-        ).result
-        return TileSliceValue(slice_value, tile=tile, offsets=tuple(raw_offsets), shape=shape)
-
-    slice_type = _make_strided_memref_type(
-        [_static_extent_if_known(shape[0])],
-        base_type.element_type,
-        [base_strides[1]],
-        base_type.memory_space,
-        offset=_compose_static_subview_offset(base_offset, base_strides, raw_offsets),
-    )
-    slice_value = memref.SubViewOp(
-        slice_type,
-        base_memref,
-        offset_operands,
-        shape_operands,
-        [],
-        static_offsets,
-        [1, static_shape[0]],
-        [1, 1],
-    ).result
-    return TileSliceValue(slice_value, tile=tile, offsets=tuple(raw_offsets), shape=shape)
-
-
-def _emit_tile_memref(tile: TileValue):
-    memref_type = infer_memref_type_from_surface_value(tile)
-    return _pto.TileBufAddrOp(memref_type, tile.value).result
+    return TileSliceValue(tile.value, tile=tile, offsets=tuple(raw_offsets), shape=shape)
 
 
 def _dynamic_extent(static_dim, start):
     if _is_python_index_literal(start):
         return static_dim - start
     return arith.SubIOp(_index_const(static_dim), _coerce_index_value(start)).result
-
-
-def _static_extent_if_known(extent):
-    return extent if _is_python_index_literal(extent) else ShapedType.get_dynamic_size()
-
-
-def _static_index_attr(value):
-    return value if _is_python_index_literal(value) else ShapedType.get_dynamic_size()
-
-
-def _split_dynamic_index_operands(values):
-    operands = []
-    static_attrs = []
-    for value in values:
-        if _is_python_index_literal(value):
-            static_attrs.append(value)
-        else:
-            operands.append(_coerce_index_value(value))
-            static_attrs.append(ShapedType.get_dynamic_size())
-    return operands, static_attrs
-
-
-def _make_strided_memref_type_with_offset(shape, element_type, strides, memory_space, *, offset):
-    return MemRefType.get(
-        list(shape),
-        element_type,
-        StridedLayoutAttr.get(offset, list(strides)),
-        memory_space,
-    )
-
-
-def _make_strided_memref_type(shape, element_type, strides, memory_space, *, offset=ShapedType.get_dynamic_size()):
-    return _make_strided_memref_type_with_offset(
-        shape,
-        element_type,
-        strides,
-        memory_space,
-        offset=offset,
-    )
-
-
-def _compose_static_subview_offset(base_offset, base_strides, raw_offsets):
-    if base_offset == ShapedType.get_dynamic_size():
-        return ShapedType.get_dynamic_size()
-
-    linear_offset = base_offset
-    for stride, authored_offset in zip(base_strides, raw_offsets):
-        if not _is_python_index_literal(authored_offset):
-            return ShapedType.get_dynamic_size()
-        linear_offset += stride * authored_offset
-    return linear_offset
 
 
 def _mul_index(lhs, rhs):
@@ -991,12 +1033,14 @@ def _coerce_index_value(value):
 
 
 __all__ = [
+    "AllocatedBufferValue",
     "AddressOffsetValue",
     "AddressValue",
     "MaskResultValue",
     "PartitionSpec",
     "PartitionTensorViewValue",
     "RuntimeValue",
+    "VecValue",
     "TileElementRef",
     "TileSliceValue",
     "TensorViewValue",

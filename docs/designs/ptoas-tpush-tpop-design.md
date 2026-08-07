@@ -227,7 +227,7 @@ pto.tfree_from_aiv(%entry : !pto.tensor_view<...>) {id = 0, split = 0}
 
 以上前端数据传输接口中的 `id` 和 `split` 均为编译期常量属性，不是运行时 SSA operand。
 
-- 取值使用 `TileSplitAxis` 枚举语义：`0/1/2` 分别对应 `TILE_NO_SPLIT`、`TILE_UP_DOWN`、`TILE_LEFT_RIGHT`
+- 取值使用 `TileSplitAxis` 枚举语义：`0/1/2/3/4` 分别对应 `TILE_NO_SPLIT`、`TILE_UP_DOWN`、`TILE_LEFT_RIGHT`、`TILE_UP_DOWN_ODD`、`TILE_LEFT_RIGHT_ODD`
 - lowering 到 PTOAS 内部 IR 时，`split` 继续以属性形式保留
 - `global` entry 的 result type 和 matched initialize op 的 `gm_slot_tensor` metadata 是底层 `GlobalData` 模板实参的 IR 描述；其 element type、静态 shape 与 stride/layout 必须描述完整 FIFO slot。若 consumer 只加载 slot 的子区域，应先 pop 完整 slot descriptor，再由该 descriptor 派生更窄的 GM view。
 
@@ -421,6 +421,13 @@ handle。
 - `TILE_NO_SPLIT`
 - `TILE_UP_DOWN`
 - `TILE_LEFT_RIGHT`
+- `TILE_UP_DOWN_ODD`
+- `TILE_LEFT_RIGHT_ODD`
+
+当前 odd 模式仅允许单向 C2V 的 GM-backed tile pipe。前端 initialize 必须同时提供
+`gm_slot_tensor` 和 `c2v_consumer_buf`，lowering 后对应带 local consumer buffer 的
+`pto.initialize_l2g2l_pipe`。local C2V、V2C、双向 pipe 以及 GlobalTensor entry
+暂不允许 odd 模式，因为固定版本的 pto-isa 尚未实现这些数据传输/offset 路径。
 
 在 PTOAS 设计中，`split` 的角色定义为：
 
@@ -442,7 +449,7 @@ handle。
 
 - 切分前完整 pipe entry 的字节数
 
-即使 `split` 为 `TILE_UP_DOWN` 或 `TILE_LEFT_RIGHT`，`SLOT_SIZE` 仍然表示未切分前的逻辑 pipe entry 总字节数。
+即使 `split` 为 `TILE_UP_DOWN`、`TILE_LEFT_RIGHT`、`TILE_UP_DOWN_ODD` 或 `TILE_LEFT_RIGHT_ODD`，`SLOT_SIZE` 仍然表示未切分前的逻辑 pipe entry 总字节数。
 
 `split` 只影响底层 `TALLOC/TPUSH/TPOP/TFREE` 的执行方式，不影响 `SLOT_SIZE` 的含义。
 
@@ -451,8 +458,14 @@ handle。
 - `TILE_NO_SPLIT`：不增加 sub-core offset
 - `TILE_UP_DOWN`：sub-core offset 为 `get_subblockid() * rows * cols * sizeof(dtype)`
 - `TILE_LEFT_RIGHT`：sub-core offset 为 `get_subblockid() * cols * sizeof(dtype)`
+- `TILE_UP_DOWN_ODD`：奇数有效行由 AIV0/AIV1 按 `ceil(rows / 2)` 与 `floor(rows / 2)` 切分
+- `TILE_LEFT_RIGHT_ODD`：奇数有效列由 AIV0/AIV1 按 `ceil(cols / 2)` 与 `floor(cols / 2)` 切分
 
-其中 `rows`、`cols` 与 `dtype` 来自 entry 对应底层 `GlobalData` 的静态 shape 与 `RawDType`。PTOAS IR 因此要求 `global` entry 的类型和 view metadata 描述完整 FIFO slot，而不是仅描述 consumer 最终要读取的子 tile。
+GM tile 路径中的偶数和奇数切分模式都使用运行时 valid shape 计算 offset 与
+row stride。odd 模式不会自动推导两个子核的 valid shape：前端必须根据
+`pto.get_subblock_idx` 为 AIV0 传入 `ceil` 半块、为 AIV1 传入 `floor` 半块，
+并把不同的 `valid_row` / `valid_col` operand 传给 `tpop`。描述 GM slot 的
+metadata 仍必须覆盖切分前的完整 FIFO slot。
 
 ### 4.4 `SLOT_NUM` 规则
 

@@ -49,6 +49,7 @@ Low-precision `VRegType` values are valid intermediate payloads, but they are no
 | `pto.f4e2m1x2` | 4-bit float (E2M1, 2-wide packed) |
 | `pto.f8e4m3` | 8-bit float (E4M3) |
 | `pto.f8e5m2` | 8-bit float (E5M2) |
+| `pto.f8e8m0` | 8-bit exponent-only MX scale format |
 
 These types can be used when constructing on-chip tiles, view descriptors, UB pointers, and vector register types:
 
@@ -61,6 +62,8 @@ lp_vreg_ty = pto.vreg_type(256, pto.f8e4m3)
 ```
 
 Constructing scalar eager values or host tensor ABI contracts with a low-precision type is **not supported** — `pto.f8e4m3(1.0)` and `pto.tensor_spec(rank=2, dtype=pto.f8e4m3)` will raise an error.
+
+`pto.f8e8m0` is storage-only. Use it for MX scale storage, including an L1 source pointer passed with the full MX field group to `pto.mte_l1_l0a_mx` or `pto.mte_l1_l0b_mx`; it is not a scalar arithmetic type.
 
 ### Integer literal guidance
 
@@ -84,6 +87,33 @@ d = pto.f32("nan")
 # Bit-pattern hex
 f16_neg_inf = pto.f16("0xFC00")
 ```
+
+### Stack-local structs
+
+`pto.struct_type` describes a heterogeneous stack-local aggregate. Declare it inside a traced function, then access scalar fields with a static positional path:
+
+```text
+pto.struct_type(*field_types) -> StructTypeDescriptor
+pto.declare_struct(struct_type) -> Value
+pto.struct_get(struct, path) -> ScalarValue
+pto.struct_set(struct, path, value) -> None
+```
+
+Fields may be `i8` / `i16` / `i32` / `i64` (including signed and unsigned variants), `f16` / `bf16` / `f32`, or another `struct_type`. `path` is an `int`, `tuple[int, ...]`, or `list[int]`; it must be non-empty, static, and end at a scalar field. For example, `(1, 0)` selects field 1, a nested struct, then its field 0. Structs are local handles to stack storage: `struct_set` mutates in place and returns `None`.
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"type_system.struct","symbol":"type_system_struct_probe","compile":{}} -->
+```python
+state_ty = pto.struct_type(pto.i32, pto.struct_type(pto.f32, pto.i16))
+state = pto.declare_struct(state_ty)
+pto.struct_set(state, 0, 1)
+pto.struct_set(state, (1, 0), 3.5)
+count = pto.struct_get(state, [0])
+value = pto.struct_get(state, (1, 0))
+```
+
+Python `int` literals can initialize integer and floating-point fields; Python `float` literals only initialize floating-point fields and are rounded to the destination type. Existing SSA values must exactly match the destination field type, so `i32 -> i16`, `index -> i32`, and `f32 -> f16` do not insert implicit casts. `bool`, strings, dynamic path values, low-precision storage types, pointer/view/tile handles, and `i1` are rejected.
+
+Structs cannot be used as `@pto.jit`, `@pto.tileop`, or `@pto.simt` parameters, or as `pto.for_(...).carry(...)` state. A struct declared outside an ordinary `pto.for_` may be read and mutated inside that loop. Struct values also cannot be returned, yielded, or passed as function arguments from their declaring scope.
 
 ## 4.2 Vector register type
 
@@ -330,3 +360,55 @@ reduce_tile = pto.alloc_tile(shape=[BR, 1], dtype=pto.f32, valid_shape=[BR, 1], 
 # Reinterpret as ColMajor layout (same shape, different layout)
 reduce_col = pto.tile.reshape(reduce_tile, shape=[BR, 1], blayout="ColMajor")
 ```
+
+## 4.9 Builtin Vector
+
+An MLIR `vector<size x dtype>` is a rank-1 builtin vector type with `size` elements of `dtype`. It is distinct from a PTO SIMD `vreg`.
+
+PTODSL uses builtin vector values in SIMT scalar code, including contiguous `scalar.load` / `scalar.store` paths and elementwise vector arithmetic. Create a builtin vector type descriptor or initialized vector value with `pto.Vec`:
+
+#### `pto.Vec(dtype, size, *, init=None)`
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `dtype` | PTO dtype | Element type, such as `pto.f32` |
+| `size` | Positive Python `int` | Number of elements in the builtin vector value |
+| `init` | Scalar value, builtin vector value, or `None` | Optional initializer; broadcastable scalar inputs: Python scalar literal, SSA scalar value, dynamic runtime scalar value |
+
+**Returns**:
+
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | Builtin vector type descriptor or `pto.Vec(dtype, size)` value | Without `init`, returns a vector type descriptor; with `init`, returns a vector value |
+
+**Example**:
+
+<!-- ptodsl-doc-pending: {"reason":"illustrative fragment; covered by test_jit_compile scalar contiguous vector probes"} -->
+```python
+x4 = scalar.load(ptr, offset, contiguous=4)
+rstd4 = pto.Vec(pto.f32, 4, init=rstd)
+y4 = x4 * rstd4
+scalar.store(y4, ptr, offset)
+```
+
+## 4.10 Explicit scratch buffers
+
+A scratch buffer is a local temporary buffer inside an explicit kernel or helper body. Allocate scratch buffers with `pto.alloc_buffer`. A buffer allocated in the top-level explicit entry body can be used by an inline SIMT scope in the same lexical body, including both `with pto.simt():` and dimensioned `with pto.simt(x, y, z):` scopes. It cannot be used by other SIMT forms. SIMT helpers should allocate their own local scratch with `pto.alloc_buffer`, or receive ordinary typed pointers authored with `pto.castptr` / `pto.addptr`.
+
+```text
+pto.alloc_buffer(shape, dtype)
+```
+
+<!-- ptodsl-doc-pending: {"reason":"illustrative fragment; covered by test_jit_compile alloc_buffer probes"} -->
+```python
+scratch = pto.alloc_buffer((32,), pto.f32)
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `shape` | Static positive integer shape. Pass an `int`, `tuple[int, ...]`, or `list[int]`. |
+| `dtype` | Element type of the returned buffer, such as `pto.f32` or `pto.i32`. |
+
+The returned value wraps the buffer address together with its allocation metadata: shape, dtype, element type, element count, and byte size.

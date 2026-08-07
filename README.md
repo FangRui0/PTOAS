@@ -53,13 +53,17 @@ export WORKSPACE_DIR=$HOME/llvm-workspace
 export LLVM_SOURCE_DIR=$WORKSPACE_DIR/llvm-project
 export LLVM_BUILD_DIR=$LLVM_SOURCE_DIR/build-shared
 
-# PTOAS 源码与安装路径
+# PTOAS 源码路径
 export PTO_SOURCE_DIR=$WORKSPACE_DIR/PTOAS
-export PTO_INSTALL_DIR=$PTO_SOURCE_DIR/install
 # =======================================================
 
 # 创建工作目录
 mkdir -p $WORKSPACE_DIR
+
+# 推荐使用独立虚拟环境。后续 LLVM 和 PTOAS 构建必须使用同一个 Python。
+python3 -m venv "$WORKSPACE_DIR/.venv"
+source "$WORKSPACE_DIR/.venv/bin/activate"
+export PYTHON_BIN="$(command -v python3)"
 
 ```
 
@@ -68,10 +72,10 @@ mkdir -p $WORKSPACE_DIR
 * **OS**: Linux (Ubuntu 20.04+ 推荐)
 * **Compiler**: GCC >= 9 或 Clang (支持 C++17)
 * **Build System**: CMake >= 3.20, Ninja
-* **Python**: 3.8+
-* **Python Packages**: `pybind11<3`, `nanobind`, `numpy`
+* **Python**: 3.10+
+* **Python Packages**: `scikit-build-core`, `pybind11<3`, `nanobind`, `numpy`
 ```bash
-python3 -m pip install 'pybind11<3' nanobind numpy
+"$PYTHON_BIN" -m pip install 'scikit-build-core>=0.12.2,<2' 'pybind11<3' nanobind numpy
 
 ```
 
@@ -100,10 +104,11 @@ cmake -G Ninja -S llvm -B $LLVM_BUILD_DIR \
     -DLLVM_ENABLE_PROJECTS="mlir;clang" \
     -DBUILD_SHARED_LIBS=ON \
     -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
-    -DPython3_EXECUTABLE=$(which python3) \
-    -DPython_EXECUTABLE=$(which python3) \
-    -Dpybind11_DIR=$(python3 -m pybind11 --cmakedir) \
-    -Dnanobind_DIR=$(python3 -m nanobind --cmake_dir) \
+    -DLLVM_ENABLE_ASSERTIONS=ON \
+    -DPython3_EXECUTABLE="$PYTHON_BIN" \
+    -DPython_EXECUTABLE="$PYTHON_BIN" \
+    -Dpybind11_DIR="$("$PYTHON_BIN" -m pybind11 --cmakedir)" \
+    -Dnanobind_DIR="$("$PYTHON_BIN" -m nanobind --cmake_dir)" \
     -DCMAKE_BUILD_TYPE=Release \
     -DLLVM_TARGETS_TO_BUILD="host"
 
@@ -119,54 +124,23 @@ ninja -C $LLVM_BUILD_DIR
 ```bash
 # 1. 下载 PTOAS 源码
 cd $WORKSPACE_DIR
-git clone https://gitcode.com/cann/pto-as.git PTOAS
+git clone https://github.com/hw-native-sys/PTOAS.git PTOAS
 cd $PTO_SOURCE_DIR
 
-# 2. 获取 pybind11 的 CMake 路径
-export PYBIND11_CMAKE_DIR=$(python3 -m pybind11 --cmakedir)
-
-# 3. 配置 CMake
-# 注意：此处直接使用了 3.0 章节中定义的变量，无需手动修改
-cmake -G Ninja \
-    -S . \
-    -B build \
-    -DLLVM_DIR=$LLVM_BUILD_DIR/lib/cmake/llvm \
-    -DMLIR_DIR=$LLVM_BUILD_DIR/lib/cmake/mlir \
-    -DPython3_EXECUTABLE=$(which python3) \
-    -DPython3_FIND_STRATEGY=LOCATION \
-    -Dpybind11_DIR="${PYBIND11_CMAKE_DIR}" \
-    -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
-    -DMLIR_PYTHON_PACKAGE_DIR=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core \
-    -DCMAKE_INSTALL_PREFIX="$PTO_INSTALL_DIR"
-
-# 4. 编译并安装
-ninja -C build-llvm21
-ninja -C build-llvm21 install
-
-# 5. 检查构建产物
-# build 输出（便于本地开发/调试）
-$PTO_SOURCE_DIR/build-llvm21/python/
-├── mlir
-│   ├── _mlir_libs
-│   │   └── _pto.cpython-*.so
-│   └── dialects
-│       ├── pto.py
-│       └── _pto_ops_gen.py
-
-# install 输出（Python 方言文件和原生扩展）
-$PTO_INSTALL_DIR/
-└── mlir
-    ├── dialects
-    │   ├── pto.py
-    │   └── _pto_ops_gen.py
-    └── _mlir_libs
-        └── _pto.cpython-*.so
-
-# CLI 工具
-$PTO_SOURCE_DIR/build-llvm21/tools/ptoas/ptoas
-$PTO_SOURCE_DIR/build-llvm21/tools/ptobc/ptobc
+# 2. 安装到当前 Python 环境，并保留可增量构建的 build tree
+PYTHON_BIN="$PYTHON_BIN" \
+LLVM_BUILD_DIR="$LLVM_BUILD_DIR" \
+PTO_BUILD_DIR="$PTO_SOURCE_DIR/build" \
+  ./quick_install.sh
 
 ```
+
+`quick_install.sh` 使用 editable install，并关闭 build isolation，避免把临时
+构建环境中的 pybind11 路径写入持久化 `CMakeCache.txt`。`ptoas` 会直接安装到
+`PYTHON_BIN` 对应的当前环境中。激活上面创建的虚拟环境后，它的 `bin` 目录已经
+位于 `PATH` 中。
+
+安装完成后，必须先按第 4 节配置运行环境，再执行 `ptoas` 或 `check-pto`。
 
 ### 3.4 Python 安装合同 (Python Distribution Contract)
 
@@ -176,17 +150,17 @@ $PTO_SOURCE_DIR/build-llvm21/tools/ptobc/ptobc
 ```bash
 # 非 editable 的源码安装
 cd $PTO_SOURCE_DIR
-pip install . --no-build-isolation
+"$PYTHON_BIN" -m pip install . --no-build-isolation
 
 # PTOAS / PTODSL 开发者的 editable 安装
 cd $PTO_SOURCE_DIR
-pip install -e . --no-build-isolation
+"$PYTHON_BIN" -m pip install -e . --no-build-isolation
 ```
 
 发布或 CI 产出的 `ptoas` wheel 也遵循同一合同：
 
 ```bash
-pip install /path/to/ptoas-*.whl
+"$PYTHON_BIN" -m pip install /path/to/ptoas*.whl
 ```
 
 安装完成后，以下导入应直接可用：
@@ -194,46 +168,95 @@ pip install /path/to/ptoas-*.whl
 ```python
 import ptodsl
 from ptodsl import pto, scalar
-from mlir.dialects import pto as mlir_pto
+from ptoas.mlir.dialects import pto as mlir_pto
 ```
 
 > 说明：
-> - `ptoas` wheel 会同时安装 PTODSL。
+> - `ptoas` wheel 会同时安装 PTODSL，并提供可直接调用的 `ptoas` CLI。
+> - VMI release 线仍然复用 `ptoas` CLI 名称；对应的 `ptoas --version` 会显示
+>   `ptoas vmi A.B.C`。
+> - `ptoas` 与 `ptoas-vmi` 两个 release wheel **互斥**：它们都会安装同名的顶层
+>   `ptoas` Python 包和 `ptoas` console script，**不要**在同一个 Python 环境里同时安装；
+>   混装会互相覆盖文件，卸载其中一个也可能破坏另一个。
 > - `ptoas-bin-*.tar.gz` 这类 compiler-only 二进制 tarball 只提供 CLI/toolchain，
 >   **不是** PTODSL-capable Python distribution；仅解压 tarball 不能保证
 >   `import ptodsl` 可用。
+> - release tag 约定：`ptoas-vX.Y` 发布主工具链，`vmi-vA.B.C` 发布
+>   `ptoas-vmi` distribution。创建 VMI release tag 前，应通过发布 PR 将
+>   `packaging/ptoas-vmi/pyproject.toml.patch` 中的版本更新为相同的 `A.B.C`。
+>   VMI 发布流程会从当前 Git revision 导出完整源码快照，只在 staging tree
+>   中应用该 metadata patch，再直接从 staging tree 构建 wheel；不会修改工作区
+>   根目录的 `pyproject.toml`，也不会在普通门禁或 release 中生成、发布 sdist。
 
 ---
 
 ## 4. 运行环境配置 (Runtime Environment)
 
-如果你已经通过 `pip install .`、`pip install -e .` 或 `pip install ptoas-*.whl`
-完成安装，那么 `import ptodsl` / `from mlir.dialects import pto` 不应再依赖手动
-设置 `PYTHONPATH`。
-
-下面这组环境变量主要用于**直接消费 build/install tree** 的场景，例如：
-
-- 不走 pip 安装，直接调试 CMake install 输出
-- 调试 `ptoas` CLI、动态库搜索路径或 MLIR Python overlay
-- 复用仓库脚本做 compile-only / simulator / sample 生成
-
-您可以将以下命令添加到 `.bashrc` 或启动脚本中。
+每次打开新 shell 时，先恢复 3.0 中配置的路径变量并重新激活安装 PTOAS 的
+Python 环境。源码或 editable 安装会使用 LLVM 构建目录中的动态库，因此还需要
+将该目录加入动态库搜索路径：
 
 ```bash
-# --- 运行时变量配置 (基于之前定义的路径) ---
+# 先重新导出 WORKSPACE_DIR、LLVM_BUILD_DIR 等 3.0 中的路径变量
+source "$WORKSPACE_DIR/.venv/bin/activate"
+export PYTHON_BIN="$(command -v python3)"
+export LD_LIBRARY_PATH="$LLVM_BUILD_DIR/lib:${LD_LIBRARY_PATH:-}"
 
-# 1. Python Path: 拼接 MLIR Core 和 PTO Core
-#    这样在 python 中 import mlir.dialects.pto 时能正确找到
-export MLIR_PYTHON_ROOT=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core
-export PTO_PYTHON_ROOT=$PTO_INSTALL_DIR/
-export PYTHONPATH=$PTO_PYTHON_ROOT:$MLIR_PYTHON_ROOT:$PYTHONPATH
+command -v ptoas
+ptoas --version
+```
 
-# 2. Library Path: 确保能加载 LLVM 和 PTO 的动态库
-export LD_LIBRARY_PATH=$LLVM_BUILD_DIR/lib:$PTO_INSTALL_DIR/lib:$LD_LIBRARY_PATH
+源码开发者完成上述配置后，可以复用安装时保留的 build tree 运行测试：
 
-# 3. PATH: 将 ptoas / ptobc 添加到命令行路径
-export PATH=$PTO_SOURCE_DIR/build-llvm21/tools/ptoas:$PTO_SOURCE_DIR/build-llvm21/tools/ptobc:$PATH
+```bash
+ninja -C "$PTO_SOURCE_DIR/build" check-pto
+```
 
+发布 wheel 自带运行时依赖，不使用外部 LLVM build tree 时无需设置上述
+`LD_LIBRARY_PATH`。无论哪种安装方式，都不需要手工拼接 `PYTHONPATH`。
+
+### Daily wheel
+
+定时构建会将最新 wheel 发布到 GitHub 的 `nightly` release。开发者可以查看
+[Nightly Build](https://github.com/hw-native-sys/PTOAS/releases/tag/nightly)，
+或在仓库 checkout 中运行下面的命令自动选择当前 Python 和平台对应的 wheel：
+
+```bash
+python tools/install_nightly_wheel.py
+```
+
+脚本使用当前 Python 自带的 pip packaging 支持选择 wheel，无需预先单独安装
+`packaging`。
+
+daily workflow 的实际 Python 版本、平台和架构以 nightly release 中当前发布的
+wheel 为准。
+
+如需先查看将要安装的文件，可以加上 `--dry-run`。脚本使用当前 Python
+环境执行安装，不会自动重装 wheel 的运行时依赖，并会替换该环境中已安装的同名
+nightly wheel。GitHub Release 提供 asset digest 时脚本会自动校验 SHA-256，也可
+通过 `--sha256` 显式指定摘要。nightly wheel 来自 GitHub Release，使用前请确认
+下载来源和当前环境符合预期。若选中的 asset 超过 48 小时未更新，脚本会给出警告。
+Linux 和 macOS nightly release 同时附带 manifest，其中记录各平台 wheel 对应的
+源码 commit 和构建任务，跨平台版本不一致时可据此核对。
+
+需要 CANN、Bisheng、simulator 或 NPU 时，再加载 CANN 对外提供的环境脚本。
+常见安装位置如下，按实际环境选择一个：
+
+```bash
+source /usr/local/Ascend/cann/set_env.sh
+# 或
+source /usr/local/Ascend/ascend-toolkit/latest/set_env.sh
+```
+
+如果没有使用虚拟环境，并且 pip 将软件包安装到了用户目录，请在运行 `ptoas`
+之前先配置 `PATH`，然后同样设置上述 `LD_LIBRARY_PATH`：
+
+```bash
+export PATH="$(python3 -m site --user-base)/bin:$PATH"
+hash -r
+export LD_LIBRARY_PATH="$LLVM_BUILD_DIR/lib:${LD_LIBRARY_PATH:-}"
+command -v ptoas
+ptoas --version
 ```
 
 ---
@@ -255,6 +278,10 @@ ptoas test/lit/pto/empty_func.pto --pto-arch=a5 -o outputfile.cpp
 # 指定构建 Level（level3 会禁用 PlanMemory/InsertSync）
 ptoas test/lit/pto/empty_func.pto --pto-level=level3 -o outputfile.cpp
 
+# VPTO backend 总是启用 VMI -> VPTO 语义 pipeline
+# public function signature 不能直接暴露 !pto.vmi.* 类型
+ptoas test/lit/vmi_new/vmi_ptoas_cli_pipeline.pto --pto-arch=a5 --pto-backend=vpto --emit-vpto -o -
+
 # 查看当前 ptoas release 版本号
 ptoas --version
 
@@ -265,9 +292,9 @@ ptoas --version
 在支持的 `ptoas` 安装环境中，PTO Dialect 与 PTODSL 都可以直接导入。
 
 ```python
-from mlir.ir import Context, Module, Location
-# [关键] 从 mlir.dialects 导入 pto，这是 Out-of-tree 绑定的标准用法
-from mlir.dialects import pto
+from ptoas.mlir.ir import Context, Module, Location
+# PTOAS 自带的 MLIR Python API 位于 ptoas.mlir 命名空间。
+from ptoas.mlir.dialects import pto
 from ptodsl import pto as jit_pto, scalar
 
 with Context() as ctx, Location.unknown():
@@ -283,14 +310,14 @@ with Context() as ctx, Location.unknown():
 ```bash
 # 建议先进入支持的 PTOAS / PTODSL 安装环境
 cd $PTO_SOURCE_DIR
-pip install -e . --no-build-isolation
+"$PYTHON_BIN" -m pip install -e . --no-build-isolation
 
 # 运行python binding 测试
 cd $PTO_SOURCE_DIR/test/samples/MatMul/
-python3 ./tmatmulk.py > ./tmatmulk.pto
+"$PYTHON_BIN" ./tmatmulk.py > ./tmatmulk.pto
 
 # 运行ptoas 测试
-$PTO_SOURCE_DIR/build/tools/ptoas/ptoas ./tmatmulk.pto -o ./tmatmulk.cpp
+ptoas ./tmatmulk.pto -o ./tmatmulk.cpp
 ```
 
 ### 5.4 上板验证
@@ -301,6 +328,9 @@ $PTO_SOURCE_DIR/build/tools/ptoas/ptoas ./tmatmulk.pto -o ./tmatmulk.cpp
 
 
 ```bash
+# 以下相对路径均以仓库根目录为起点
+cd "$PTO_SOURCE_DIR"
+
 # 1) 生成 npu_validation 测试目录（会在当前 sample 目录下创建 npu_validation/）
 # A2/A3 示例：
 python3 test/npu_validation/scripts/generate_testcase.py \

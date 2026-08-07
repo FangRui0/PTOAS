@@ -8,6 +8,7 @@
 
 #include "PTO/IR/PTO.h"
 #include "Utils.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -22,6 +23,28 @@
 namespace mlir {
 namespace pto {
 
+static constexpr llvm::StringLiteral kFrontendPipeIdAttrName =
+    "__pto.frontend_id";
+
+std::optional<PhysicalSectionKind>
+inferPhysicalSectionKindFromPipe(Operation *op) {
+  auto pipeOp = dyn_cast_or_null<OpPipeInterface>(op);
+  if (!pipeOp)
+    return std::nullopt;
+
+  switch (pipeOp.getPipe()) {
+  case PIPE::PIPE_M:
+  case PIPE::PIPE_MTE1:
+    return PhysicalSectionKind::Cube;
+  case PIPE::PIPE_V:
+  case PIPE::PIPE_V2:
+  case PIPE::PIPE_S:
+    return PhysicalSectionKind::Vector;
+  default:
+    return std::nullopt;
+  }
+}
+
 func::ReturnOp getAssumedUniqueReturnOp(func::FuncOp funcOp) {
   func::ReturnOp returnOp;
   for (Block &b : funcOp.getBody()) {
@@ -32,6 +55,65 @@ func::ReturnOp getAssumedUniqueReturnOp(func::FuncOp funcOp) {
     }
   }
   return returnOp;
+}
+
+Value peelUnrealized(Value value) {
+  if (auto castOp = value.getDefiningOp<UnrealizedConversionCastOp>())
+    return castOp.getOperand(0);
+  return value;
+}
+
+bool isScalarFixpipeQuant(FixpipeQuant quant) {
+  switch (quant) {
+  case FixpipeQuant::DEQF16Scalar:
+  case FixpipeQuant::REQ8Scalar:
+  case FixpipeQuant::QF322B8PreScalar:
+  case FixpipeQuant::QF322F16PreScalar:
+  case FixpipeQuant::QF322BF16PreScalar:
+  case FixpipeQuant::QS322BF16PreScalar:
+  case FixpipeQuant::QF322HIF8PreScalar:
+  case FixpipeQuant::QF322FP8PreScalar:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool isVectorFixpipeQuant(FixpipeQuant quant) {
+  switch (quant) {
+  case FixpipeQuant::DEQF16Vec:
+  case FixpipeQuant::REQ8Vec:
+  case FixpipeQuant::QF322B8PreVec:
+  case FixpipeQuant::QS322BF16PreVec:
+    return true;
+  default:
+    return false;
+  }
+}
+
+Operation *getPipeInitDef(Value pipeHandle) {
+  pipeHandle = peelUnrealized(pipeHandle);
+  return pipeHandle ? pipeHandle.getDefiningOp() : nullptr;
+}
+
+AccPushEpilogueAttr getPipeInitAccPushEpilogue(Operation *initOp) {
+  if (auto init = dyn_cast_or_null<InitializeL2LPipeOp>(initOp))
+    return init.getAccPushEpilogueAttr();
+  if (auto init = dyn_cast_or_null<InitializeL2G2LPipeOp>(initOp))
+    return init.getAccPushEpilogueAttr();
+  return {};
+}
+
+std::optional<int32_t> getFrontendPipeIdFromInit(Operation *initOp) {
+  if (!initOp)
+    return std::nullopt;
+  if (auto attr = initOp->getAttrOfType<IntegerAttr>(kFrontendPipeIdAttrName))
+    return static_cast<int32_t>(attr.getInt());
+  return std::nullopt;
+}
+
+std::optional<int32_t> getFrontendPipeIdFromHandle(Value pipeHandle) {
+  return getFrontendPipeIdFromInit(getPipeInitDef(pipeHandle));
 }
 
 // New helper function to get the updated BaseMemRefType
@@ -68,6 +150,19 @@ void setBaseMemRefTypeScope(Value val, AddressSpaceAttr targetMemScope) {
 
 
 std::optional<AddressSpaceAttr> GetBufferSpaceAttr(Value operand) {
+  if (auto tileTy = dyn_cast<pto::TileBufType>(operand.getType())) {
+    if (auto memorySpaceAttr =
+            dyn_cast_or_null<AddressSpaceAttr>(tileTy.getMemorySpace()))
+      return memorySpaceAttr;
+    return std::nullopt;
+  }
+  if (auto multiTy = dyn_cast<pto::MultiTileBufType>(operand.getType())) {
+    if (auto memorySpaceAttr = dyn_cast_or_null<AddressSpaceAttr>(
+            multiTy.getSlotType().getMemorySpace()))
+      return memorySpaceAttr;
+    return std::nullopt;
+  }
+
   if (!llvm::isa<MemRefType>(operand.getType())) {
     return std::nullopt;
   }
@@ -85,13 +180,26 @@ std::optional<AddressSpaceAttr> GetBufferSpaceAttr(Value operand) {
 std::optional<std::pair<Value, Value>> getOperationAliasInfo(Operation *op) {
   if (auto subViewOp = dyn_cast<memref::SubViewOp>(op)) {
     return std::make_pair(subViewOp.getResult(), subViewOp.getViewSource());
-  } else if (auto bindTileOp = dyn_cast<pto::BindTileOp>(op)) {
-    return std::make_pair(bindTileOp.getResult(), bindTileOp.getSource());
-  } else if (auto slotMarkerOp = dyn_cast<pto::SlotMarkerOp>(op)) {
-    // `pto.slot_marker` is a metadata-only view that tags a memref with the
-    // physical slot of a multi-buffer alloc. From an alias-walking
-    // standpoint it behaves like any other view-like op.
-    return std::make_pair(slotMarkerOp.getResult(), slotMarkerOp.getSource());
+  } else if (auto makeViewOp = dyn_cast<pto::MakeTensorViewOp>(op)) {
+    return std::make_pair(makeViewOp.getResult(), makeViewOp.getPtr());
+  } else if (auto partViewOp = dyn_cast<pto::PartitionViewOp>(op)) {
+    return std::make_pair(partViewOp.getResult(), partViewOp.getSource());
+  } else if (auto addPtrOp = dyn_cast<pto::AddPtrOp>(op)) {
+    return std::make_pair(addPtrOp.getResult(), addPtrOp.getPtr());
+  } else if (auto ptrToIntOp = dyn_cast<pto::PtrToIntOp>(op)) {
+    return std::make_pair(ptrToIntOp.getResult(), ptrToIntOp.getPtr());
+  } else if (auto intToPtrOp = dyn_cast<pto::IntToPtrOp>(op)) {
+    return std::make_pair(intToPtrOp.getResult(), intToPtrOp.getAddr());
+  } else if (auto castPtrOp = dyn_cast<pto::CastPtrOp>(op)) {
+    return std::make_pair(castPtrOp.getResult(), castPtrOp.getInput());
+  } else if (auto subViewOp = dyn_cast<pto::SubViewOp>(op)) {
+    return std::make_pair(subViewOp.getResult(), subViewOp.getSource());
+  } else if (auto bitcastOp = dyn_cast<pto::BitcastOp>(op)) {
+    return std::make_pair(bitcastOp.getResult(), bitcastOp.getSrc());
+  } else if (auto reshapeOp = dyn_cast<pto::TReshapeOp>(op)) {
+    return std::make_pair(reshapeOp.getResult(), reshapeOp.getSrc());
+  } else if (auto multiGetOp = dyn_cast<pto::MultiTileGetOp>(op)) {
+    return std::make_pair(multiGetOp.getResult(), multiGetOp.getSource());
   } else if (auto extSliceOp = dyn_cast<tensor::ExtractSliceOp>(op)) {
     return std::make_pair(extSliceOp.getResult(), extSliceOp.getSource());
   } else if (auto collapseShapeOp = dyn_cast<memref::CollapseShapeOp>(op)) {
@@ -109,6 +217,9 @@ std::optional<std::pair<Value, Value>> getOperationAliasInfo(Operation *op) {
     return std::make_pair(reshapeOp.getResult(), reshapeOp.getViewSource());
   } else if (auto castOp = dyn_cast<memref::CastOp>(op)) {
     return std::make_pair(castOp.getResult(), castOp.getViewSource());
+  } else if (auto castOp = dyn_cast<UnrealizedConversionCastOp>(op)) {
+    if (castOp.getNumOperands() == 1 && castOp.getNumResults() == 1)
+      return std::make_pair(castOp.getResult(0), castOp.getOperand(0));
   } else if (auto extractStridedMetadataOp =
                  dyn_cast<memref::ExtractStridedMetadataOp>(op)) {
     return std::make_pair(extractStridedMetadataOp.getBaseBuffer(),
@@ -167,8 +278,6 @@ Value tracebackImpl(Value memrefVal) {
   } else if (auto op = dyn_cast<scf::ForOp>(def)) {
     // trace back memref.alloc support scf.for
     result = op.getInitArgs()[cast<OpResult>(memrefVal).getResultNumber()];
-  } else if (auto op = dyn_cast<pto::BindTileOp>(def)) {
-    result = op.getSource();
   }
 
   if (result) {

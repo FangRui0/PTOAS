@@ -22,5 +22,5 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 }
 
 // CHECK-LABEL: llvm.func @vsstb_with_updated_base_mix_aiv
-// CHECK: llvm.call @llvm.hivm.vsstb.post
-// CHECK: llvm.call @llvm.hivm.vsstb
+// CHECK: llvm.call @llvm.hivm.vsstb.post.v64f32
+// CHECK: llvm.call @llvm.hivm.vsstb.v64f32

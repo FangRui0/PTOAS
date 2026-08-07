@@ -14,6 +14,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
@@ -31,6 +32,19 @@ namespace pto {
 using namespace mlir;
 
 namespace {
+
+enum class DmaArch { A2A3, A5 };
+
+constexpr uint64_t kMxScaleAddressShift = 4;
+
+static DmaArch getDmaArch(ModuleOp mod) {
+  if (!mod)
+    return DmaArch::A2A3;
+  auto arch = mod->getAttrOfType<StringAttr>("pto.target_arch");
+  if (arch && arch.getValue() == "a5")
+    return DmaArch::A5;
+  return DmaArch::A2A3;
+}
 
 static pto::AddressSpaceAttr getPointerMemorySpace(Attribute memorySpace,
                                                    MLIRContext *ctx) {
@@ -265,6 +279,21 @@ static Value getI64Constant(Location loc, PatternRewriter &rewriter,
   return rewriter.create<arith::ConstantIntOp>(loc, value, 64);
 }
 
+static Value deriveMxScaleDestination(Value dataDestination,
+                                      PatternRewriter &rewriter,
+                                      Location loc) {
+  auto ptrType = dyn_cast<pto::PtrType>(dataDestination.getType());
+  if (!ptrType)
+    return {};
+
+  Value dataAddress = rewriter.create<pto::CastPtrOp>(
+      loc, rewriter.getI64Type(), dataDestination);
+  Value scaleAddress = rewriter.create<arith::ShRUIOp>(
+      loc, dataAddress,
+      getI64Constant(loc, rewriter, kMxScaleAddressShift));
+  return rewriter.create<pto::CastPtrOp>(loc, ptrType, scaleAddress);
+}
+
 static Value buildAccStoreOptionalEnumValue(Location loc,
                                             std::optional<uint32_t> value,
                                             PatternRewriter &rewriter) {
@@ -368,7 +397,9 @@ static void configureAccStoreScalarPreOps(Location loc, Value preQuant,
     }
   };
 
-  if (preQuantMode && !isVectorQuantMode(*preQuantMode)) {
+  if (preQuantMode &&
+      *preQuantMode != pto::AccStoreQuantPreMode::NoConvert &&
+      !isVectorQuantMode(*preQuantMode)) {
     if (Value quantValue = materializeAccStoreScalarPayload(preQuant, rewriter, loc))
       rewriter.create<pto::SetQuantPreOp>(loc, quantValue);
   }
@@ -1096,7 +1127,9 @@ public:
 };
 
 struct ExpandDmaLoadPattern : public OpRewritePattern<pto::MteGmUbOp> {
-  using OpRewritePattern<pto::MteGmUbOp>::OpRewritePattern;
+  DmaArch dmaArch;
+  explicit ExpandDmaLoadPattern(MLIRContext *ctx, DmaArch arch)
+      : OpRewritePattern(ctx), dmaArch(arch) {}
 
   LogicalResult matchAndRewrite(pto::MteGmUbOp op,
                                 PatternRewriter &rewriter) const override {
@@ -1106,24 +1139,38 @@ struct ExpandDmaLoadPattern : public OpRewritePattern<pto::MteGmUbOp> {
     SmallVector<pto::DmaLoopConfig> loops =
         collectLoopConfigs(op.getLoopCounts(), op.getLoopSrcStrides(),
                            op.getLoopDstStrides());
-    ArrayRef<pto::DmaLoopConfig> hwLoops = ArrayRef<pto::DmaLoopConfig>(loops).take_front(2);
-    ArrayRef<pto::DmaLoopConfig> swLoops = ArrayRef<pto::DmaLoopConfig>(loops).drop_front(hwLoops.size());
 
+    SmallVector<pto::DmaLoopConfig> allLoops;
+    ArrayRef<pto::DmaLoopConfig> hwLoops;
+    ArrayRef<pto::DmaLoopConfig> swLoops;
     Value loop1Count;
     Value loop2Size = one;
-    if (hwLoops.size() == 2) {
-      rewriter.create<pto::SetLoop2StrideOutToUbOp>(
-          loc, hwLoops[0].srcStride, hwLoops[0].dstStride);
-      loop2Size = hwLoops[0].count;
-      loop1Count = hwLoops[1].count;
-      rewriter.create<pto::SetLoop1StrideOutToUbOp>(
-          loc, hwLoops[1].srcStride, hwLoops[1].dstStride);
-      rewriter.create<pto::SetLoopSizeOutToUbOp>(loc, loop2Size, loop1Count);
-    } else if (hwLoops.size() == 1) {
-      loop1Count = hwLoops[0].count;
-      rewriter.create<pto::SetLoop1StrideOutToUbOp>(
-          loc, hwLoops[0].srcStride, hwLoops[0].dstStride);
-      rewriter.create<pto::SetLoopSizeOutToUbOp>(loc, loop2Size, loop1Count);
+
+    if (dmaArch == DmaArch::A5) {
+      hwLoops = ArrayRef<pto::DmaLoopConfig>(loops).take_front(2);
+      swLoops = ArrayRef<pto::DmaLoopConfig>(loops).drop_front(hwLoops.size());
+      if (hwLoops.size() == 2) {
+        rewriter.create<pto::SetLoop2StrideOutToUbOp>(
+            loc, hwLoops[0].srcStride, hwLoops[0].dstStride);
+        loop2Size = hwLoops[0].count;
+        loop1Count = hwLoops[1].count;
+        rewriter.create<pto::SetLoop1StrideOutToUbOp>(
+            loc, hwLoops[1].srcStride, hwLoops[1].dstStride);
+        rewriter.create<pto::SetLoopSizeOutToUbOp>(loc, loop2Size, loop1Count);
+      } else if (hwLoops.size() == 1) {
+        loop1Count = hwLoops[0].count;
+        rewriter.create<pto::SetLoop1StrideOutToUbOp>(
+            loc, hwLoops[0].srcStride, hwLoops[0].dstStride);
+        rewriter.create<pto::SetLoopSizeOutToUbOp>(loc, loop2Size, loop1Count);
+      }
+    } else {
+      allLoops.append(loops);
+      pto::DmaLoopConfig nburstCfg;
+      nburstCfg.count = op.getNBurst();
+      nburstCfg.srcStride = op.getNburstSrcStride();
+      nburstCfg.dstStride = op.getNburstDstStride();
+      allLoops.push_back(nburstCfg);
+      swLoops = ArrayRef<pto::DmaLoopConfig>(allLoops);
     }
 
     Value leftPadding = op.getLeftPaddingCount();
@@ -1136,8 +1183,11 @@ struct ExpandDmaLoadPattern : public OpRewritePattern<pto::MteGmUbOp> {
         loc, rewriter.getI1Type(),
         rewriter.getBoolAttr(static_cast<bool>(op.getPadValue())));
 
+    bool hasPad = static_cast<bool>(op.getPadValue());
     if (Value padValue = op.getPadValue())
       rewriter.create<pto::SetMovPadValOp>(loc, padValue);
+
+    Value effectiveNBurst = (dmaArch == DmaArch::A5) ? op.getNBurst() : one;
 
     buildSoftwareLoopNest(
         rewriter, loc, swLoops, zero, zero,
@@ -1145,12 +1195,15 @@ struct ExpandDmaLoadPattern : public OpRewritePattern<pto::MteGmUbOp> {
           Value source = offsetPointerByBytes(op.getSource(), srcOffset, rewriter, loc);
           Value destination =
               offsetPointerByBytes(op.getDestination(), dstOffset, rewriter, loc);
-          rewriter.create<pto::CopyGmToUbufOp>(
-              loc, source, destination, zero, op.getNBurst(), op.getLenBurst(),
+          auto copyOp = rewriter.create<pto::CopyGmToUbufOp>(
+              loc, source, destination, zero, effectiveNBurst, op.getLenBurst(),
               leftPadding, rightPadding, dataSelect, op.getL2CacheCtl(),
               op.getNburstSrcStride(), op.getNburstDstStride());
+          if (hasPad)
+            copyOp->setAttr("has_pad", UnitAttr::get(copyOp->getContext()));
         });
-    if (shouldRestoreDmaLoopSize(loop1Count, loop2Size))
+    if (dmaArch == DmaArch::A5 &&
+        shouldRestoreDmaLoopSize(loop1Count, loop2Size))
       rewriter.create<pto::SetLoopSizeOutToUbOp>(loc, one, one);
     rewriter.eraseOp(op);
     return success();
@@ -1158,7 +1211,9 @@ struct ExpandDmaLoadPattern : public OpRewritePattern<pto::MteGmUbOp> {
 };
 
 struct ExpandDmaStorePattern : public OpRewritePattern<pto::MteUbGmOp> {
-  using OpRewritePattern<pto::MteUbGmOp>::OpRewritePattern;
+  DmaArch dmaArch;
+  explicit ExpandDmaStorePattern(MLIRContext *ctx, DmaArch arch)
+      : OpRewritePattern(ctx), dmaArch(arch) {}
 
   LogicalResult matchAndRewrite(pto::MteUbGmOp op,
                                 PatternRewriter &rewriter) const override {
@@ -1168,27 +1223,42 @@ struct ExpandDmaStorePattern : public OpRewritePattern<pto::MteUbGmOp> {
     SmallVector<pto::DmaLoopConfig> loops =
         collectLoopConfigs(op.getLoopCounts(), op.getLoopSrcStrides(),
                            op.getLoopDstStrides());
-    ArrayRef<pto::DmaLoopConfig> hwLoops =
-        ArrayRef<pto::DmaLoopConfig>(loops).take_front(2);
-    ArrayRef<pto::DmaLoopConfig> swLoops =
-        ArrayRef<pto::DmaLoopConfig>(loops).drop_front(hwLoops.size());
 
+    SmallVector<pto::DmaLoopConfig> allLoops;
+    ArrayRef<pto::DmaLoopConfig> hwLoops;
+    ArrayRef<pto::DmaLoopConfig> swLoops;
     Value loop1Count;
     Value loop2Size = one;
-    if (hwLoops.size() == 2) {
-      rewriter.create<pto::SetLoop2StrideUbToOutOp>(
-          loc, hwLoops[0].srcStride, hwLoops[0].dstStride);
-      loop2Size = hwLoops[0].count;
-      loop1Count = hwLoops[1].count;
-      rewriter.create<pto::SetLoop1StrideUbToOutOp>(
-          loc, hwLoops[1].srcStride, hwLoops[1].dstStride);
-      rewriter.create<pto::SetLoopSizeUbToOutOp>(loc, loop2Size, loop1Count);
-    } else if (hwLoops.size() == 1) {
-      loop1Count = hwLoops[0].count;
-      rewriter.create<pto::SetLoop1StrideUbToOutOp>(
-          loc, hwLoops[0].srcStride, hwLoops[0].dstStride);
-      rewriter.create<pto::SetLoopSizeUbToOutOp>(loc, loop2Size, loop1Count);
+
+    if (dmaArch == DmaArch::A5) {
+      hwLoops = ArrayRef<pto::DmaLoopConfig>(loops).take_front(2);
+      swLoops =
+          ArrayRef<pto::DmaLoopConfig>(loops).drop_front(hwLoops.size());
+      if (hwLoops.size() == 2) {
+        rewriter.create<pto::SetLoop2StrideUbToOutOp>(
+            loc, hwLoops[0].srcStride, hwLoops[0].dstStride);
+        loop2Size = hwLoops[0].count;
+        loop1Count = hwLoops[1].count;
+        rewriter.create<pto::SetLoop1StrideUbToOutOp>(
+            loc, hwLoops[1].srcStride, hwLoops[1].dstStride);
+        rewriter.create<pto::SetLoopSizeUbToOutOp>(loc, loop2Size, loop1Count);
+      } else if (hwLoops.size() == 1) {
+        loop1Count = hwLoops[0].count;
+        rewriter.create<pto::SetLoop1StrideUbToOutOp>(
+            loc, hwLoops[0].srcStride, hwLoops[0].dstStride);
+        rewriter.create<pto::SetLoopSizeUbToOutOp>(loc, loop2Size, loop1Count);
+      }
+    } else {
+      allLoops.append(loops);
+      pto::DmaLoopConfig nburstCfg;
+      nburstCfg.count = op.getNBurst();
+      nburstCfg.srcStride = op.getNburstSrcStride();
+      nburstCfg.dstStride = op.getNburstDstStride();
+      allLoops.push_back(nburstCfg);
+      swLoops = ArrayRef<pto::DmaLoopConfig>(allLoops);
     }
+
+    Value effectiveNBurst = (dmaArch == DmaArch::A5) ? op.getNBurst() : one;
 
     buildSoftwareLoopNest(
         rewriter, loc, swLoops, zero, zero,
@@ -1196,11 +1266,13 @@ struct ExpandDmaStorePattern : public OpRewritePattern<pto::MteUbGmOp> {
           Value source = offsetPointerByBytes(op.getSource(), srcOffset, rewriter, loc);
           Value destination =
               offsetPointerByBytes(op.getDestination(), dstOffset, rewriter, loc);
+          Value l2CacheCtl = op.getL2CacheCtl() ? op.getL2CacheCtl() : zero;
           rewriter.create<pto::CopyUbufToGmOp>(
-              loc, source, destination, zero, op.getNBurst(), op.getLenBurst(),
-              zero, op.getNburstDstStride(), op.getNburstSrcStride());
+              loc, source, destination, zero, effectiveNBurst, op.getLenBurst(),
+              l2CacheCtl, op.getNburstDstStride(), op.getNburstSrcStride());
         });
-    if (shouldRestoreDmaLoopSize(loop1Count, loop2Size))
+    if (dmaArch == DmaArch::A5 &&
+        shouldRestoreDmaLoopSize(loop1Count, loop2Size))
       rewriter.create<pto::SetLoopSizeUbToOutOp>(loc, one, one);
     rewriter.eraseOp(op);
     return success();
@@ -1493,20 +1565,36 @@ struct ExpandLeftLoadMxPattern : public OpRewritePattern<pto::MteL1L0aMxOp> {
       return rewriter.notifyMatchFailure(op, "expected typed L1 source");
     if (!destination)
       return rewriter.notifyMatchFailure(op, "expected pointer-like destination");
+    destination = deriveMxScaleDestination(destination, rewriter, loc);
+    if (!destination)
+      return rewriter.notifyMatchFailure(
+          op, "failed to derive MX scale destination pointer");
 
-    FailureOr<LoadCbufToMxControl> control =
-        deriveLoadCbufToCaMxControl(loc, op.getM(), op.getK(),
-                                    sourceType.getElementType(),
-                                    op.getStartRow(), op.getStartCol(),
-                                    rewriter);
-    if (failed(control))
-      return rewriter.notifyMatchFailure(op,
-                                         "failed to derive load_cbuf_to_ca_mx control");
+    LoadCbufToMxControl control;
+    if (op.getXStart()) {
+      if (!op.getYStart() || !op.getXStep() || !op.getYStep() ||
+          !op.getSrcStride() || !op.getDstStride())
+        return rewriter.notifyMatchFailure(op,
+                                           "expected complete full MX operands");
+      control = {op.getXStart(), op.getYStart(), op.getXStep(), op.getYStep(),
+                 op.getSrcStride(), op.getDstStride()};
+    } else {
+      if (!op.getM() || !op.getK() || !op.getStartRow() || !op.getStartCol())
+        return rewriter.notifyMatchFailure(
+            op, "expected complete shape-derived MX operands");
+      FailureOr<LoadCbufToMxControl> derived = deriveLoadCbufToCaMxControl(
+          loc, op.getM(), op.getK(), sourceType.getElementType(),
+          op.getStartRow(), op.getStartCol(), rewriter);
+      if (failed(derived))
+        return rewriter.notifyMatchFailure(
+            op, "failed to derive load_cbuf_to_ca_mx control");
+      control = *derived;
+    }
 
     rewriter.create<pto::LoadCbufToCaMxOp>(
-        loc, source, destination, control->xStartPosition,
-        control->yStartPosition, control->xStep, control->yStep,
-        control->srcStride, control->dstStride);
+        loc, source, destination, control.xStartPosition,
+        control.yStartPosition, control.xStep, control.yStep,
+        control.srcStride, control.dstStride);
     rewriter.eraseOp(op);
     return success();
   }
@@ -1526,19 +1614,36 @@ struct ExpandRightLoadMxPattern : public OpRewritePattern<pto::MteL1L0bMxOp> {
       return rewriter.notifyMatchFailure(op, "expected typed L1 source");
     if (!destination)
       return rewriter.notifyMatchFailure(op, "expected pointer-like destination");
-    FailureOr<LoadCbufToMxControl> control =
-        deriveLoadCbufToCbMxControl(loc, op.getK(), op.getN(),
-                                    sourceType.getElementType(),
-                                    op.getStartRow(), op.getStartCol(),
-                                    rewriter);
-    if (failed(control))
-      return rewriter.notifyMatchFailure(op,
-                                         "failed to derive load_cbuf_to_cb_mx control");
+    destination = deriveMxScaleDestination(destination, rewriter, loc);
+    if (!destination)
+      return rewriter.notifyMatchFailure(
+          op, "failed to derive MX scale destination pointer");
+
+    LoadCbufToMxControl control;
+    if (op.getXStart()) {
+      if (!op.getYStart() || !op.getXStep() || !op.getYStep() ||
+          !op.getSrcStride() || !op.getDstStride())
+        return rewriter.notifyMatchFailure(op,
+                                           "expected complete full MX operands");
+      control = {op.getXStart(), op.getYStart(), op.getXStep(), op.getYStep(),
+                 op.getSrcStride(), op.getDstStride()};
+    } else {
+      if (!op.getK() || !op.getN() || !op.getStartRow() || !op.getStartCol())
+        return rewriter.notifyMatchFailure(
+            op, "expected complete shape-derived MX operands");
+      FailureOr<LoadCbufToMxControl> derived = deriveLoadCbufToCbMxControl(
+          loc, op.getK(), op.getN(), sourceType.getElementType(),
+          op.getStartRow(), op.getStartCol(), rewriter);
+      if (failed(derived))
+        return rewriter.notifyMatchFailure(
+            op, "failed to derive load_cbuf_to_cb_mx control");
+      control = *derived;
+    }
 
     rewriter.create<pto::LoadCbufToCbMxOp>(
-        loc, source, destination, control->xStartPosition,
-        control->yStartPosition, control->xStep, control->yStep,
-        control->srcStride, control->dstStride);
+        loc, source, destination, control.xStartPosition,
+        control.yStartPosition, control.xStep, control.yStep,
+        control.srcStride, control.dstStride);
     rewriter.eraseOp(op);
     return success();
   }
@@ -1853,6 +1958,56 @@ struct ExpandSimtLaunchPattern : public OpRewritePattern<pto::SimtLaunchOp> {
   }
 };
 
+struct AtomicCtrlUpdate {
+  uint64_t mask;
+  uint64_t value;
+};
+
+template <typename AtomicConfigOp>
+static AtomicCtrlUpdate getAtomicCtrlUpdate();
+
+#define DEFINE_ATOMIC_CTRL_UPDATE(OpTy, Mask, Value)                            \
+  template <>                                                                   \
+  AtomicCtrlUpdate getAtomicCtrlUpdate<pto::OpTy>() {                           \
+    return {Mask, Value};                                                       \
+  }
+
+// CCE set_atomic_* configures CTRL[10:6]. Dtype occupies [8:6] and the
+// reduction operation occupies [10:9]. This matches the structured L0C-to-GM
+// FIXP atomic CTRL encoding used by configureAccStoreCtrl above.
+DEFINE_ATOMIC_CTRL_UPDATE(SetAtomicAddOp, 0x3ULL << 9, 0x0ULL << 9)
+DEFINE_ATOMIC_CTRL_UPDATE(SetAtomicMaxOp, 0x3ULL << 9, 0x1ULL << 9)
+DEFINE_ATOMIC_CTRL_UPDATE(SetAtomicMinOp, 0x3ULL << 9, 0x2ULL << 9)
+DEFINE_ATOMIC_CTRL_UPDATE(SetAtomicNoneOp, 0x7ULL << 6, 0)
+DEFINE_ATOMIC_CTRL_UPDATE(SetAtomicF32Op, 0x7ULL << 6, 0x1ULL << 6)
+DEFINE_ATOMIC_CTRL_UPDATE(SetAtomicF16Op, 0x7ULL << 6, 0x2ULL << 6)
+DEFINE_ATOMIC_CTRL_UPDATE(SetAtomicS16Op, 0x7ULL << 6, 0x3ULL << 6)
+DEFINE_ATOMIC_CTRL_UPDATE(SetAtomicS32Op, 0x7ULL << 6, 0x4ULL << 6)
+DEFINE_ATOMIC_CTRL_UPDATE(SetAtomicS8Op, 0x7ULL << 6, 0x5ULL << 6)
+DEFINE_ATOMIC_CTRL_UPDATE(SetAtomicBF16Op, 0x7ULL << 6, 0x6ULL << 6)
+
+#undef DEFINE_ATOMIC_CTRL_UPDATE
+
+template <typename AtomicConfigOp>
+struct ExpandAtomicConfigPattern
+    : public OpRewritePattern<AtomicConfigOp> {
+  using OpRewritePattern<AtomicConfigOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(AtomicConfigOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    AtomicCtrlUpdate update = getAtomicCtrlUpdate<AtomicConfigOp>();
+    Value ctrl = rewriter.create<pto::GetCtrlOp>(loc);
+    Value clearMask = getI64Constant(loc, rewriter, ~update.mask);
+    Value value = getI64Constant(loc, rewriter, update.value);
+    Value updated = rewriter.create<arith::AndIOp>(loc, ctrl, clearMask);
+    updated = rewriter.create<arith::OrIOp>(loc, updated, value);
+    rewriter.create<pto::SetCtrlOp>(loc, updated);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct VPTOExpandWrapperOpsPass
     : public pto::impl::VPTOExpandWrapperOpsBase<VPTOExpandWrapperOpsPass> {
   using pto::impl::VPTOExpandWrapperOpsBase<
@@ -1868,8 +2023,12 @@ struct VPTOExpandWrapperOpsPass
     if (func.isExternal())
       return;
 
+    DmaArch dmaArch = getDmaArch(func->getParentOfType<ModuleOp>());
+
     RewritePatternSet patterns(&getContext());
-    patterns.add<ExpandUvldPattern, ExpandDmaLoadPattern, ExpandDmaStorePattern,
+    patterns.add(std::make_unique<ExpandDmaLoadPattern>(&getContext(), dmaArch));
+    patterns.add(std::make_unique<ExpandDmaStorePattern>(&getContext(), dmaArch));
+    patterns.add<ExpandUvldPattern,
                  ExpandMteUbUbPattern, ExpandMteUbL1Pattern, ExpandCubeLoadPattern,
                  ExpandCubeStorePattern, ExpandBiasLoadPattern,
                  ExpandFpLoadPattern,
@@ -1879,6 +2038,16 @@ struct VPTOExpandWrapperOpsPass
                  ExpandAccStoreGmPattern,
                  ExpandAccStoreUbPattern,
                  ExpandSimtLaunchPattern,
+                 ExpandAtomicConfigPattern<pto::SetAtomicAddOp>,
+                 ExpandAtomicConfigPattern<pto::SetAtomicMaxOp>,
+                 ExpandAtomicConfigPattern<pto::SetAtomicMinOp>,
+                 ExpandAtomicConfigPattern<pto::SetAtomicNoneOp>,
+                 ExpandAtomicConfigPattern<pto::SetAtomicF32Op>,
+                 ExpandAtomicConfigPattern<pto::SetAtomicF16Op>,
+                 ExpandAtomicConfigPattern<pto::SetAtomicBF16Op>,
+                 ExpandAtomicConfigPattern<pto::SetAtomicS32Op>,
+                 ExpandAtomicConfigPattern<pto::SetAtomicS16Op>,
+                 ExpandAtomicConfigPattern<pto::SetAtomicS8Op>,
                  ExpandMadSemanticPattern<pto::MadOp>,
                  ExpandMadSemanticPattern<pto::MadAccOp>,
                  ExpandMadSemanticPattern<pto::MadBiasOp>,

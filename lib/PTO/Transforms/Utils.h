@@ -30,12 +30,21 @@
 #include "llvm/Support/Debug.h"
 
 #include <cassert>
+#include <optional>
 #include <queue>
 #include <set>
 #include <type_traits>
 
 namespace mlir {
 namespace pto {
+  enum class PhysicalSectionKind {
+    Vector,
+    Cube,
+  };
+
+  std::optional<PhysicalSectionKind>
+  inferPhysicalSectionKindFromPipe(Operation *op);
+
   const std::set<pto::AddressSpace> LocalBufferSpace{
     pto::AddressSpace::VEC, pto::AddressSpace::MAT, pto::AddressSpace::ACC, pto::AddressSpace::LEFT, pto::AddressSpace::RIGHT, pto::AddressSpace::BIAS, pto::AddressSpace::SCALING};
   constexpr const uint8_t kBitsToByte = 8;
@@ -54,6 +63,13 @@ namespace pto {
   std::optional<memref::AllocOp> tracebackMemRefToAlloc(Value memrefVal);
   bool isFromFunctionArg(mlir::Value v);
   bool isOpTouchLocalBuffer(Operation *op);
+  Value peelUnrealized(Value value);
+  bool isScalarFixpipeQuant(FixpipeQuant quant);
+  bool isVectorFixpipeQuant(FixpipeQuant quant);
+  Operation *getPipeInitDef(Value pipeHandle);
+  AccPushEpilogueAttr getPipeInitAccPushEpilogue(Operation *initOp);
+  std::optional<int32_t> getFrontendPipeIdFromInit(Operation *initOp);
+  std::optional<int32_t> getFrontendPipeIdFromHandle(Value pipeHandle);
 }
 }
 #endif

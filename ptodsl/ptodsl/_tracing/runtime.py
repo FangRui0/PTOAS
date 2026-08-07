@@ -13,11 +13,11 @@ from .active import activate_runtime, activate_session, require_active_session
 from .module_builder import create_kernel_module
 from .session import TraceSession
 from .._diagnostics import kernel_module_return_value_error
-from .._bootstrap import make_context
+from .._context import make_context
 from .._types import _resolve
 
-from mlir.dialects import func
-from mlir.ir import InsertionPoint, Location
+from ptoas.mlir.dialects import func
+from ptoas.mlir.ir import InsertionPoint, Location
 
 
 class TracingRuntime:
@@ -63,7 +63,7 @@ class TracingRuntime:
     def dispatch_subkernel_call(self, subkernel, *args, **kwargs):
         """Dispatch a decorated PTODSL subkernel call in the active trace."""
         session = require_active_session(f"@pto.{subkernel.spec.role.value}")
-        if subkernel.spec.role.value in {"cube", "simd", "simt"}:
+        if subkernel.spec.role.value in {"cube", "simd", "simt", "tileop"}:
             return session.lower_helper_subkernel(subkernel, *args, **kwargs)
         return subkernel.emit_body(*args, **kwargs)
 

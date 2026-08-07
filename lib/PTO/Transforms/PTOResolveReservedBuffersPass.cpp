@@ -323,11 +323,14 @@ buildPeerAwareComponents(const SmallVectorImpl<PipeInitInfo> &initInfos,
 
     for (Operation *op : component.ops) {
       if (auto frontendId = getFrontendPipeId(op)) {
-        if (component.frontendId && *component.frontendId != *frontendId) {
-          return op->emitOpError(
-              "conflicting __pto.frontend_id across peer pipe inits");
-        }
-        component.frontendId = *frontendId;
+        // Peer logical pipes may use different local frontend ids in the
+        // producer/consumer functions. Keep the smallest observed id only as a
+        // stable component sort key; cross-function pairing is determined by
+        // the peer buffer contract instead of frontend id equality.
+        if (component.frontendId)
+          component.frontendId = std::min(*component.frontendId, *frontendId);
+        else
+          component.frontendId = *frontendId;
       }
     }
 
@@ -460,7 +463,9 @@ struct PTOResolveReservedBuffersPass
     // downstream lowering only sees ordinary SSA values.
     SmallVector<Operation *> eraseOps;
 
-    for (func::FuncOp funcOp : moduleOp.getOps<func::FuncOp>()) {
+    SmallVector<func::FuncOp> funcs;
+    moduleOp.walk([&](func::FuncOp funcOp) { funcs.push_back(funcOp); });
+    for (func::FuncOp funcOp : funcs) {
       OpBuilder builder(funcOp.getContext());
 
       SmallVector<ReserveBufferOp> reserveOps;

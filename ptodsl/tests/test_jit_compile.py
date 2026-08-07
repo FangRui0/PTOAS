@@ -7,6 +7,7 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
+from dataclasses import replace
 from pathlib import Path
 import os
 import re
@@ -19,7 +20,9 @@ from unittest import mock
 
 from ptodsl import pto, scalar
 from ptodsl import _types as pto_types
-from ptodsl._bootstrap import make_context
+import ptodsl._vmi_namespace as vmi_namespace
+from ptodsl._ast_rewrite import PTODSLAstRewriteError
+from ptodsl._context import make_context
 from ptodsl._kernel_signature import DeviceParameterSpec, HelperMarkerParameterSpec, RuntimeScalarParameterSpec
 from ptodsl._tracing.runtime import SignatureTracingRuntime
 from ptodsl._runtime import native_build as native_build_runtime
@@ -27,7 +30,7 @@ from ptodsl._runtime.cache import NativeBuildArtifacts, artifact_paths
 from ptodsl._runtime.codegen import generate_launch_cpp
 from ptodsl._runtime.launch import _marshal_launch_args
 from ptodsl._tracing import current_session
-from mlir.ir import InsertionPoint, Location, Module
+from ptoas.mlir.ir import InsertionPoint, Location, Module
 
 
 def expect(condition: bool, message: str) -> None:
@@ -128,6 +131,30 @@ def host_vec_copy(
     out = pto.partition_view(o_view, offsets=[0, 0], sizes=[rows, cols])
     pto.tile.load(part, a_tile)
     pto.tile.store(o_tile, out)
+
+
+@pto.jit(target="a5", backend="vpto", mode="explicit")
+def scalar_pipeline_access_modes_probe(
+    src: pto.ptr(pto.i32, "gm"),
+    dst: pto.ptr(pto.i32, "gm"),
+):
+    normal = pto.load_scalar(src, 1)
+    pto.store_scalar(dst, 2, normal)
+    bypass = pto.load_scalar(src, 3, bypass_l1=True)
+    pto.store_scalar(dst, 4, bypass, bypass_l1=True)
+
+
+@pto.jit(target="a5", backend="vpto", mode="explicit")
+def scalar_pipeline_bypass_ub_invalid_probe():
+    src = pto.castptr(pto.const(0, dtype=pto.i64), pto.ptr(pto.i32, "ub"))
+    pto.load_scalar(src, 0, bypass_l1=True)
+
+
+@pto.jit(target="a5", backend="vpto", mode="explicit")
+def scalar_pipeline_bypass_float_invalid_probe(
+    src: pto.ptr(pto.f32, "gm"),
+):
+    pto.load_scalar(src, 0, bypass_l1=True)
 
 
 @pto.jit(target="a5", mode="explicit")
@@ -256,7 +283,7 @@ def process_tile_module(
     rows: pto.i32,
     cols: pto.i32,
 ):
-    with pto.simd():
+    with pto.tileop():
         vec = pto.elements_per_vreg(pto.f32)
         initial_remained = cols
         with pto.for_(0, rows, step=1) as r:
@@ -278,7 +305,7 @@ def explicit_vpto_kernel_module(
     o_tile: pto.Tile,
     cols: pto.i32,
 ):
-    with pto.simd():
+    with pto.tileop():
         remained = cols
         vec = pto.elements_per_vreg(pto.f32)
         loop = pto.for_(0, cols, step=vec).carry(remained=remained)
@@ -296,21 +323,45 @@ def process_row_ptr_kernel_module(
     dst_gm: pto.ptr(pto.f32, "gm"),
     row: pto.i32,
 ):
-    with pto.simd():
-        c0_i64 = pto.const(0, dtype=pto.i64)
-        row_offset = row * 16
-        src_row = pto.addptr(src_gm, row_offset)
-        dst_row = pto.addptr(dst_gm, row_offset)
-        ub_ptr = pto.castptr(c0_i64, pto.ptr(pto.f32, "ub"))
+    c0_i64 = pto.const(0, dtype=pto.i64)
+    row_offset = row * 16
+    src_row = pto.addptr(src_gm, row_offset)
+    dst_row = pto.addptr(dst_gm, row_offset)
+    ub_ptr = pto.castptr(c0_i64, pto.ptr(pto.f32, "ub"))
 
-        pto.get_buf(pto.Pipe.MTE2, 0)
-        pto.mte_gm_ub(src_row, ub_ptr, 0, 64, nburst=(1, 64, 64))
-        pto.rls_buf(pto.Pipe.MTE2, 0)
+    pto.get_buf(pto.Pipe.MTE2, 0)
+    pto.mte_gm_ub(src_row, ub_ptr, 0, 64, nburst=(1, 64, 64))
+    pto.rls_buf(pto.Pipe.MTE2, 0)
 
-        pto.get_buf(pto.Pipe.MTE3, 0)
-        pto.mte_ub_gm(ub_ptr, dst_row, 64, nburst=(1, 64, 64))
-        pto.rls_buf(pto.Pipe.MTE3, 0)
-        pto.pipe_barrier(pto.Pipe.ALL)
+    pto.get_buf(pto.Pipe.MTE3, 0)
+    pto.mte_ub_gm(ub_ptr, dst_row, 64, nburst=(1, 64, 64))
+    pto.rls_buf(pto.Pipe.MTE3, 0)
+    pto.pipe_barrier(pto.Pipe.ALL)
+
+
+@pto.jit(target="a5", entry=False, backend="vpto", mode="explicit", insert_sync=False)
+def dynamic_buf_kernel_module(
+    src_gm: pto.ptr(pto.f32, "gm"),
+    dst_gm: pto.ptr(pto.f32, "gm"),
+    row: pto.i32,
+):
+    c0_i64 = pto.const(0, dtype=pto.i64)
+    row_offset = row * 16
+    src_row = pto.addptr(src_gm, row_offset)
+    dst_row = pto.addptr(dst_gm, row_offset)
+    ub_ptr = pto.castptr(c0_i64, pto.ptr(pto.f32, "ub"))
+
+    # Compute dynamic buf-id from the row index: row & 1
+    buf_id = row & 1
+    pto.get_buf(pto.Pipe.MTE2, buf_id, 0)
+    pto.mte_gm_ub(src_row, ub_ptr, 0, 64, nburst=(1, 64, 64))
+    pto.rls_buf(pto.Pipe.MTE2, buf_id, 0)
+
+    buf_id2 = row & 1
+    pto.get_buf(pto.Pipe.MTE3, buf_id2, 0)
+    pto.mte_ub_gm(ub_ptr, dst_row, 64, nburst=(1, 64, 64))
+    pto.rls_buf(pto.Pipe.MTE3, buf_id2, 0)
+    pto.pipe_barrier(pto.Pipe.ALL)
 
 
 @pto.jit(target="a5", entry=False, backend="vpto", mode="explicit", insert_sync=False)
@@ -379,7 +430,26 @@ def emitc_entry_calls_vpto_kernel_module_probe(
         process_row_ptr_kernel_module(A_ptr, O_ptr, row)
 
 
-@pto.simd
+@pto.jit(target="a5", backend="emitc")
+def emitc_entry_calls_dynamic_buf_kernel_module_probe(
+    A_ptr: pto.ptr(pto.f32, "gm"),
+    O_ptr: pto.ptr(pto.f32, "gm"),
+    rows: pto.i32,
+):
+    a_view = pto.make_tensor_view(A_ptr, shape=[rows, 16], strides=[16, 1])
+    o_view = pto.make_tensor_view(O_ptr, shape=[rows, 16], strides=[16, 1])
+    a_tile = pto.alloc_tile(shape=[1, 16], dtype=pto.f32)
+    o_tile = pto.alloc_tile(shape=[1, 16], dtype=pto.f32)
+
+    with pto.for_(0, rows, step=1) as row:
+        a_part = pto.partition_view(a_view, offsets=[row, 0], sizes=[1, 16])
+        o_part = pto.partition_view(o_view, offsets=[row, 0], sizes=[1, 16])
+        pto.tile.load(a_part, a_tile)
+        pto.tile.adds(a_tile, 1.0, o_tile)
+        pto.tile.store(o_tile, o_part)
+        dynamic_buf_kernel_module(A_ptr, O_ptr, row)
+
+
 def emitc_vpto_kernel_module_callsite_simd_helper(
     src_tile: pto.Tile,
     dst_tile: pto.Tile,
@@ -559,8 +629,17 @@ def tile_sort_gather_surface_probe():
 
     pto.tile.sort32(src, idx, sort)
     pto.tile.mrgsort(sort, tmp, pto.const(64, dtype=pto.i32))
-    pto.tile.gather(tmp, gather_scores, mask_pattern="P0101")
-    pto.tgather(tmp, gather_indices, mask_pattern="P1010")
+    pto.tile.gather(tmp, gather_scores, mask_pattern="P0101", axis="row")
+    pto.tgather(tmp, gather_indices, mask_pattern="P1010", axis="row")
+
+
+@pto.jit(target="a5")
+def tile_ci_surface_probe():
+    dst_i32 = pto.alloc_tile(shape=[1, 64], dtype=pto.i32, valid_shape=[1, 64])
+    pto.tile.ci(0, dst_i32)
+
+    dst_ui32 = pto.alloc_tile(shape=[1, 64], dtype=pto.ui32, valid_shape=[1, 64])
+    pto.tile.ci(pto.ui32(0), dst_ui32, descending=True)
 
 
 @pto.jit(target="a5")
@@ -666,35 +745,28 @@ SUBKERNEL_OBSERVATIONS = []
 INLINE_SUBKERNEL_SCOPE_OBSERVATIONS = []
 
 
-@pto.simd
+@pto.tileop
 def nested_simd_probe():
     session = current_session()
     frame = session.current_subkernel
     SUBKERNEL_OBSERVATIONS.append((frame.role, frame.symbol_name, session.subkernel_stack_depth))
+    tileop_noop_simt_probe[1, 1, 1]()
 
 
-@pto.cube
+@pto.tileop
 def top_level_cube_probe():
     session = current_session()
     frame = session.current_subkernel
     SUBKERNEL_OBSERVATIONS.append((frame.role, frame.symbol_name, session.subkernel_stack_depth))
+    tileop_noop_simt_probe[1, 1, 1]()
 
 
-@pto.simd
+@pto.tileop
 def top_level_simd_probe():
     session = current_session()
     frame = session.current_subkernel
     SUBKERNEL_OBSERVATIONS.append((frame.role, frame.symbol_name, session.subkernel_stack_depth))
-
-
-@pto.simd
-def explicit_vector_simd_probe():
-    pto.pipe_barrier(pto.Pipe.ALL)
-
-
-@pto.cube
-def explicit_vector_cube_probe():
-    pto.pipe_barrier(pto.Pipe.ALL)
+    tileop_noop_simt_probe[1, 1, 1]()
 
 
 @pto.jit(target="a5")
@@ -705,19 +777,9 @@ def shared_subkernel_lowering_probe(*, TRACE_TOKEN: pto.const_expr = 0):
 
 
 @pto.jit(target="a5", kernel_kind="vector")
-def explicit_vector_calls_simd_probe(*, TRACE_TOKEN: pto.const_expr = 0):
-    explicit_vector_simd_probe()
-
-
-@pto.jit(target="a5", kernel_kind="vector")
-def explicit_vector_calls_cube_probe(*, TRACE_TOKEN: pto.const_expr = 0):
-    explicit_vector_cube_probe()
-
-
-@pto.jit(target="a5", kernel_kind="vector")
-def explicit_vector_inline_simd_probe(*, TRACE_TOKEN: pto.const_expr = 0):
-    with pto.simd():
-        pto.pipe_barrier(pto.Pipe.ALL)
+def explicit_vector_inline_tileop_probe(*, TRACE_TOKEN: pto.const_expr = 0):
+    with pto.tileop():
+        pto.vbr(1.0)
 
 
 @pto.jit(target="a5", mode="explicit")
@@ -729,14 +791,28 @@ def inline_subkernel_scope_probe(*, TRACE_TOKEN: pto.const_expr = 0):
         frame = session.current_subkernel
         INLINE_SUBKERNEL_SCOPE_OBSERVATIONS.append((frame.role, frame.symbol_name, session.subkernel_stack_depth))
         scalar.store(0, meta_tile.as_ptr() + 0)
-    with pto.simd():
+    with pto.tileop():
         frame = session.current_subkernel
         INLINE_SUBKERNEL_SCOPE_OBSERVATIONS.append((frame.role, frame.symbol_name, session.subkernel_stack_depth))
-        pto.pipe_barrier(pto.Pipe.ALL)
-    with pto.cube():
-        frame = session.current_subkernel
-        INLINE_SUBKERNEL_SCOPE_OBSERVATIONS.append((frame.role, frame.symbol_name, session.subkernel_stack_depth))
-        pto.pipe_barrier(pto.Pipe.ALL)
+        pto.vbr(1.0)
+
+
+@pto.jit(target="a5", mode="explicit")
+def inline_simt_launch_dims_probe(
+    gm: pto.ptr(pto.i32, "gm"),
+    *,
+    TRACE_TOKEN: pto.const_expr = 0,
+):
+    with pto.simt(32, 2, 1):
+        tid = pto.get_tid_x()
+        pto.stg(tid, gm, scalar.index_cast(tid))
+
+
+@pto.jit(target="a5", mode="explicit")
+def inline_simt_dynamic_launch_dim_probe(*, TRACE_TOKEN: pto.const_expr = 0):
+    dynamic_dim = pto.const(32, dtype=pto.i32)
+    with pto.simt(dynamic_dim, 1, 1):
+        pto.get_tid_x()
 
 
 @pto.simt
@@ -744,6 +820,11 @@ def simt_tid_probe():
     pto.get_tid_x()
     pto.get_tid_y()
     pto.get_tid_z()
+
+
+@pto.simt(max_threads=1, ast_rewrite=False)
+def tileop_noop_simt_probe():
+    pass
 
 
 @pto.simt
@@ -781,7 +862,7 @@ def simt_grouped_query_probe():
     pto.keep(grid_z, slot=8)
 
 
-@pto.simt(max_threads=256, max_regs=48)
+@pto.simt(max_threads=256)
 def simt_resource_attr_probe():
     pto.get_tid_x()
 
@@ -832,6 +913,7 @@ def simt_memory_atomic_probe(
     idx = scalar.index_cast(pto.get_tid_x())
     value = pto.ldg(gm, idx, l1cache="cache", l2cache="nmfv")
     pto.stg(value, gm, idx, l1cache="uncache", l2cache="wtsred")
+    pto.stg(1, gm, idx)
 
     old = pto.atomic_add(gm, value, l2cache="nmfv", signedness="signed")
     pto.atomic_exch(gm, value, signedness="signed")
@@ -846,6 +928,24 @@ def simt_memory_atomic_probe(
     pto.syncthreads()
     pto.threadfence()
     pto.threadfence_block()
+
+
+@pto.simt
+def simt_fp8_ext_ldg_stg_probe(
+    gm_f8e4x4: pto.ptr(pto.f8e4m3x4, "gm"),
+    gm_f8e4x8: pto.ptr(pto.f8e4m3x8, "gm"),
+    gm_f8e5x4: pto.ptr(pto.f8e5m2x4, "gm"),
+    gm_f8e5x8: pto.ptr(pto.f8e5m2x8, "gm"),
+):
+    idx = scalar.index_cast(pto.get_tid_x())
+    v_f8e4x4 = pto.ldg(gm_f8e4x4, idx)
+    v_f8e4x8 = pto.ldg(gm_f8e4x8, idx)
+    v_f8e5x4 = pto.ldg(gm_f8e5x4, idx)
+    v_f8e5x8 = pto.ldg(gm_f8e5x8, idx)
+    pto.stg(v_f8e4x4, gm_f8e4x4, idx)
+    pto.stg(v_f8e4x8, gm_f8e4x8, idx)
+    pto.stg(v_f8e5x4, gm_f8e5x4, idx)
+    pto.stg(v_f8e5x8, gm_f8e5x8, idx)
 
 
 @pto.simt
@@ -896,17 +996,101 @@ def simt_invalid_atomic_signedness_probe(gm: pto.ptr(pto.f32, "gm")):
     pto.atomic_add(gm, value, signedness="signed")
 
 
-@pto.simd
-def ast_subkernel_runtime_for_helper(rows: pto.i32):
+@pto.tileop
+def ast_subkernel_runtime_for_helper(inp: pto.Tile, out: pto.Tile, rows: pto.i32):
+    mask, _ = pto.make_mask(pto.f32, pto.const(64, dtype=pto.i32))
     for row in range(0, rows, 1):
-        _ = row
-        pto.pipe_barrier(pto.Pipe.ALL)
+        vec = pto.vlds(inp[row, 0:])
+        pto.vsts(vec, out[row, 0:], mask)
 
 
 @pto.jit(target="a5")
 def simt_helper_lowering_probe(*, TRACE_TOKEN: pto.const_expr = 0):
     simt_tid_probe()
     simt_tid_probe()
+
+
+@pto.simt
+def alloc_buffer_local_helper():
+    _ = pto.alloc_buffer((32,), pto.f32)
+
+
+@pto.jit(target="a5", mode="explicit")
+def alloc_buffer_local_probe():
+    alloc_buffer_local_helper()
+
+
+@pto.jit(target="a5", mode="explicit")
+def alloc_buffer_outside_simt_probe():
+    _ = pto.alloc_buffer((32,), pto.f32)
+
+
+@pto.tileop
+def alloc_buffer_tileop_helper():
+    _ = pto.alloc_buffer((32,), pto.f32)
+    tileop_noop_simt_probe[1, 1, 1]()
+
+
+@pto.jit(target="a5", mode="explicit", kernel_kind="vector")
+def alloc_buffer_tileop_helper_probe():
+    alloc_buffer_tileop_helper()
+
+
+@pto.jit(target="a5", mode="explicit")
+def alloc_buffer_inline_simt_probe():
+    with pto.simt(32, 1, 1):
+        _ = pto.alloc_buffer((32,), pto.f32)
+
+
+@pto.simt
+def rmsnorm_alloc_buffer_frag_helper(
+    w_ub: pto.ptr(pto.f32, pto.MemorySpace.UB),
+    x_ub: pto.ptr(pto.f32, pto.MemorySpace.UB),
+):
+    _ = pto.get_tid_x()
+    _ = w_ub
+    _ = x_ub
+    _ = pto.alloc_buffer((32,), pto.f32)
+    _ = pto.alloc_buffer((1,), pto.f32)
+
+
+@pto.jit(target="a5", mode="explicit")
+def rmsnorm_alloc_buffer_layout_probe(
+    X: pto.ptr(pto.f32, "gm"),
+    W: pto.ptr(pto.f32, "gm"),
+    Y: pto.ptr(pto.f32, "gm"),
+    RSTD: pto.ptr(pto.f32, "gm"),
+):
+    ub_base = pto.castptr(pto.const(0, dtype=pto.ui64), pto.ptr(pto.f32, "ub"))
+    w_ub = pto.addptr(ub_base, 0)
+    reduce_scratch = pto.addptr(ub_base, 4096)
+    x_ub = pto.addptr(ub_base, 4224)
+    y_ub = pto.addptr(ub_base, 12416)
+    rstd_ub = pto.addptr(ub_base, 20608)
+
+    pto.mte_gm_ub(W, w_ub, 0, 4096 * 4, nburst=(1, 0, 0))
+    pto.mte_gm_ub(X, x_ub, 0, 4096 * 4, nburst=(1, 0, 0))
+    rmsnorm_alloc_buffer_frag_helper(w_ub, x_ub)
+    pto.mte_ub_gm(y_ub, Y, 4096 * 4, nburst=(1, 0, 0))
+    pto.mte_ub_gm(rstd_ub, RSTD, 4, nburst=(1, 0, 0))
+    _ = reduce_scratch
+
+
+@pto.simt
+def simt_alloc_buffer_arg_probe(buf: pto.ptr(pto.f32, "ub")):
+    _ = buf
+
+
+@pto.jit(target="a5", mode="explicit")
+def simt_helper_reject_alloc_buffer_probe():
+    scratch = pto.alloc_buffer((32,), pto.f32)
+    pto.simt_launch(simt_alloc_buffer_arg_probe, scratch, dims=(32, 1, 1))
+
+
+@pto.jit(target="a5", mode="explicit")
+def simt_helper_reject_alloc_buffer_offset_probe():
+    scratch = pto.alloc_buffer((32,), pto.f32)
+    pto.simt_launch(simt_alloc_buffer_arg_probe, scratch + 4, dims=(32, 1, 1))
 
 
 @pto.jit(target="a5")
@@ -932,11 +1116,23 @@ def simt_resource_attr_launch_probe(*, TRACE_TOKEN: pto.const_expr = 0):
 @pto.jit(target="a5")
 def simt_full_surface_probe(
     gm: pto.ptr(pto.i32, "gm"),
+    gm_f8e4x4: pto.ptr(pto.f8e4m3x4, "gm"),
+    gm_f8e4x8: pto.ptr(pto.f8e4m3x8, "gm"),
+    gm_f8e5x4: pto.ptr(pto.f8e5m2x4, "gm"),
+    gm_f8e5x8: pto.ptr(pto.f8e5m2x8, "gm"),
     *,
     TRACE_TOKEN: pto.const_expr = 0,
 ):
     pto.simt_launch(simt_collective_math_probe, dims=(32, 1, 1))
     pto.simt_launch(simt_memory_atomic_probe, gm, dims=(32, 1, 1))
+    pto.simt_launch(
+        simt_fp8_ext_ldg_stg_probe,
+        gm_f8e4x4,
+        gm_f8e4x8,
+        gm_f8e5x4,
+        gm_f8e5x8,
+        dims=(32, 1, 1),
+    )
     pto.simt_launch(simt_keep_stage, dims=(32, 1, 1))
     pto.simt_launch(simt_resume_stage, gm, dims=(32, 1, 1))
 
@@ -979,7 +1175,9 @@ def simt_invalid_atomic_signedness_launch(
 
 @pto.jit(target="a5")
 def ast_subkernel_runtime_for_probe(rows: pto.i32):
-    ast_subkernel_runtime_for_helper(rows)
+    inp = pto.alloc_tile(shape=[1, 64], dtype=pto.f32)
+    out = pto.alloc_tile(shape=[1, 64], dtype=pto.f32)
+    ast_subkernel_runtime_for_helper(inp, out, rows)
 
 
 @pto.jit(target="a5")
@@ -1116,6 +1314,28 @@ def ast_runtime_for_probe(rows: pto.i32):
         pto.pipe_barrier(pto.Pipe.ALL)
 
 
+@pto.jit(target="a5", mode="explicit")
+def ast_nested_runtime_for_induction_scope_probe(rows: pto.i32):
+    for outer in range(rows):
+        _ = outer
+        with pto.vecscope():
+            for lane in range(4):
+                _ = lane
+                pto.mem_bar(pto.BarrierType.VST_VLD)
+
+
+@pto.jit(target="a5", mode="explicit")
+def ast_nested_runtime_for_local_temp_scope_probe(rows: pto.i32):
+    for outer in range(rows):
+        _ = outer
+        with pto.vecscope():
+            for row in range(4):
+                for col in range(2):
+                    ob = row + col
+                    _ = ob
+        pto.pipe_barrier(pto.Pipe.ALL)
+
+
 @pto.jit(target="a5")
 def ast_runtime_for_carry_probe(rows: pto.i32):
     one = pto.const(1, dtype=pto.i32)
@@ -1148,6 +1368,153 @@ def ast_runtime_for_branch_local_temp_probe(rows: pto.i32):
             tmp = zero
             out = tmp + zero
         _ = out
+
+
+@pto.jit(target="a5")
+def ast_runtime_ifexp_assign_probe(rows: pto.i32):
+    limit = pto.const(64, dtype=pto.index)
+    zero = pto.const(0, dtype=pto.index)
+
+    for row in range(rows):
+        cnt = row if row < limit else limit
+        out = cnt + zero
+        _ = out
+
+
+@pto.jit(target="a5")
+def ast_runtime_ifexp_python_literal_assign_probe(rows: pto.i32):
+    limit = pto.const(64, dtype=pto.index)
+    zero = pto.const(0, dtype=pto.index)
+
+    for row in range(rows):
+        cnt = row if row < limit else 64
+        out = cnt + zero
+        _ = out
+
+
+@pto.jit(target="a5")
+def ast_runtime_for_sibling_iv_reuse_probe(rows: pto.i32, cols: pto.i32):
+    stride = pto.const(64, dtype=pto.index)
+    one = pto.const(1, dtype=pto.index)
+    zero = pto.const(0, dtype=pto.index)
+
+    for t in range(rows):
+        for c in range(cols):
+            col = c * stride
+            sink = col + one
+            _ = sink
+
+        for stage in pto.static_range(2):
+            acc = zero
+            for c in range(cols):
+                col = c * stride
+                acc = acc + col
+            _ = acc
+            _ = stage
+        _ = t
+
+
+@pto.jit(target="a5")
+def ast_runtime_for_static_range_name_reuse_probe(cols: pto.i32):
+    zero = pto.const(0, dtype=pto.index)
+
+    for phase_a_chunk in range(cols):
+        d_heads = [phase_a_chunk + h for h in pto.static_range(4)]
+        acc = zero
+        for h in pto.static_range(4):
+            acc = acc + d_heads[h]
+        for mi in pto.static_range(2):
+            inner = zero
+            for h in pto.static_range(4):
+                inner = inner + d_heads[h]
+            acc = acc + inner
+            _ = mi
+        _ = acc
+
+
+@pto.jit(target="a5")
+def ast_runtime_for_static_slot_carry_probe(cols: pto.i32):
+    zero = pto.const(0, dtype=pto.index)
+    accs = [zero for _ in pto.static_range(4)]
+
+    for c in range(cols):
+        for h in pto.static_range(4):
+            accs[h] = accs[h] + c
+
+    total = zero
+    for h in pto.static_range(4):
+        total = total + accs[h]
+    _ = total
+
+
+_STATIC_SLOT_GLOBAL_INDEX = 2
+
+
+@pto.jit(target="a5")
+def ast_runtime_for_static_slot_global_index_probe(cols: pto.i32):
+    zero = pto.const(0, dtype=pto.index)
+    accs = [zero for _ in pto.static_range(4)]
+
+    for c in range(cols):
+        accs[_STATIC_SLOT_GLOBAL_INDEX] = accs[_STATIC_SLOT_GLOBAL_INDEX] + c
+
+    total = zero
+    for h in pto.static_range(4):
+        total = total + accs[h]
+    _ = total
+
+
+@pto.jit(target="a5")
+def ast_runtime_for_static_slot_binop_index_probe(cols: pto.i32):
+    zero = pto.const(0, dtype=pto.index)
+    accs = [zero for _ in pto.static_range(5)]
+
+    for c in range(cols):
+        for h in pto.static_range(4):
+            accs[h + 1] = accs[h + 1] + c
+
+    total = zero
+    for h in pto.static_range(5):
+        total = total + accs[h]
+    _ = total
+
+
+@pto.jit(target="a5")
+def ast_runtime_for_static_slot_constexpr_index_probe(cols: pto.i32, *, SLOT: pto.const_expr = 2):
+    zero = pto.const(0, dtype=pto.index)
+    accs = [zero for _ in pto.static_range(4)]
+
+    for c in range(cols):
+        accs[SLOT] = accs[SLOT] + c
+
+    total = zero
+    for h in pto.static_range(4):
+        total = total + accs[h]
+    _ = total
+
+
+@pto.jit(target="a5")
+def ast_runtime_for_dynamic_slot_store_error_probe(cols: pto.i32):
+    zero = pto.const(0, dtype=pto.index)
+    accs = [zero for _ in pto.static_range(4)]
+
+    for idx in range(cols):
+        accs[idx] = zero
+
+
+class _StaticSlotHolder:
+    pass
+
+
+@pto.jit(target="a5")
+def ast_runtime_for_complex_slot_store_error_probe(cols: pto.i32):
+    zero = pto.const(0, dtype=pto.index)
+    holder = _StaticSlotHolder()
+    holder.accs = [zero for _ in pto.static_range(4)]
+
+    for _ in range(cols):
+        for h in pto.static_range(4):
+            holder.accs[h] = zero
 
 
 @pto.jit(target="a5", ast_rewrite=False)
@@ -1314,10 +1681,10 @@ ast_signature_closure_default_kernel_probe = make_ast_signature_closure_default_
 def make_ast_rebound_subkernel_probe():
     limit = 2
 
-    @pto.simd
+    @pto.tileop
     def helper():
         for _ in pto.static_range(limit):
-            pto.pipe_barrier(pto.Pipe.ALL)
+            tileop_noop_simt_probe[1, 1, 1]()
 
     limit = 4
 
@@ -1349,13 +1716,13 @@ sourceless_ast_rewrite_kernel_probe = make_sourceless_ast_rewrite_kernel()
 
 
 def make_sourceless_subkernel_entry():
-    namespace = {"pto": pto}
+    namespace = {"pto": pto, "tileop_noop_simt_probe": tileop_noop_simt_probe}
     exec(
         """
-@pto.simd
+@pto.tileop
 def sourceless_subkernel_helper():
     if True:
-        pto.pipe_barrier(pto.Pipe.ALL)
+        tileop_noop_simt_probe[1, 1, 1]()
 """,
         namespace,
     )
@@ -1498,7 +1865,7 @@ def host_runtime_scalar_entry_probe(
     pto.tile.store(o_tile, o_part)
 
 
-@pto.simd
+@pto.tileop
 def tile_slice_vector_probe(inp_tile: pto.Tile, out_tile: pto.Tile, row: pto.index):
     mask, _ = pto.plt_b32(pto.const(64, dtype=pto.i32))
     vec = pto.vlds(inp_tile[row, 0:])
@@ -1609,6 +1976,67 @@ def scalar_pointer_offset_probe():
 
 
 @pto.jit(target="a5")
+def scalar_contiguous_vector_probe():
+    data_tile = pto.alloc_tile(shape=[1, 16], dtype=pto.f32, valid_shape=[1, 16])
+    data_ptr = data_tile.as_ptr()
+    x4 = scalar.load(data_ptr, 0, contiguous=4)
+    scale4 = pto.Vec(pto.f32, size=4, init=1.0)
+    y4 = x4 * scale4
+    scalar.store(y4, data_ptr, 4)
+
+
+@pto.simt
+def scalar_contiguous_vector_arith_simt_body(data_ptr):
+    tid = pto.get_tid_x()
+    base = tid * 4
+    x4 = scalar.load(data_ptr, base, contiguous=4)
+    y4 = scalar.load(data_ptr, 32 + base, contiguous=4)
+    sum4 = x4 + y4
+    diff4 = x4 - y4
+    prod4 = x4 * y4
+    scalar.store(sum4, data_ptr, 64 + base)
+    scalar.store(diff4, data_ptr, 96 + base)
+    scalar.store(prod4, data_ptr, 128 + base)
+
+
+@pto.jit(target="a5", mode="explicit")
+def scalar_contiguous_vector_arith_probe():
+    scalar_contiguous_vector_arith_simt_body[8, 1, 1](
+        pto.castptr(pto.const(0, dtype=pto.ui64), pto.ptr(pto.f32, "ub"))
+    )
+    pto.pipe_barrier(pto.Pipe.ALL)
+
+
+@pto.simt
+def scalar_contiguous_local_alloc_buffer_helper():
+    data = pto.alloc_buffer((16,), pto.f32)
+    x4 = scalar.load(data, 0, contiguous=4)
+    scale4 = pto.Vec(pto.f32, 4, init=1.0)
+    y4 = x4 * scale4
+    scalar.store(y4, data, 4)
+
+
+@pto.jit(target="a5", mode="explicit")
+def scalar_contiguous_local_alloc_buffer_probe():
+    scalar_contiguous_local_alloc_buffer_helper()
+
+
+@pto.jit(target="a5")
+def scalar_contiguous_width_mismatch_probe():
+    data_tile = pto.alloc_tile(shape=[1, 16], dtype=pto.f32, valid_shape=[1, 16])
+    data_ptr = data_tile.as_ptr()
+    x4 = scalar.load(data_ptr, 0, contiguous=4)
+    scalar.store(x4, data_ptr, 4, contiguous=2)
+
+
+@pto.jit(target="a5")
+def scalar_contiguous_scalar_store_probe():
+    data_tile = pto.alloc_tile(shape=[1, 16], dtype=pto.f32, valid_shape=[1, 16])
+    data_ptr = data_tile.as_ptr()
+    scalar.store(1.0, data_ptr, 0, contiguous=4)
+
+
+@pto.jit(target="a5")
 def addptr_surface_probe():
     meta_tile = pto.alloc_tile(shape=[1, 8], dtype=pto.i32, valid_shape=[1, 4])
     meta_ptr = meta_tile.as_ptr()
@@ -1688,21 +2116,30 @@ def shared_index_coercion_probe():
         pto.wait_flag(pto.Pipe.V, pto.Pipe.MTE2, event_id=limit)
 
 
-@pto.simd
+@pto.tileop
 def public_vector_surface_probe(inp_tile: pto.Tile, out_tile: pto.Tile, stats_tile: pto.Tile):
     col_mask = pto.make_mask(pto.f32, pto.const(16, dtype=pto.i32))
     row = pto.const(0)
     s_row = pto.vlds(inp_tile[row, 0:])
+    pto.vsubs(s_row, pto.const(1.0, dtype=pto.f32), col_mask)
     row_max = pto.vcgmax(s_row, col_mask)
-    s_shifted = pto.vsubs(s_row, row_max, col_mask)
+    row_max_broadcast = pto.vdup(row_max, col_mask)
+    s_shifted = pto.vsub(s_row, row_max_broadcast, col_mask)
     p_row = pto.vexp(s_shifted, col_mask)
     row_sum = pto.vcgadd(p_row, col_mask)
+    # Register-level probe: only assert that pto.vsqz emits the op. The
+    # compacted result is intentionally discarded here — a real compress_store
+    # would consume it via pto.init_align + pto.vstur(POST_UPDATE) + pto.vstar
+    # (see docs/user_guide/08-compute-operations.md). This probe deliberately
+    # does NOT chain a masked pto.vsts, because the original col_mask selects
+    # source lanes, not compacted positions, and would scatter the survivors.
+    _ = pto.vsqz(p_row, col_mask)
     pto.vsts(p_row, out_tile[row, 0:], col_mask)
-    scalar.store(row_max, stats_tile[row, 0])
-    scalar.store(row_sum, stats_tile[row, 1])
+    pto.vsts(row_max, stats_tile.as_ptr(), row, col_mask, dist="1PT_B32")
+    pto.vsts(row_sum, stats_tile.as_ptr(), row + 1, col_mask, dist="1PT_B32")
 
 
-@pto.cube
+@pto.jit(target="a5", entry=False, mode="explicit", kernel_kind="cube")
 def public_cube_surface_probe(
     lhs_tile: pto.Tile,
     rhs_tile: pto.Tile,
@@ -1793,7 +2230,97 @@ def public_cube_surface_probe(
     pto.mte_l0c_ub(acc_tile.as_ptr(), out_tile.as_ptr(), m, n, n, n, split=pto.SplitMode.M, layout="nz2nd")
 
 
-@pto.cube
+@pto.jit(target="a5", mode="explicit")
+def acc_store_pre_quant_surface_probe(
+    dst: pto.ptr(pto.bf16, "gm"),
+):
+    size = pto.const(16)
+    zero = pto.const(0)
+    src = pto.alloc_tile(
+        shape=[16, 16],
+        dtype=pto.f32,
+        memory_space=pto.MemorySpace.ACC,
+        valid_shape=[16, 16],
+        blayout="ColMajor",
+        slayout="RowMajor",
+    )
+    pto.mte_l0c_gm(
+        src.as_ptr(),
+        dst,
+        size,
+        size,
+        size,
+        size,
+        zero,
+        zero,
+        pre_quant=(pto.bf16(1.0), "f32_bf16"),
+        layout="nz2nd",
+    )
+
+
+@pto.jit(target="a5", mode="explicit")
+def acc_store_bad_pre_quant_mode_probe(
+    dst: pto.ptr(pto.bf16, "gm"),
+):
+    size = pto.const(16)
+    zero = pto.const(0)
+    src = pto.alloc_tile(
+        shape=[16, 16],
+        dtype=pto.f32,
+        memory_space=pto.MemorySpace.ACC,
+        valid_shape=[16, 16],
+        blayout="ColMajor",
+        slayout="RowMajor",
+    )
+    pto.mte_l0c_gm(
+        src.as_ptr(),
+        dst,
+        size,
+        size,
+        size,
+        size,
+        zero,
+        zero,
+        pre_quant=(pto.bf16(1.0), "not_a_mode"),
+        layout="nz2nd",
+    )
+
+
+@pto.jit(target="a5", mode="explicit")
+def acc_store_bad_pre_quant_payload_probe(
+    dst: pto.ptr(pto.bf16, "gm"),
+):
+    size = pto.const(16)
+    zero = pto.const(0)
+    src = pto.alloc_tile(
+        shape=[16, 16],
+        dtype=pto.f32,
+        memory_space=pto.MemorySpace.ACC,
+        valid_shape=[16, 16],
+        blayout="ColMajor",
+        slayout="RowMajor",
+    )
+    payload = pto.alloc_tile(
+        shape=[16],
+        dtype=pto.bf16,
+        memory_space=pto.MemorySpace.SCALING,
+        valid_shape=[16],
+    )
+    pto.mte_l0c_gm(
+        src.as_ptr(),
+        dst,
+        size,
+        size,
+        size,
+        size,
+        zero,
+        zero,
+        pre_quant=(payload.as_ptr(), "f32_bf16"),
+        layout="nz2nd",
+    )
+
+
+@pto.jit(target="a5", entry=False, mode="explicit", kernel_kind="cube")
 def public_cube_tile_mx_probe(
     mat_lhs: pto.Tile,
     mat_lhs_scale: pto.Tile,
@@ -2087,6 +2614,303 @@ def public_surface_exports_probe(
     )
 
 
+@pto.jit(target="a5", backend="vpto", mode="explicit")
+def vmi_wrapper_dispatch_probe():
+    src_tile = pto.alloc_tile(shape=[1, 64], dtype=pto.f32)
+    other_tile = pto.alloc_tile(shape=[1, 64], dtype=pto.f32)
+    dst_tile = pto.alloc_tile(shape=[1, 64], dtype=pto.f32)
+    int_src_tile = pto.alloc_tile(shape=[1, 64], dtype=pto.i32)
+    int_other_tile = pto.alloc_tile(shape=[1, 64], dtype=pto.i32)
+    hist_acc_tile = pto.alloc_tile(shape=[1, 256], dtype=pto.ui16)
+    hist_src_tile = pto.alloc_tile(shape=[1, 256], dtype=pto.ui8)
+
+    src_ptr = src_tile.as_ptr()
+    other_ptr = other_tile.as_ptr()
+    dst_ptr = dst_tile.as_ptr()
+    int_src_ptr = int_src_tile.as_ptr()
+    int_other_ptr = int_other_tile.as_ptr()
+    hist_acc_ptr = hist_acc_tile.as_ptr()
+    hist_src_ptr = hist_src_tile.as_ptr()
+
+    offset = pto.const(0, dtype=pto.index)
+    active_lanes = pto.const(64, dtype=pto.index)
+    active_per_group = pto.const(8, dtype=pto.index)
+
+    mask = pto.vmi.create_mask(
+        active_lanes,
+        size=64,
+    )
+    group_mask = pto.vmi.create_mask(
+        active_per_group,
+        size=64,
+        group=8,
+    )
+    lhs = pto.vmi.vload(src_ptr, offset, size=64)
+    rhs = pto.vmi.vload(other_ptr, offset, size=64)
+    compact = pto.vmi.vload(src_ptr, offset, size=8)
+    idx = pto.vmi.vci(pto.i32(0), size=64, order="ASC")
+    bias = pto.vmi.vbrc(pto.f32(0.0), size=64)
+    expanded = pto.vmi.vbrc(compact, size=64, group=8)
+    hist_acc = pto.vmi.vload(hist_acc_ptr, offset, size=256)
+    hist_src = pto.vmi.vload(hist_src_ptr, offset, size=256)
+    int_lhs = pto.vmi.vload(int_src_ptr, offset, size=64)
+    int_rhs = pto.vmi.vload(int_other_ptr, offset, size=64)
+    hist_mask = pto.vmi.create_mask(pto.const(256, dtype=pto.index), size=256)
+    added = pto.vmi.vadd(lhs, rhs, mask)
+    subtracted = pto.vmi.vsub(lhs, rhs, mask)
+    multiplied = pto.vmi.vmul(lhs, rhs, mask)
+    divided = pto.vmi.vdiv(lhs, rhs, mask)
+    maximum = pto.vmi.vmax(lhs, rhs, mask)
+    minimum = pto.vmi.vmin(lhs, rhs, mask)
+    absolute = pto.vmi.vabs(lhs, mask)
+    negated = pto.vmi.vneg(lhs, mask)
+    relu = pto.vmi.vrelu(added, mask)
+    exponent = pto.vmi.vexp(lhs, mask)
+    logarithm = pto.vmi.vln(lhs, mask)
+    square_root = pto.vmi.vsqrt(lhs, mask)
+    int_and = pto.vmi.vand(int_lhs, int_rhs, mask)
+    int_or = pto.vmi.vor(int_lhs, int_rhs, mask)
+    int_xor = pto.vmi.vxor(int_lhs, int_rhs, mask)
+    int_not = pto.vmi.vnot(int_lhs, mask)
+    int_shl = pto.vmi.vshl(int_lhs, int_rhs, mask)
+    int_shr = pto.vmi.vshr(int_lhs, int_rhs, mask)
+    scalar_added = pto.vmi.vadds(relu, 1.0, mask)
+    scalar_multiplied = pto.vmi.vmuls(relu, 2.0, mask)
+    scalar_maximum = pto.vmi.vmaxs(relu, 1.0, mask)
+    scalar_minimum = pto.vmi.vmins(relu, 1.0, mask)
+    scalar_shl = pto.vmi.vshls(int_lhs, pto.i32(1), mask)
+    scalar_shr = pto.vmi.vshrs(int_lhs, pto.i32(1), mask)
+    scaled = pto.vmi.vadd(scalar_multiplied, bias, mask)
+    pred = pto.vmi.vcmp(scaled, lhs, mask, "ogt")
+    scalar_pred = pto.vmi.vcmps(scaled, 0.0, mask, "ogt")
+    selected = pto.vmi.vsel(pred, scaled, expanded)
+    shuffled = pto.vmi.vselr(selected, idx)
+    total = pto.vmi.vcadd(shuffled, mask, reassoc=False)
+    explicit_total = pto.vmi.vcadd(shuffled, mask, group=1, reassoc=False)
+    peak = pto.vmi.vcmax(shuffled, mask)
+    explicit_peak = pto.vmi.vcmax(shuffled, mask, group=1)
+    floor = pto.vmi.vcmin(shuffled, mask)
+    explicit_floor = pto.vmi.vcmin(shuffled, mask, group=1)
+    group_peak = pto.vmi.vcmax(shuffled, group_mask, group=8)
+    gather = pto.vmi.vgather(src_ptr, idx, mask)
+    gatherb = pto.vmi.vgatherb(src_ptr, idx, mask)
+    hist = pto.vmi.vdhist(hist_acc, hist_src, hist_mask)
+    cumul = pto.vmi.vchist(hist_acc, hist_src, hist_mask)
+    exp_difference = pto.vmi.vexpdif(lhs, rhs, mask)
+    axpy = pto.vmi.vaxpy(lhs, rhs, 2.0, mask)
+    leaky_relu = pto.vmi.vlrelu(lhs, 0.125, mask)
+    parametric_relu = pto.vmi.vprelu(lhs, rhs, mask)
+    low, high = pto.vmi.vmull(int_lhs, int_rhs, mask)
+    multiply_accumulate = pto.vmi.vmula(lhs, lhs, rhs, mask)
+    widened = pto.vmi.vadd(low, high, mask)
+    casted = pto.vmi.vcvt(shuffled, pto.f16)
+    casted_r = pto.vmi.vcvt(shuffled, pto.f16, rounding="R", saturate="SAT")
+    casted_a = pto.vmi.vcvt(shuffled, pto.f16, rounding="A", saturate="SAT")
+    casted_h = pto.vmi.vcvt(shuffled, pto.f16, rounding="H", saturate="SAT")
+    casted_z = pto.vmi.vcvt(shuffled, pto.f16, rounding="Z", saturate="SAT")
+    recast = pto.vmi.vinterpret_cast(
+        lhs,
+        pto.i32,
+    )
+    recast_narrow = pto.vmi.vinterpret_cast(lhs, pto.f16)
+    lo, hi = pto.vmi.vintlv(selected, shuffled, mask)
+    even, odd = pto.vmi.vdintlv(lo, hi, mask)
+    pto.vmi.vscatter(selected, dst_ptr, idx, mask)
+    pto.vmi.vstore(lo, dst_ptr, offset, mask)
+    pto.vmi.vsstb(hi, dst_ptr, offset, pto.i16(8), mask)
+
+    _ = group_mask
+    _ = total
+    _ = explicit_total
+    _ = peak
+    _ = explicit_peak
+    _ = floor
+    _ = explicit_floor
+    _ = group_peak
+    _ = gather
+    _ = gatherb
+    _ = hist
+    _ = cumul
+    _ = widened
+    _ = casted
+    _ = (casted_r, casted_a, casted_h, casted_z)
+    _ = recast
+    _ = recast_narrow
+    _ = hi
+    _ = (subtracted, multiplied, divided, maximum, minimum, absolute, negated)
+    _ = (exponent, logarithm, square_root, int_and, int_or, int_xor, int_not)
+    _ = (int_shl, int_shr, scalar_added, scalar_maximum, scalar_minimum)
+    _ = (scalar_shl, scalar_shr, scalar_pred, exp_difference, axpy)
+    _ = (leaky_relu, parametric_relu, multiply_accumulate, even, odd)
+
+
+@pto.jit(target="a5", backend="vpto", mode="explicit")
+def vmi_vhist_signless_source_probe():
+    # acc/result stay ui16 (DSL-enforced); source is signless i8 to exercise
+    # the VMI verifier's "signless == unsigned" relaxation for vdhist/vchist.
+    hist_acc_tile = pto.alloc_tile(shape=[1, 256], dtype=pto.ui16)
+    hist_src_tile = pto.alloc_tile(shape=[1, 256], dtype=pto.i8)
+    hist_acc_ptr = hist_acc_tile.as_ptr()
+    hist_src_ptr = hist_src_tile.as_ptr()
+    offset = pto.const(0, dtype=pto.index)
+    hist_acc = pto.vmi.vload(hist_acc_ptr, offset, size=256)
+    hist_src = pto.vmi.vload(hist_src_ptr, offset, size=256)
+    hist_mask = pto.vmi.create_mask(pto.const(256, dtype=pto.index), size=256)
+    _ = pto.vmi.vdhist(hist_acc, hist_src, hist_mask)
+    _ = pto.vmi.vchist(hist_acc, hist_src, hist_mask)
+
+
+@pto.jit(target="a5", backend="vpto", mode="explicit")
+def vmi_vhist_signless_acc_probe():
+    # acc is signless i16 - DSL should accept it (treated as ui16) and emit a
+    # ui16 result for both vdhist and vchist.
+    hist_acc_tile = pto.alloc_tile(shape=[1, 256], dtype=pto.i16)
+    hist_src_tile = pto.alloc_tile(shape=[1, 256], dtype=pto.ui8)
+    hist_acc_ptr = hist_acc_tile.as_ptr()
+    hist_src_ptr = hist_src_tile.as_ptr()
+    offset = pto.const(0, dtype=pto.index)
+    hist_acc = pto.vmi.vload(hist_acc_ptr, offset, size=256)
+    hist_src = pto.vmi.vload(hist_src_ptr, offset, size=256)
+    hist_mask = pto.vmi.create_mask(pto.const(256, dtype=pto.index), size=256)
+    _ = pto.vmi.vdhist(hist_acc, hist_src, hist_mask)
+    _ = pto.vmi.vchist(hist_acc, hist_src, hist_mask)
+
+
+@pto.jit(target="a5", backend="vpto", mode="explicit")
+def vmi_vhist_bad_acc_probe():
+    # acc is signed si16 - must be rejected by the PTODSL surface with a
+    # TypeError before the MLIR verifier runs.
+    hist_acc_tile = pto.alloc_tile(shape=[1, 256], dtype=pto.si16)
+    hist_src_tile = pto.alloc_tile(shape=[1, 256], dtype=pto.ui8)
+    hist_acc_ptr = hist_acc_tile.as_ptr()
+    hist_src_ptr = hist_src_tile.as_ptr()
+    offset = pto.const(0, dtype=pto.index)
+    hist_acc = pto.vmi.vload(hist_acc_ptr, offset, size=256)
+    hist_src = pto.vmi.vload(hist_src_ptr, offset, size=256)
+    hist_mask = pto.vmi.create_mask(pto.const(256, dtype=pto.index), size=256)
+    _ = pto.vmi.vdhist(hist_acc, hist_src, hist_mask)
+
+
+@pto.jit(target="a5", backend="vpto", mode="explicit")
+def vmi_missing_binding_probe():
+    src_tile = pto.alloc_tile(shape=[1, 64], dtype=pto.f32)
+    src_ptr = src_tile.as_ptr()
+    offset = pto.const(0, dtype=pto.index)
+    active_lanes = pto.const(64, dtype=pto.index)
+
+    src = pto.vmi.vload(src_ptr, offset, size=64)
+    mask = pto.vmi.create_mask(
+        active_lanes,
+        size=64,
+    )
+    _ = pto.vmi.vadd(src, src, mask)
+
+
+@pto.jit(target="a5", backend="vpto", mode="explicit")
+def vmi_masked_vcvt_probe():
+    src_tile = pto.alloc_tile(shape=[1, 64], dtype=pto.f32)
+    src_ptr = src_tile.as_ptr()
+    offset = pto.const(0, dtype=pto.index)
+    active_lanes = pto.const(64, dtype=pto.index)
+
+    src = pto.vmi.vload(src_ptr, offset, size=64)
+    mask = pto.vmi.create_mask(
+        active_lanes,
+        size=64,
+    )
+    _ = pto.vmi.vcvt(src, pto.f16, mask)
+
+
+@pto.jit(target="a5", backend="vpto", mode="explicit")
+def vmi_invalid_rounding_vcvt_probe():
+    src_tile = pto.alloc_tile(shape=[1, 64], dtype=pto.f32)
+    src_ptr = src_tile.as_ptr()
+    offset = pto.const(0, dtype=pto.index)
+
+    src = pto.vmi.vload(src_ptr, offset, size=64)
+    _ = pto.vmi.vcvt(
+        src,
+        pto.f8e4m3,
+        rounding=pto.VcvtRoundMode.F,
+        saturate=pto.VcvtSatMode.SAT,
+    )
+
+
+@pto.jit(target="a5", backend="vpto", mode="explicit")
+def vmi_round_r_vcvt_probe():
+    src_tile = pto.alloc_tile(shape=[1, 64], dtype=pto.f32)
+    src_ptr = src_tile.as_ptr()
+    offset = pto.const(0, dtype=pto.index)
+
+    src = pto.vmi.vload(src_ptr, offset, size=64)
+    _ = pto.vmi.vcvt(
+        src,
+        pto.f8e4m3,
+        rounding=pto.VcvtRoundMode.R,
+        saturate=pto.VcvtSatMode.SAT,
+    )
+
+
+@pto.jit(target="a5", backend="vpto", mode="explicit")
+def vmi_unpack_vload_probe():
+    src_tile = pto.alloc_tile(shape=[1, 128], dtype=pto.i8)
+    src_ptr = src_tile.as_ptr()
+    offset = pto.const(0, dtype=pto.index)
+
+    _ = pto.vmi.vload(
+        src_ptr,
+        offset,
+        size=128,
+        dist_mode="unpack",
+        to_dtype=pto.i16,
+    )
+
+
+@pto.jit(target="a5", backend="vpto", mode="explicit")
+def vmi_brc_vload_probe():
+    src_tile = pto.alloc_tile(shape=[1, 64], dtype=pto.f32)
+    src_ptr = src_tile.as_ptr()
+    offset = pto.const(0, dtype=pto.index)
+
+    _ = pto.vmi.vload(
+        src_ptr,
+        offset,
+        size=64,
+        dist_mode="brc",
+    )
+
+
+@pto.jit(target="a5", backend="vpto", mode="explicit")
+def vmi_group_brc_vload_probe():
+    src_tile = pto.alloc_tile(shape=[1, 64], dtype=pto.f32)
+    src_ptr = src_tile.as_ptr()
+    offset = pto.const(0, dtype=pto.index)
+    row_stride = pto.const(1, dtype=pto.index)
+
+    _ = pto.vmi.vload(
+        src_ptr,
+        offset,
+        size=64,
+        group=8,
+        stride=row_stride,
+        dist_mode="brc",
+    )
+
+
+@pto.jit(target="a5", backend="vpto", mode="explicit")
+def vmi_unpack_vload_missing_dtype_probe():
+    src_tile = pto.alloc_tile(shape=[1, 128], dtype=pto.i8)
+    src_ptr = src_tile.as_ptr()
+    offset = pto.const(0, dtype=pto.index)
+
+    _ = pto.vmi.vload(
+        src_ptr,
+        offset,
+        size=128,
+        dist_mode="unpack",
+    )
+
+
 @pto.jit(target="a5")
 def compile_time_query_probe():
     f32_bw = pto.bytewidth(pto.f32)
@@ -2302,8 +3126,29 @@ def public_sync_surface_probe():
     pto.wait_flag(pto.Pipe.V, pto.Pipe.MTE3, event_id=dynamic_event)
     pto.set_cross_flag(pto.Pipe.FIX, 0)
     pto.set_intra_flag(pto.Pipe.MTE3, dynamic_event)
+    pto.set_intra_flag(pto.Pipe.FIX, 4)
     pto.wait_cross_flag(pto.Pipe.FIX, 0)
     pto.wait_intra_flag(pto.Pipe.V, dynamic_event)
+    pto.wait_intra_flag(pto.Pipe.FIX, 20)
+    pto.wait_intra_flag(pto.Pipe.MTE3, dynamic_event)
+    pto.wait_intra_flag(pto.Pipe.MTE3, 31)
+
+
+@pto.jit(target="a5")
+def public_trap_surface_probe():
+    pto.trap()
+
+
+@pto.jit(target="a5")
+def public_dynamic_buf_sync_surface_probe():
+    const_buf_id = pto.const(3)
+    pto.get_buf(pto.Pipe.V, const_buf_id)
+    pto.rls_buf(pto.Pipe.MTE2, const_buf_id, 2)
+
+    with pto.for_(0, 4, step=1) as iter:
+        buf_id = iter & 1
+        pto.get_buf(pto.Pipe.MTE2, buf_id, 0)
+        pto.rls_buf(pto.Pipe.MTE2, buf_id, 0)
 
 
 @pto.jit(target="a5", ast_rewrite=False)
@@ -2348,6 +3193,20 @@ def public_data_movement_surface_probe():
     pto.mte_gm_ub(gm_src, ub_dst, 0, 256, nburst=(8, 256, 256), loops=[(4, 2048, 2048)])
     pto.mte_gm_ub(gm_src, ub_dst, 0, 200, nburst=(64, 200, 256), pad=(0.0, 0, 0))
     pto.mte_ub_gm(ub_src, gm_dst, 256, nburst=(64, 256, 1024))
+    pto.set_store_atomic_cfg(4)
+    pto.mte_ub_gm(ub_src, gm_dst, 128, nburst=(1, 128, 128), l2_cache="nared")
+    pto.set_store_atomic_cfg(0)
+    pto.set_atomic_s32()
+    pto.set_atomic_add()
+    pto.set_atomic_max()
+    pto.set_atomic_min()
+    pto.set_atomic_f32()
+    pto.set_atomic_f16()
+    pto.set_atomic_bf16()
+    pto.set_atomic_s16()
+    pto.set_atomic_s8()
+    pto.set_atomic_none()
+    pto.mte_ub_gm(ub_src, gm_dst, 64, nburst=(1, 64, 64), l2_cache="wtsred")
     pto.mte_ub_ub(ub_src, ub_dst, 8, nburst=(16, 0, 4))
     pto.mte_ub_l1(ub_src, l1_dst, 8, nburst=(16, 0, 4))
     pto.mte_gm_l1(gm_src, l1_dst, 256, nburst=(8, 256, 256), loops=[(2, 2048, 2048)])
@@ -2397,6 +3256,25 @@ def public_data_movement_surface_probe():
     _ = gather1
     _ = gatherb
     _ = blocked
+
+
+@pto.jit(target="a5", mode="explicit")
+def explicit_mx_scale_staging_surface_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    stage1_u64 = pto.const(32768, dtype=pto.ui64)
+    a_scale_l1 = pto.castptr(zero_u64, pto.ptr(pto.f8e8m0, "mat"))
+    b_scale_l1 = pto.castptr(zero_u64, pto.ptr(pto.f8e8m0, "mat"))
+    a_stage1_l0 = pto.castptr(stage1_u64, pto.ptr(pto.f8e4m3, "left"))
+    b_stage1_l0 = pto.castptr(stage1_u64, pto.ptr(pto.f8e4m3, "right"))
+
+    pto.mte_l1_l0a_mx(
+        a_scale_l1, a_stage1_l0,
+        x_start=3, y_start=5, x_step=16, y_step=2, src_stride=8, dst_stride=2,
+    )
+    pto.mte_l1_l0b_mx(
+        b_scale_l1, b_stage1_l0,
+        x_start=3, y_start=5, x_step=16, y_step=2, src_stride=8, dst_stride=2,
+    )
 
 
 @pto.jit(target="a5", mode="explicit")
@@ -2565,6 +3443,24 @@ def low_precision_vsel_invalid_probe():
 
 
 @pto.jit(target="a5", mode="explicit")
+def low_precision_vmula_invalid_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    hif8_src = pto.castptr(zero_u64, pto.ptr(pto.hif8, "ub"))
+    mask_b8 = pto.pset_b8(pto.MaskPattern.ALL)
+    hif8 = pto.vlds(hif8_src, pto.const(0))
+    _ = pto.vmula(hif8, hif8, hif8, mask_b8)
+
+
+@pto.jit(target="a5", mode="explicit")
+def low_precision_vmadd_invalid_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    hif8_src = pto.castptr(zero_u64, pto.ptr(pto.hif8, "ub"))
+    mask_b8 = pto.pset_b8(pto.MaskPattern.ALL)
+    hif8 = pto.vlds(hif8_src, pto.const(0))
+    _ = pto.vmadd(hif8, hif8, hif8, mask_b8)
+
+
+@pto.jit(target="a5", mode="explicit")
 def vdup_surface_probe():
     zero_u64 = pto.const(0, dtype=pto.ui64)
     ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
@@ -2576,6 +3472,17 @@ def vdup_surface_probe():
     _ = scalar_dup
     _ = lowest_dup
     _ = highest_dup
+
+
+@pto.jit(target="a5", mode="explicit")
+def vecscope_surface_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    zero = pto.const(0)
+    with pto.vecscope():
+        mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+        vec_f32 = pto.vlds(ub_f32, zero)
+        pto.vsts(vec_f32, ub_f32, zero, mask32_full)
 
 
 @pto.jit(target="a5", mode="explicit")
@@ -2598,6 +3505,28 @@ def vmulscvt_surface_probe():
         part=pto.PartMode.EVEN,
     )
     _ = packed
+
+
+@pto.jit(target="a5", mode="explicit")
+def vmula_surface_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    acc = pto.vlds(ub_f32, pto.const(0))
+    lhs = pto.vlds(ub_f32, pto.const(0))
+    rhs = pto.vlds(ub_f32, pto.const(0))
+    _ = pto.vmula(acc, lhs, rhs, mask32_full)
+
+
+@pto.jit(target="a5", mode="explicit")
+def vmadd_surface_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    acc = pto.vlds(ub_f32, pto.const(0))
+    lhs = pto.vlds(ub_f32, pto.const(0))
+    rhs = pto.vlds(ub_f32, pto.const(0))
+    _ = pto.vmadd(acc, lhs, rhs, mask32_full)
 
 
 @pto.jit(target="a5", mode="explicit")
@@ -2728,6 +3657,24 @@ def auto_mode_explicit_surface_violation_probe():
     pto.mte_gm_ub(gm_src, ub_dst, 0, 256, nburst=(8, 256, 256))
 
 
+@pto.jit(target="a5")
+def auto_mode_vecscope_violation_probe():
+    with pto.vecscope():
+        pass
+
+
+@pto.jit(target="a5")
+def dynamic_buf_invalid_type_probe():
+    bad = pto.const(1.0, dtype=pto.f32)
+    pto.get_buf(pto.Pipe.V, bad)
+
+
+@pto.jit(target="a5")
+def dynamic_rls_buf_invalid_type_probe():
+    bad = pto.const(0.0, dtype=pto.f32)
+    pto.rls_buf(pto.Pipe.MTE2, bad)
+
+
 class _FakeTensor:
     def __init__(self, shape):
         self.shape = tuple(shape)
@@ -2739,8 +3686,15 @@ class _FakeTensor:
 def main() -> None:
     expected_public_exports = [
         "f8e4m3",
+        "f8e4m3x2",
+        "f8e4m3x4",
+        "f8e4m3x8",
         "f8e5m2",
+        "f8e5m2x2",
+        "f8e5m2x4",
+        "f8e5m2x8",
         "hif8",
+        "hif8x2",
         "f4e1m2x2",
         "f4e2m1x2",
         "si8",
@@ -2870,9 +3824,14 @@ def main() -> None:
     expect(fake_empty.shape == fake_tensor.shape, "pto.empty_like(...) should preserve the logical tensor shape")
     expect(not hasattr(pto, "scalar"), "pto.scalar should not remain in the public pto namespace")
     expect(hasattr(pto, "tile"), "pto.tile should be exported from the public namespace")
+    expect(hasattr(pto, "vmi"), "pto.vmi should be exported from the public namespace")
     expect(hasattr(pto.tile, "load"), "pto.tile.load should be exported from the public tile namespace")
     expect(hasattr(pto.tile, "add"), "pto.tile.add should be exported from the public tile namespace")
     expect(hasattr(pto.tile, "cmps"), "pto.tile.cmps should be exported from the public tile namespace")
+    expect(hasattr(pto.vmi, "vreg"), "pto.vmi.vreg should be exported from the public VMI namespace")
+    expect(hasattr(pto.vmi, "mask"), "pto.vmi.mask should be exported from the public VMI namespace")
+    expect(hasattr(pto.vmi, "vadd"), "pto.vmi.vadd should be exported from the public VMI namespace")
+    expect(hasattr(pto.vmi, "create_mask"), "pto.vmi.create_mask should be exported from the public VMI namespace")
     expect(not hasattr(pto, "load_tile"), "pto.load_tile should not remain on the public pto namespace")
     expect(not hasattr(pto, "store_tile"), "pto.store_tile should not remain on the public pto namespace")
     expect(hasattr(pto.tile, "matmul"), "pto.tile.matmul should be exported from the public tile namespace")
@@ -2886,12 +3845,17 @@ def main() -> None:
     expect(not hasattr(pto, "tload"), "legacy pto.tload should not remain on the public pto namespace")
     expect(not hasattr(pto, "tstore"), "legacy pto.tstore should not remain on the public pto namespace")
     expect(not hasattr(pto, "tadd"), "legacy pto.tadd should not remain on the public pto namespace")
+    expect(not hasattr(pto, "get_buf_dyn"), "pto.get_buf_dyn should not remain on the public pto namespace")
+    expect(not hasattr(pto, "rls_buf_dyn"), "pto.rls_buf_dyn should not remain on the public pto namespace")
     expect(not hasattr(pto, "tile_buf_type"), "pto.tile_buf_type should not remain on the public pto namespace")
-    expect(not hasattr(pto, "vecscope"), "pto.vecscope should not remain on the public pto namespace")
+    expect(hasattr(pto, "vecscope"), "pto.vecscope should be exported from the public pto namespace")
     expect(not hasattr(pto, "as_ptr"), "pto.as_ptr should not remain on the public pto namespace")
     expect(not hasattr(pto, "vbrc_load"), "pto.vbrc_load should not remain on the public pto namespace")
     expect(not hasattr(pto, "vsts_1pt"), "pto.vsts_1pt should not remain on the public pto namespace")
     expect(not hasattr(pto, "constexpr"), "pto.const_expr should not remain on the public pto namespace")
+    expect(not hasattr(pto, "copy_ubuf_to_ubuf"), "pto.copy_ubuf_to_ubuf should not remain on the public pto namespace")
+    expect(not hasattr(pto, "vmi_vreg_type"), "pto.vmi_vreg_type should not remain on the public pto namespace")
+    expect(not hasattr(pto, "vmi_mask_type"), "pto.vmi_mask_type should not remain on the public pto namespace")
     expect(not hasattr(scalar, "sts"), "scalar.sts should not remain in the public scalar namespace")
     expect(not hasattr(scalar, "cmpi"), "scalar.cmpi should not remain in the public scalar namespace")
     expect(not hasattr(scalar, "cmpi_sgt"), "scalar.cmpi_sgt should not remain in the public scalar namespace")
@@ -2900,10 +3864,9 @@ def main() -> None:
         "pto.tile_buf_type is not a supported PTODSL public interface" in str(removed_tile_buf_type),
         "removed pto.tile_buf_type should diagnose the authored alloc_tile replacement",
     )
-    removed_vecscope = expect_raises(AttributeError, lambda: getattr(pto, "vecscope"))
     expect(
-        "pto.vecscope is not a supported PTODSL public interface" in str(removed_vecscope),
-        "removed pto.vecscope should diagnose the public SIMD replacements",
+        callable(pto.vecscope),
+        "pto.vecscope should expose the public vecscope context manager",
     )
     removed_as_ptr = expect_raises(AttributeError, lambda: getattr(pto, "as_ptr"))
     expect(
@@ -2925,6 +3888,12 @@ def main() -> None:
         "pto.constexpr is not a supported PTODSL public interface" in str(removed_constexpr)
         and "Use pto.const_expr" in str(removed_constexpr),
         "removed pto.constexpr should diagnose pto.const_expr as the replacement",
+    )
+    removed_copy_ubuf_to_ubuf = expect_raises(AttributeError, lambda: getattr(pto, "copy_ubuf_to_ubuf"))
+    expect(
+        "pto.copy_ubuf_to_ubuf is not a supported PTODSL public interface" in str(removed_copy_ubuf_to_ubuf)
+        and "Use pto.mte_ub_ub" in str(removed_copy_ubuf_to_ubuf),
+        "removed pto.copy_ubuf_to_ubuf should diagnose pto.mte_ub_ub as the replacement",
     )
     for name in ("max", "min", "exp", "log", "sqrt", "abs"):
         expect(hasattr(scalar, name), f"scalar.{name} should be exported from the public scalar namespace")
@@ -2967,6 +3936,8 @@ def main() -> None:
     fixed_integer_index_coercion_probe.verify()
     integer_loop_bound_probe.verify()
     scalar_pointer_offset_probe.verify()
+    scalar_contiguous_vector_probe.verify()
+    scalar_contiguous_vector_arith_probe.verify()
     addptr_surface_probe.verify()
     simt_pointer_offset_probe.verify()
     scalar_store_element_coercion_probe.verify()
@@ -2980,6 +3951,7 @@ def main() -> None:
     public_mask_bitcast_probe.verify()
     public_mask_surface_probe.verify()
     public_sync_surface_probe.verify()
+    public_trap_surface_probe.verify()
     explicit_runtime_index_bitwise_event_probe.verify()
     explicit_runtime_index_integer_bitwise_event_probe.verify()
     ast_runtime_index_bitwise_event_probe.verify()
@@ -2988,6 +3960,8 @@ def main() -> None:
     public_vector_conversion_surface_probe.verify()
     vdup_surface_probe.verify()
     vmulscvt_surface_probe.verify()
+    vmula_surface_probe.verify()
+    vmadd_surface_probe.verify()
     vsstb_post_update_surface_probe.verify()
 
     with make_context() as ctx, Location.unknown(ctx):
@@ -3042,6 +4016,26 @@ def main() -> None:
             "pto.f8e4m3 should resolve to the public E4M3 float8 type",
         )
         expect(
+            str(pto.f8e4m3x4.resolve()) == "vector<4xf8E4M3FN>",
+            "pto.f8e4m3x4 should resolve to vector<4xf8E4M3FN>",
+        )
+        expect(
+            str(pto.f8e4m3x8.resolve()) == "vector<8xf8E4M3FN>",
+            "pto.f8e4m3x8 should resolve to vector<8xf8E4M3FN>",
+        )
+        expect(
+            str(pto.f8e5m2x4.resolve()) == "vector<4xf8E5M2>",
+            "pto.f8e5m2x4 should resolve to vector<4xf8E5M2>",
+        )
+        expect(
+            str(pto.f8e5m2x8.resolve()) == "vector<8xf8E5M2>",
+            "pto.f8e5m2x8 should resolve to vector<8xf8E5M2>",
+        )
+        expect(
+            str(pto.f8e8m0.resolve()) == "!pto.f8E8M0",
+            "pto.f8e8m0 should resolve to the public E8M0 scale type",
+        )
+        expect(
             "hif8" in str(pto.hif8.resolve()),
             "pto.hif8 should resolve to the public HiF8 type",
         )
@@ -3060,6 +4054,18 @@ def main() -> None:
         expect(
             str(pto.mask_b32.resolve()) == "!pto.mask<b32>",
             "pto.mask_b32 should resolve to the public 32-bit mask type",
+        )
+        expect(
+            str(pto.vmi.vreg(128, pto.f32).resolve()) == "!pto.vmi.vreg<128xf32>",
+            "pto.vmi.vreg(...) should resolve to the public logical VMI vector type",
+        )
+        expect(
+            str(pto.vmi.mask(128).resolve()) == "!pto.vmi.mask<128xpred>",
+            "pto.vmi.mask(...) should resolve to the public logical VMI mask type",
+        )
+        expect(
+            str(pto.vmi.vreg(128, pto.f8e4m3).resolve()) == "!pto.vmi.vreg<128xf8E4M3FN>",
+            "pto.vmi.vreg(...) should preserve low-precision authored element types",
         )
 
         lp_tile_ty = pto_types.tile_buf_type([16, 16], pto.hif8, [16, 16])
@@ -3083,6 +4089,10 @@ def main() -> None:
             "low-precision pointer types should be valid for device storage",
         )
         expect(
+            "!pto.ptr<!pto.f8E8M0, l1>" == str(pto.ptr(pto.f8e8m0, "mat").resolve()),
+            "f8e8m0 pointers should be valid for L1 scale storage",
+        )
+        expect(
             str(pto.vreg_type(256, pto.f8e4m3).resolve()) == "!pto.vreg<256xf8E4M3FN>",
             "low-precision vreg types should be valid for vector micro-ops",
         )
@@ -3094,6 +4104,11 @@ def main() -> None:
         expect_raises(
             TypeError,
             lambda: pto.f8e4m3(1.0),
+            "unsupported eager constructor target type",
+        )
+        expect_raises(
+            TypeError,
+            lambda: pto.f8e8m0(1.0),
             "unsupported eager constructor target type",
         )
 
@@ -3119,6 +4134,32 @@ def main() -> None:
     default_compiled = host_vec_copy.compile()
     explicit_default = host_vec_copy.compile(BLOCK=128)
     block64 = host_vec_copy.compile(BLOCK=64)
+
+    scalar_pipeline_text = scalar_pipeline_access_modes_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        scalar_pipeline_text,
+        "scalar pipeline access mode specialization",
+    )
+    expect(
+        scalar_pipeline_text.count("pto.load_scalar") == 1
+        and scalar_pipeline_text.count("pto.store_scalar") == 1,
+        "default scalar pipeline accesses should remain load_scalar/store_scalar",
+    )
+    expect(
+        scalar_pipeline_text.count("pto.ld_dev") == 1
+        and scalar_pipeline_text.count("pto.st_dev") == 1,
+        "bypass_l1 scalar pipeline accesses should lower to ld_dev/st_dev",
+    )
+    expect_raises(
+        TypeError,
+        lambda: scalar_pipeline_bypass_ub_invalid_probe.compile().mlir_text(),
+        "requires a GM pointer",
+    )
+    expect_raises(
+        TypeError,
+        lambda: scalar_pipeline_bypass_float_invalid_probe.compile().mlir_text(),
+        "supports only i8, i16, i32 or i64",
+    )
 
     expect(default_compiled is explicit_default, "default constexpr compile should hit specialization cache")
     expect(default_compiled is not block64, "different constexpr values should materialize different specializations")
@@ -3397,20 +4438,23 @@ def main() -> None:
     expect("!pto.tile_buf<vec, 1x64xf32>" in block64_text, "BLOCK=64 specialization MLIR missing specialized tile")
     expect("pto.entry" in default_text, "default @pto.jit entry child should carry the explicit entry marker")
     expect("pto.entry" in explicit_text, "explicit @pto.jit entry child should carry the explicit entry marker")
-    expect(default_text.count("module") >= 2, "default @pto.jit should emit an outer container plus one child module")
-    expect(block64_text.count("module") >= 2, "specialized @pto.jit should keep the outer-plus-child container shape")
-    expect('module attributes {pto.target_arch = "a5"}' in default_text, "outer container should carry only shared target-arch metadata")
+    expect(default_text.count("module") == 2, "default @pto.jit should wrap an unspecified-kind kernel in a backend child module")
+    expect(block64_text.count("module") == 2, "specialized @pto.jit should keep the backend child module shape")
+    expect(
+        'module attributes {pto.backend = "vpto", pto.target_arch = "a5"}' in default_text,
+        "unpartitioned VPTO module should carry backend and target metadata",
+    )
     expect('pto.mode = ' not in default_text, "generated PTODSL container IR should no longer expose public pto.mode")
     expect(
         'pto.backend = "vpto"' in default_text
         and 'pto.target_arch = "a5"' in default_text
-        and 'pto.kernel_kind = #pto.kernel_kind<vector>' in default_text,
+        and 'pto.kernel_kind' not in default_text,
         "primary VPTO child module should carry PTOAS-facing backend metadata directly on the child module",
     )
     expect(
         'pto.backend = "vpto"' in explicit_text
         and 'pto.target_arch = "a5"' in explicit_text
-        and 'pto.kernel_kind = #pto.kernel_kind<vector>' in explicit_text,
+        and 'pto.kernel_kind' not in explicit_text,
         "explicit specialization child module should keep the same VPTO child metadata shape",
     )
     expect(
@@ -3507,8 +4551,8 @@ def main() -> None:
         "@pto.jit(entry=False) handles should expose an explicit, stable cache-signature protocol",
     )
     expect(
-        helper_cache_signature[7] == "vector" and helper_cache_signature[8] is False,
-        "default @pto.jit handles should keep vector as the effective kernel kind while recording that it was not explicit",
+        helper_cache_signature[7] is None and helper_cache_signature[8] is False,
+        "default @pto.jit handles should leave the effective kernel kind unspecified",
     )
     expect_raises(
         RuntimeError,
@@ -3572,7 +4616,7 @@ def main() -> None:
     )
     expect(
         kernel_module_call_text.count('pto.backend = "vpto"') >= 2
-        and kernel_module_call_text.count('pto.kernel_kind = #pto.kernel_kind<vector>') >= 2,
+        and 'pto.kernel_kind' not in kernel_module_call_text,
         "entry-plus-helper specialization should materialize separate child modules for caller and callee",
     )
     ast_rewrite_kernel_module_text = entry_calls_ast_rewrite_kernel_module_probe.compile().mlir_text()
@@ -3617,7 +4661,7 @@ def main() -> None:
     expect(
         'pto.backend = "vpto"' in mixed_backend_text
         and 'pto.target_arch = "a5"' in mixed_backend_text
-        and 'pto.kernel_kind = #pto.kernel_kind<vector>' in mixed_backend_text,
+        and 'pto.kernel_kind' not in mixed_backend_text,
         "mixed-backend callee child should preserve the callee's VPTO backend through child pto.backend metadata",
     )
     expect(
@@ -3625,8 +4669,8 @@ def main() -> None:
         "mixed-backend EmitC entry should keep its top-level tile load/store path alongside the kernel-module call",
     )
     expect(
-        mixed_backend_text.count("pto.section.vector {") == 1,
-        "before PTOAS inferred normalization, the mixed-backend PTODSL IR should only carry the helper-authored explicit vector section",
+        "pto.section.vector {" not in mixed_backend_text,
+        "PTODSL should leave the mixed-backend kernel-module body uncovered so PTOAS can infer its physical section",
     )
     expect(
         "pto.tload" in mixed_backend_text
@@ -3663,22 +4707,51 @@ def main() -> None:
         "pto.mte_gm_ub" in mixed_backend_text and "pto.mte_ub_gm" in mixed_backend_text,
         "mixed-backend ptr/scalar kernel modules should be able to keep explicit VPTO data-movement ops in the callee child",
     )
+    dynamic_buf_emitc_text = emitc_entry_calls_dynamic_buf_kernel_module_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        dynamic_buf_emitc_text,
+        "emitc entry calling dynamic buf kernel-module specialization",
+    )
+    expect(
+        'module attributes {pto.backend = "emitc", pto.target_arch = "a5"}' in dynamic_buf_emitc_text,
+        "dynamic-buf emitc entry should encode the EmitC backend",
+    )
+    expect(
+        "pto.get_buf_dyn" in dynamic_buf_emitc_text,
+        "dynamic-buf kernel module IR should contain pto.get_buf_dyn ops",
+    )
+    expect(
+        "pto.rls_buf_dyn" in dynamic_buf_emitc_text,
+        "dynamic-buf kernel module IR should contain pto.rls_buf_dyn ops",
+    )
+    expect(
+        dynamic_buf_emitc_text.count("pto.get_buf_dyn") == 2,
+        "mixed-backend dynamic buf callee should keep both MTE2 and MTE3 get_buf_dyn ops",
+    )
+    expect(
+        dynamic_buf_emitc_text.count("pto.rls_buf_dyn") == 2,
+        "mixed-backend dynamic buf callee should keep both MTE2 and MTE3 rls_buf_dyn ops",
+    )
+    expect(
+        "func.call @dynamic_buf_kernel_module__ptodsl_" in dynamic_buf_emitc_text,
+        "emitc entry should call into the dynamic buf kernel module",
+    )
     decorated_mixed_backend_text = emitc_entry_calls_vpto_kernel_module_via_decorated_simd_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(
         decorated_mixed_backend_text,
-        "emitc entry calling vpto kernel-module through @pto.simd specialization",
+        "emitc entry calling vpto kernel-module through @pto.tileop specialization",
     )
     expect(
         re.search(
-            r"call @emitc_vpto_kernel_module_callsite_simd_helper__ptodsl_[0-9a-f]+"
+            r"call @explicit_vpto_kernel_module__ptodsl_[0-9a-f]+"
             r"\(%[a-zA-Z0-9_]+, %[a-zA-Z0-9_]+, %[a-zA-Z0-9_]+\)",
             decorated_mixed_backend_text,
         ) is not None,
-        "@pto.simd helper callsites should lower to helper function calls in the caller body",
+        "plain Tile adapters should expand in the caller and invoke the kernel module directly",
     )
     expect(
-        "pto.section.vector {" in decorated_mixed_backend_text,
-        "the outlined @pto.simd helper body should still materialize one vector section",
+        "emitc_vpto_kernel_module_callsite_simd_helper__ptodsl_" not in decorated_mixed_backend_text,
+        "plain Tile adapters should not create an extra helper function boundary",
     )
     multi_abi_compiled = entry_calls_kernel_module_multiple_abi_probe.compile()
     multi_abi_text = multi_abi_compiled.mlir_text()
@@ -3707,16 +4780,22 @@ def main() -> None:
         multi_abi_graph.dependencies == (("entry_calls_kernel_module_multiple_abi_probe", ("process_tile_module",)),),
         "higher-level dependency metadata should still preserve the authored caller->callee edge",
     )
+    host_vec_copy_compiled = host_vec_copy.compile()
     native_build_variants = (
-        ("pure-container", host_vec_copy.compile()),
-        ("explicit-level3-container", host_vec_copy_explicit_addr.compile()),
-        ("same-backend-multi-child-container", kernel_module_compiled),
-        ("mixed-backend-container", emitc_entry_calls_vpto_kernel_module_probe.compile()),
-        ("source-auto", source_native_build_compiled),
-        ("source-explicit", source_explicit_native_build_compiled),
-        ("source-no-insert-sync", source_no_insert_sync_native_build_compiled),
+        (
+            "a3-pure-container",
+            host_vec_copy_compiled,
+            replace(host_vec_copy_compiled._module_spec, target_arch="a3"),
+        ),
+        ("explicit-level3-container", host_vec_copy_explicit_addr.compile(), None),
+        ("same-backend-multi-child-container", kernel_module_compiled, None),
+        ("mixed-backend-container", emitc_entry_calls_vpto_kernel_module_probe.compile(), None),
+        ("source-auto", source_native_build_compiled, None),
+        ("source-explicit", source_explicit_native_build_compiled, None),
+        ("source-no-insert-sync", source_no_insert_sync_native_build_compiled, None),
     )
     native_build_observations = []
+    launch_target_arches = []
 
     with TemporaryDirectory() as tmpdir:
         build_root = Path(tmpdir)
@@ -3746,16 +4825,30 @@ def main() -> None:
             )
             kernel_object.write_text("fake fatobj\n", encoding="utf-8")
 
-        def fake_compile_launch_cpp(launch_cpp, launch_object, *, kernel_kind, export_macro):
+        def fake_compile_launch_cpp(
+            launch_cpp,
+            launch_object,
+            *,
+            kernel_kind,
+            target_arch,
+            export_macro,
+        ):
             expect(launch_cpp.is_file(), "native build should materialize launch.cpp before compiling it")
-            expect(kernel_kind in {"vector", "cube"}, "native build should forward the authored kernel kind")
+            expect(
+                kernel_kind in {None, "vector", "cube"},
+                "native build should forward the optional authored kernel kind",
+            )
+            launch_target_arches.append(target_arch)
             expect(export_macro.endswith("_EXPORTS"), "native build should preserve launch export macro naming")
             launch_object.write_text("fake launch object\n", encoding="utf-8")
 
         def fake_link_shared_library(launch_object, kernel_object, shared_library, *, kernel_kind):
             expect(launch_object.is_file(), "native build should compile launch.cpp before linking")
             expect(kernel_object.is_file(), "native build should run ptoas before shared-library link")
-            expect(kernel_kind in {"vector", "cube"}, "native build should preserve kernel-kind-aware link flags")
+            expect(
+                kernel_kind in {None, "vector", "cube"},
+                "native build should preserve the optional kernel kind",
+            )
             shared_library.write_text("fake shared library\n", encoding="utf-8")
 
         with mock.patch.object(native_build_runtime, "artifact_paths", side_effect=fake_artifacts), mock.patch.object(
@@ -3765,10 +4858,11 @@ def main() -> None:
         ), mock.patch.object(
             native_build_runtime, "_link_shared_library", side_effect=fake_link_shared_library
         ), mock.patch.object(native_build_runtime, "runtime_library_flags", return_value=("-laclrt",)):
-            for label, compiled in native_build_variants:
+            for label, compiled, module_spec_override in native_build_variants:
+                module_spec = module_spec_override or compiled._module_spec
                 lib_path, launch_symbol = native_build_runtime.build_native_library(
                     py_name=compiled._py_name,
-                    module_spec=compiled._module_spec,
+                    module_spec=module_spec,
                     kernel_signature=compiled._kernel_signature,
                     mlir_text=compiled.mlir_text(),
                     specialization_key=compiled.specialization_key,
@@ -3783,22 +4877,29 @@ def main() -> None:
         len(native_build_observations) == len(native_build_variants),
         "native build should drive ptoas once per compiled container variant under test",
     )
-    for (label, compiled), observation in zip(native_build_variants, native_build_observations):
+    for (label, compiled, module_spec_override), observation, launch_target_arch in zip(
+        native_build_variants, native_build_observations, launch_target_arches
+    ):
+        module_spec = module_spec_override or compiled._module_spec
         expect(
-            observation["target_arch"] == compiled._module_spec.target_arch,
+            observation["target_arch"] == module_spec.target_arch,
             f"{label} native build should still pass the target arch to ptoas",
         )
+        expect(
+            launch_target_arch == module_spec.target_arch,
+            f"{label} native build should pass the target arch to launch compilation",
+        )
         expected_insert_sync = (
-            compiled._module_spec.insert_sync
-            if compiled._module_spec.insert_sync is not None
-            else compiled._module_spec.mode != "explicit"
+            module_spec.insert_sync
+            if module_spec.insert_sync is not None
+            else module_spec.mode != "explicit"
         )
         expect(
             observation["insert_sync"] == expected_insert_sync,
             f"{label} native build should forward the effective insert_sync policy to ptoas",
         )
-        expected_backend = compiled._module_spec.backend if compiled._module_spec.jit_source is not None else None
-        expected_pto_level = "level3" if compiled._module_spec.mode == "explicit" else None
+        expected_backend = module_spec.backend if module_spec.jit_source is not None else None
+        expected_pto_level = "level3" if module_spec.mode == "explicit" else None
         expect(
             observation["backend"] == expected_backend,
             f"{label} native build should only forward ptoas backend overrides for source-backed kernels",
@@ -3811,10 +4912,11 @@ def main() -> None:
             observation["mlir_text"] == compiled.mlir_text(),
             f"{label} native build should hand the backend-partitioned container MLIR to ptoas unchanged",
         )
-        if compiled._module_spec.jit_source is None:
+        if module_spec.jit_source is None:
+            expected_module_count = 2
             expect(
-                observation["mlir_text"].count("module") >= 2,
-                f"{label} native build should route the unified outer+child container through ptoas",
+                observation["mlir_text"].count("module") >= expected_module_count,
+                f"{label} native build should route the authored module shape through ptoas",
             )
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
@@ -3898,6 +5000,21 @@ def main() -> None:
             "--enable-insert-sync" in explicit_ptoas_cmd,
             "source-backed native build should still pass explicit/effective insert-sync to ptoas",
         )
+        ptoas_cmds.clear()
+        vmi_mlir_text = vmi_wrapper_dispatch_probe.compile().mlir_text()
+        mlir_path.write_text(vmi_mlir_text, encoding="utf-8")
+        with mock.patch.object(native_build_runtime, "resolve_ptoas_binary", return_value=Path("/tmp/fake-ptoas")), mock.patch.object(
+            native_build_runtime, "_run", side_effect=fake_run_ptoas_cmd
+        ):
+            native_build_runtime._run_ptoas(
+                mlir_path,
+                kernel_object,
+                target_arch="a5",
+            )
+        expect(
+            len(ptoas_cmds) == 1,
+            "native build should issue exactly one ptoas command for PTODSL-generated VMI MLIR",
+        )
     expect("valid=?" not in default_text, "default alloc_tile() should keep full static valid-shape when valid_shape= is omitted")
     auto_mode_violation = expect_raises(
         RuntimeError,
@@ -3916,6 +5033,23 @@ def main() -> None:
         __file__ in str(auto_mode_violation),
         "auto-mode DMA violation should preserve the authored source file",
     )
+    auto_mode_vecscope_violation = expect_raises(
+        RuntimeError,
+        auto_mode_vecscope_violation_probe.compile,
+        '@pto.jit(mode="explicit")',
+    )
+    expect(
+        "auto-mode contract violation" in str(auto_mode_vecscope_violation),
+        "auto-mode vecscope use should be diagnosed as an auto-mode contract violation",
+    )
+    expect(
+        "pto.vecscope()" in str(auto_mode_vecscope_violation),
+        "auto-mode vecscope violation should identify the explicit-only surface",
+    )
+    expect(
+        "auto_mode_vecscope_violation_probe" in str(auto_mode_vecscope_violation),
+        "auto-mode vecscope violation should identify the authored kernel name",
+    )
     merged_cross_mode_text = str(pto.merge_jit_modules(host_vec_copy.compile(), host_vec_copy_explicit.compile()))
     expect_parse_roundtrip_and_verify(merged_cross_mode_text, "merged cross-mode PTODSL container")
     expect(
@@ -3927,7 +5061,7 @@ def main() -> None:
     expect_parse_roundtrip_and_verify(merged_same_mode_text, "merged same-mode PTODSL container")
     expect(
         merged_same_mode_text.count('func.func @host_vec_copy(') == 2,
-        "merge_jit_modules() should preserve both primary child modules in the merged container",
+        "merge_jit_modules() should preserve same-named specializations in independent backend child modules",
     )
 
     runtime_metadata_text = runtime_metadata_kernel.compile().mlir_text()
@@ -3964,6 +5098,10 @@ def main() -> None:
     expect(tile_sort_gather_text.count("pto.tgather") == 2, "tile gather wrappers should lower to pto.tgather")
     expect("#pto.mask_pattern<P0101>" in tile_sort_gather_text, "pto.tile.gather should preserve P0101")
     expect("#pto.mask_pattern<P1010>" in tile_sort_gather_text, "pto.tgather should preserve P1010")
+    tile_ci_text = tile_ci_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(tile_ci_text, "tile ci surface specialization")
+    expect(tile_ci_text.count("pto.tci") == 2, "pto.tile.ci should lower to pto.tci")
+    expect("descending = true" in tile_ci_text, "pto.tile.ci(descending=True) should preserve the descending attribute in MLIR")
     expect(
         re.search(
             r"pto\.alloc_tile valid_row = %[a-zA-Z0-9_]+ valid_col = %[a-zA-Z0-9_]+ : !pto\.tile_buf<vec, 1x128xf32, valid=\?x\?>",
@@ -4114,9 +5252,9 @@ def main() -> None:
     expect_parse_roundtrip_and_verify(shared_subkernel_text, "shared subkernel lowering specialization")
     expect(
         SUBKERNEL_OBSERVATIONS == [
-            ("cube", "top_level_cube_probe", 1),
-            ("simd", "top_level_simd_probe", 1),
-            ("simd", "nested_simd_probe", 1),
+            ("tileop", "top_level_cube_probe", 1),
+            ("tileop", "top_level_simd_probe", 1),
+            ("tileop", "nested_simd_probe", 1),
         ],
         f"unexpected shared subkernel lowering observations: {SUBKERNEL_OBSERVATIONS!r}",
     )
@@ -4124,39 +5262,26 @@ def main() -> None:
         re.search(r"call @top_level_cube_probe__ptodsl_[0-9a-f]+\(\)", shared_subkernel_text) is not None
         and re.search(r"call @top_level_simd_probe__ptodsl_[0-9a-f]+\(\)", shared_subkernel_text) is not None
         and re.search(r"call @nested_simd_probe__ptodsl_[0-9a-f]+\(\)", shared_subkernel_text) is not None,
-        "@pto.cube/@pto.simd decorated subkernels should lower to helper calls in the caller body",
+        "@pto.tileop decorated helpers should lower to helper calls in the caller body",
     )
     expect(
-        shared_subkernel_text.count("pto.section.vector {") == 2 and "pto.section.cube {" in shared_subkernel_text,
-        "outlined decorated helper bodies should still preserve their PTO unit sections",
+        shared_subkernel_text.count("pto.tileop.helper") == 3
+        and "pto.section.vector" not in shared_subkernel_text
+        and "pto.section.cube" not in shared_subkernel_text,
+        "outlined TileOp helpers should defer section kind materialization to PTOAS",
     )
-
-    explicit_vector_simd_text = explicit_vector_calls_simd_probe.compile(TRACE_TOKEN=1).mlir_text()
-    expect_parse_roundtrip_and_verify(
-        explicit_vector_simd_text,
-        "explicit vector jit calling simd subkernel specialization",
-    )
-    expect(
-        "pto.kernel_kind = #pto.kernel_kind<vector>" in explicit_vector_simd_text
-        and "pto.section.vector {" not in explicit_vector_simd_text,
-        "same-kind @pto.simd helpers inside explicit vector kernels should use function/kernel kind metadata without redundant sections",
-    )
-    expect_raises(
-        RuntimeError,
-        lambda: explicit_vector_calls_cube_probe.compile(TRACE_TOKEN=1).mlir_text(),
-        "@pto.cube cannot be lowered inside an explicit @pto.jit(kernel_kind='vector')",
-    )
-    explicit_vector_inline_simd_text = explicit_vector_inline_simd_probe.compile(
+    explicit_vector_inline_tileop_text = explicit_vector_inline_tileop_probe.compile(
         TRACE_TOKEN=1
     ).mlir_text()
     expect_parse_roundtrip_and_verify(
-        explicit_vector_inline_simd_text,
-        "explicit vector jit calling inline simd specialization",
+        explicit_vector_inline_tileop_text,
+        "explicit vector jit calling inline TileOp specialization",
     )
     expect(
-        "pto.kernel_kind = #pto.kernel_kind<vector>" in explicit_vector_inline_simd_text
-        and "pto.section.vector {" not in explicit_vector_inline_simd_text,
-        "same-kind inline pto.simd() scopes inside explicit vector kernels should avoid redundant sections",
+        "pto.kernel_kind = #pto.kernel_kind<vector>" in explicit_vector_inline_tileop_text
+        and "pto.tileop.helper" in explicit_vector_inline_tileop_text
+        and "pto.section.vector {" not in explicit_vector_inline_tileop_text,
+        "inline pto.tileop() scopes should defer physical section materialization to PTOAS",
     )
 
     INLINE_SUBKERNEL_SCOPE_OBSERVATIONS.clear()
@@ -4165,27 +5290,54 @@ def main() -> None:
     expect(
         INLINE_SUBKERNEL_SCOPE_OBSERVATIONS == [
             ("simt", "inline_simt", 1),
-            ("simd", "inline_simd", 1),
-            ("cube", "inline_cube", 1),
+            ("tileop", "inline_tileop", 1),
         ],
         f"unexpected inline subkernel scope observations: {INLINE_SUBKERNEL_SCOPE_OBSERVATIONS!r}",
     )
     expect(
-        inline_subkernel_scope_text.count("pto.store_vfsimt_info") == 1,
-        "inline pto.simt() should materialize one caller-side store_vfsimt_info before the helper call",
+        inline_subkernel_scope_text.count("pto.section.simt") == 1
+        and re.search(r"pto\.section\.simt\s*<<<", inline_subkernel_scope_text) is not None,
+        "inline pto.simt() should lower to one inline pto.section.simt region",
     )
     expect(
-        re.search(r"call @inline_simt_[0-9]+__ptodsl_[0-9a-f]+\([^\\n]*\)", inline_subkernel_scope_text) is not None
-        and re.search(r"call @inline_simd_[0-9]+__ptodsl_[0-9a-f]+\([^\\n]*\)", inline_subkernel_scope_text) is not None
-        and re.search(r"call @inline_cube_[0-9]+__ptodsl_[0-9a-f]+\([^\\n]*\)", inline_subkernel_scope_text) is not None,
-        "inline pto.simt()/pto.simd()/pto.cube() scopes should each lower to one helper call",
+        re.search(r"call @inline_simt_[0-9]+__ptodsl_[0-9a-f]+\([^\\n]*\)", inline_subkernel_scope_text) is None
+        and re.search(r"call @inline_tileop_[0-9]+__ptodsl_[0-9a-f]+\([^\\n]*\)", inline_subkernel_scope_text) is not None,
+        "inline pto.simt() should stay in-place while inline pto.tileop() still lowers to one helper call",
     )
     expect(
-        inline_subkernel_scope_text.count("pto.barrier <PIPE_ALL>") >= 2
-        and "pto.section.vector {" in inline_subkernel_scope_text
-        and "pto.section.cube {" in inline_subkernel_scope_text
+        "pto.tileop.helper" in inline_subkernel_scope_text
+        and "pto.section.vector {" not in inline_subkernel_scope_text
+        and "pto.section.cube {" not in inline_subkernel_scope_text
         and "pto.store" in inline_subkernel_scope_text,
-        "outlined inline helpers should preserve the authored SIMD/Cube sections and SIMT scalar ops",
+        "outlined inline TileOp helpers should mark TileOp helpers and preserve SIMT scalar ops",
+    )
+
+    inline_simt_launch_text = inline_simt_launch_dims_probe.compile(TRACE_TOKEN=1).mlir_text()
+    expect_parse_roundtrip_and_verify(inline_simt_launch_text, "inline simt launch-dims specialization")
+    expect(
+        "pto.section.simt<<<32, 2, 1>>>" in inline_simt_launch_text,
+        "with pto.simt(dim_x, dim_y, dim_z) should emit static inline pto.section.simt launch dims",
+    )
+    expect(
+        "pto.simt_launch" not in inline_simt_launch_text
+        and "pto.store_vfsimt_info" not in inline_simt_launch_text,
+        "with pto.simt(dim_x, dim_y, dim_z) should not emit caller-side SIMT launch metadata",
+    )
+    expect(
+        re.search(r"func\.func @inline_simt_[0-9]+__ptodsl_[0-9a-f]+", inline_simt_launch_text)
+        is None
+        and "pto.simt_entry" not in inline_simt_launch_text,
+        "inline SIMT launch-dims body should remain in the enclosing kernel during DSL tracing",
+    )
+    expect_raises(
+        TypeError,
+        lambda: pto.simt(32, 1),
+        "expects exactly three",
+    )
+    expect_raises(
+        TypeError,
+        lambda: inline_simt_dynamic_launch_dim_probe.compile(TRACE_TOKEN=1),
+        "static Python int",
     )
 
     simt_text = simt_helper_lowering_probe.compile(TRACE_TOKEN=1).mlir_text()
@@ -4213,12 +5365,76 @@ def main() -> None:
         "@pto.simt helper should materialize exactly one reusable pto.simt_entry function",
     )
     expect(
-        "pto.ptodsl.subkernel_helper = \"simt\"" not in simt_text,
-        "@pto.simt helpers should no longer be modeled as PTODSL subkernel helpers",
+        "pto.tileop.helper" not in simt_text,
+        "@pto.simt helpers should not be modeled as TileOp helpers",
     )
     expect("pto.get_tid_x" in simt_text, "SIMT helper body should contain pto.get_tid_x")
     expect("pto.get_tid_y" in simt_text, "SIMT helper body should contain pto.get_tid_y")
     expect("pto.get_tid_z" in simt_text, "SIMT helper body should contain pto.get_tid_z")
+
+    alloc_buffer_local_text = alloc_buffer_local_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(alloc_buffer_local_text, "alloc_buffer local specialization")
+    expect(
+        "llvm.alloca" in alloc_buffer_local_text and "x f32" in alloc_buffer_local_text,
+        "alloc_buffer should lower to an LLVM stack allocation in the SIMT helper",
+    )
+    expect(
+        "pto.persistent" not in alloc_buffer_local_text,
+        "alloc_buffer inside a SIMT helper should remain section-local",
+    )
+    expect(
+        re.search(
+            r"func\.func @alloc_buffer_local_helper__simt_\d+\(\) attributes \{pto\.simt_entry\}",
+            alloc_buffer_local_text,
+        )
+        is not None,
+        "alloc_buffer probe should keep allocation inside the SIMT helper body",
+    )
+    alloc_buffer_top_level_text = alloc_buffer_outside_simt_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(alloc_buffer_top_level_text, "alloc_buffer top-level specialization")
+    expect(
+        "llvm.alloca" in alloc_buffer_top_level_text and "pto.persistent" in alloc_buffer_top_level_text,
+        "alloc_buffer outside a SIMT helper should be marked as a persistent fragment candidate",
+    )
+    alloc_buffer_tileop_helper_text = alloc_buffer_tileop_helper_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(alloc_buffer_tileop_helper_text, "alloc_buffer tileop helper specialization")
+    expect(
+        "llvm.alloca" in alloc_buffer_tileop_helper_text
+        and "pto.persistent" not in alloc_buffer_tileop_helper_text,
+        "alloc_buffer inside a TileOp helper should remain local",
+    )
+    alloc_buffer_inline_simt_text = alloc_buffer_inline_simt_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(alloc_buffer_inline_simt_text, "alloc_buffer inline simt specialization")
+    expect(
+        "llvm.alloca" in alloc_buffer_inline_simt_text and "pto.persistent" not in alloc_buffer_inline_simt_text,
+        "alloc_buffer inside an inline SIMT section should remain local",
+    )
+    rmsnorm_alloc_buffer_text = rmsnorm_alloc_buffer_layout_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(rmsnorm_alloc_buffer_text, "RMSNorm hand-authored UB layout specialization")
+    for expected_offset in (4096, 4224, 12416, 20608):
+        expect(
+            f"arith.constant {expected_offset} : index" in rmsnorm_alloc_buffer_text,
+            f"RMSNorm hand-authored UB layout should materialize f32 offset {expected_offset}",
+        )
+    expect(
+        rmsnorm_alloc_buffer_text.count("llvm.alloca") == 2,
+        "RMSNorm alloc_buffer fragment helper should allocate x_frag and sum_sq locally",
+    )
+    expect(
+        re.search(r"call @rmsnorm_alloc_buffer_frag_helper__simt_\d+\(", rmsnorm_alloc_buffer_text)
+        is not None,
+        "RMSNorm alloc_buffer layout should pass explicitly authored UB pointers through the existing SIMT helper call path",
+    )
+    expect_raises(
+        TypeError,
+        lambda: simt_helper_reject_alloc_buffer_probe.compile(),
+        "do not accept pto.alloc_buffer",
+    )
+    expect_raises(
+        TypeError,
+        lambda: simt_helper_reject_alloc_buffer_offset_probe.compile(),
+        "do not accept pto.alloc_buffer",
+    )
 
     simt_launch_text = simt_explicit_launch_probe.compile(TRACE_TOKEN=1).mlir_text()
     expect_parse_roundtrip_and_verify(simt_launch_text, "explicit simt launch specialization")
@@ -4268,27 +5484,22 @@ def main() -> None:
     )
     expect_raises(
         TypeError,
-        lambda: ast_subkernel_runtime_for_helper[32, 1, 1](pto.const(1, dtype=pto.i32)),
+        lambda: ast_subkernel_runtime_for_helper[32, 1, 1](),
         "only @pto.simt",
     )
     simt_resource_attr_text = simt_resource_attr_launch_probe.compile(TRACE_TOKEN=1).mlir_text()
     expect_parse_roundtrip_and_verify(simt_resource_attr_text, "simt resource attr launch specialization")
     expect(
         re.search(
-            r"func\.func @simt_resource_attr_probe__simt_\d+\(\) attributes \{pto\.simt_entry, pto\.simt_max_regs = 48 : i32, pto\.simt_max_threads = 256 : i32\}",
+            r"func\.func @simt_resource_attr_probe__simt_\d+\(\) attributes \{pto\.simt_entry, pto\.simt_max_threads = 256 : i32\}",
             simt_resource_attr_text,
         ) is not None,
-        "@pto.simt(max_threads=..., max_regs=...) should attach resource attrs to the helper function",
+        "@pto.simt(max_threads=...) should attach resource attrs to the helper function",
     )
     expect_raises(
         ValueError,
         lambda: pto.simt(max_threads=0)(lambda: None),
         "max_threads",
-    )
-    expect_raises(
-        TypeError,
-        lambda: pto.simt(max_regs=True)(lambda: None),
-        "max_regs",
     )
 
     def _enter_inline_simt_with_resource_attr():
@@ -4394,6 +5605,20 @@ def main() -> None:
         "pto.resume",
     ):
         expect(op_name in simt_full_text, f"full SIMT surface should contain {op_name}")
+    for fp8_vec in (
+        "vector<4xf8E4M3FN>",
+        "vector<8xf8E4M3FN>",
+        "vector<4xf8E5M2>",
+        "vector<8xf8E5M2>",
+    ):
+        expect(
+            f"!pto.ptr<{fp8_vec}, gm>" in simt_full_text,
+            f"SIMT FP8 extension should preserve !pto.ptr<{fp8_vec}, gm>",
+        )
+        expect(
+            f"!pto.ptr<{fp8_vec}, gm>, {fp8_vec}" in simt_full_text,
+            f"SIMT FP8 extension stg should accept exact {fp8_vec} payload",
+        )
 
     expect_raises(
         TypeError,
@@ -4418,11 +5643,11 @@ def main() -> None:
     )
     expect(
         ast_subkernel_runtime_for_text.count("scf.for") == 1,
-        "@pto.simd helper should rewrite Python range(...) loops into runtime scf.for",
+        "@pto.tileop helper should rewrite Python range(...) loops into runtime scf.for",
     )
     expect(
-        "pto.barrier <PIPE_ALL>" in ast_subkernel_runtime_for_text,
-        "rewritten @pto.simd helper body should lower inside the caller trace",
+        "pto.vlds" in ast_subkernel_runtime_for_text and "pto.vsts" in ast_subkernel_runtime_for_text,
+        "rewritten @pto.tileop helper body should preserve Vector compute inside the caller trace",
     )
 
     carry_text = carry_loop_lowering_probe.compile(BLOCK=32).mlir_text()
@@ -4524,6 +5749,26 @@ def main() -> None:
         "ast_rewrite=True Python range(...) should lower to one scf.for",
     )
 
+    ast_nested_runtime_for_induction_scope_text = ast_nested_runtime_for_induction_scope_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ast_nested_runtime_for_induction_scope_text,
+        "AST-rewritten nested runtime induction scope specialization",
+    )
+    expect(
+        ast_nested_runtime_for_induction_scope_text.count("scf.for") == 2,
+        "nested runtime loop induction variables should remain local to their loops",
+    )
+
+    ast_nested_runtime_for_local_temp_scope_text = ast_nested_runtime_for_local_temp_scope_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ast_nested_runtime_for_local_temp_scope_text,
+        "AST-rewritten nested runtime local temp scope specialization",
+    )
+    expect(
+        ast_nested_runtime_for_local_temp_scope_text.count("scf.for") == 3,
+        "nested runtime loop temporaries consumed in-loop should not become live-outs",
+    )
+
     ast_runtime_for_carry_text = ast_runtime_for_carry_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(ast_runtime_for_carry_text, "AST-rewritten runtime carry for specialization")
     expect(
@@ -4549,6 +5794,110 @@ def main() -> None:
     expect(
         "iter_args(" not in ast_runtime_for_branch_local_temp_text,
         "branch-local temporaries should not be inferred as loop-carried state",
+    )
+
+    ast_runtime_ifexp_assign_text = ast_runtime_ifexp_assign_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ast_runtime_ifexp_assign_text,
+        "AST-rewritten runtime IfExp assignment specialization",
+    )
+    expect(
+        ast_runtime_ifexp_assign_text.count("scf.for") == 1,
+        "assign-form Python conditional expressions inside runtime loops should preserve the runtime loop",
+    )
+    expect(
+        ast_runtime_ifexp_assign_text.count("scf.if") == 1,
+        "assign-form Python conditional expressions should normalize through the existing AST if rewrite",
+    )
+
+    ast_runtime_ifexp_python_literal_assign_text = (
+        ast_runtime_ifexp_python_literal_assign_probe.compile().mlir_text()
+    )
+    expect_parse_roundtrip_and_verify(
+        ast_runtime_ifexp_python_literal_assign_text,
+        "AST-rewritten runtime IfExp assignment should materialize opposite-branch Python literals",
+    )
+    expect(
+        ast_runtime_ifexp_python_literal_assign_text.count("scf.for") == 1,
+        "assign-form Python conditional expressions with opposite-branch literals should preserve the runtime loop",
+    )
+    expect(
+        ast_runtime_ifexp_python_literal_assign_text.count("scf.if") == 1,
+        "assign-form Python conditional expressions with opposite-branch literals should normalize through the existing AST if rewrite",
+    )
+
+    ast_runtime_for_sibling_iv_reuse_text = ast_runtime_for_sibling_iv_reuse_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ast_runtime_for_sibling_iv_reuse_text,
+        "AST-rewritten sibling runtime for IV reuse specialization",
+    )
+    expect(
+        ast_runtime_for_sibling_iv_reuse_text.count("scf.for") >= 3,
+        "reusing a sibling runtime loop IV name should not be misdiagnosed as loop-target live-out",
+    )
+
+    ast_runtime_for_static_range_name_reuse_text = ast_runtime_for_static_range_name_reuse_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ast_runtime_for_static_range_name_reuse_text,
+        "AST-rewritten runtime for static_range/list-comprehension name reuse specialization",
+    )
+    expect(
+        ast_runtime_for_static_range_name_reuse_text.count("scf.for") == 1,
+        "static_range and comprehension-local names should not be inferred as outer runtime loop carry state",
+    )
+
+    ast_runtime_for_static_slot_carry_text = ast_runtime_for_static_slot_carry_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ast_runtime_for_static_slot_carry_text,
+        "AST-rewritten runtime for static subscript slot carry specialization",
+    )
+    expect(
+        ast_runtime_for_static_slot_carry_text.count("scf.for") == 1,
+        "static subscript slot carry should preserve the authored runtime loop",
+    )
+    expect(
+        "iter_args(" in ast_runtime_for_static_slot_carry_text
+        and "scf.yield" in ast_runtime_for_static_slot_carry_text,
+        "static subscript slot carry should lower through scf.for iter_args",
+    )
+    ast_runtime_for_static_slot_global_index_text = ast_runtime_for_static_slot_global_index_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ast_runtime_for_static_slot_global_index_text,
+        "AST-rewritten runtime for global static subscript slot carry specialization",
+    )
+    expect(
+        ast_runtime_for_static_slot_global_index_text.count("scf.for") == 1,
+        "module-global static slot indices should lower through the authored runtime loop",
+    )
+    ast_runtime_for_static_slot_binop_index_text = ast_runtime_for_static_slot_binop_index_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ast_runtime_for_static_slot_binop_index_text,
+        "AST-rewritten runtime for BinOp static subscript slot carry specialization",
+    )
+    expect(
+        ast_runtime_for_static_slot_binop_index_text.count("scf.for") == 1,
+        "BinOp static slot indices should lower through the authored runtime loop",
+    )
+    ast_runtime_for_static_slot_constexpr_index_text = (
+        ast_runtime_for_static_slot_constexpr_index_probe.compile(SLOT=2).mlir_text()
+    )
+    expect_parse_roundtrip_and_verify(
+        ast_runtime_for_static_slot_constexpr_index_text,
+        "AST-rewritten runtime for constexpr static subscript slot carry specialization",
+    )
+    expect(
+        ast_runtime_for_static_slot_constexpr_index_text.count("scf.for") == 1,
+        "constexpr static slot indices should lower through the authored runtime loop",
+    )
+    expect_raises(
+        PTODSLAstRewriteError,
+        lambda: ast_runtime_for_dynamic_slot_store_error_probe.compile(),
+        "simple_name[static_int_or_static_range_iv]",
+    )
+    expect_raises(
+        PTODSLAstRewriteError,
+        lambda: ast_runtime_for_complex_slot_store_error_probe.compile(),
+        "simple_name[static_int_or_static_range_iv]",
     )
 
     ast_rewrite_disabled_nested_helper_python_control_text = (
@@ -4685,7 +6034,7 @@ def main() -> None:
         "AST-rewritten rebound subkernel specialization",
     )
     expect(
-        ast_rebound_subkernel_text.count("pto.barrier <PIPE_ALL>") == 4,
+        ast_rebound_subkernel_text.count("pto.simt_launch @tileop_noop_simt_probe__simt_") == 4,
         "named subkernels should read nonlocal closure values when traced",
     )
 
@@ -4705,7 +6054,7 @@ def main() -> None:
         "source-less subkernel AST rewrite fallback specialization",
     )
     expect(
-        sourceless_subkernel_text.count("pto.barrier <PIPE_ALL>") == 1,
+        sourceless_subkernel_text.count("pto.simt_launch @tileop_noop_simt_probe__simt_") == 1,
         "source-less subkernels should fall back to original trace-time Python execution",
     )
 
@@ -4848,21 +6197,20 @@ def main() -> None:
 
     tile_slice_text = tile_slice_surface_probe.compile(BLOCK=128).mlir_text()
     expect_parse_roundtrip_and_verify(tile_slice_text, "tile slice surface specialization")
-    expect("memref.subview" in tile_slice_text, "tile[row, col:] should lower through memref.subview")
-    expect("memref.collapse_shape" not in tile_slice_text, "2D tile[row, col:] should lower directly to a rank-reduced memref view")
-    expect("pto.tile_buf_addr" in tile_slice_text, "tile[row, col:] should materialize a memref tile address view")
+    expect("memref.subview" not in tile_slice_text, "tile[row, col:] should no longer lower through memref.subview")
+    expect("pto.tile_buf_addr" in tile_slice_text, "tile[row, col:] should materialize a tile address pointer")
     expect(
-        "pto.vlds" in tile_slice_text and "memref<128xf32, strided<[1], offset: ?>, #pto.address_space<vec>>" in tile_slice_text,
-        "vlds(tile[row, col:]) should lower against the memref slice view",
+        "pto.vlds" in tile_slice_text and "!pto.ptr<f32, ub>" in tile_slice_text,
+        "vlds(tile[row, col:]) should lower against the pointer slice view",
     )
     expect(
-        "pto.vsts" in tile_slice_text and "memref<128xf32, strided<[1], offset: ?>, #pto.address_space<vec>>" in tile_slice_text,
-        "vsts(vec, tile[row, col:], mask) should lower against the memref slice view",
+        "pto.vsts" in tile_slice_text and "!pto.ptr<f32, ub>" in tile_slice_text,
+        "vsts(vec, tile[row, col:], mask) should lower against the pointer slice view",
     )
 
     tile_slice_1d_text = tile_slice_1d_surface_probe.compile(BLOCK=128).mlir_text()
     expect_parse_roundtrip_and_verify(tile_slice_1d_text, "1D tile slice surface specialization")
-    expect("memref.subview" in tile_slice_1d_text, "tile[start:] should lower through memref.subview")
+    expect("memref.subview" not in tile_slice_1d_text, "tile[start:] should lower without memref.subview")
     expect("pto.vldas" in tile_slice_1d_text, "vldas(tile[start:]) should lower against the 1D slice view")
     expect("pto.vldus" in tile_slice_1d_text, "vldus(tile[start:], align) should lower against the 1D slice view")
     expect("pto.vsts" in tile_slice_1d_text, "vsts(vec, tile[start:], mask) should lower against the 1D slice view")
@@ -4895,6 +6243,51 @@ def main() -> None:
     expect(
         re.search(r"pto\.load %\d+\[%c2(?:_\d+)?\]", scalar_pointer_offset_text) is not None,
         "scalar.load(ptr + 2) should lower as element offset 2",
+    )
+
+    scalar_contiguous_text = scalar_contiguous_vector_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(scalar_contiguous_text, "scalar contiguous vector specialization")
+    expect("llvm.load" in scalar_contiguous_text, "scalar.load(..., contiguous=N) should lower to llvm.load")
+    expect("llvm.store" in scalar_contiguous_text, "scalar.store(vector, ...) should lower to llvm.store")
+    expect("vector<4xf32>" in scalar_contiguous_text, "contiguous=4 over f32 should produce vector<4xf32>")
+    expect("llvm.insertelement" in scalar_contiguous_text, "pto.Vec(..., init=scalar) should broadcast with insertelement")
+    expect("arith.mulf" in scalar_contiguous_text, "VecValue multiplication should lower to arith.mulf")
+    expect(
+        "pto.load" not in scalar_contiguous_text and "pto.store" not in scalar_contiguous_text,
+        "contiguous vector memory access should not lower through scalar pto.load/store",
+    )
+    expect_raises(
+        ValueError,
+        lambda: scalar_contiguous_width_mismatch_probe.compile(),
+        "does not match vector size",
+    )
+    expect_raises(
+        TypeError,
+        lambda: scalar_contiguous_scalar_store_probe.compile(),
+        "scalar.store(scalar, ..., contiguous=N) is not supported",
+    )
+
+    vec_arith_text = scalar_contiguous_vector_arith_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(vec_arith_text, "scalar contiguous vector arithmetic specialization")
+    expect(
+        "pto.simt_launch" in vec_arith_text,
+        "VecValue arithmetic probe should lower through a SIMT launch",
+    )
+    expect("arith.addf" in vec_arith_text, "VecValue addition should lower to arith.addf")
+    expect("arith.subf" in vec_arith_text, "VecValue subtraction should lower to arith.subf")
+    expect("arith.mulf" in vec_arith_text, "VecValue multiplication should lower to arith.mulf")
+    expect("vector<4xf32>" in vec_arith_text, "vector arithmetic should keep vector<4xf32> type")
+    expect(
+        vec_arith_text.count("arith.addf") == 1,
+        "VecValue __add__ should emit exactly one arith.addf",
+    )
+    expect(
+        vec_arith_text.count("arith.subf") == 1,
+        "VecValue __sub__ should emit exactly one arith.subf",
+    )
+    expect(
+        vec_arith_text.count("arith.mulf") == 1,
+        "VecValue __mul__ should emit exactly one arith.mulf",
     )
 
     addptr_surface_text = addptr_surface_probe.compile().mlir_text()
@@ -4982,6 +6375,27 @@ def main() -> None:
 
     public_surface_text = public_surface_exports_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(public_surface_text, "public surface export specialization")
+    explicit_mx_scale_staging_text = explicit_mx_scale_staging_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        explicit_mx_scale_staging_text,
+        "explicit MX scale staging specialization",
+    )
+    acc_store_pre_quant_text = acc_store_pre_quant_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(acc_store_pre_quant_text, "acc-store pre_quant public mode specialization")
+    expect(
+        "pre_quant(%" in acc_store_pre_quant_text and "mode = f32_bf16" in acc_store_pre_quant_text,
+        "mte_l0c_gm pre_quant should preserve the f32_bf16 public mode",
+    )
+    expect_raises(
+        ValueError,
+        lambda: acc_store_bad_pre_quant_mode_probe.compile().mlir_text(),
+        "unsupported acc store pre_quant mode",
+    )
+    expect_raises(
+        TypeError,
+        lambda: acc_store_bad_pre_quant_payload_probe.compile().mlir_text(),
+        "acc store scalar pre_quant payload must be an f16, bf16, or f32 scalar",
+    )
     compile_time_query_text = compile_time_query_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(compile_time_query_text, "compile-time query specialization")
     eager_scalar_text = eager_scalar_constructor_probe.compile().mlir_text()
@@ -4996,6 +6410,10 @@ def main() -> None:
     expect_parse_roundtrip_and_verify(mask_surface_text, "public mask surface specialization")
     sync_surface_text = public_sync_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(sync_surface_text, "public sync surface specialization")
+    trap_surface_text = public_trap_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(trap_surface_text, "public trap surface specialization")
+    dynamic_buf_sync_text = public_dynamic_buf_sync_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(dynamic_buf_sync_text, "dynamic buf sync surface specialization")
     explicit_runtime_index_bitwise_event_text = explicit_runtime_index_bitwise_event_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(
         explicit_runtime_index_bitwise_event_text,
@@ -5023,24 +6441,289 @@ def main() -> None:
     expect_parse_roundtrip_and_verify(low_precision_vcvt_surface_text, "low-precision vcvt surface specialization")
     vdup_surface_text = vdup_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(vdup_surface_text, "public vdup surface specialization")
+    vecscope_surface_text = vecscope_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(vecscope_surface_text, "public vecscope surface specialization")
     vmulscvt_surface_text = vmulscvt_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(vmulscvt_surface_text, "public vmulscvt surface specialization")
+    vmula_surface_text = vmula_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(vmula_surface_text, "public vmula surface specialization")
+    vmadd_surface_text = vmadd_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(vmadd_surface_text, "public vmadd surface specialization")
     vsstb_post_update_surface_text = vsstb_post_update_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(vsstb_post_update_surface_text, "vsstb post-update surface specialization")
+    vmi_wrapper_dispatch_text = vmi_wrapper_dispatch_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(vmi_wrapper_dispatch_text, "public VMI wrapper dispatch specialization")
+    vmi_vhist_signless_source_text = vmi_vhist_signless_source_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        vmi_vhist_signless_source_text,
+        "public VMI vdhist/vchist signless-source specialization",
+    )
+    expect(
+        "pto.vmi.vdhist" in vmi_vhist_signless_source_text
+        and "pto.vmi.vchist" in vmi_vhist_signless_source_text,
+        "signless-source vdhist/vchist probe should still emit both histogram ops",
+    )
+    expect(
+        "!pto.vmi.vreg<256xi8" in vmi_vhist_signless_source_text,
+        "vdhist/vchist probe with dtype=pto.i8 source should surface signless i8 lanes in IR",
+    )
+    expect(
+        "!pto.vmi.vreg<256xui16" in vmi_vhist_signless_source_text,
+        "vdhist/vchist acc/result must remain ui16 in emitted IR",
+    )
+    vmi_vhist_signless_acc_text = vmi_vhist_signless_acc_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        vmi_vhist_signless_acc_text,
+        "public VMI vdhist/vchist signless-acc specialization",
+    )
+    expect(
+        "pto.vmi.vdhist" in vmi_vhist_signless_acc_text
+        and "pto.vmi.vchist" in vmi_vhist_signless_acc_text,
+        "signless-acc vdhist/vchist probe should emit both histogram ops",
+    )
+    expect(
+        "!pto.vmi.vreg<256xi16" in vmi_vhist_signless_acc_text,
+        "vdhist/vchist probe with dtype=pto.i16 acc should surface signless i16 lanes in IR",
+    )
+    expect(
+        "!pto.vmi.vreg<256xui16" in vmi_vhist_signless_acc_text,
+        "vdhist/vchist result must always be ui16, even when acc is signless i16",
+    )
+    vmi_vhist_bad_acc_error = expect_raises(
+        TypeError,
+        vmi_vhist_bad_acc_probe.compile,
+        "requires acc element type to be ui16 or i16",
+    )
+    expect(
+        "pto.vmi.vdhist(...)" in str(vmi_vhist_bad_acc_error),
+        "vdhist bad-acc rejection should carry the pto.vmi.vdhist call-site context",
+    )
+    vmi_unpack_vload_text = vmi_unpack_vload_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(vmi_unpack_vload_text, "public VMI unpack vload specialization")
+    vmi_brc_vload_text = vmi_brc_vload_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(vmi_brc_vload_text, "public VMI brc vload specialization")
+    expect(
+        'dist_mode = "brc"' in vmi_brc_vload_text,
+        "pto.vmi.vload should preserve the authored brc dist_mode without requiring a stride operand",
+    )
+    vmi_group_brc_vload_text = vmi_group_brc_vload_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(vmi_group_brc_vload_text, "public VMI grouped brc vload specialization")
+    expect(
+        'dist_mode = "brc"' in vmi_group_brc_vload_text and "group = 8" in vmi_group_brc_vload_text,
+        "pto.vmi.vload should allow the grouped brc form exposed by the VMI IR contract",
+    )
     fixed_width_integer_text = fixed_width_integer_specialization_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(fixed_width_integer_text, "fixed-width integer specialization")
+    with mock.patch.object(vmi_namespace._pto, "vmi_vadd", None):
+        missing_vmi_binding = expect_raises(
+            NotImplementedError,
+            vmi_missing_binding_probe.compile,
+            "pto.vmi.vadd",
+        )
+    expect(
+        "Rebuild PTO Python bindings" in str(missing_vmi_binding),
+        "missing generated VMI bindings should diagnose rebuild guidance",
+    )
+    masked_vcvt_error = expect_raises(
+        NotImplementedError,
+        vmi_masked_vcvt_probe.compile,
+        "pto.vmi.vcvt",
+    )
+    expect(
+        "masked form" in str(masked_vcvt_error),
+        "unsupported VMI backend/binding forms should diagnose the unavailable feature",
+    )
+    invalid_rounding_vcvt_error = expect_raises(
+        ValueError,
+        vmi_invalid_rounding_vcvt_probe.compile,
+        "rounding",
+    )
+    expect(
+        "expected one of A, H, R, Z" in str(invalid_rounding_vcvt_error),
+        "pto.vmi.vcvt should reject unsupported VMI rounding tokens before IR verification",
+    )
+    vmi_round_r_vcvt_text = vmi_round_r_vcvt_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(vmi_round_r_vcvt_text, "VMI R-rounding vcvt specialization")
+    expect(
+        'rounding = "R"' in vmi_round_r_vcvt_text,
+        "pto.vmi.vcvt should preserve the authored R rounding token for fp32->fp8",
+    )
+    unpack_missing_dtype_error = expect_raises(
+        TypeError,
+        vmi_unpack_vload_missing_dtype_probe.compile,
+        'to_dtype when dist_mode="unpack"',
+    )
+    expect(
+        'to_dtype when dist_mode="unpack"' in str(unpack_missing_dtype_error),
+        "unpack vload without to_dtype should diagnose the missing widened element type",
+    )
+
+    expected_vmi_ops = [
+        "pto.vmi.vload",
+        "pto.vmi.vstore",
+        "pto.vmi.vsstb",
+        "pto.vmi.vci",
+        "pto.vmi.vadd",
+        "pto.vmi.vsub",
+        "pto.vmi.vmul",
+        "pto.vmi.vdiv",
+        "pto.vmi.vmax",
+        "pto.vmi.vmin",
+        "pto.vmi.vabs",
+        "pto.vmi.vneg",
+        "pto.vmi.vrelu",
+        "pto.vmi.vexp",
+        "pto.vmi.vln",
+        "pto.vmi.vsqrt",
+        "pto.vmi.vand",
+        "pto.vmi.vor",
+        "pto.vmi.vxor",
+        "pto.vmi.vnot",
+        "pto.vmi.vshl",
+        "pto.vmi.vshr",
+        "pto.vmi.vadds",
+        "pto.vmi.vmuls",
+        "pto.vmi.vmaxs",
+        "pto.vmi.vmins",
+        "pto.vmi.vshls",
+        "pto.vmi.vshrs",
+        "pto.vmi.vcmp",
+        "pto.vmi.vcmps",
+        "pto.vmi.vsel",
+        "pto.vmi.vselr",
+        "pto.vmi.vbrc",
+        "pto.vmi.vcadd",
+        "pto.vmi.vcmax",
+        "pto.vmi.vcmin",
+        "pto.vmi.vcvt",
+        "pto.vmi.vinterpret_cast",
+        "pto.vmi.vexpdif",
+        "pto.vmi.vaxpy",
+        "pto.vmi.vlrelu",
+        "pto.vmi.vprelu",
+        "pto.vmi.vmull",
+        "pto.vmi.vmula",
+        "pto.vmi.vchist",
+        "pto.vmi.vdhist",
+        "pto.vmi.vgather",
+        "pto.vmi.vgatherb",
+        "pto.vmi.vscatter",
+        "pto.vmi.create_mask",
+        "pto.vmi.create_group_mask",
+        "pto.vmi.vintlv",
+        "pto.vmi.vdintlv",
+    ]
+    for op_name in expected_vmi_ops:
+        expect(
+            op_name in vmi_wrapper_dispatch_text,
+            f"representative {op_name} wrapper dispatch should emit the matching generated VMI op",
+        )
+    for op_name, expected_count in (("vcadd", 2), ("vcmax", 3), ("vcmin", 2)):
+        expect(
+            vmi_wrapper_dispatch_text.count(f"pto.vmi.{op_name}") == expected_count,
+            f"pto.vmi.{op_name} should emit both omitted-group and explicit-group probes",
+        )
+    expect(
+        vmi_wrapper_dispatch_text.count("group = 1") >= 6,
+        "VMI reductions should make the omitted group equivalent to group=1",
+    )
+    expect(
+        vmi_wrapper_dispatch_text.count("pto.vmi.vload") == 7,
+        "vmi wrapper dispatch probe should lower seven explicit VMI loads",
+    )
+    expect(
+        "pto.backend = \"vpto\"" in vmi_wrapper_dispatch_text,
+        "VMI public surface probe should compile through the VMI/VPTO backend partition",
+    )
+    expect(
+        "!pto.vmi.vreg<64xf32>" in vmi_wrapper_dispatch_text,
+        "PTODSL VMI compile probes should materialize logical VMI vector result types in MLIR",
+    )
+    expect(
+        "!pto.vmi.vreg<1xf32>" in vmi_wrapper_dispatch_text,
+        "PTODSL VMI reduction probes should materialize reduced logical VMI vector result types in MLIR",
+    )
+    expect(
+        "!pto.vmi.vreg<64xf16>" in vmi_wrapper_dispatch_text,
+        "PTODSL VMI conversion probes should materialize converted logical VMI vector result types in MLIR",
+    )
+    for rounding in ("R", "A", "H", "Z"):
+        expect(
+            f'rounding = "{rounding}"' in vmi_wrapper_dispatch_text,
+            f"PTODSL vcvt should preserve canonical {rounding} rounding",
+        )
+    expect(
+        vmi_wrapper_dispatch_text.count('saturate = "SAT"') >= 5,
+        "PTODSL vcvt should preserve explicit SAT and default omitted narrowing saturation to SAT",
+    )
+    expect(
+        "!pto.vmi.vreg<64xi32>" in vmi_wrapper_dispatch_text,
+        "PTODSL VMI index/reinterpret probes should materialize integer logical VMI vector result types in MLIR",
+    )
+    expect(
+        "!pto.vmi.vreg<128xf16>" in vmi_wrapper_dispatch_text,
+        "PTODSL vinterpret_cast should infer lane count by conserving total bits",
+    )
+    expect(
+        "!pto.vmi.mask<64xpred>" in vmi_wrapper_dispatch_text,
+        "PTODSL VMI compare and prefix mask probes should materialize logical VMI mask types in MLIR",
+    )
+    expect(
+        "!pto.vmi.mask<64xpred>" in vmi_wrapper_dispatch_text,
+        "PTODSL grouped mask probes should materialize grouped logical VMI mask types in MLIR",
+    )
+    expect(
+        "reassoc" in vmi_wrapper_dispatch_text,
+        "PTODSL VMI vcadd should preserve the reassoc attr in MLIR",
+    )
+    expect(
+        "!pto.vmi.vreg<128xi16>" in vmi_unpack_vload_text,
+        "PTODSL VMI unpack vload should infer the widened logical VMI vector result type from to_dtype",
+    )
     expect("pto.mte_gm_ub" in public_surface_text, "mte_load(...) should lower to pto.mte_gm_ub")
     expect("pto.mte_ub_gm" in public_surface_text, "mte_store(...) should lower to pto.mte_ub_gm")
+    expect(
+        re.search(r"pto\.mte_ub_gm [^\n]+ nburst\([^)]+\) l2_cache_ctl\(%c0[^)\n]*\)", public_surface_text) is not None,
+        "mte_store(...) should pass default l2_cache_ctl through the pto.mte_ub_gm l2_cache_ctl group",
+    )
     expect(public_surface_text.count("pto.mem_bar") >= 1, "mem_bar(...) should still lower explicit memory barriers")
     expect("pto.barrier <PIPE_ALL>" in public_surface_text, "pipe_barrier(Pipe.ALL) should lower to pto.barrier")
+    expect("pto.trap" in trap_surface_text, "pto.trap() should lower to the public pto.trap operation")
     expect("pto.vexp" in public_surface_text, "vexp(...) should lower to pto.vexp")
     expect("pto.vcgmax" in public_surface_text, "vcgmax(...) should lower to pto.vcgmax")
     expect("pto.vcgadd" in public_surface_text, "vcgadd(...) should lower to pto.vcgadd")
+    expect("pto.vsqz" in public_surface_text, "vsqz(...) should lower to pto.vsqz")
     expect("pto.vadds" in public_surface_text, "vsubs(...) should lower via scalar negation plus pto.vadds")
     expect("pto.mte_l1_l0a" in public_surface_text, "mte_l1_l0a(...) should lower to pto.mte_l1_l0a")
     expect("start(" not in public_surface_text, "mte_l1_l0a/l0b start_row/start_col should lower as operands")
     expect('pto.get_buf "PIPE_V", 0, 0' in sync_surface_text, 'get_buf(Pipe.V, 0) should lower to pto.get_buf with PIPE_V')
     expect('pto.rls_buf "PIPE_MTE2", 1, 2' in sync_surface_text, 'rls_buf(Pipe.MTE2, 1, 2) should lower to pto.rls_buf with PIPE_MTE2')
+    expect("pto.get_buf_dyn" in dynamic_buf_sync_text, "get_buf_dyn should lower to pto.get_buf_dyn")
+    expect("pto.rls_buf_dyn" in dynamic_buf_sync_text, "rls_buf_dyn should lower to pto.rls_buf_dyn")
+    expect(
+        'pto.get_buf_dyn "PIPE_V"' in dynamic_buf_sync_text,
+        'get_buf_dyn(Pipe.V, const_buf_id) should lower to pto.get_buf_dyn with PIPE_V',
+    )
+    expect(
+        'pto.rls_buf_dyn "PIPE_MTE2"' in dynamic_buf_sync_text,
+        'rls_buf_dyn(Pipe.MTE2, const_buf_id, 2) should lower to pto.rls_buf_dyn with PIPE_MTE2',
+    )
+    expect(
+        dynamic_buf_sync_text.count('pto.get_buf_dyn "PIPE_V"') == 1,
+        "constant SSA buf-id get_buf_dyn should preserve PIPE_V",
+    )
+    expect(
+        dynamic_buf_sync_text.count('pto.get_buf_dyn "PIPE_MTE2"') == 1,
+        "loop get_buf_dyn should preserve PIPE_MTE2",
+    )
+    expect(
+        dynamic_buf_sync_text.count('pto.rls_buf_dyn "PIPE_MTE2"') == 2,
+        "constant and loop rls_buf_dyn calls should preserve PIPE_MTE2",
+    )
+    expect(
+        "arith.andi" in dynamic_buf_sync_text,
+        "iter & 1 in pto.for_ should lower to arith.andi for dynamic buf_id computation",
+    )
     expect("pto.set_flag[<PIPE_MTE2>, <PIPE_V>, <EVENT_ID0>]" in sync_surface_text, "set_flag(..., event_id=0) should lower static event ids to pto.set_flag")
     expect("pto.wait_flag[<PIPE_MTE2>, <PIPE_V>, <EVENT_ID0>]" in sync_surface_text, "wait_flag(..., event_id=0) should lower static event ids to pto.wait_flag")
     expect("pto.set_flag_dyn[<PIPE_V>, <PIPE_MTE3>, %c3]" in sync_surface_text, "set_flag(..., event_id=dynamic_event) should lower runtime event ids to pto.set_flag_dyn")
@@ -5084,9 +6767,41 @@ def main() -> None:
     expect("pto.sync.set <PIPE_FIX>, 0" in sync_surface_text, "set_cross_flag(Pipe.FIX, 0) should lower to pto.sync.set")
     expect("pto.sync.wait <PIPE_FIX>, 0" in sync_surface_text, "wait_cross_flag(Pipe.FIX, 0) should lower to pto.sync.wait")
     expect("pto.sync.set <PIPE_MTE3>, %c3" in sync_surface_text, "set_intra_flag(Pipe.MTE3, dynamic_event) should lower dynamic event ids through pto.sync.set")
+    expect("pto.sync.set <PIPE_FIX>, 4" in sync_surface_text, "set_intra_flag(Pipe.FIX, 4) should lower physical event ids through pto.sync.set")
     expect("pto.sync.wait <PIPE_V>, %c3" in sync_surface_text, "wait_intra_flag(Pipe.V, dynamic_event) should lower dynamic event ids through pto.sync.wait")
+    expect("pto.sync.wait <PIPE_FIX>, 20" in sync_surface_text, "wait_intra_flag(Pipe.FIX, 20) should lower physical event ids through pto.sync.wait")
+    expect("pto.sync.wait <PIPE_MTE3>, %c3" in sync_surface_text, "wait_intra_flag(Pipe.MTE3, dynamic_event) should lower dynamic event ids through pto.sync.wait")
+    expect("pto.sync.wait <PIPE_MTE3>, 31" in sync_surface_text, "wait_intra_flag(Pipe.MTE3, 31) should lower the static physical event id through pto.sync.wait")
     expect(data_movement_surface_text.count("pto.mte_gm_ub") == 2, "public grouped GM->UB wrappers should lower to pto.mte_gm_ub")
     expect("pto.mte_ub_gm" in data_movement_surface_text, "public grouped UB->GM wrapper should lower to pto.mte_ub_gm")
+    expect(
+        data_movement_surface_text.count("pto.set_store_atomic_cfg") == 2,
+        "set_store_atomic_cfg should lower the requested config and reset",
+    )
+    for atomic_api in (
+        "set_atomic_s32",
+        "set_atomic_add",
+        "set_atomic_max",
+        "set_atomic_min",
+        "set_atomic_f32",
+        "set_atomic_f16",
+        "set_atomic_bf16",
+        "set_atomic_s16",
+        "set_atomic_s8",
+        "set_atomic_none",
+    ):
+        expect(
+            f"pto.{atomic_api}" in data_movement_surface_text,
+            f"{atomic_api} should lower through the explicit PTODSL surface",
+        )
+    expect(
+        re.search(r"pto\.mte_ub_gm [^\n]+ nburst\([^)]+\) l2_cache_ctl\(%c7[^)\n]*\)", data_movement_surface_text) is not None,
+        "mte_ub_gm(..., l2_cache='nared') should map to the l2_cache_ctl group",
+    )
+    expect(
+        re.search(r"pto\.mte_ub_gm [^\n]+ nburst\([^)]+\) l2_cache_ctl\(%c15[^)\n]*\)", data_movement_surface_text) is not None,
+        "mte_ub_gm(..., l2_cache='wtsred') should map to the l2_cache_ctl group",
+    )
     expect("pto.mte_ub_ub" in data_movement_surface_text, "public grouped UB->UB wrapper should lower to pto.mte_ub_ub")
     expect("pto.mte_ub_l1" in data_movement_surface_text, "public grouped UB->L1 wrapper should lower to pto.mte_ub_l1")
     expect("pto.mte_gm_l1" in data_movement_surface_text, "public grouped GM->L1 wrapper should lower to pto.mte_gm_l1")
@@ -5143,15 +6858,35 @@ def main() -> None:
     expect("f32, !pto.mask<b32> -> !pto.vreg<64xf32>" in vdup_surface_text, "vdup(scalar_f32, mask_b32) should infer an f32 vector result type")
     expect(vdup_surface_text.count('position = "LOWEST"') >= 1, "vdup(vec, mask) should default position to LOWEST")
     expect('position = "HIGHEST"' in vdup_surface_text, "vdup(vec, mask, PositionMode.HIGHEST) should preserve the authored position")
+    expect(vecscope_surface_text.count("pto.vecscope") == 1, "pto.vecscope() should lower exactly one vecscope region")
+    expect("pto.vlds" in vecscope_surface_text, "public vecscope body should allow vector loads")
+    expect("pto.vsts" in vecscope_surface_text, "public vecscope body should allow vector stores")
     expect("pto.vmulscvt" in vmulscvt_surface_text, "vmulscvt(...) should lower to pto.vmulscvt")
     expect('\"A\"' in vmulscvt_surface_text, "vmulscvt(..., rnd=VcvtRoundMode.A) should preserve the authored round token")
     expect('\"EVEN\"' in vmulscvt_surface_text, "vmulscvt(..., part=PartMode.EVEN) should preserve the authored part token")
     expect("!pto.vreg<128xf16>" in vmulscvt_surface_text, "vmulscvt(f32 -> f16) should infer the packed f16 result type")
+    expect("pto.vmula" in vmula_surface_text, "vmula(...) should lower to pto.vmula")
+    expect("!pto.vreg<64xf32>" in vmula_surface_text, "vmula(f32, f32, f32) should infer the f32 vector result type")
+    expect("pto.vmadd" in vmadd_surface_text, "vmadd(...) should lower to pto.vmadd")
+    expect("!pto.vreg<64xf32>" in vmadd_surface_text, "vmadd(f32, f32, f32) should infer the f32 vector result type")
     expect("pto.vsstb" in vsstb_post_update_surface_text, "vsstb(..., post_update=ON) should still lower through pto.vsstb on the current VPTO IR")
     expect("-> !pto.ptr<f32, ub>" in vsstb_post_update_surface_text, "vsstb(..., post_update=ON) should request the updated destination pointer result")
     expect("pto.mte_l1_l0b" in public_surface_text, "mte_l1_l0b(...) should lower to pto.mte_l1_l0b")
     expect("pto.mte_l1_l0a_mx" in public_surface_text, "mte_l1_l0a_mx(...) should lower to pto.mte_l1_l0a_mx")
     expect("pto.mte_l1_l0b_mx" in public_surface_text, "mte_l1_l0b_mx(...) should lower to pto.mte_l1_l0b_mx")
+    expect(
+        explicit_mx_scale_staging_text.count("!pto.ptr<!pto.f8E8M0, l1>") >= 2,
+        "explicit MX staging should preserve E8M0 L1 source pointers",
+    )
+    for op_name in ("mte_l1_l0a_mx", "mte_l1_l0b_mx"):
+        expect(
+            re.search(
+                rf"pto\.{op_name} %\d+, %\d+, %c3_i64(?:_\d+)?, %c5_i64(?:_\d+)?, "
+                r"%c16_i64(?:_\d+)?, %c2_i64(?:_\d+)?, %c8_i64(?:_\d+)?, %c2_i64(?:_\d+)",
+                explicit_mx_scale_staging_text,
+            ) is not None,
+            f"{op_name}(...) should preserve every explicit MX control operand",
+        )
     expect("pto.tmatmul.mx" in public_surface_text, "pto.tile.matmul_mx should lower to pto.tmatmul.mx")
     expect("pto.tmatmul.mx.acc" in public_surface_text, "pto.tile.matmul_mx_acc should lower to pto.tmatmul.mx.acc")
     expect("pto.tmatmul.mx.bias" in public_surface_text, "pto.tile.matmul_mx_bias should lower to pto.tmatmul.mx.bias")
@@ -5181,6 +6916,16 @@ def main() -> None:
     expect(mask_bitcast_text.count("pto.pbitcast") == 2, "pbitcast(...) should lower to pto.pbitcast for each authored mask reinterpretation")
     expect("!pto.mask<b16>" in mask_bitcast_text, "pbitcast(mask, pto.mask_b16) should materialize the requested result mask type")
     expect("!pto.mask<b32>" in mask_bitcast_text, "pbitcast(mask, pto.mask_b32) should materialize the requested result mask type")
+    expect_raises(
+        TypeError,
+        lambda: dynamic_buf_invalid_type_probe.compile(),
+        "get_buf",
+    )
+    expect_raises(
+        TypeError,
+        lambda: dynamic_rls_buf_invalid_type_probe.compile(),
+        "rls_buf",
+    )
     expect_raises(
         ValueError,
         lambda: vmulscvt_surface_invalid_attr_probe.compile(),
@@ -5214,6 +6959,16 @@ def main() -> None:
     expect_raises(
         TypeError,
         lambda: low_precision_vsel_invalid_probe.compile(),
+        "does not support low-precision vreg elements yet",
+    )
+    expect_raises(
+        TypeError,
+        lambda: low_precision_vmula_invalid_probe.compile(),
+        "does not support low-precision vreg elements yet",
+    )
+    expect_raises(
+        TypeError,
+        lambda: low_precision_vmadd_invalid_probe.compile(),
         "does not support low-precision vreg elements yet",
     )
     expect_raises(

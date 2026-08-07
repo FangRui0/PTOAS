@@ -88,11 +88,11 @@ private:
   std::pair<llvm::SmallVector<Value>, llvm::SmallVector<Value>>
   getReadWriteMemoryOps(Operation *op);
 
-  template <typename OP>
-  std::unique_ptr<OperationBase> getLoadStoreOp(OP op, OperationBase *parentOp);
-
   std::unique_ptr<OperationBase> getPipeInterfaceOp(pto::OpPipeInterface op,
                                                     OperationBase *parentOp);
+
+  std::unique_ptr<OperationBase> getScalarMemoryOp(Operation *op,
+                                                   OperationBase *parentOp);
 
   std::unique_ptr<OperationBase> getTensorExtractOp(tensor::ExtractOp extractOp,
                                                     OperationBase *parentOp);

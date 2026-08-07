@@ -27,21 +27,12 @@ def resolve_ptoas_binary() -> Path:
             f"PTOAS_BIN is set but does not resolve to an existing executable: {env_override}"
         )
 
-    repo_root = Path(__file__).resolve().parents[4]
-    candidates = [
-        repo_root / "build" / "tools" / "ptoas" / "ptoas",
-        repo_root / "install" / "bin" / "ptoas",
-    ]
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-
     from_path = shutil.which("ptoas")
     if from_path:
         return Path(from_path)
 
     raise FileNotFoundError(
-        "unable to locate ptoas; build ptoas or add it to PATH after sourcing scripts/ptoas_env.sh"
+        "unable to locate ptoas; install it, add it to PATH, or set PTOAS_BIN"
     )
 
 
@@ -70,7 +61,11 @@ def ascend_driver_path() -> Path:
 
 
 def _append_include_flag(flags: list[str], path: Path) -> None:
-    if not path.is_dir():
+    try:
+        is_dir = path.is_dir()
+    except OSError:
+        return
+    if not is_dir:
         return
     flag = f"-I{path}"
     if flag not in flags:
@@ -155,10 +150,17 @@ def runtime_library_flags(*, sim_mode: bool = False) -> list[str]:
     return flags
 
 
-def aicore_arch_for_kernel_kind(kernel_kind: str) -> str:
+def aicore_arch_for_kernel_kind(kernel_kind: str | None, target_arch: str) -> str:
+    target = target_arch.lower()
+    if kernel_kind is None:
+        return "dav-c220" if target in {"a2", "a3"} else "dav-c310"
     if kernel_kind == "vector":
+        if target in {"a2", "a3"}:
+            return "dav-c220-vec"
         return "dav-c310-vec"
     if kernel_kind == "cube":
+        if target in {"a2", "a3"}:
+            return "dav-c220-cube"
         return "dav-c310-cube"
     raise ValueError(f"unsupported kernel_kind for native build: {kernel_kind!r}")
 

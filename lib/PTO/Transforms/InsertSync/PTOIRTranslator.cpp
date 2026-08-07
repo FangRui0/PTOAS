@@ -12,17 +12,15 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 #include "PTO/Transforms/InsertSync/PTOIRTranslator.h"
+#include "PTO/IR/PTOMultiBuffer.h"
 #include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/Transforms/InsertSync/SyncMacroModel.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "llvm/Support/Debug.h"
 #include "mlir/IR/AsmState.h"
-#include "llvm/Support/FormatVariadic.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Matchers.h"
 #include "llvm/ADT/StringSwitch.h"
+#include "llvm/Support/Debug.h"
+#include "llvm/Support/FormatVariadic.h"
 // [P0 新增] 引入副作用接口和 PTO 接口
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
@@ -36,13 +34,65 @@ using namespace mlir::pto;
 namespace {
 
 constexpr size_t kTileRank2D = 2;
-constexpr unsigned kStrideInlineCapacity = 4;
 constexpr unsigned kMemoryEffectInlineCapacity = 4;
+constexpr llvm::StringLiteral kTileOpEffectsAttr = "pto.tileop.effects";
 
-using StrideVector = SmallVector<int64_t, kStrideInlineCapacity>;
 using MemoryEffectVector =
     SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>,
                 kMemoryEffectInlineCapacity>;
+
+static uint64_t getStaticBufferSizeInBytes(ArrayRef<int64_t> shape,
+                                           Type elementType) {
+  uint64_t size = pto::getPTOStorageElemByteSize(elementType);
+  if (size == 0)
+    return 0;
+  for (int64_t dim : shape) {
+    if (dim == ShapedType::kDynamic)
+      return 0;
+    size *= static_cast<uint64_t>(dim);
+  }
+  return size;
+}
+
+static uint64_t getTileBufferFootprintBytes(pto::TileBufType type) {
+  ArrayRef<int64_t> shape = type.getShape();
+  uint64_t elemBytes = pto::getPTOStorageElemByteSize(type.getElementType());
+  if (elemBytes == 0)
+    return 0;
+  if (type.getCompactModeI32() !=
+      static_cast<int32_t>(pto::CompactMode::RowPlusOne))
+    return getStaticBufferSizeInBytes(shape, type.getElementType());
+  if (shape.size() != kTileRank2D ||
+      llvm::is_contained(shape, ShapedType::kDynamic))
+    return 0;
+
+  bool rowMajor =
+      type.getBLayoutValueI32() == static_cast<int32_t>(pto::BLayout::RowMajor);
+  uint64_t major = static_cast<uint64_t>(rowMajor ? shape[0] : shape[1]);
+  uint64_t minor = static_cast<uint64_t>(rowMajor ? shape[1] : shape[0]);
+  if (major == 0 || minor == 0)
+    return 0;
+  return ((major - 1) * (minor + 1) + minor) * elemBytes;
+}
+
+static pto::AddressSpace getTileAddressSpace(pto::TileBufType type) {
+  if (auto attr =
+          dyn_cast_or_null<pto::AddressSpaceAttr>(type.getMemorySpace()))
+    return attr.getAddressSpace();
+  return pto::AddressSpace::MAT;
+}
+
+static void
+appendUniqueMemInfo(SmallVectorImpl<std::unique_ptr<BaseMemInfo>> &infos,
+                    std::unique_ptr<BaseMemInfo> candidate) {
+  if (!candidate)
+    return;
+  if (llvm::any_of(infos, [&](const std::unique_ptr<BaseMemInfo> &info) {
+        return info && *info == *candidate;
+      }))
+    return;
+  infos.emplace_back(std::move(candidate));
+}
 
 } // namespace
 
@@ -80,6 +130,24 @@ static bool getConstIndexValue(Value value, int64_t &out) {
   if (!intAttr) return false;
   out = intAttr.getInt();
   return true;
+}
+
+static std::optional<uint64_t> getKnownPhysicalAddress(Value value) {
+  int64_t address = 0;
+  if (!getConstIndexValue(value, address) || address < 0)
+    return std::nullopt;
+  return static_cast<uint64_t>(address);
+}
+
+static bool isLocalAddressSpace(pto::AddressSpace space) {
+  return space != pto::AddressSpace::GM &&
+         space != pto::AddressSpace::Zero;
+}
+
+static pto::AddressSpace getPointerLikeAddressSpace(Type type) {
+  if (auto space = pto::getPTOAddressSpaceAttr(type))
+    return space.getAddressSpace();
+  return pto::AddressSpace::GM;
 }
 
 static bool isStaticRank2Shape(ArrayRef<int64_t> shape) {
@@ -145,165 +213,52 @@ getPtoSubViewBaseAddresses(pto::SubViewOp op, pto::TileBufType sourceType,
   return addresses;
 }
 
-static std::optional<SmallVector<uint64_t>>
-getMemrefSubViewBaseAddresses(memref::SubViewOp op, MemRefType sourceType,
-                              int64_t elemBytes) {
-  if (!sourceType.hasStaticShape() || sourceType.getRank() != kTileRank2D)
-    return std::nullopt;
-
-  SmallVector<int64_t> strides;
-  int64_t baseOffset = ShapedType::kDynamic;
-  if (failed(mlir::pto::getPTOMemRefStridesAndOffset(sourceType, strides,
-                                                     baseOffset)) ||
-      strides.size() != 2 ||
-      llvm::is_contained(strides, ShapedType::kDynamic))
-    return std::nullopt;
-
-  ArrayRef<int64_t> staticOffsets = op.getStaticOffsets();
-  ArrayRef<int64_t> staticSizes = op.getStaticSizes();
-  ArrayRef<int64_t> staticSubViewStrides = op.getStaticStrides();
-  if (staticOffsets.size() != 2 || staticSizes.size() != 2 ||
-      staticSubViewStrides.size() != 2)
-    return std::nullopt;
-  if (llvm::is_contained(staticOffsets, ShapedType::kDynamic) ||
-      llvm::is_contained(staticSizes, ShapedType::kDynamic) ||
-      llvm::is_contained(staticSubViewStrides, ShapedType::kDynamic))
-    return std::nullopt;
-  if (staticSubViewStrides[0] != 1 || staticSubViewStrides[1] != 1)
-    return std::nullopt;
-
-  int64_t rowOffset = staticOffsets[0];
-  int64_t colOffset = staticOffsets[1];
-  int64_t rowSize = staticSizes[0];
-  int64_t colSize = staticSizes[1];
-  if (rowOffset < 0 || colOffset < 0 || rowSize <= 0 || colSize <= 0)
-    return std::nullopt;
-
-  SmallVector<uint64_t> addresses;
-  if (strides[1] == 1) {
-    addresses.reserve(static_cast<size_t>(rowSize));
-    for (int64_t row = 0; row < rowSize; ++row) {
-      int64_t elemOffset =
-          (rowOffset + row) * strides[0] + colOffset * strides[1];
-      addresses.push_back(static_cast<uint64_t>(elemOffset * elemBytes));
-    }
-  } else if (strides[0] == 1) {
-    addresses.reserve(static_cast<size_t>(colSize));
-    for (int64_t col = 0; col < colSize; ++col) {
-      int64_t elemOffset =
-          rowOffset * strides[0] + (colOffset + col) * strides[1];
-      addresses.push_back(static_cast<uint64_t>(elemOffset * elemBytes));
-    }
-  } else {
-    return std::nullopt;
-  }
-
-  return addresses;
-}
-
 namespace {
 
-static func::FuncOp lookupPTODSLSubkernelHelper(func::CallOp callOp) {
+static func::FuncOp lookupSyncHelper(func::CallOp callOp) {
   auto module = callOp->getParentOfType<ModuleOp>();
   if (!module || callOp.getCallee().empty())
     return {};
   auto callee = module.lookupSymbol<func::FuncOp>(callOp.getCallee());
   if (!callee)
     return {};
-  if (!callee->hasAttr("pto.ptodsl.subkernel_helper"))
+  if (!callee->hasAttr("pto.tileop.helper") &&
+      !callee->hasAttr("pto.ptodsl.subkernel_helper"))
     return {};
   return callee;
 }
 
-static std::optional<pto::PipelineType>
-getPTODSLSubkernelHelperPipe(func::FuncOp callee) {
-  auto roleAttr =
-      callee->getAttrOfType<mlir::StringAttr>("pto.ptodsl.subkernel_helper");
-  if (!roleAttr)
-    return std::nullopt;
+static std::optional<pto::PipelineType> getSyncHelperPipe(func::FuncOp callee) {
+  if (auto roleAttr = callee->getAttrOfType<mlir::StringAttr>(
+          "pto.ptodsl.subkernel_helper")) {
+    return llvm::StringSwitch<std::optional<pto::PipelineType>>(
+               roleAttr.getValue())
+        .Case("cube", pto::PipelineType::PIPE_M)
+        .Case("simd", pto::PipelineType::PIPE_V)
+        .Default(std::nullopt);
+  }
 
+  auto kindAttr = callee->getAttrOfType<mlir::StringAttr>("pto.tileop.kind");
+  if (!kindAttr)
+    return std::nullopt;
   return llvm::StringSwitch<std::optional<pto::PipelineType>>(
-             roleAttr.getValue())
+             kindAttr.getValue())
       .Case("cube", pto::PipelineType::PIPE_M)
-      .Case("simd", pto::PipelineType::PIPE_V)
+      .Case("vector", pto::PipelineType::PIPE_V)
       .Default(std::nullopt);
 }
 
-static bool isPTODSLSubkernelMemoryOperand(Type type) {
-  return isa<MemRefType, pto::PtrType, pto::TileBufType, pto::TensorViewType,
+static bool isSyncHelperMemoryOperand(Type type) {
+  return isa<pto::PtrType, pto::TileBufType, pto::TensorViewType,
              pto::PartitionTensorViewType>(type);
 }
 
-static pto::TCoreType getPTODSLSubkernelHelperCoreType(
-    pto::PipelineType pipe) {
+static pto::TCoreType getSyncHelperCoreType(pto::PipelineType pipe) {
   return pipe == pto::PipelineType::PIPE_M ? pto::TCoreType::CUBE
                                            : pto::TCoreType::VECTOR;
 }
 
 } // namespace
-
-// [辅助函数] 尝试从 Operation 中计算相对于 Source 的字节偏移量和新大小
-// 返回值: pair<offsetInBytes, sizeInBytes>
-// 如果无法计算静态值，返回 {-1, -1} 表示这是动态的
-static std::pair<int64_t, int64_t> getStaticOffsetAndSize(Operation *op, Value src) {
-  auto srcType = dyn_cast<MemRefType>(src.getType());
-  if (!srcType) return {0, 0};
-
-  int64_t elemSize =
-      static_cast<int64_t>(pto::getPTOStorageElemByteSize(srcType.getElementType()));
-  if (elemSize == 0)
-    return {-1, -1};
-
-  // === Case 1: memref.subview ===
-  if (auto subView = dyn_cast<memref::SubViewOp>(op)) {
-    int64_t baseOffset;
-    StrideVector strides;
-    if (failed(mlir::pto::getPTOMemRefStridesAndOffset(srcType, strides,
-                                                       baseOffset))) {
-        return {-1, -1};
-    }
-
-    int64_t newSize = 1;
-    for (int64_t s : subView.getStaticSizes()) {
-      if (s == ShapedType::kDynamic) return {-1, -1};
-      newSize *= s;
-    }
-    newSize *= elemSize;
-
-    int64_t totalOffset = 0;
-    auto staticOffsets = subView.getStaticOffsets();
-
-    if (staticOffsets.empty()) return {-1, -1};
-    if (staticOffsets.size() > strides.size()) return {-1, -1};
-
-    for (size_t i = 0; i < staticOffsets.size(); ++i) {
-      int64_t off = staticOffsets[i];
-      if (off == ShapedType::kDynamic) return {-1, -1};
-
-      int64_t stride = 1;
-      if (i < strides.size() && strides[i] != ShapedType::kDynamic) {
-          stride = strides[i];
-      } else {
-          return {-1, -1};
-      }
-
-      totalOffset += off * stride;
-    }
-
-    return {totalOffset * elemSize, newSize};
-  }
-
-  // === Case 2: memref.reinterpret_cast ===
-  if (auto castOp = dyn_cast<memref::ReinterpretCastOp>(op)) {
-    auto staticOffsets = castOp.getStaticOffsets();
-    if (staticOffsets.empty() || staticOffsets[0] == ShapedType::kDynamic) {
-        return {0, 0};
-    }
-    return {staticOffsets[0] * elemSize, 0};
-  }
-
-  return {0, 0};
-}
 
 // ============================================================================
 // 1. 构建入口
@@ -315,27 +270,42 @@ void PTOIRTranslator::Build() {
 }
 
 // ============================================================================
-// 2. 更新 Kernel 参数内存信息 (GM Global Memory)
+// 2. 更新 Kernel 参数内存信息
 // ============================================================================
 void PTOIRTranslator::UpdateKernelArgMemInfo() {
-  auto funcParamSize = func_.getNumArguments();
-  for (size_t i = 0; i < funcParamSize; i++) {
-    Value funcArg = func_.getArgument(i);
+  for (Value funcArg : func_.getArguments()) {
     Type argType = funcArg.getType();
+    pto::AddressSpace space = pto::AddressSpace::Zero;
+    uint64_t sizeInBytes = 0;
+    SmallVector<uint64_t> baseAddresses{0};
 
-    if (!isa<pto::PtrType>(argType) && !isa<MemRefType>(argType)) {
+    if (auto ptrType = dyn_cast<pto::PtrType>(argType)) {
+      space = ptrType.getMemorySpace().getAddressSpace();
+    } else if (auto tileType = dyn_cast<pto::TileBufType>(argType)) {
+      space = getTileAddressSpace(tileType);
+      sizeInBytes = getTileBufferFootprintBytes(tileType);
+    } else if (auto multiType = dyn_cast<pto::MultiTileBufType>(argType)) {
+      pto::TileBufType slotType = multiType.getSlotType();
+      space = getTileAddressSpace(slotType);
+      sizeInBytes = getTileBufferFootprintBytes(slotType);
+      baseAddresses.clear();
+      for (uint32_t slot = 0; slot < multiType.getCount(); ++slot)
+        baseAddresses.push_back(sizeInBytes == 0 ? 0 : slot * sizeInBytes);
+    } else if (auto viewType = dyn_cast<pto::TensorViewType>(argType)) {
+      space = pto::AddressSpace::GM;
+      sizeInBytes = getStaticBufferSizeInBytes(viewType.getShape(),
+                                               viewType.getElementType());
+    } else if (auto viewType =
+                   dyn_cast<pto::PartitionTensorViewType>(argType)) {
+      space = pto::AddressSpace::GM;
+      sizeInBytes = getStaticBufferSizeInBytes(viewType.getShape(),
+                                               viewType.getElementType());
+    } else {
       continue;
     }
 
-    std::unique_ptr<BaseMemInfo> newMemInfo = std::make_unique<BaseMemInfo>(
-        funcArg,                  // baseBuffer
-        funcArg,                  // rootBuffer
-        pto::AddressSpace::GM,    // Scope
-        SmallVector<uint64_t>{0}, // Base Addresses
-        0                         // Allocate Size
-    );
-
-    buffer2MemInfoMap_[funcArg].emplace_back(newMemInfo->clone());
+    buffer2MemInfoMap_[funcArg].emplace_back(std::make_unique<BaseMemInfo>(
+        funcArg, funcArg, space, std::move(baseAddresses), sizeInBytes));
   }
 }
 
@@ -351,69 +321,57 @@ void PTOIRTranslator::RecursionIR(Region *region) {
         return WalkResult::interrupt();
       }
     }
-    // 支持标准 memref.alloc
-    else if (auto memAllocOp = dyn_cast<memref::AllocOp>(op)) {
-       if (failed(UpdateMemrefAllocOpMemInfo(memAllocOp))) {
-          return WalkResult::interrupt();
-       }
-    }
-    else if (auto declareOp = dyn_cast<pto::DeclareTileMemRefOp>(op)) {
-      if (failed(UpdateDeclareTileMemRefOpMemInfo(declareOp))) {
+    else if (auto allocMultiOp = dyn_cast<pto::AllocMultiTileOp>(op)) {
+      if (failed(UpdateAllocMultiTileOpMemInfo(allocMultiOp))) {
         return WalkResult::interrupt();
       }
+    }
+    else if (auto declareOp = dyn_cast<pto::DeclareTileOp>(op)) {
+      if (failed(UpdateDeclareTileOpMemInfo(declareOp)))
+        return WalkResult::interrupt();
     }
     else if (auto declareGlobalOp = dyn_cast<pto::DeclareGlobalOp>(op)) {
       if (failed(UpdateDeclareGlobalOpMemInfo(declareGlobalOp))) {
         return WalkResult::interrupt();
       }
     }
-    else if (auto castOp = dyn_cast<pto::PointerCastOp>(op)) {
-      if (failed(UpdatePointerCastOpMemInfo(castOp))) return WalkResult::interrupt();
-    }
-
     // --- Case B: 别名/视图操作 ---
     else if (auto makeViewOp = dyn_cast<pto::MakeTensorViewOp>(op)) {
       UpdateAliasBufferInfo(makeViewOp.getResult(), makeViewOp.getPtr());
     }
-    else if (auto bindTileOp = dyn_cast<pto::BindTileOp>(op)) {
-      UpdateAliasBufferInfo(bindTileOp.getResult(), bindTileOp.getSource());
-    }
     else if (auto subViewOp = dyn_cast<pto::PartitionViewOp>(op)) {
       UpdateAliasBufferInfo(subViewOp.getResult(), subViewOp.getSource());
     }
+    else if (auto addPtrOp = dyn_cast<pto::AddPtrOp>(op)) {
+      UpdateAliasBufferInfo(addPtrOp.getResult(), addPtrOp.getPtr());
+    }
+    else if (auto ptrToIntOp = dyn_cast<pto::PtrToIntOp>(op)) {
+      UpdateAliasBufferInfo(ptrToIntOp.getResult(), ptrToIntOp.getPtr());
+    }
+    else if (auto intToPtrOp = dyn_cast<pto::IntToPtrOp>(op)) {
+      if (failed(UpdateIntToPtrOpMemInfo(intToPtrOp)))
+        return WalkResult::interrupt();
+    }
+    else if (auto castPtrOp = dyn_cast<pto::CastPtrOp>(op)) {
+      if (isa<pto::PtrType>(castPtrOp.getInput().getType()) &&
+          isa<pto::PtrType>(castPtrOp.getResult().getType())) {
+        UpdateAliasBufferInfo(castPtrOp.getResult(), castPtrOp.getInput());
+      }
+    }
     else if (auto subViewOp = dyn_cast<pto::SubViewOp>(op)) {
       UpdateTileSubViewAliasBufferInfo(subViewOp);
+    } else if (auto multiGet = dyn_cast<pto::MultiTileGetOp>(op)) {
+      UpdateMultiTileGetAliasBufferInfo(multiGet);
     }
-    else if (auto memrefSubView = dyn_cast<memref::SubViewOp>(op)) {
-      UpdateMemrefSubViewAliasBufferInfo(memrefSubView);
+    else if (auto reshape = dyn_cast<pto::TReshapeOp>(op)) {
+      UpdateAliasBufferInfo(reshape.getResult(), reshape.getSrc());
     }
-    else if (auto slotMarker = dyn_cast<pto::SlotMarkerOp>(op)) {
-      UpdateSlotMarkerAliasBufferInfo(slotMarker);
+    else if (auto bitcast = dyn_cast<pto::BitcastOp>(op)) {
+      UpdateAliasBufferInfo(bitcast.getResult(), bitcast.getSrc());
     }
-    else if (auto castOp = dyn_cast<memref::ReinterpretCastOp>(op)) {
-      UpdateAliasBufferInfo(castOp.getResult(), castOp.getSource());
-    }
-    // [Fix] 添加 CollapseShape 和 ExpandShape 的支持
-    else if (auto collapseOp = dyn_cast<memref::CollapseShapeOp>(op)) {
-      UpdateAliasBufferInfo(collapseOp.getResult(), collapseOp.getSrc());
-    }
-    else if (auto expandOp = dyn_cast<memref::ExpandShapeOp>(op)) {
-      UpdateAliasBufferInfo(expandOp.getResult(), expandOp.getSrc());
-    }
-    // arith.select on memref values: emitted by `PTOResolveBufferSelect`
-    // for the dynamic-slot path of `pto.multi_tile_get`. The result
-    // conservatively aliases both branches so sync analysis cannot miss a
-    // dependency that arises through either possible slot. This preserves
-    // correctness for runtime slot indices; finer-grained "slot
-    // expressions are disjoint" reasoning is a future affine-analysis
-    // upgrade and would let sync emit fewer flags in prefetch idioms.
-    else if (auto selectOp = dyn_cast<arith::SelectOp>(op)) {
-      if (isa<MemRefType>(selectOp.getResult().getType())) {
-        UpdateConservativeAliasBufferInfo(selectOp.getResult(),
-                                          selectOp.getTrueValue());
-        UpdateConservativeAliasBufferInfo(selectOp.getResult(),
-                                          selectOp.getFalseValue());
-      }
+    else if (auto select = dyn_cast<arith::SelectOp>(op)) {
+      UpdateAliasBufferInfo(select.getResult(), select.getTrueValue());
+      UpdateAliasBufferInfo(select.getResult(), select.getFalseValue());
     }
 
     // --- Case C: 控制流 (SCF) ---
@@ -431,7 +389,13 @@ void PTOIRTranslator::RecursionIR(Region *region) {
     } else if (getSyncMacroModel(op)) {
       UpdateMacroOpInfo(op);
     } else if (auto callOp = dyn_cast<func::CallOp>(op)) {
-      UpdatePTODSLSubkernelCallInfo(callOp);
+      UpdateHelperCallInfo(callOp);
+    } else if (isa<pto::LoadScalarOp, pto::StoreScalarOp>(op)) {
+      // Scalar GM pointer accesses do not implement OpPipeInterface, but they
+      // execute on PIPE_S and can race with async MTE/FIX tile stores touching
+      // the same GM payload.
+      UpdatePTOOpInfoWithPipeline(op, pto::PipelineType::PIPE_S,
+                                  /*skipIfNoMemInfo=*/true);
     } else if (isa<pto::OpPipeInterface>(op)) {
       // --- Case D: 带有 OpPipeInterface 的计算/搬运指令 ---
       UpdatePTOOpInfo(op);
@@ -444,7 +408,7 @@ void PTOIRTranslator::RecursionIR(Region *region) {
 }
 
 // ============================================================================
-// 4. 处理 AllocTile / PointerCast
+// 4. 处理本地 tile 分配
 // ============================================================================
 LogicalResult PTOIRTranslator::UpdateAllocTileOpMemInfo(pto::AllocTileOp op) {
   Value res = op.getResult();
@@ -452,38 +416,20 @@ LogicalResult PTOIRTranslator::UpdateAllocTileOpMemInfo(pto::AllocTileOp op) {
   auto tileType = dyn_cast<pto::TileBufType>(res.getType());
   uint64_t sizeInBytes = 0;
   uint64_t baseAddr = 0;
+  std::optional<uint64_t> knownPhysicalAddress;
 
   // If alloc_tile carries an explicit address, record it when it's a constant.
   if (Value addr = op.getAddr()) {
-    llvm::APInt apIntValue;
-    if (matchPattern(addr, m_ConstantInt(&apIntValue))) {
-        // 将 APInt 转换为 int64_t，再转为 uint64_t
-        int64_t c = apIntValue.getSExtValue();  // 有符号扩展转换
-        // 如果确定是无符号值，也可以用：apIntValue.getZExtValue()
-        baseAddr = static_cast<uint64_t>(c);
-    }
+    knownPhysicalAddress = getKnownPhysicalAddress(addr);
+    if (knownPhysicalAddress)
+      baseAddr = *knownPhysicalAddress;
   }
 
   // 1. 计算大小
   if (tileType) {
-    ArrayRef<int64_t> shape = tileType.getShape();
-    bool isStatic = true;
-    for (int64_t dim : shape) {
-      if (dim == ShapedType::kDynamic) {
-        isStatic = false;
-        break;
-      }
-    }
-
-    if (isStatic) {
-      int64_t elemSize = static_cast<int64_t>(
-          pto::getPTOStorageElemByteSize(tileType.getElementType()));
-      if (elemSize == 0)
-        return failure();
-      int64_t numElements = 1;
-      for (auto dim : shape) numElements *= dim;
-      sizeInBytes = numElements * elemSize;
-    }
+    sizeInBytes = getTileBufferFootprintBytes(tileType);
+    if (sizeInBytes == 0)
+      return failure();
   }
 
   // 2. 解析地址空间
@@ -501,125 +447,76 @@ LogicalResult PTOIRTranslator::UpdateAllocTileOpMemInfo(pto::AllocTileOp op) {
 
   // 3. 注册 Buffer 信息
   auto newMemInfo = std::make_unique<BaseMemInfo>(
-      res,
-      res,
-      space, // 使用解析出的 space
-      SmallVector<uint64_t>{baseAddr},
-      sizeInBytes
-  );
+      res, res, space, SmallVector<uint64_t>{baseAddr}, sizeInBytes,
+      knownPhysicalAddress.has_value() && isLocalAddressSpace(space));
 
-  buffer2MemInfoMap_[res].emplace_back(newMemInfo->clone());
-  return success();
-}
-
-LogicalResult PTOIRTranslator::UpdatePointerCastOpMemInfo(pto::PointerCastOp op) {
-  Value res = op.getResult();
-  auto memRefType = dyn_cast<MemRefType>(res.getType());
-  if (!memRefType) return failure();
-
-  if (op.getAddrs().empty()) {
-    return op.emitError("PointerCast must have at least one address operand");
-  }
-
-  uint64_t sizeInBytes = 0;
-  if (memRefType.hasStaticShape()) {
-    int64_t elemSize = static_cast<int64_t>(
-        pto::getPTOStorageElemByteSize(memRefType.getElementType()));
-    if (elemSize == 0)
-      return failure();
-    int64_t numElements = 1;
-    for (auto dim : memRefType.getShape()) numElements *= dim;
-    sizeInBytes = numElements * elemSize;
-  }
-
-  pto::AddressSpace space = pto::AddressSpace::GM;
-  if (auto attr = memRefType.getMemorySpace()) {
-    if (auto ptoAttr = dyn_cast<pto::AddressSpaceAttr>(attr)) {
-      space = ptoAttr.getAddressSpace();
-    }
-  }
-
-  if (op.getAddrs().size() == 1) {
-    // Single-address path: keep the historical semantics where `rootBuffer`
-    // is the i64 address SSA and `baseAddresses` starts at {0}. Downstream
-    // view ops accumulate a delta into baseAddresses[0]; MemAlias gates on
-    // rootBuffer SSA identity for single-buffer allocations.
-    Value rootSrc = op.getAddrs().front();
-    auto newMemInfo = std::make_unique<BaseMemInfo>(
-        res, rootSrc, space, SmallVector<uint64_t>{0}, sizeInBytes);
-    buffer2MemInfoMap_[res].emplace_back(newMemInfo->clone());
-    return success();
-  }
-
-  // Multi-address (multi-buffer) cast. Use the cast result as `rootBuffer`
-  // so every downstream `pto.slot_marker` from the same alloc shares one
-  // root, and populate `baseAddresses` with each slot's physical offset
-  // (extracted from the constant i64 operands emitted by
-  // AllocToPointerCast). `pto.slot_marker` then narrows or keeps these
-  // offsets according to its slot SSA; MemAlias's existing
-  // `isBufferAddressRangeOverlap` does the per-slot disambiguation.
-  SmallVector<uint64_t> slotOffsets;
-  slotOffsets.reserve(op.getAddrs().size());
-  for (Value a : op.getAddrs()) {
-    auto cst = a.getDefiningOp<arith::ConstantOp>();
-    IntegerAttr attr;
-    if (!cst || !(attr = dyn_cast<IntegerAttr>(cst.getValue()))) {
-      // Non-constant slot address: fall back to single-address semantics
-      // with the first operand as rootBuffer so existing non-multi-buffer
-      // codepaths that happen to feed non-constant i64s keep their
-      // historical behavior.
-      Value rootSrc = op.getAddrs().front();
-      auto newMemInfo = std::make_unique<BaseMemInfo>(
-          res, rootSrc, space, SmallVector<uint64_t>{0}, sizeInBytes);
-      buffer2MemInfoMap_[res].emplace_back(newMemInfo->clone());
-      return success();
-    }
-    slotOffsets.push_back(attr.getValue().getZExtValue());
-  }
-
-  auto newMemInfo = std::make_unique<BaseMemInfo>(
-      res, res, space, std::move(slotOffsets), sizeInBytes);
   buffer2MemInfoMap_[res].emplace_back(newMemInfo->clone());
   return success();
 }
 
 LogicalResult
-PTOIRTranslator::UpdateDeclareTileMemRefOpMemInfo(pto::DeclareTileMemRefOp op) {
-  Value res = op.getResult();
-  auto memRefType = dyn_cast<MemRefType>(res.getType());
-  if (!memRefType)
+PTOIRTranslator::UpdateAllocMultiTileOpMemInfo(pto::AllocMultiTileOp op) {
+  Value result = op.getResult();
+  auto multiType = op.getResult().getType();
+  pto::TileBufType slotType = multiType.getSlotType();
+
+  uint64_t slotBytes = getTileBufferFootprintBytes(slotType);
+  if (slotBytes == 0)
     return failure();
 
-  uint64_t sizeInBytes = 0;
-  if (memRefType.hasStaticShape()) {
-    int64_t elemSize = static_cast<int64_t>(
-        pto::getPTOStorageElemByteSize(memRefType.getElementType()));
-    if (elemSize == 0)
-      return failure();
+  pto::AddressSpace space = pto::AddressSpace::MAT;
+  if (auto attr = dyn_cast_or_null<pto::AddressSpaceAttr>(
+          slotType.getMemorySpace()))
+    space = attr.getAddressSpace();
 
-    int64_t numElements = 1;
-    for (auto dim : memRefType.getShape())
-      numElements *= dim;
-    sizeInBytes = numElements * elemSize;
+  SmallVector<uint64_t> addresses;
+  bool hasKnownAddresses = false;
+  if (auto planned = op->getAttrOfType<DenseI64ArrayAttr>(
+          pto::kPtoMultiBufferAddrsAttrName)) {
+    if (planned.size() != multiType.getCount())
+      return op.emitError("planned address count does not match slot count");
+    for (int64_t address : planned.asArrayRef())
+      addresses.push_back(static_cast<uint64_t>(address));
+    hasKnownAddresses = true;
+  } else if (Value base = op.getAddr()) {
+    if (std::optional<uint64_t> knownBase = getKnownPhysicalAddress(base)) {
+      for (uint32_t slot = 0; slot < multiType.getCount(); ++slot)
+        addresses.push_back(*knownBase + slot * slotBytes);
+      hasKnownAddresses = true;
+    }
   }
+
+  if (addresses.empty()) {
+    return op.emitError(
+        "requires planner-assigned slot addresses or a constant level3 base");
+  }
+
+  auto info = std::make_unique<BaseMemInfo>(
+      result, result, space, std::move(addresses), slotBytes,
+      hasKnownAddresses && isLocalAddressSpace(space));
+  buffer2MemInfoMap_[result].emplace_back(info->clone());
+  return success();
+}
+
+LogicalResult
+PTOIRTranslator::UpdateDeclareTileOpMemInfo(pto::DeclareTileOp op) {
+  Value result = op.getTile();
+  auto tileType = dyn_cast<pto::TileBufType>(result.getType());
+  if (!tileType)
+    return op.emitError("requires a tile_buf result for sync analysis");
+
+  uint64_t sizeInBytes = getTileBufferFootprintBytes(tileType);
+  if (sizeInBytes == 0)
+    return failure();
 
   pto::AddressSpace space = pto::AddressSpace::MAT;
-  if (auto attr = memRefType.getMemorySpace()) {
-    if (auto ptoAttr = dyn_cast<pto::AddressSpaceAttr>(attr))
-      space = ptoAttr.getAddressSpace();
-  }
+  if (auto attr = dyn_cast_or_null<pto::AddressSpaceAttr>(
+          tileType.getMemorySpace()))
+    space = attr.getAddressSpace();
 
-  // declare_tile_memref is only a symbolic placeholder. Use its SSA result as
-  // both base/root so later bind_tile aliases and tpop consumers can be
-  // connected by InsertSync without inventing a fake allocation.
-  auto newMemInfo = std::make_unique<BaseMemInfo>(
-      res,
-      res,
-      space,
-      SmallVector<uint64_t>{0},
-      sizeInBytes);
-
-  buffer2MemInfoMap_[res].emplace_back(newMemInfo->clone());
+  auto info = std::make_unique<BaseMemInfo>(
+      result, result, space, SmallVector<uint64_t>{0}, sizeInBytes);
+  buffer2MemInfoMap_[result].emplace_back(info->clone());
   return success();
 }
 
@@ -666,8 +563,12 @@ PTOIRTranslator::UpdateDeclareGlobalOpMemInfo(pto::DeclareGlobalOp op) {
 // ============================================================================
 void PTOIRTranslator::UpdatePTOOpInfo(Operation *op) {
   // 1. 获取流水线类型 (现在通过 Interface)
-  pto::PipelineType pipe = getOpPipeline(op);
+  UpdatePTOOpInfoWithPipeline(op, getOpPipeline(op));
+}
 
+void PTOIRTranslator::UpdatePTOOpInfoWithPipeline(Operation *op,
+                                                  pto::PipelineType pipe,
+                                                  bool skipIfNoMemInfo) {
   // 如果 Op 不属于任何关心的流水线，直接跳过，不建立 Sync 节点
   if (pipe == pto::PipelineType::PIPE_UNASSIGNED) return;
 
@@ -695,6 +596,9 @@ void PTOIRTranslator::UpdatePTOOpInfo(Operation *op) {
     LLVM_DEBUG(llvm::dbgs() << "Warning: Op " << op->getName()
                             << " has Pipe but no MemoryEffects interface.\n");
   }
+
+  if (skipIfNoMemInfo && defVec.empty() && useVec.empty())
+    return;
 
   // 3. 构建 Compound Node
   auto compoundElement = std::make_unique<CompoundInstanceElement>(
@@ -744,27 +648,32 @@ void PTOIRTranslator::UpdateMacroOpInfo(Operation *op) {
   }
 }
 
-void PTOIRTranslator::UpdatePTODSLSubkernelCallInfo(func::CallOp callOp) {
-  func::FuncOp callee = lookupPTODSLSubkernelHelper(callOp);
+void PTOIRTranslator::UpdateHelperCallInfo(func::CallOp callOp) {
+  func::FuncOp callee = lookupSyncHelper(callOp);
   if (!callee)
     return;
 
-  std::optional<pto::PipelineType> pipe = getPTODSLSubkernelHelperPipe(callee);
+  std::optional<pto::PipelineType> pipe = getSyncHelperPipe(callee);
   if (!pipe || *pipe == pto::PipelineType::PIPE_UNASSIGNED)
     return;
 
   SmallVector<const BaseMemInfo *> defVec;
   SmallVector<const BaseMemInfo *> useVec;
-  for (Value operand : callOp.getOperands()) {
-    if (!isPTODSLSubkernelMemoryOperand(operand.getType()))
+  auto effects = callee->getAttrOfType<ArrayAttr>(kTileOpEffectsAttr);
+  bool hasPreciseEffects = effects && effects.size() == callOp.getNumOperands();
+  for (auto [operandIndex, operand] : llvm::enumerate(callOp.getOperands())) {
+    if (!isSyncHelperMemoryOperand(operand.getType()))
       continue;
 
-    // PTODSL subkernel boundaries communicate through caller-visible local
-    // memory objects. Model helper calls conservatively as both reading and
-    // writing those operands so auto-sync can bridge TLOAD/TSTORE hazards
-    // across the call boundary before helper inlining runs later.
-    UpdateDefUseVec({operand}, useVec);
-    UpdateDefUseVec({operand}, defVec);
+    StringRef effect = "readwrite";
+    if (hasPreciseEffects) {
+      if (auto effectAttr = dyn_cast<StringAttr>(effects[operandIndex]))
+        effect = effectAttr.getValue();
+    }
+    if (effect == "read" || effect == "readwrite")
+      UpdateDefUseVec({operand}, useVec);
+    if (effect == "write" || effect == "readwrite")
+      UpdateDefUseVec({operand}, defVec);
   }
 
   if (defVec.empty() && useVec.empty())
@@ -773,12 +682,11 @@ void PTOIRTranslator::UpdatePTODSLSubkernelCallInfo(func::CallOp callOp) {
   auto compoundElement = std::make_unique<CompoundInstanceElement>(
       index, defVec, useVec, *pipe, callOp->getName());
   compoundElement->elementOp = callOp;
-  compoundElement->compoundCoreType =
-      getPTODSLSubkernelHelperCoreType(*pipe);
+  compoundElement->compoundCoreType = getSyncHelperCoreType(*pipe);
   syncIR_.emplace_back(std::move(compoundElement));
   index++;
 }
- 
+
 // ============================================================================
 // 6. [P0 修改] 获取 Op 的 Pipeline 类型
 // ============================================================================
@@ -931,55 +839,59 @@ void PTOIRTranslator::UpdateAliasBufferInfo(Value result, Value source) {
   if (!result || !source) return;
   if (!buffer2MemInfoMap_.contains(source)) return;
 
-  int64_t deltaOffset = 0;
-  int64_t newSize = -1;
-
-  if (auto op = result.getDefiningOp()) {
-    auto info = getStaticOffsetAndSize(op, source);
-    if (info.first != -1) {
-        deltaOffset = info.first;
-        if (info.second > 0) newSize = info.second;
-    }
-  }
-
   auto &resultMemInfoVec = buffer2MemInfoMap_[result];
-
-  for (auto &parentInfo : buffer2MemInfoMap_[source]) {
-    auto newInfo = parentInfo->clone(result);
-
-    if (!newInfo->baseAddresses.empty()) {
-        newInfo->baseAddresses[0] += deltaOffset;
-    } else {
-        newInfo->baseAddresses.push_back(deltaOffset);
-    }
-
-    if (newSize > 0) {
-        newInfo->allocateSize = newSize;
-    }
-
-    resultMemInfoVec.emplace_back(std::move(newInfo));
-  }
+  for (auto &parentInfo : buffer2MemInfoMap_[source])
+    appendUniqueMemInfo(resultMemInfoVec, parentInfo->clone(result));
 }
 
 void PTOIRTranslator::UpdateConservativeAliasBufferInfo(Value result,
                                                         Value source) {
-  if (!result || !source) return;
-  if (!buffer2MemInfoMap_.contains(source)) return;
-
-  auto &resultMemInfoVec = buffer2MemInfoMap_[result];
-  for (auto &parentInfo : buffer2MemInfoMap_[source])
-    resultMemInfoVec.emplace_back(parentInfo->clone(result));
+  UpdateAliasBufferInfo(result, source);
 }
 
-void PTOIRTranslator::UpdateSlotMarkerAliasBufferInfo(pto::SlotMarkerOp op) {
+LogicalResult PTOIRTranslator::UpdateIntToPtrOpMemInfo(pto::IntToPtrOp op) {
   Value result = op.getResult();
-  Value source = op.getSource();
+  if (!result)
+    return failure();
+
+  // Preserve provenance across the explicit byte-address round trip:
+  //   %addr = pto.ptrtoint %ptr
+  //   %ptr2 = pto.inttoptr %addr
+  // `ptr2` is the same address as `ptr`, possibly with a different element
+  // type, so scalar memory ops must participate in the same GM dependency
+  // chain as tile stores/loads through the original pointer.
+  if (auto ptrToInt = op.getAddr().getDefiningOp<pto::PtrToIntOp>()) {
+    UpdateConservativeAliasBufferInfo(result, ptrToInt.getPtr());
+    if (buffer2MemInfoMap_.contains(result))
+      return success();
+  }
+
+  // A raw integer address may still point at any object in its address space.
+  // Keep it in the sync IR instead of letting scalar ops be dropped by
+  // skipIfNoMemInfo=true.
+  auto space = getPointerLikeAddressSpace(result.getType());
+  auto newMemInfo = std::make_unique<BaseMemInfo>(
+      result, result, space, SmallVector<uint64_t>{0},
+      /*allocateSize=*/0, /*hasKnownPhysicalAddresses=*/false,
+      /*aliasesUnknownRange=*/true);
+  buffer2MemInfoMap_[result].emplace_back(newMemInfo->clone());
+  return success();
+}
+
+void PTOIRTranslator::UpdateMultiTileGetAliasBufferInfo(
+    pto::MultiTileGetOp op) {
+  UpdateSlotSelectedAliasBufferInfo(op.getResult(), op.getSource(),
+                                    op.getSlot());
+}
+
+void PTOIRTranslator::UpdateSlotSelectedAliasBufferInfo(Value result,
+                                                        Value source,
+                                                        Value slot) {
   if (!result || !source)
     return;
   if (!buffer2MemInfoMap_.contains(source))
     return;
 
-  Value slot = op.getSlot();
   IntegerAttr constAttr;
   bool isConstSlot = matchPattern(slot, m_Constant(&constAttr));
   int64_t constSlotIdx = isConstSlot ? constAttr.getValue().getSExtValue() : -1;
@@ -988,8 +900,7 @@ void PTOIRTranslator::UpdateSlotMarkerAliasBufferInfo(pto::SlotMarkerOp op) {
   for (auto &parentInfo : buffer2MemInfoMap_[source]) {
     auto newInfo = parentInfo->clone(result);
     // Multi-buffer parent: `baseAddresses` lists every physical slot's
-    // offset (populated by `UpdatePointerCastOpMemInfo` for multi-address
-    // casts). For a constant slot index, narrow `baseAddresses` to just
+    // planner-assigned offset. For a constant slot index, narrow it to just
     // that one slot so MemAlias's range-overlap check returns false when
     // two const-slot uses pick different slots. For a dynamic slot index,
     // keep all addresses -- the runtime SSA could resolve to any slot, so
@@ -1002,72 +913,6 @@ void PTOIRTranslator::UpdateSlotMarkerAliasBufferInfo(pto::SlotMarkerOp op) {
       newInfo->baseAddresses.clear();
       newInfo->baseAddresses.push_back(pickAddr);
     }
-    resultMemInfoVec.emplace_back(std::move(newInfo));
-  }
-}
-
-void PTOIRTranslator::UpdateMemrefSubViewAliasBufferInfo(memref::SubViewOp op) {
-  Value result = op.getResult();
-  Value source = op.getSource();
-  if (!result || !source) return;
-  if (!buffer2MemInfoMap_.contains(source)) return;
-
-  auto sourceType = dyn_cast<MemRefType>(source.getType());
-  if (!sourceType) {
-    UpdateConservativeAliasBufferInfo(result, source);
-    return;
-  }
-
-  unsigned elemBytes = pto::getPTOStorageElemByteSize(sourceType.getElementType());
-  auto subViewAddresses =
-      elemBytes == 0 ? std::nullopt
-                     : getMemrefSubViewBaseAddresses(
-                           op, sourceType, static_cast<int64_t>(elemBytes));
-  if (!subViewAddresses || subViewAddresses->empty()) {
-    UpdateConservativeAliasBufferInfo(result, source);
-    return;
-  }
-
-  SmallVector<int64_t> strides;
-  int64_t baseOffset = ShapedType::kDynamic;
-  if (failed(mlir::pto::getPTOMemRefStridesAndOffset(sourceType, strides,
-                                                     baseOffset)) ||
-      strides.size() != 2) {
-    UpdateConservativeAliasBufferInfo(result, source);
-    return;
-  }
-
-  ArrayRef<int64_t> staticSizes = op.getStaticSizes();
-  uint64_t segmentSize = 0;
-  if (strides[1] == 1) {
-    segmentSize = static_cast<uint64_t>(
-        staticSizes[1] * static_cast<int64_t>(elemBytes));
-  } else if (strides[0] == 1) {
-    segmentSize = static_cast<uint64_t>(
-        staticSizes[0] * static_cast<int64_t>(elemBytes));
-  } else {
-    UpdateConservativeAliasBufferInfo(result, source);
-    return;
-  }
-
-  for (auto &parentInfo : buffer2MemInfoMap_[source]) {
-    if (!parentInfo || parentInfo->baseAddresses.size() != 1 ||
-        parentInfo->allocateSize == 0) {
-      UpdateConservativeAliasBufferInfo(result, source);
-      return;
-    }
-  }
-
-  auto &resultMemInfoVec = buffer2MemInfoMap_[result];
-  for (auto &parentInfo : buffer2MemInfoMap_[source]) {
-    auto newInfo = parentInfo->clone(result);
-    SmallVector<uint64_t> addresses;
-    addresses.reserve(subViewAddresses->size());
-    uint64_t parentBase = parentInfo->baseAddresses[0];
-    for (uint64_t offset : *subViewAddresses)
-      addresses.push_back(parentBase + offset);
-    newInfo->baseAddresses = std::move(addresses);
-    newInfo->allocateSize = segmentSize;
     resultMemInfoVec.emplace_back(std::move(newInfo));
   }
 }
@@ -1123,52 +968,6 @@ void PTOIRTranslator::UpdateTileSubViewAliasBufferInfo(pto::SubViewOp op) {
     newInfo->allocateSize = segmentSize;
     resultMemInfoVec.emplace_back(std::move(newInfo));
   }
-}
-
-// ============================================================================
-// 实现 UpdateMemrefAllocOpMemInfo
-// ============================================================================
-LogicalResult PTOIRTranslator::UpdateMemrefAllocOpMemInfo(memref::AllocOp op) {
-  Value res = op.getResult();
-  auto memRefType = dyn_cast<MemRefType>(res.getType());
-  if (!memRefType) return failure();
-
-  // 1. 计算大小 (Bytes)
-  uint64_t sizeInBytes = 0;
-  if (memRefType.hasStaticShape()) {
-    int64_t elemSize = static_cast<int64_t>(
-        pto::getPTOStorageElemByteSize(memRefType.getElementType()));
-    if (elemSize == 0)
-      return failure();
-
-    int64_t numElements = 1;
-    for (auto dim : memRefType.getShape()) numElements *= dim;
-    sizeInBytes = numElements * elemSize;
-  }
-
-  // 2. 解析地址空间 (Scope)
-  // 默认视为 MAT/UB (Local Memory)，这是 alloc 的常见用途
-  // 如果有显式属性，则覆盖
-  pto::AddressSpace space = pto::AddressSpace::MAT;
-
-  if (auto attr = memRefType.getMemorySpace()) {
-    if (auto ptoAttr = dyn_cast<pto::AddressSpaceAttr>(attr)) {
-      space = ptoAttr.getAddressSpace();
-    }
-  }
-
-  // 3. 注册 Buffer 信息
-  // 对于 alloc，它自己就是 Root
-  auto newMemInfo = std::make_unique<BaseMemInfo>(
-      res,                      // baseBuffer
-      res,                      // rootBuffer (Self is root)
-      space,
-      SmallVector<uint64_t>{0}, // Base Addresses (Offset 0)
-      sizeInBytes
-  );
-
-  buffer2MemInfoMap_[res].emplace_back(newMemInfo->clone());
-  return success();
 }
 
 void PTOIRTranslator::UpdateDefUseVec(ValueRange values, SmallVector<const BaseMemInfo *> &vec) {

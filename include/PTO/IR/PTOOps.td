@@ -34,26 +34,19 @@ include "mlir/Interfaces/ViewLikeInterface.td"
 // Types
 //===----------------------------------------------------------------------===//
 
-def TensorOrMemref :
-  AnyTypeOf<[AnyMemRef, AnyRankedTensor], "Tensor or Memref">;
-
 def PTODpsType :
-  AnyTypeOf<[AnyRankedTensor, AnyMemRef, PartitionTensorViewType, TileBufType]>;
+  AnyTypeOf<[AnyRankedTensor, PartitionTensorViewType, TileBufType]>;
 
 def PTOPipeEntryType :
-  AnyTypeOf<[AnyRankedTensor, AnyMemRef, TensorViewType, TileBufType],
-            "TensorView, TileBuf, Tensor, or MemRef">;
+  AnyTypeOf<[AnyRankedTensor, TensorViewType, TileBufType],
+            "TensorView, TileBuf, or Tensor">;
+
+def PTOCommType :
+  AnyTypeOf<[AnyRankedTensor, TensorViewType, PartitionTensorViewType,
+             TileBufType], "TensorView, PartitionTensorView, TileBuf, or Tensor">;
 
 def PtrOrMemRef :
   AnyTypeOf<[PtrType, AnyMemRef], "Ptr or MemRef">;
-
-def TileBufOrMemRef :
-  AnyTypeOf<[TileBufType, AnyMemRef], "TileBuf or MemRef">;
-
-def ScalarPtrOrMemRef :
-  TypeConstraint<
-    CPred<"::mlir::pto::isScalarPtrOrMemRef($_self)">,
-    "Ptr or GM MemRef">;
 
 def ScalarType :
   AnyTypeOf<[AnySignlessInteger, AnyFloat], "numeric (integer/float)">;
@@ -62,7 +55,8 @@ def ScalarType :
 // Op Class
 //===----------------------------------------------------------------------===//
 class PTO_TOp<string mnemonic, list<Trait> traits = []>
-    : Op<PTO_Dialect, mnemonic, !listconcat(traits, [ ])>;
+    : Op<PTO_Dialect, mnemonic,
+         !listconcat(traits, [TileOpInterface])>;
 
 class PTO_DpsOp<string mnemonic, list<Trait> traits = []>
     : Op<PTO_Dialect, mnemonic, traits # [DestinationStyleOpInterface]> {
@@ -76,7 +70,9 @@ class PTO_DpsOp<string mnemonic, list<Trait> traits = []>
 class PTO_Op<string mnemonic, list<Trait> traits = []>
     : Op<PTO_Dialect, mnemonic, !listconcat(traits, [ ])>;
 
+include "PTO/IR/VMIOps.td"
 include "PTO/IR/VPTOOps.td"
+include "PTO/IR/VPTOUbOps.td"
 
 //===----------------------------------------------------------------------===//
 // Pointer/View Ops (for your front-end IR)
@@ -110,13 +106,12 @@ def AddPtrOp : PTO_Op<"addptr", [
 def PtrToIntOp : PTO_Op<"ptrtoint", [Pure]> {
   let summary = "Convert a global pointer to a byte address";
   let description = [{
-    Converts a global pointer value to an i64 byte address. If the source
-    pointer is produced by `pto.addptr`, lowering materializes the addptr
-    offset as an explicit byte offset before converting to EmitC.
+    Converts a global pointer value to an i64 byte address. Pointer arithmetic
+    such as `pto.addptr` remains explicit until backend lowering.
   }];
 
   let arguments = (ins
-    PtrOrMemRef:$ptr
+    PtrType:$ptr
   );
 
   let results = (outs
@@ -145,7 +140,7 @@ def IntToPtrOp : PTO_Op<"inttoptr", [Pure]> {
   );
 
   let results = (outs
-    PtrOrMemRef:$result
+    PtrType:$result
   );
 
   let hasVerifier = 1;
@@ -185,12 +180,13 @@ def CastPtrOp : PTO_Op<"castptr", [Pure]> {
 //===----------------------------------------------------------------------===//
 
 def LoadScalarOp : PTO_Op<"load_scalar", [
+    OpPipeInterface,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let summary = "Load a single scalar element from a pointer at offset.";
 
   let arguments = (ins
-    ScalarPtrOrMemRef:$ptr,
+    PtrType:$ptr,
     Index:$offset
   );
 
@@ -201,15 +197,20 @@ def LoadScalarOp : PTO_Op<"load_scalar", [
   let assemblyFormat = [{
     $ptr `[` $offset `]` attr-dict `:` type($ptr) `->` type($value)
   }];
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_S; }
+  }];
 }
 
 def StoreScalarOp : PTO_Op<"store_scalar", [
+    OpPipeInterface,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let summary = "Store a single scalar element to a pointer at offset.";
 
   let arguments = (ins
-    ScalarPtrOrMemRef:$ptr,
+    PtrType:$ptr,
     Index:$offset,
     AnyType:$value
   );
@@ -221,13 +222,18 @@ def StoreScalarOp : PTO_Op<"store_scalar", [
   let assemblyFormat = [{
     $value `,` $ptr `[` $offset `]` attr-dict `:` type($ptr) `,` type($value)
   }];
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_S; }
+  }];
 }
 
-def MakeTensorViewOp : PTO_Op<"make_tensor_view", [AttrSizedOperandSegments]> {
+def MakeTensorViewOp : PTO_Op<"make_tensor_view", [AttrSizedOperandSegments,
+                                                    Pure]> {
   let summary = "Wrap a pointer as a tensor_view descriptor (no allocation, no copy).";
 
   let arguments = (ins
-    AnyType:$ptr,
+    PtrType:$ptr,
     Variadic<Index>:$shape,
     Variadic<Index>:$strides,
     OptionalAttr<PTO_LayoutAttr>:$layout
@@ -242,7 +248,8 @@ def MakeTensorViewOp : PTO_Op<"make_tensor_view", [AttrSizedOperandSegments]> {
 // =============================================================================
 // PartitionViewOp
 // =============================================================================
-def PartitionViewOp : PTO_Op<"partition_view", [AttrSizedOperandSegments]> {
+def PartitionViewOp : PTO_Op<"partition_view", [AttrSizedOperandSegments,
+                                                Pure]> {
   let summary = "Partition a tensor view into a smaller logical view (logical slicing).";
   let description = [{
     Captures a specific calculation region from a large view.
@@ -265,27 +272,24 @@ def PartitionViewOp : PTO_Op<"partition_view", [AttrSizedOperandSegments]> {
   let hasCustomAssemblyFormat = 1;
 }
 
-// Helper: tensor_view or memref (after lowering tensor_view to memref).
-def TensorViewLikeOrMemRef :
-  AnyTypeOf<[TensorViewType, PartitionTensorViewType, AnyMemRef],
-            "TensorView, PartitionTensorView, or MemRef">;
+// Helper for either whole-tensor or partitioned GM views.
+def TensorViewLike :
+  AnyTypeOf<[TensorViewType, PartitionTensorViewType],
+            "TensorView or PartitionTensorView">;
 
-// Get the size of a dimension of a tensor_view or its lowered memref view.
+// Get the size of a dimension of a tensor_view.
 // Result type: Index (use arith.index_cast if i32 is needed).
 def GetTensorViewDimOp : PTO_Op<"get_tensor_view_dim", [Pure]> {
   let summary = "Get the size of a dimension of a tensor_view.";
   let description = [{
     Returns the size of the given dimension of a logical tensor view.
-    This op accepts either !pto.tensor_view or the memref it is lowered to.
-    IR (tensor_view form):
+    This op accepts !pto.tensor_view or !pto.partition_tensor_view.
+    IR:
       %dim_size = pto.get_tensor_view_dim %tv, %dim_index
         : !pto.tensor_view, index -> index
-    IR (memref form, after lowering):
-      %dim_size = pto.get_tensor_view_dim %mr, %dim_index
-        : memref<...>, index -> index
   }];
   let arguments = (ins
-    TensorViewLikeOrMemRef:$tensor_view,
+    TensorViewLike:$tensor_view,
     Index:$dim_index
   );
   let results = (outs Index:$result);
@@ -301,11 +305,11 @@ def GetTensorViewStrideOp : PTO_Op<"get_tensor_view_stride", [Pure]> {
   let summary = "Get the stride of a dimension of a tensor_view.";
   let description = [{
     Returns the stride, measured in elements, of the given dimension of a
-    logical tensor view. This op accepts either !pto.tensor_view or the memref
-    it is lowered to.
+    logical tensor view. This op accepts !pto.tensor_view or
+    !pto.partition_tensor_view.
   }];
   let arguments = (ins
-    TensorViewLikeOrMemRef:$tensor_view,
+    TensorViewLike:$tensor_view,
     Index:$dim_index
   );
   let results = (outs Index:$result);
@@ -343,20 +347,15 @@ def AllocTileOp : PTO_Op<"alloc_tile", [AttrSizedOperandSegments]> {
 //===----------------------------------------------------------------------===//
 //
 // `pto.alloc_multi_tile` declares an N-slot logical tile buffer. The actual
-// physical allocation of N slots is performed by PTOPlanMemory once the op
-// has been lowered to `memref.alloc {pto.multi_buffer = N : i32}` by
-// PTOViewToMemref.
+// physical allocation of N slots is performed directly by PTOPlanMemory.
+// The op remains tile-native until PTOResolveBufferSelect materializes an
+// addressed `pto.alloc_tile` for each selected slot.
 //
 // `pto.multi_tile_get` is the *only* way to consume a `multi_tile_buf`: it
 // returns a regular `tile_buf` view onto the chosen slot. The slot index
 // may be a constant or any SSA `index` value; PTOAS does not synthesize
 // `iv mod N` automatically -- the user expression IS the slot selector.
 //
-// `pto.slot_marker` is an internal op materialized by PTOViewToMemref to
-// thread the slot SSA from `multi_tile_get` through the memref layer down
-// to PlanMemory / sync analysis. It is not intended for direct frontend
-// use.
-
 def AllocMultiTileOp : PTO_Op<"alloc_multi_tile", [AttrSizedOperandSegments]> {
   let summary = "Allocate an N-slot multi-buffer tile";
   let description = [{
@@ -415,9 +414,9 @@ def MultiTileGetOp : PTO_Op<"multi_tile_get", [
     sync analysis treats this use as a slot-indexed dynamic access; ptoas
     does NOT rewrite the user expression into `iv mod N`.
 
-    This op is metadata-only (no data movement); the lowering merely
-    annotates the underlying memref view with the slot index for PlanMemory
-    / sync / EnableBufferSelect to consume.
+    This op is metadata-only (no data movement). PlanMemory preserves it,
+    sync analysis consumes its slot index directly, and
+    PTOResolveBufferSelect replaces it with an addressed `pto.alloc_tile`.
   }];
 
   let arguments = (ins
@@ -439,64 +438,6 @@ def MultiTileGetOp : PTO_Op<"multi_tile_get", [
   }];
 }
 
-
-// ============================================================================
-// BindTileOp: 将 Config 和 Valid Dims 绑定到 MemRef 上
-// ============================================================================
-def BindTileOp : PTO_Op<"bind_tile", [
-    Pure,
-    AttrSizedOperandSegments
-    // 允许输入 offset:0 -> 输出 offset:?
-  ]> {
-  let summary = "Binds metadata and implicitly casts layout";
-  let description = [{
-    Wraps a memref with PTO metadata (valid dimensions and config).
-  }];
-
-  // [修改] 以前是 Variadic<Index>:$valid_dims
-  // 现在改为明确的 Optional Row/Col，与 PointerCastOp 保持一致
-  let arguments = (ins
-    AnyMemRef:$source,
-    Optional<Index>:$valid_row,
-    Optional<Index>:$valid_col,
-    TileBufConfigAttr:$config
-  );
-
-  let results = (outs AnyMemRef:$result);
-
-  // [修改] assemblyFormat: 去掉 valid_dims，改为 ($row, $col)?
-  let assemblyFormat = [{
-    $source (`,` $valid_row^ `,` $valid_col)? attr-dict `:` qualified(type($source)) `->` qualified(type($result))
-  }];
-}
-
-def MaterializeTileOp : PTO_Op<"materialize_tile", [
-    Pure,
-    AttrSizedOperandSegments
-  ]> {
-  let summary = "Materializes a tile buffer handle from a planned memref";
-  let description = [{
-    Bridges the memref-based memory-planning/sync IR back into tile-buffer
-    handle IR immediately before EmitC. The source remains the planned memref
-    address, while the result carries the tile type, valid dims, and config
-    expected by tile operations and C++ tile codegen.
-  }];
-
-  let arguments = (ins
-    AnyMemRef:$source,
-    Optional<Index>:$valid_row,
-    Optional<Index>:$valid_col,
-    TileBufConfigAttr:$config
-  );
-
-  let results = (outs TileBufType:$result);
-
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    $source (`,` $valid_row^ `,` $valid_col)? attr-dict `:` qualified(type($source)) `->` qualified(type($result))
-  }];
-}
 
 def SubViewOp : PTO_Op<"subview", [
     Pure,
@@ -560,7 +501,7 @@ def SetValidShapeOp : PTO_Op<"set_validshape", [
   }];
 
   let arguments = (ins
-    TileBufOrMemRef:$source,
+    TileBufType:$source,
     Index:$valid_row,
     Index:$valid_col
   );
@@ -584,7 +525,7 @@ def GetValidShapeOp : PTO_Op<"get_validshape", [
   }];
 
   let arguments = (ins
-    TileBufOrMemRef:$source
+    TileBufType:$source
   );
 
   let results = (outs
@@ -789,7 +730,7 @@ def MakePrefetchAsyncContextOp : PTO_Op<"make_prefetch_async_context"> {
   }];
 
   let arguments = (ins
-    ScalarPtrOrMemRef:$workspace
+    PtrType:$workspace
   );
 
   let results = (outs
@@ -895,13 +836,6 @@ def TStoreOp: PTO_TOp<"tstore", [
             return as.getAddressSpace() == ::mlir::pto::AddressSpace::ACC;
           return false;
         }
-        if (auto mr = ::mlir::dyn_cast<::mlir::MemRefType>(ty)) {
-          if (auto ms = mr.getMemorySpace()) {
-            if (auto as = ::mlir::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
-              return as.getAddressSpace() == ::mlir::pto::AddressSpace::ACC;
-          }
-          return false;
-        }
         return false;
       };
       if (isAcc(getSrc().getType()))
@@ -949,21 +883,6 @@ def TTransOp : PTO_TOp<"ttrans", [
     }
   }];
 }
-//===----------------------------------------------------------------------===//
-// TMATMUL_BIAS / TMATMUL_MX family
-//   - DPS: AnyMemRef
-//   - TOp: PTODpsType
-//   - All in ins/outs form
-//===----------------------------------------------------------------------===//
-
-// -------------------------
-// DPS versions (AnyMemRef)
-// -------------------------
-
-// -------------------------
-// Tile-world TOp versions (PTODpsType)
-// -------------------------
-
 def TMatmulBiasOp : PTO_TOp<"tmatmul.bias", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
@@ -1432,21 +1351,10 @@ def TMovOp  : PTO_TOp<"tmov", [
       // while UB->UB copies are vector-pipe operations.
       auto getASFromType = [](Type ty)
           -> std::optional<::mlir::pto::AddressSpace> {
-        // Pre-lowering: tile_buf carries the address space in its memorySpace.
         if (auto tb = llvm::dyn_cast<::mlir::pto::TileBufType>(ty)) {
           if (auto as = llvm::dyn_cast_or_null<::mlir::pto::AddressSpaceAttr>(
                   tb.getMemorySpace()))
             return as.getAddressSpace();
-          return std::nullopt;
-        }
-        // Post PTOViewToMemref: tile_buf is erased to memref but memorySpace is
-        // preserved in memref's memorySpace attribute.
-        if (auto mr = llvm::dyn_cast<::mlir::MemRefType>(ty)) {
-          if (auto ms = mr.getMemorySpace()) {
-            if (auto as =
-                    llvm::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
-              return as.getAddressSpace();
-          }
           return std::nullopt;
         }
         return std::nullopt;
@@ -1465,11 +1373,25 @@ def TMovOp  : PTO_TOp<"tmov", [
         return ::mlir::pto::PIPE::PIPE_V;
       }
 
-      // MAT -> L0 (Left/Right/Bias/Scaling) are MTE1 moves.
+      // MAT -> L0A/L0B/Bias moves run on MTE1.
       if ((s == ::mlir::pto::AddressSpace::MAT &&
            (d == ::mlir::pto::AddressSpace::LEFT || d == ::mlir::pto::AddressSpace::RIGHT ||
-            d == ::mlir::pto::AddressSpace::BIAS || d == ::mlir::pto::AddressSpace::SCALING))) {
+            d == ::mlir::pto::AddressSpace::BIAS))) {
         return ::mlir::pto::PIPE::PIPE_MTE1;
+      }
+
+      if (s == ::mlir::pto::AddressSpace::MAT &&
+          d == ::mlir::pto::AddressSpace::SCALING) {
+        // PTOAS uses SCALING for two distinct PTO-ISA destinations. A5 MX
+        // scale tiles are ScaleLeft/ScaleRight loads into L0A/L0B and run on
+        // MTE1. Regular Scaling tiles are FBUF loads (TMOV_M2S) and run on
+        // Distinguish the MX-only f8E8M0 type from regular scaling tiles.
+        Type dstElemTy;
+        if (auto tb = llvm::dyn_cast<::mlir::pto::TileBufType>(getDst().getType()))
+          dstElemTy = tb.getElementType();
+        if (dstElemTy && llvm::isa<::mlir::pto::F8E8M0Type>(dstElemTy))
+          return ::mlir::pto::PIPE::PIPE_MTE1;
+        return ::mlir::pto::PIPE::PIPE_FIX;
       }
 
       // ACC -> MAT / VEC use FIX in PTO-ISA sync mapping (TMOV_A2M/TMOV_A2V).
@@ -1487,91 +1409,15 @@ def TMovOp  : PTO_TOp<"tmov", [
 }
 
 
-//===----------------------------------------------------------------------===//
-// Pointer Cast Op (existing)
-//===----------------------------------------------------------------------===//
-
-def PointerCastOp : PTO_Op<"pointer_cast", [AttrSizedOperandSegments, Pure]> {
-  let summary = "Casts an integer address to a MemRef with optional valid dims";
-  
-  // 参数定义 (保持 Optional)
-  let arguments = (ins 
-    Variadic<I64>:$addrs,
-    Optional<Index>:$valid_row,
-    Optional<Index>:$valid_col,
-    OptionalAttr<TileBufConfigAttr>:$config
-  );
-  
-  let results = (outs Res<AnyMemRef, "", [MemAlloc]>:$result);
-
-  // Assembly Format (去掉了 [])
-  let assemblyFormat = [{
-    `(` $addrs `)` ($valid_row^ `,` $valid_col)? attr-dict `:` qualified(type($result))
-  }];
-
-  // Builder (修复 addOperand -> addOperands)
-  let builders = [
-    OpBuilder<(ins "Type":$result, "ValueRange":$addrs, "Value":$vRow, "Value":$vCol, "Attribute":$config), [{
-      $_state.addTypes(result);
-      $_state.addOperands(addrs);
-      // [关键修复] addOperand -> addOperands
-      if (vRow) $_state.addOperands(vRow);
-      if (vCol) $_state.addOperands(vCol);
-      if (config) $_state.addAttribute("config", config);
-
-      int32_t addrsSize = addrs.size();
-      int32_t vRowSize = vRow ? 1 : 0;
-      int32_t vColSize = vCol ? 1 : 0;
-      $_state.addAttribute("operandSegmentSizes",
-        $_builder.getDenseI32ArrayAttr({addrsSize, vRowSize, vColSize}));
-    }]>
-  ];
-
-  let extraClassDeclaration = [{
-    ::mlir::LogicalResult verify();
-  }];
-}
-
-def SlotMarkerOp : PTO_Op<"slot_marker", [
-    Pure,
-    ViewLikeOpInterface,
-    AllTypesMatch<["source", "result"]>
-  ]> {
-  let summary = "Tag a memref view as referring to one slot of a multi_tile_buf";
-  let description = [{
-    Internal op materialized by `PTOViewToMemref` while lowering
-    `pto.multi_tile_get`. It carries the slot SSA index through the memref
-    layer so that PlanMemory, sync analysis (InsertSync / GraphSyncSolver),
-    and the buffer-select lowering pass can identify which physical slot
-    this memref reference touches.
-
-    The op is metadata-only (no data movement, no extra address arithmetic);
-    its result memref aliases the source memref byte-for-byte. Frontends do
-    not produce this op directly -- use `pto.multi_tile_get` instead.
-  }];
-
-  let arguments = (ins
-    AnyMemRef:$source,
-    Index:$slot
-  );
-
-  let results = (outs AnyMemRef:$result);
-
-  let assemblyFormat = [{
-    $source `[` $slot `]` attr-dict
-    `:` qualified(type($source)) `->` qualified(type($result))
-  }];
-
-  let extraClassDeclaration = [{
-    ::mlir::Value getViewSource() { return getSource(); }
-  }];
-}
-
 // =============================================================================
 // System/Runtime Query Ops
 // =============================================================================
 
-def GetBlockIdxOp : PTO_Op<"get_block_idx", [Pure]> {
+def GetBlockIdxOp : PTO_Op<"get_block_idx", [
+    Pure,
+    MicroOpInterface,
+    SimtOpInterface
+  ]> {
   let summary = "Get the current block index (core ID).";
   let description = [{
     Returns the linear index of the current compute unit (CUBE Core) within the task.
@@ -1584,7 +1430,11 @@ def GetBlockIdxOp : PTO_Op<"get_block_idx", [Pure]> {
   let assemblyFormat = "attr-dict";
 }
 
-def GetSubBlockIdxOp : PTO_Op<"get_subblock_idx", [Pure]> {
+def GetSubBlockIdxOp : PTO_Op<"get_subblock_idx", [
+    Pure,
+    MicroOpInterface,
+    SimtOpInterface
+  ]> {
   let summary = "Get the current vector core ID.";
   let description = [{
     Returns the ID of the current compute unit (Vector Core).
@@ -1597,7 +1447,11 @@ def GetSubBlockIdxOp : PTO_Op<"get_subblock_idx", [Pure]> {
   let assemblyFormat = "attr-dict";
 }
 
-def GetBlockNumOp : PTO_Op<"get_block_num", [Pure]> {
+def GetBlockNumOp : PTO_Op<"get_block_num", [
+    Pure,
+    MicroOpInterface,
+    SimtOpInterface
+  ]> {
   let summary = "Get the total number of blocks (cores).";
   let description = [{
     Returns the total number of compute units (Blocks) configured for the current task.
@@ -1609,7 +1463,11 @@ def GetBlockNumOp : PTO_Op<"get_block_num", [Pure]> {
   let assemblyFormat = "attr-dict";
 }
 
-def GetSubBlockNumOp : PTO_Op<"get_subblock_num", [Pure]> {
+def GetSubBlockNumOp : PTO_Op<"get_subblock_num", [
+    Pure,
+    MicroOpInterface,
+    SimtOpInterface
+  ]> {
   let summary = "Get the number of vector cores.";
   let description = [{
     Returns the total number of vector compute units.
@@ -1698,6 +1556,26 @@ class PTO_SectionOp<string mnemonic>
 def SectionCubeOp : PTO_SectionOp<"section.cube">;
 def SectionVectorOp : PTO_SectionOp<"section.vector">;
 
+def SectionSimtOp : PTO_Op<"section.simt", [SingleBlock, NoTerminator]> {
+  let summary = "Container for inline SIMT code";
+  let description = [{
+    `pto.section.simt` keeps an inline SIMT body in the enclosing kernel
+    function until downstream PTOAS lowering consumes it.  It is a
+    source-level carrier for transformations that need to observe the lexical
+    relationship between surrounding code and SIMT regions.
+
+    Launch dimensions are explicit static i32 attributes.  The textual launch
+    dimension order matches `pto.simt_launch`:
+    `<<<dimX, dimY, dimZ>>>`.
+  }];
+  let arguments = (ins I32Attr:$dimX, I32Attr:$dimY, I32Attr:$dimZ);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = [{
+    `<` `<` `<` $dimX `,` $dimY `,` $dimZ `>` `>` `>` $body attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
 //===----------------------------------------------------------------------===//
 // Tile Fusion Region Ops
 //===----------------------------------------------------------------------===//
@@ -1752,6 +1630,7 @@ def AicInitializePipeOp : PTO_Op<"aic_initialize_pipe",
       OptionalAttr<I32Attr>:$slot_num,
       OptionalAttr<I32Attr>:$local_slot_num,
       OptionalAttr<BoolAttr>:$nosplit,
+      OptionalAttr<PTO_AccPushEpilogueAttr>:$acc_push_epilogue,
       Optional<PtrType>:$gm_slot_buffer,
       Optional<TensorViewType>:$gm_slot_tensor,
       Optional<I32>:$c2v_consumer_buf,
@@ -1774,6 +1653,7 @@ def AivInitializePipeOp : PTO_Op<"aiv_initialize_pipe",
       OptionalAttr<I32Attr>:$slot_num,
       OptionalAttr<I32Attr>:$local_slot_num,
       OptionalAttr<BoolAttr>:$nosplit,
+      OptionalAttr<PTO_AccPushEpilogueAttr>:$acc_push_epilogue,
       Optional<PtrType>:$gm_slot_buffer,
       Optional<TensorViewType>:$gm_slot_tensor,
       Optional<I32>:$c2v_consumer_buf,
@@ -1819,7 +1699,9 @@ def TAllocToAicOp : PTO_TOp<"talloc_to_aic"> {
   }];
 }
 
-def TPushToAivOp : PTO_TOp<"tpush_to_aiv"> {
+def TPushToAivOp : PTO_TOp<"tpush_to_aiv", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
   let summary = "Frontend C2V producer push from Cube to Vector";
 
   let arguments = (ins
@@ -1842,6 +1724,7 @@ def TPushToAicOp : PTO_TOp<"tpush_to_aic"> {
 
   let arguments = (ins
       PTOPipeEntryType:$tile,
+      Optional<I64>:$aiv_subblockid,
       DefaultValuedOptionalAttr<I32Attr, "0">:$id,
       I8Attr:$split
   );
@@ -1851,7 +1734,9 @@ def TPushToAicOp : PTO_TOp<"tpush_to_aic"> {
 
   let assemblyFormat = [{
     `(` $tile `:` qualified(type($tile)) `)`
-    `{` (`id` `=` $id^ `,`)? `split` `=` $split `}` attr-dict
+    `{` (`id` `=` $id^ `,`)? `split` `=` $split `}`
+    (`aiv_subblockid` `(` $aiv_subblockid^ `)`)?
+    attr-dict
   }];
 }
 
@@ -1861,6 +1746,7 @@ def TPopFromAicOp : PTO_TOp<"tpop_from_aic", [AttrSizedOperandSegments]> {
   let arguments = (ins
       Optional<Index>:$valid_row,
       Optional<Index>:$valid_col,
+      Optional<I64>:$aiv_subblockid,
       DefaultValuedOptionalAttr<I32Attr, "0">:$id,
       I8Attr:$split
   );
@@ -1869,7 +1755,10 @@ def TPopFromAicOp : PTO_TOp<"tpop_from_aic", [AttrSizedOperandSegments]> {
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    (`(` $valid_row^ `,` $valid_col `)`)? `{` (`id` `=` $id^ `,`)? `split` `=` $split `}` attr-dict
+    (`(` $valid_row^ `,` $valid_col `)`)?
+    `{` (`id` `=` $id^ `,`)? `split` `=` $split `}`
+    (`aiv_subblockid` `(` $aiv_subblockid^ `)`)?
+    attr-dict
     `->` qualified(type($tile))
   }];
 }
@@ -1929,6 +1818,67 @@ def TFreeFromAivOp : PTO_TOp<"tfree_from_aiv"> {
   }];
 }
 
+//===----------------------------------------------------------------------===//
+// Fixpipe Quant Config Ops
+//===----------------------------------------------------------------------===//
+
+def SetQuantScalarOp : PTO_Op<"set_quant_scalar", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Set scalar quantization parameters for fixpipe producer";
+
+  let description = [{
+    Producer-side scalar quantization configuration for fixpipe TPUSH.
+    Binds an f32 scalar quant payload to a logical pipe id.
+    This binding persists until overwritten by another set_quant_scalar with
+    the same id. Used by scalar quant modes: deqf16_scalar, req8_scalar,
+    qf322b8_pre_scalar, qf322f16_pre_scalar, qf322bf16_pre_scalar,
+    qs322bf16_pre_scalar, qf322hif8_pre_scalar, qf322fp8_pre_scalar.
+  }];
+
+  let arguments = (ins
+      F32:$scale,
+      DefaultValuedOptionalAttr<I32Attr, "0">:$id
+  );
+
+  let results = (outs);
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `(` $scale `:` type($scale) `)` `{` `id` `=` $id `}` attr-dict
+  }];
+}
+
+def SetQuantVectorOp : PTO_Op<"set_quant_vector", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Set vector quantization parameters for fixpipe producer";
+
+  let description = [{
+    Producer-side vector quantization configuration for fixpipe TPUSH.
+    Binds a vector quant payload (scaling tile) to a logical pipe id.
+    The input tile must have loc=scaling. A5 consumes a direct scaling
+    payload with an element type in the f16/bf16/f32 family; A3 consumes
+    a packed 64-bit integer payload (i64/ui64). This binding persists
+    until overwritten by another set_quant_vector with the same id.
+    Used by vector quant modes: deqf16_vec, req8_vec, qf322b8_pre_vec,
+    qs322bf16_pre_vec.
+  }];
+
+  let arguments = (ins
+      PTOPipeEntryType:$scaling_tile,
+      DefaultValuedOptionalAttr<I32Attr, "0">:$id
+  );
+
+  let results = (outs);
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `(` $scaling_tile `:` qualified(type($scaling_tile)) `)`
+    `{` `id` `=` $id `}` attr-dict
+  }];
+}
+
 def ReserveBufferOp : PTO_Op<"reserve_buffer"> {
   let summary = "Reserve a local consumer slot buffer";
 
@@ -1981,8 +1931,8 @@ def BuildAsyncSessionOp : PTO_Op<"comm.build_async_session", [
   let summary = "Build an async DMA session handle for TPUT_ASYNC/TGET_ASYNC";
 
   let arguments = (ins
-      TileBufOrMemRef:$scratch,
-      ScalarPtrOrMemRef:$workspace,
+      TileBufType:$scratch,
+      PtrType:$workspace,
       OptionalAttr<I32Attr>:$sync_id,
       OptionalAttr<I64Attr>:$block_bytes,
       OptionalAttr<I64Attr>:$comm_block_offset,
@@ -1994,7 +1944,7 @@ def BuildAsyncSessionOp : PTO_Op<"comm.build_async_session", [
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    `(` $scratch `,` $workspace `:` qualified(type($scratch)) `,` type($workspace) `)`
+    `(` $scratch `,` $workspace `:` qualified(type($scratch)) `,` qualified(type($workspace)) `)`
     attr-dict `->` qualified(type($session))
   }];
 }
@@ -2005,8 +1955,8 @@ def TPutAsyncOp : PTO_Op<"comm.tput_async", [
   let summary = "Asynchronous remote write from local GM to remote GM";
 
   let arguments = (ins
-      PTODpsType:$dst,
-      PTODpsType:$src,
+      PTOCommType:$dst,
+      PTOCommType:$src,
       AsyncSessionType:$session
   );
 
@@ -2026,8 +1976,8 @@ def TGetAsyncOp : PTO_Op<"comm.tget_async", [
   let summary = "Asynchronous remote read from remote GM to local GM";
 
   let arguments = (ins
-      PTODpsType:$dst,
-      PTODpsType:$src,
+      PTOCommType:$dst,
+      PTOCommType:$src,
       AsyncSessionType:$session
   );
 
@@ -2084,10 +2034,10 @@ def TPutOp : PTO_Op<"comm.tput", [
 ]> {
   let summary = "Synchronous remote write from local GM to remote GM";
   let arguments = (ins
-      PTODpsType:$dst,
-      PTODpsType:$src,
-      PTODpsType:$ping,
-      Optional<PTODpsType>:$pong,
+      PTOCommType:$dst,
+      PTOCommType:$src,
+      PTOCommType:$ping,
+      Optional<PTOCommType>:$pong,
       DefaultValuedAttr<PTO_AtomicTypeAttr, "::mlir::pto::AtomicType::AtomicNone">:$atomicType
   );
   let results = (outs);
@@ -2104,10 +2054,10 @@ def TGetOp : PTO_Op<"comm.tget", [
 ]> {
   let summary = "Synchronous remote read from remote GM to local GM";
   let arguments = (ins
-      PTODpsType:$dst,
-      PTODpsType:$src,
-      PTODpsType:$ping,
-      Optional<PTODpsType>:$pong
+      PTOCommType:$dst,
+      PTOCommType:$src,
+      PTOCommType:$ping,
+      Optional<PTOCommType>:$pong
   );
   let results = (outs);
   let hasVerifier = 1;
@@ -2123,7 +2073,7 @@ def TNotifyOp : PTO_Op<"comm.tnotify", [
 ]> {
   let summary = "Send a signal notification to remote GM";
   let arguments = (ins
-      PTODpsType:$signal,
+      PTOCommType:$signal,
       AnySignlessInteger:$value,
       PTO_NotifyOpAttr:$notifyOp
   );
@@ -2140,7 +2090,7 @@ def TWaitOp : PTO_Op<"comm.twait", [
 ]> {
   let summary = "Block until signal(s) satisfy a comparison";
   let arguments = (ins
-      PTODpsType:$signal,
+      PTOCommType:$signal,
       AnySignlessInteger:$cmpValue,
       PTO_WaitCmpAttr:$cmp
   );
@@ -2157,7 +2107,7 @@ def TTestOp : PTO_Op<"comm.ttest", [
 ]> {
   let summary = "Non-blocking signal comparison test";
   let arguments = (ins
-      PTODpsType:$signal,
+      PTOCommType:$signal,
       AnySignlessInteger:$cmpValue,
       PTO_WaitCmpAttr:$cmp
   );
@@ -2175,10 +2125,10 @@ def TBroadcastOp : PTO_Op<"comm.tbroadcast", [
 ]> {
   let summary = "Broadcast local GM data to all group members";
   let arguments = (ins
-      PTODpsType:$src,
-      PTODpsType:$ping,
-      Optional<PTODpsType>:$pong,
-      Variadic<PTODpsType>:$group,
+      PTOCommType:$src,
+      PTOCommType:$ping,
+      Optional<PTOCommType>:$pong,
+      Variadic<PTOCommType>:$group,
       I32Attr:$root
   );
   let results = (outs);
@@ -2192,10 +2142,10 @@ def CommTGatherOp : PTO_Op<"comm.tgather", [
 ]> {
   let summary = "Gather remote GM data from a communication group";
   let arguments = (ins
-      PTODpsType:$dst,
-      PTODpsType:$ping,
-      Optional<PTODpsType>:$pong,
-      Variadic<PTODpsType>:$group,
+      PTOCommType:$dst,
+      PTOCommType:$ping,
+      Optional<PTOCommType>:$pong,
+      Variadic<PTOCommType>:$group,
       I32Attr:$root
   );
   let results = (outs);
@@ -2209,10 +2159,10 @@ def CommTScatterOp : PTO_Op<"comm.tscatter", [
 ]> {
   let summary = "Scatter local GM data to a communication group";
   let arguments = (ins
-      PTODpsType:$src,
-      PTODpsType:$ping,
-      Optional<PTODpsType>:$pong,
-      Variadic<PTODpsType>:$group,
+      PTOCommType:$src,
+      PTOCommType:$ping,
+      Optional<PTOCommType>:$pong,
+      Variadic<PTOCommType>:$group,
       I32Attr:$root
   );
   let results = (outs);
@@ -2226,11 +2176,11 @@ def TReduceOp : PTO_Op<"comm.treduce", [
 ]> {
   let summary = "Reduce remote GM data from a communication group";
   let arguments = (ins
-      PTODpsType:$dst,
-      PTODpsType:$acc,
-      PTODpsType:$recvPing,
-      Optional<PTODpsType>:$recvPong,
-      Variadic<PTODpsType>:$group,
+      PTOCommType:$dst,
+      PTOCommType:$acc,
+      PTOCommType:$recvPing,
+      Optional<PTOCommType>:$recvPong,
+      Variadic<PTOCommType>:$group,
       PTO_ReduceOpAttr:$reduceOp,
       I32Attr:$root
   );
@@ -2252,6 +2202,7 @@ def InitializeL2G2LPipeOp : PTO_Op<"initialize_l2g2l_pipe", [
       OptionalAttr<I32Attr>:$local_slot_num,
       OptionalAttr<I32Attr>:$flag_base,
       OptionalAttr<BoolAttr>:$nosplit,
+      OptionalAttr<PTO_AccPushEpilogueAttr>:$acc_push_epilogue,
       AnyType:$gm_addr,
       Optional<AnyType>:$local_addr,
       Optional<AnyType>:$peer_local_addr
@@ -2286,6 +2237,7 @@ def InitializeL2LPipeOp : PTO_Op<"initialize_l2l_pipe", [
       I32Attr:$slot_num,
       OptionalAttr<I32Attr>:$flag_base,
       OptionalAttr<BoolAttr>:$nosplit,
+      OptionalAttr<PTO_AccPushEpilogueAttr>:$acc_push_epilogue,
       AnyType:$local_addr,
       Optional<AnyType>:$peer_local_addr
   );
@@ -2315,6 +2267,7 @@ def TPushOp : PTO_TOp<"tpush", [
   let arguments = (ins
       PTOPipeEntryType:$tile,
       PipeType:$pipe_handle,
+      Optional<I64>:$aiv_subblockid,
       I8Attr:$split
   );
 
@@ -2323,7 +2276,9 @@ def TPushOp : PTO_TOp<"tpush", [
 
   let assemblyFormat = [{
     `(` $tile `,` $pipe_handle `:` qualified(type($tile)) `,` qualified(type($pipe_handle)) `)`
-    `{` `split` `=` $split `}` attr-dict
+    `{` `split` `=` $split `}`
+    (`aiv_subblockid` `(` $aiv_subblockid^ `)`)?
+    attr-dict
   }];
 
   let extraClassDeclaration = [{
@@ -2333,13 +2288,6 @@ def TPushOp : PTO_TOp<"tpush", [
           if (auto as = ::mlir::dyn_cast_or_null<::mlir::pto::AddressSpaceAttr>(
                   tb.getMemorySpace()))
             return as.getAddressSpace();
-          return std::nullopt;
-        }
-        if (auto mr = ::mlir::dyn_cast<::mlir::MemRefType>(ty)) {
-          if (auto ms = mr.getMemorySpace()) {
-            if (auto as = ::mlir::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
-              return as.getAddressSpace();
-          }
           return std::nullopt;
         }
         return std::nullopt;
@@ -2402,7 +2350,7 @@ def TAllocOp : PTO_TOp<"talloc", [
   }];
 }
 
-def TAssignOp : PTO_Op<"tassign", [Pure]> {
+def TAssignOp : PTO_Op<"tassign", [Pure, AllTypesMatch<["tile", "result"]>]> {
   let summary = "Rebind a declared tile handle to a runtime address";
   let description = [{
     Rebinds an existing tile handle to a new address. This op is intended for
@@ -2476,7 +2424,7 @@ def EventIdArraySetOp : PTO_Op<"eventid_array_set"> {
 // Mirrors the `eventid_array` triad (declare / get / set) for a generic
 // statically-shaped scalar stack array. Disjoint from the tile-buf / scratch
 // memory world: the array's address is decided by the host C++ compiler at
-// codegen time, never by PTO memory planning or `pto.pointer_cast`.
+// codegen time, never by PTO memory planning.
 
 def DeclareLocalArrayOp : PTO_Op<"declare_local_array"> {
   let summary = "Declare a stack-local statically-shaped array";
@@ -2539,19 +2487,101 @@ def LocalArraySetOp : PTO_Op<"local_array_set"> {
   }];
 }
 
-def DeclareTileMemRefOp : PTO_Op<"declare_tile_memref"> {
-  let summary = "Internal memref placeholder for a tile whose address is assigned later";
+//===----------------------------------------------------------------------===//
+// Stack-local heterogeneous aggregate (struct)
+//===----------------------------------------------------------------------===//
+//
+// Mirrors the `local_array` triad (declare / get / set) for a generic
+// heterogeneous scalar-unit aggregate. The struct's address is decided by the
+// host C++ compiler at codegen time, never by PTO memory planning or
+// `pto.pointer_cast`. Field positions are constant (struct semantics), so
+// `get` / `set` carry a constant `path` of field indices that may descend
+// through nested structs. The path always ends at a scalar; a nested struct is
+// traversed by a longer path, never handed back as a value.
+
+def DeclareStructOp : PTO_Op<"declare_struct"> {
+  let summary = "Declare a stack-local heterogeneous aggregate";
   let description = [{
-    Internal lowering op used by PTOViewToMemref. This op does not allocate
-    storage; it only provides a memref-typed SSA handle so later passes can
-    attach tile metadata through pto.bind_tile before the address is filled by
-    pipe operations such as pto.tpop.
+    Lowers to a plain C++ stack variable like `PtoStruct_X s;`. Field types are
+    restricted to scalars (integers of width 8/16/32/64, f16/bf16/f32/f64) or a
+    nested `!pto.struct`.
+
+    This op does not participate in PTO memory planning. The resulting struct's
+    address is determined by the host C++ compiler.
+
+    The struct is stack storage owned by the scope that declares it, and a
+    `!pto.struct` value lowers to a pointer to that storage. Handing the value
+    to a terminator would publish the address outside the owning scope, so it is
+    rejected: returning it would leave the caller holding a pointer to a dead
+    frame. Module-level provenance validation also rejects function results and
+    derived operation results of this type, so aliases cannot launder that
+    address past the direct-use check. Struct storage originates from this op
+    or is received through a function argument.
+    Since `pto.struct_set` mutates in place, a struct never needs to be returned
+    or yielded — declare it in the outer scope and pass it down as a function
+    argument instead.
   }];
 
-  let results = (outs AnyMemRef:$result);
+  let results = (outs StructType:$s);
+
+  let hasVerifier = 1;
 
   let assemblyFormat = [{
-    attr-dict `->` qualified(type($result))
+    attr-dict `->` qualified(type($s))
+  }];
+}
+
+def StructGetOp : PTO_Op<"struct_get"> {
+  let summary = "Read a field from a stack-local struct by constant path";
+  let description = [{
+    Reads the field reached by following the constant `path` of field indices
+    from the struct, descending through nested structs. Lowers to `s.fA.fB...`
+    member access, read into a fresh variable so the SSA value keeps its value
+    if the struct is mutated later (mirrors `pto.local_array_get`).
+
+    The path must end at a scalar field, and the result type must equal that
+    field's type. A path stopping on a nested `!pto.struct` is rejected —
+    extend it to reach a scalar inside.
+  }];
+
+  let arguments = (ins
+    StructType:$s,
+    DenseI64ArrayAttr:$path
+  );
+  let results = (outs AnyType:$value);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $s custom<StructPath>($path) attr-dict
+      `:` qualified(type($s)) `->` type($value)
+  }];
+}
+
+def StructSetOp : PTO_Op<"struct_set"> {
+  let summary = "Write a field into a stack-local struct by constant path";
+  let description = [{
+    Writes `value` into the field reached by following the constant `path` of
+    field indices, descending through nested structs. Lowers to
+    `s.fA.fB... = value;`.
+
+    The path must end at a scalar field, and the value type must equal that
+    field's type. A path stopping on a nested `!pto.struct` is rejected —
+    extend it to reach a scalar inside.
+  }];
+
+  let arguments = (ins
+    StructType:$s,
+    DenseI64ArrayAttr:$path,
+    AnyType:$value
+  );
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $s custom<StructPath>($path) `,` $value attr-dict
+      `:` qualified(type($s)) `,` type($value)
   }];
 }
 
@@ -2565,6 +2595,7 @@ def TPopOp : PTO_TOp<"tpop", [
   let arguments = (ins
       PTOPipeEntryType:$tile,
       PipeType:$pipe_handle,
+      Optional<I64>:$aiv_subblockid,
       I8Attr:$split
   );
 
@@ -2573,7 +2604,9 @@ def TPopOp : PTO_TOp<"tpop", [
 
   let assemblyFormat = [{
     `(` $tile `,` $pipe_handle `:` qualified(type($tile)) `,` qualified(type($pipe_handle)) `)`
-    `{` `split` `=` $split `}` attr-dict
+    `{` `split` `=` $split `}`
+    (`aiv_subblockid` `(` $aiv_subblockid^ `)`)?
+    attr-dict
   }];
 
   let extraClassDeclaration = [{
@@ -2583,13 +2616,6 @@ def TPopOp : PTO_TOp<"tpop", [
           if (auto as = ::mlir::dyn_cast_or_null<::mlir::pto::AddressSpaceAttr>(
                   tb.getMemorySpace()))
             return as.getAddressSpace();
-          return std::nullopt;
-        }
-        if (auto mr = ::mlir::dyn_cast<::mlir::MemRefType>(ty)) {
-          if (auto ms = mr.getMemorySpace()) {
-            if (auto as = ::mlir::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
-              return as.getAddressSpace();
-          }
           return std::nullopt;
         }
         return std::nullopt;
@@ -2747,6 +2773,27 @@ def GetBufOp : PTO_Op<"get_buf"> {
   }];
 }
 
+def GetBufDynOp : PTO_Op<"get_buf_dyn"> {
+  let summary = "Acquire a buffer-id token (dynamic buf-id)";
+  let description = [{
+    Dynamic variant of `pto.get_buf` where the buffer-id is provided as an
+    SSA value (index) instead of a static integer attribute. This enables
+    runtime-computed buf_id patterns such as SIMT ping-pong buffering
+    (e.g. `iter & 1`).
+  }];
+
+  let arguments = (ins
+    PTO_PipeLikeAttr:$op_type,
+    Index:$buf_id,
+    DefaultValuedAttr<I32Attr, "0">:$mode
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+  let hasCustomAssemblyFormat = 1;
+}
+
 def RlsBufOp : PTO_Op<"rls_buf"> {
   let summary = "Release a buffer-id token for a sync op type (A5)";
   let description = [{
@@ -2771,6 +2818,25 @@ def RlsBufOp : PTO_Op<"rls_buf"> {
     static ::mlir::ParseResult parse(::mlir::OpAsmParser &parser,
                                      ::mlir::OperationState &result);
   }];
+}
+
+def RlsBufDynOp : PTO_Op<"rls_buf_dyn"> {
+  let summary = "Release a buffer-id token (dynamic buf-id)";
+  let description = [{
+    Dynamic variant of `pto.rls_buf` where the buffer-id is provided as an
+    SSA value (index) instead of a static integer attribute.
+  }];
+
+  let arguments = (ins
+    PTO_PipeLikeAttr:$op_type,
+    Index:$buf_id,
+    DefaultValuedAttr<I32Attr, "0">:$mode
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+  let hasCustomAssemblyFormat = 1;
 }
 
 def SyncSetOp : PTO_Op<"sync.set"> {
@@ -2816,6 +2882,49 @@ def BarrierOp : PTO_Op<"barrier"> {
   let assemblyFormat = "$pipe attr-dict";
 }
 
+def CmoCacheInvalidOp : PTO_Op<"cmo.cacheinvalid"> {
+  let summary = "Perform cache maintenance for a memory space";
+  let description = [{
+    Cache maintenance operation for the specified memory space.
+
+    The whole-cache form lowers to PTO-ISA's two-argument
+    `dcci((__gm__ void*)0, cache_line_t::ENTIRE_DATA_CACHE)`.
+
+    The single-cache-line form carries the GM payload address selected by the
+    producer DSL/user and lowers to
+    `dcci(addr, cache_line_t::SINGLE_CACHE_LINE)`.
+
+    This op is an explicit CMO boundary. PTOAS no longer runs the historical
+    MemoryConsistency analysis pass that consumed marker-only CMO ops or inferred
+    signal/payload pipe drains, so precise placement and coverage are the
+    producer DSL/user's responsibility.
+  }];
+
+  let arguments = (ins
+    Optional<AnyType>:$addr,
+    PTO_AddressSpaceAttr:$space
+  );
+
+  let hasVerifier = 1;
+  let hasCustomAssemblyFormat = 1;
+}
+
+def FenceBarrierAllOp : PTO_Op<"fence.barrier_all"> {
+  let summary = "All-direction memory fence for a visibility scope";
+  let description = [{
+    Memory fence for a visibility scope. Around signal/payload communication it
+    can be used as the producer-side publish barrier or the consumer-side
+    acquire barrier depending on placement. In EmitC, `scope = gm` and
+    `scope = all` drain all vector-kernel pipes with `PIPE_ALL` before lowering
+    to `dsb(DSB_DDR)`. Other kernel kinds conservatively drain MTE2, MTE3, and
+    FIX before the DDR barrier. Users therefore do not need to separately model
+    producer pipe classes before a GM visibility fence.
+  }];
+
+  let arguments = (ins PTO_FenceScopeAttr:$scope);
+  let assemblyFormat = "$scope attr-dict";
+}
+
 def TSyncOp : PTO_TOp<"tsync"> {
   let summary = "Direct TSYNC mapping (variadic operands).";
   let description = [{
@@ -2838,19 +2947,17 @@ def SyncAllOp : PTO_Op<"syncall", [AttrSizedOperandSegments]> {
 
     Supported IR forms:
     - hard sync: no operands, `mode = hard`
-    - soft AIV-only sync: `gm_workspace`, `ub_workspace`, optional `used_cores`
-    - soft AIC-only sync: `gm_workspace`, `l1_workspace`, optional `used_cores`
-    - soft mixed sync: `gm_workspace`, `ub_workspace`, `l1_workspace`,
-      optional `used_cores`
+    - soft sync: `gm_workspace`, optional `used_cores`
 
-    The verifier mirrors the input-form constraints exposed by the public
-    `pto-isa` API.
+    The soft operand ABI is identical for AIV-only, AIC-only, and mixed
+    synchronization. The GM workspace must reserve at least 16 `i32` elements
+    (64 bytes), be zero-initialized before first use, and occupy an exclusive
+    cache line.
   }];
 
   let arguments = (ins
-    Optional<PTODpsType>:$gm_workspace,
-    Optional<PTODpsType>:$ub_workspace,
-    Optional<PTODpsType>:$l1_workspace,
+    Optional<AnyTypeOf<[PtrType, TensorViewLike],
+                       "Ptr, TensorView, or PartitionTensorView">>:$gm_workspace,
     Optional<I32>:$used_cores,
     PTO_SyncAllModeAttr:$mode,
     PTO_SyncCoreTypeAttr:$core_type
@@ -2860,32 +2967,6 @@ def SyncAllOp : PTO_Op<"syncall", [AttrSizedOperandSegments]> {
 
   let hasVerifier = 1;
   let hasCustomAssemblyFormat = 1;
-}
-
-//===----------------------------------------------------------------------===//
-// SIMD Bridge Ops
-//===----------------------------------------------------------------------===//
-
-def SimdTileToMemrefOp : PTO_Op<"simd.tile_to_memref", [Pure]> {
-  let summary = "Bridge cast from tile_buf to memref in OP-Lib bodies.";
-  let description = [{
-    This op is the canonical bridge marker for OP-Lib templates to expose a
-    memref view from tile-like values while keeping external ABI as
-    !pto.tile_buf.
-    In tile_buf world, src is !pto.tile_buf and dst is the corresponding
-    memref bridge type.
-    After memref-world lowering, src may already be memref and this op remains
-    as a marker for backend lowering (EmitC) to materialize tile data access.
-  }];
-
-  let arguments = (ins TileBufOrMemRef:$src);
-  let results = (outs AnyMemRef:$dst);
-
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    $src attr-dict `:` qualified(type($src)) `to` type($dst)
-  }];
 }
 
 // ---------------------------------------------------------------------------
@@ -2934,7 +3015,7 @@ def TileValidColsOp : PTO_Op<"tile_valid_cols", [Pure]> {
 
 def SetFFTsOp : PTO_Op<"set_ffts", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Set FFTS/flags pointer for runtime (side-effecting).";
-  let arguments = (ins AnyMemRef:$ffts);
+  let arguments = (ins PtrType:$ffts);
   let results = (outs);
 
   let assemblyFormat = "$ffts attr-dict `:` type($ffts)";
@@ -2957,7 +3038,7 @@ def PrintOp : PTO_Op<"print", [MemoryEffects<[MemRead, MemWrite]>]> {
   }];
 }
 
-def TrapOp : PTO_Op<"trap"> {
+def TrapOp : PTO_Op<"trap", [MicroOpInterface, SimtOpInterface]> {
   let summary = "Trap: abort execution (no operands).";
   let description = [{
     Inserts a trap to stop execution. No arguments, no results.
@@ -2973,6 +3054,7 @@ def TrapOp : PTO_Op<"trap"> {
 def MGatherOp : PTO_TOp<"mgather", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  MteOpInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Gather-load elements from memory into a tile using per-element indices (tile world, ins/outs).";
@@ -3011,24 +3093,14 @@ def MGatherOp : PTO_TOp<"mgather", [
       // MTE2 pipe on every arch, mirroring pto.tload. The GM -> UB (VEC) path
       // below keeps its A5 SIMT (PIPE_V) / A2A3 MTE2 selection.
       //
-      // Resolve the dst address space from BOTH the tile_buf and the lowered
-      // memref form: PTOViewToMemref rewrites dst into a memref<...,mat> before
-      // InsertSync / GraphSyncSolver run, and both consume getPipe() through the
-      // OpPipeInterface. A tile-only check would fall through to PIPE_V on A5.
+      // Resolve the destination address space for InsertSync and
+      // GraphSyncSolver through the OpPipeInterface.
       auto getAddressSpace =
           [](::mlir::Type ty) -> std::optional<::mlir::pto::AddressSpace> {
         if (auto tb = ::mlir::dyn_cast<::mlir::pto::TileBufType>(ty)) {
           if (auto as = ::mlir::dyn_cast_or_null<::mlir::pto::AddressSpaceAttr>(
                   tb.getMemorySpace()))
             return as.getAddressSpace();
-          return std::nullopt;
-        }
-        if (auto mr = ::mlir::dyn_cast<::mlir::MemRefType>(ty)) {
-          if (auto ms = mr.getMemorySpace()) {
-            if (auto as =
-                    ::mlir::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
-              return as.getAddressSpace();
-          }
           return std::nullopt;
         }
         return std::nullopt;
@@ -3061,6 +3133,8 @@ def MGatherOp : PTO_TOp<"mgather", [
       return isA5Target() ? ::mlir::pto::PIPE::PIPE_V
                           : ::mlir::pto::PIPE::PIPE_MTE2;
     }
+    ::mlir::Value getSource() { return getMem(); }
+    ::mlir::Value getDestination() { return getDst(); }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
 }
@@ -3192,6 +3266,7 @@ def TGetScaleAddrOp : PTO_TOp<"tget_scale_addr", [
 def MScatterOp : PTO_TOp<"mscatter", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  MteOpInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Scatter-store elements from a tile into memory using per-element indices (tile world, ins/outs).";
@@ -3238,6 +3313,8 @@ def MScatterOp : PTO_TOp<"mscatter", [
       return isA5Target() ? ::mlir::pto::PIPE::PIPE_V
                           : ::mlir::pto::PIPE::PIPE_MTE3;
     }
+    ::mlir::Value getSource() { return getSrc(); }
+    ::mlir::Value getDestination() { return getMem(); }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getMemMutable(); }
   }];
 }
@@ -3286,6 +3363,44 @@ def TAddOp : PTO_TOp<"tadd", [
   let summary = "Elementwise add of two tiles ";
   let description = [{
     For each element (i, j): dst[i,j] = src0[i,j] + src1[i,j].
+  }];
+
+  let arguments = (ins
+    PTODpsType:$src0,
+    PTODpsType:$src1,
+    PTODpsType:$dst
+  );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    `ins` `(` $src0 `,` $src1 `:` qualified(type($src0)) `,` qualified(type($src1)) `)`
+    `outs` `(` $dst `:` qualified(type($dst) ) `)`
+    attr-dict
+  }];
+
+  let hasVerifier = 1;
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() {
+      return ::mlir::pto::PIPE::PIPE_V;
+    }
+
+    ::mlir::MutableOperandRange getDpsInitsMutable() {
+        return getDstMutable();
+    }
+  }];
+}
+
+def TAddReluOp : PTO_TOp<"taddrelu", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Fused elementwise add + ReLU of two tiles";
+  let description = [{
+    For each element (i, j): dst[i,j] = max(0, src0[i,j] + src1[i,j]).
+    Maps to the fused VADDRELU intrinsic on C220.
   }];
 
   let arguments = (ins
@@ -4442,14 +4557,6 @@ def TExtractOp : PTO_TOp<"textract", [
             return as.getAddressSpace();
           return std::nullopt;
         }
-        if (auto mr = llvm::dyn_cast<::mlir::MemRefType>(ty)) {
-          if (auto ms = mr.getMemorySpace()) {
-            if (auto as =
-                    llvm::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
-              return as.getAddressSpace();
-          }
-          return std::nullopt;
-        }
         return std::nullopt;
       };
 
@@ -4588,13 +4695,6 @@ def TInsertOp : PTO_TOp<"tinsert", [
             return as.getAddressSpace();
           return std::nullopt;
         }
-        if (auto mr = ::mlir::dyn_cast<::mlir::MemRefType>(ty)) {
-          if (auto ms = mr.getMemorySpace()) {
-            if (auto as = ::mlir::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
-              return as.getAddressSpace();
-          }
-          return std::nullopt;
-        }
         return std::nullopt;
       };
 
@@ -4680,13 +4780,6 @@ def TFillPadOp : PTO_TOp<"tfillpad", [
           if (auto as = ::mlir::dyn_cast_or_null<::mlir::pto::AddressSpaceAttr>(
                   tb.getMemorySpace()))
             return as.getAddressSpace();
-          return std::nullopt;
-        }
-        if (auto mr = ::mlir::dyn_cast<::mlir::MemRefType>(ty)) {
-          if (auto ms = mr.getMemorySpace()) {
-            if (auto as = ::mlir::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
-              return as.getAddressSpace();
-          }
           return std::nullopt;
         }
         return std::nullopt;
@@ -4776,6 +4869,7 @@ def TGatherOp : PTO_TOp<"tgather", [
     Optional<PTODpsType>:$tmp,
     Optional<ScalarType>:$kValue,
     OptionalAttr<PTO_MaskPatternAttr>:$maskPattern,
+    OptionalAttr<StrAttr>:$axis,
     OptionalAttr<PTO_CmpModeAttr>:$cmpMode,
     OptionalAttr<I32Attr>:$offset
   );
@@ -4789,6 +4883,7 @@ def TGatherOp : PTO_TOp<"tgather", [
     bool hasCompareForm() { return static_cast<bool>(getCdst()) || static_cast<bool>(getKValue()); }
     bool hasIndexForm() { return static_cast<bool>(getIndices()); }
     bool hasMaskForm() { return static_cast<bool>(getMaskPatternAttr()); }
+    bool hasAxis() { return static_cast<bool>(getAxisAttr()); }
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
     ::mlir::MutableOperandRange getDpsInitsMutable() {
       return ::mlir::MutableOperandRange(getOperation(), 1, 1 + (getCdst() ? 1 : 0));
@@ -5511,9 +5606,10 @@ def TQuantOp : PTO_TOp<"tquant", [
     TQUANT_IMPL row-wise broadcast (the fp->s32 conversion reuses it). On
     pto-isa builds where the 4-arg TQUANT overload routes through the fixed
     TMP_UB_OFFSET scratch area, supplying tmp selects the tmp-aware 5-arg
-    overload and avoids the fixed-address collision. PTOAS auto-synthesizes
-    this scratch tile for A2/A3 only. On A5 the tmp operand is accepted as a
-    placeholder and does not add extra shape or memory-planning constraints.
+    overload and avoids the fixed-address collision. PTOAS preserves an omitted
+    tmp and lowers it through the 4-arg overload. On A5 the tmp operand is
+    accepted as a placeholder and does not add extra shape or memory-planning
+    constraints.
 
     DPS form (INT8_SYM):
       pto.tquant ins(%src, %fp : <src_type>, <fp_type>)
@@ -6271,6 +6367,7 @@ def TScatterOp: PTO_TOp<"tscatter", [
     PTODpsType:$src,
     PTODpsType:$dst,
     Optional<PTODpsType>:$indexes,
+    OptionalAttr<StrAttr>:$axis,
     OptionalAttr<PTO_MaskPatternAttr>:$maskPattern
   );
 
@@ -6282,6 +6379,7 @@ def TScatterOp: PTO_TOp<"tscatter", [
   let extraClassDeclaration = [{
     bool hasIndexForm() { return static_cast<bool>(getIndexes()); }
     bool hasMaskForm() { return static_cast<bool>(getMaskPatternAttr()); }
+    bool hasAxis() { return static_cast<bool>(getAxisAttr()); }
     ::mlir::pto::PIPE getPipe() {
       if (hasMaskForm())
         return ::mlir::pto::PIPE::PIPE_V;
@@ -6580,6 +6678,7 @@ def TSqrtOp: PTO_TOp<"tsqrt", [
 def TStoreFPOp: PTO_TOp<"tstore_fp", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
 ]> {
   let summary = "TSTORE_FP: Store an accumulator tile into global memory using a scaling (fp) tile for vector quantization parameters.";
 

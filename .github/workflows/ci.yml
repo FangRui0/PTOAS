@@ -6,6 +6,9 @@ concurrency:
 
 on:
   pull_request:
+  push:
+    branches:
+      - main
   # Nightly remote-board validation (GitHub cron is UTC).
   # 22:00 CST (UTC+8) == 14:00 UTC.
   schedule:
@@ -49,7 +52,7 @@ on:
         description: "pto-isa ref (commit/tag/branch; empty = repo-pinned weekly commit)"
         type: string
         # NOTE: Pin a known-good GitCode commit for deterministic runs.
-        default: 7e879c4198939b506571f8769326b5a61e88da25
+        default: ce3262e3825a235f951917eeada30e52910b6a84
       remote_host:
         description: "SSH host/IP for the NPU machine"
         type: string
@@ -102,9 +105,8 @@ jobs:
       LLVM_BUILD_DIR: ${{ github.workspace }}/llvm-project/llvm/build-assert
       LLVM_DIR: ${{ github.workspace }}/llvm-project/llvm/build-assert
       PTO_BUILD_DIR: ${{ github.workspace }}/build-assert
-      PTO_INSTALL_DIR: ${{ github.workspace }}/install-assert
-      MLIR_PYTHONPATH: ${{ github.workspace }}/llvm-project/llvm/build-assert/tools/mlir/python_packages/mlir_core
-      LLVM_CACHE_FLAVOR: llvm21-assert-shared-mlirpy-hardening-v1
+      PTOAS_VENV: ${{ github.workspace }}/.venv-ptoas-assert
+      LLVM_CACHE_FLAVOR: llvm21-assert-shared-mlirpy-hardening-v2
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -112,7 +114,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Install dependencies
+      - name: Install dependencies and create developer environment
         run: |
           # GitHub-hosted runners may include Microsoft apt sources unrelated to
           # PTOAS; these can intermittently return 403 and break apt-get update.
@@ -125,13 +127,17 @@ jobs:
             /etc/apt/sources.list.d/packages-microsoft-prod*.sources
           sudo apt-get update
           sudo apt-get install -y \
-            cmake git ninja-build \
+            ccache cmake git ninja-build \
             python3 python3-pip python3-venv \
             clang-${PTOAS_CLANG_MAJOR} lld-${PTOAS_CLANG_MAJOR} \
             libedit-dev zlib1g-dev libxml2-dev libzstd-dev
-          python3 -m pip install --upgrade pip
+          rm -rf "${PTOAS_VENV}"
+          python3 -m venv "${PTOAS_VENV}"
+          "${PTOAS_VENV}/bin/python" -m pip install --upgrade pip
           # LLVM/MLIR Python bindings are not yet compatible with pybind11 3.x.
-          python3 -m pip install setuptools wheel 'pybind11<3' nanobind numpy
+          "${PTOAS_VENV}/bin/pip" install \
+            'scikit-build-core>=0.12.2,<2' 'pybind11<3' \
+            nanobind numpy ml-dtypes
 
       - name: Define payload paths
         shell: bash
@@ -163,6 +169,36 @@ jobs:
           echo "PTOAS_CMAKE_CXX_COMPILER=${clang_cxx}" >> "${GITHUB_ENV}"
           "${clang_c}" --version | head -n 1
           "${clang_cxx}" --version | head -n 1
+
+      - name: Configure ccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "CCACHE_DIR=${GITHUB_WORKSPACE}/.ccache" >> "${GITHUB_ENV}"
+          echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}" >> "${GITHUB_ENV}"
+          echo "CCACHE_COMPILERCHECK=content" >> "${GITHUB_ENV}"
+          echo "CCACHE_NOHASHDIR=true" >> "${GITHUB_ENV}"
+          echo "CMAKE_C_COMPILER_LAUNCHER=ccache" >> "${GITHUB_ENV}"
+          echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache" >> "${GITHUB_ENV}"
+          ccache --version
+
+      # Keep one bounded cache on the default branch. PRs can restore this
+      # shared cache, but do not create a separate cache for every commit.
+      - name: Restore main ccache
+        id: cache-ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: ccache-main-${{ runner.os }}-clang${{ env.PTOAS_CLANG_MAJOR }}-${{ github.sha }}
+          restore-keys: |
+            ccache-main-${{ runner.os }}-clang${{ env.PTOAS_CLANG_MAJOR }}-
+
+      - name: Initialize ccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          ccache --max-size=2G
+          ccache --zero-stats
 
       - name: Resolve LLVM source SHA
         shell: bash
@@ -196,8 +232,8 @@ jobs:
           fi
 
           git remote set-url origin "${LLVM_REPO}"
-          git fetch --depth 1 origin "${LLVM_REF}"
-          git checkout --force FETCH_HEAD
+          git fetch --depth 1 origin "${LLVM_SOURCE_SHA}"
+          git checkout --force "${LLVM_SOURCE_SHA}"
 
       - name: Build LLVM/MLIR (only if cache miss)
         if: steps.cache-llvm.outputs.cache-hit != 'true'
@@ -208,10 +244,10 @@ jobs:
             -DBUILD_SHARED_LIBS=ON \
             -DLLVM_ENABLE_ASSERTIONS=ON \
             -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
-            -DPython3_EXECUTABLE=python3 \
-            -DPython_EXECUTABLE=python3 \
-            -Dpybind11_DIR="$(python3 -m pybind11 --cmakedir)" \
-            -Dnanobind_DIR="$(python3 -m nanobind --cmake_dir)" \
+            -DPython3_EXECUTABLE="${PTOAS_VENV}/bin/python" \
+            -DPython_EXECUTABLE="${PTOAS_VENV}/bin/python" \
+            -Dpybind11_DIR="$("${PTOAS_VENV}/bin/python" -m pybind11 --cmakedir)" \
+            -Dnanobind_DIR="$("${PTOAS_VENV}/bin/python" -m nanobind --cmake_dir)" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER="${PTOAS_CMAKE_C_COMPILER}" \
             -DCMAKE_CXX_COMPILER="${PTOAS_CMAKE_CXX_COMPILER}" \
@@ -222,7 +258,10 @@ jobs:
 
       # LLVM build 完成后立即保存缓存，避免后续测试影响缓存内容
       - name: Save LLVM build cache
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        if: >-
+          steps.cache-llvm.outputs.cache-hit != 'true' &&
+          github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+          success()
         uses: actions/cache/save@v4
         with:
           path: |
@@ -233,13 +272,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cmake4_pkg="${RUNNER_TEMP:-${GITHUB_WORKSPACE}/.tmp}/cmake-4.1.3-pkg"
+          cmake4_venv="${RUNNER_TEMP:-${GITHUB_WORKSPACE}/.tmp}/cmake-4.1.3-venv"
           cmake4_build="${RUNNER_TEMP:-${GITHUB_WORKSPACE}/.tmp}/ptoas-cmake4-strict"
-          rm -rf "${cmake4_pkg}" "${cmake4_build}"
-          python3 -m pip install --target "${cmake4_pkg}" "cmake==4.1.3"
-          cmake4_bin="$(
-            PYTHONPATH="${cmake4_pkg}" python3 -c 'import cmake; from pathlib import Path; print(Path(cmake.__file__).resolve().parent / "data" / "bin" / "cmake")'
-          )"
+          rm -rf "${cmake4_venv}" "${cmake4_build}"
+          python3 -m venv "${cmake4_venv}"
+          "${cmake4_venv}/bin/python" -m pip install --upgrade pip
+          "${cmake4_venv}/bin/pip" install "cmake==4.1.3" 'pybind11<3' nanobind
+          cmake4_bin="${cmake4_venv}/bin/cmake"
           "${cmake4_bin}" --version
           "${cmake4_bin}" -C "${GITHUB_WORKSPACE}/cmake/LinuxHardeningCache.cmake" \
             -G Ninja \
@@ -247,73 +286,78 @@ jobs:
             -B "${cmake4_build}" \
             -DLLVM_DIR="${LLVM_DIR}/lib/cmake/llvm" \
             -DMLIR_DIR="${LLVM_DIR}/lib/cmake/mlir" \
-            -DPython3_EXECUTABLE="$(command -v python3)" \
+            -DPython3_EXECUTABLE="${cmake4_venv}/bin/python" \
             -DPython3_FIND_STRATEGY=LOCATION \
-            -Dpybind11_DIR="$(python3 -m pybind11 --cmakedir)" \
+            -Dpybind11_DIR="$("${cmake4_venv}/bin/python" -m pybind11 --cmakedir)" \
+            -Dnanobind_DIR="$("${cmake4_venv}/bin/python" -m nanobind --cmake_dir)" \
             -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
-            -DMLIR_PYTHON_PACKAGE_DIR="${MLIR_PYTHONPATH}" \
             -DPTO_ENABLE_PYTHON_BINDING=ON \
-            -DPTOAS_VALIDATE_CMAKE4_FETCHCONTENT_COMPAT=ON \
-            -DPTOAS_ENABLE_WERROR=OFF \
             -DBUILD_TESTING=ON \
             -DCMAKE_C_COMPILER="${PTOAS_CMAKE_C_COMPILER}" \
             -DCMAKE_CXX_COMPILER="${PTOAS_CMAKE_CXX_COMPILER}" \
             -Werror=dev
 
-      - name: Build PTOAS
+      - name: Install PTOAS editable
         run: |
+          set -euo pipefail
           rm -rf "${PTO_BUILD_DIR}"
-          rm -rf "${PTO_INSTALL_DIR}"
-          # LLVM_BUILD_DIR is the env var read by the build backend (_ptoas_build_backend.py).
+          # Keep a persistent CMake build tree for CTest and lit while exposing
+          # the current sources and Python extension through the developer venv.
           LLVM_BUILD_DIR="${LLVM_DIR}" \
-          CMAKE_C_COMPILER="${PTOAS_CMAKE_C_COMPILER}" \
-          CMAKE_CXX_COMPILER="${PTOAS_CMAKE_CXX_COMPILER}" \
-            PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" \
-            python3 -m pip install . --no-build-isolation --no-deps --ignore-installed --prefix "${PTO_INSTALL_DIR}"
+          CC="${PTOAS_CMAKE_C_COMPILER}" \
+          CXX="${PTOAS_CMAKE_CXX_COMPILER}" \
+            "${PTOAS_VENV}/bin/python" -m pip install --editable . \
+              --no-build-isolation --no-deps \
+              --config-settings="build-dir=${PTO_BUILD_DIR}"
+
+      - name: Test PTOAS editable install
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATH="${PTOAS_VENV}/bin:${PATH}" \
+          PYTHON="${PTOAS_VENV}/bin/python" \
+            bash docker/test_wheel_imports.sh
 
       - name: Run PTODSL Python tests
         shell: bash
         env:
           LLVM_DIR: ${{ env.LLVM_DIR }}
-          PTO_INSTALL_DIR: ${{ env.PTO_INSTALL_DIR }}
-          MLIR_PYTHONPATH: ${{ env.MLIR_PYTHONPATH }}
         run: |
-          PTOAS_PYTHON_SITE="$(PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" python3 -c 'import os, sysconfig; prefix = os.environ["PTO_INSTALL_DIR"]; print(sysconfig.get_path("purelib", vars={"base": prefix, "platbase": prefix}))')"
-          export PATH="${LLVM_DIR}/bin:${PTO_INSTALL_DIR}/bin:${PATH}"
-          export LD_LIBRARY_PATH="${LLVM_DIR}/lib:${PTO_INSTALL_DIR}/lib:${LD_LIBRARY_PATH:-}"
-          export PYTHONPATH="${PTOAS_PYTHON_SITE}:${PTO_INSTALL_DIR}:${MLIR_PYTHONPATH}:${PYTHONPATH:-}"
+          export PATH="${PTOAS_VENV}/bin:${LLVM_DIR}/bin:${PATH}"
           ctest --test-dir "${PTO_BUILD_DIR}" --output-on-failure -L PTODSL
 
       - name: Run lit tests
         shell: bash
         env:
           LLVM_DIR: ${{ env.LLVM_DIR }}
-          PTO_INSTALL_DIR: ${{ env.PTO_INSTALL_DIR }}
-          MLIR_PYTHONPATH: ${{ env.MLIR_PYTHONPATH }}
         run: |
-          PTOAS_PYTHON_SITE="$(PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" python3 -c 'import os, sysconfig; prefix = os.environ["PTO_INSTALL_DIR"]; print(sysconfig.get_path("purelib", vars={"base": prefix, "platbase": prefix}))')"
-          export PATH="${LLVM_DIR}/bin:${PTO_INSTALL_DIR}/bin:${PATH}"
-          export LD_LIBRARY_PATH="${LLVM_DIR}/lib:${PTO_INSTALL_DIR}/lib:${LD_LIBRARY_PATH:-}"
-          export PYTHONPATH="${PTOAS_PYTHON_SITE}:${PTO_INSTALL_DIR}:${MLIR_PYTHONPATH}:${PYTHONPATH:-}"
+          export PATH="${PTOAS_VENV}/bin:${LLVM_DIR}/bin:${PATH}"
           ninja -C "${PTO_BUILD_DIR}" check-pto
+
+      - name: Show ccache statistics
+        if: always()
+        shell: bash
+        run: ccache --show-stats
+
+      - name: Save main ccache
+        if: github.ref == 'refs/heads/main' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ccache-main-${{ runner.os }}-clang${{ env.PTOAS_CLANG_MAJOR }}-${{ github.sha }}
 
       - name: Run sample tests (py -> pto -> cpp)
         shell: bash
         env:
           CI_EVENT_NAME: ${{ github.event_name }}
           WORKFLOW_SOC_VERSION: ${{ github.event.inputs.soc_version || 'Ascend910' }}
-          PTOAS_BIN: ${{ env.PTO_BUILD_DIR }}/tools/ptoas/ptoas
+          PTOAS_BIN: ${{ env.PTOAS_VENV }}/bin/ptoas
           PTOBC_BIN: ${{ env.PTO_BUILD_DIR }}/tools/ptobc/ptobc
           PTO_BUILD_DIR: ${{ env.PTO_BUILD_DIR }}
-          PYTHON_BIN: /usr/bin/python3
-          MLIR_PYTHON_ROOT: ${{ env.MLIR_PYTHONPATH }}
-          PTO_INSTALL_DIR: ${{ env.PTO_INSTALL_DIR }}
+          PYTHON_BIN: ${{ env.PTOAS_VENV }}/bin/python
         run: |
           set -euo pipefail
-          PTOAS_PYTHON_SITE="$(PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" python3 -c 'import os, sysconfig; prefix = os.environ["PTO_INSTALL_DIR"]; print(sysconfig.get_path("purelib", vars={"base": prefix, "platbase": prefix}))')"
-          export PATH="${PTO_INSTALL_DIR}/bin:${PATH}"
-          export PYTHONPATH="${PTOAS_PYTHON_SITE}:${PTO_INSTALL_DIR}:${MLIR_PYTHON_ROOT}:${PYTHONPATH:-}"
-          export LD_LIBRARY_PATH="${LLVM_DIR}/lib:${PTO_INSTALL_DIR}/lib:${LD_LIBRARY_PATH:-}"
+          export PATH="${PTOAS_VENV}/bin:${PATH}"
           export PTOAS_OUT_DIR="${PAYLOAD_DIR}/test/samples"
           if [[ "${CI_EVENT_NAME}" == "workflow_dispatch" || "${CI_EVENT_NAME}" == "schedule" ]]; then
             # Board-validation payloads must only contain the arch-matching
@@ -383,7 +427,7 @@ jobs:
           SKIP_CASES: ${{ github.event.inputs.skip_cases || '' }}
           RUN_ONLY_CASES: ${{ github.event.inputs.run_only_cases || '' }}
           PTO_ISA_REPO: ${{ github.event.inputs.pto_isa_repo || 'https://gitcode.com/cann/pto-isa.git' }}
-          PTO_ISA_COMMIT: ${{ github.event.inputs.pto_isa_commit || '7e879c4198939b506571f8769326b5a61e88da25' }}
+          PTO_ISA_COMMIT: ${{ github.event.inputs.pto_isa_commit || 'ce3262e3825a235f951917eeada30e52910b6a84' }}
           REMOTE_HOST: ${{ github.event.inputs.remote_host || '101.245.68.6' }}
           REMOTE_USER: ${{ github.event.inputs.remote_user || 'zhongxuan' }}
           REMOTE_PORT: ${{ github.event.inputs.remote_port || '22' }}
@@ -403,8 +447,8 @@ jobs:
           # non-matching variant based on SOC_VERSION, even for explicit
           # RUN_ONLY_CASES requests, so remote validation does not try to force
           # A5-only cases through an A3 flow or vice versa.
-          A3_ONLY_CASES="partition5d,partition5d_dynamic,mrgsort,tmatmulk_autosync"
-          A5_ONLY_CASES="partition5d_a5,partition5d_dynamic_a5,mrgsort_a5,tmatmulk_autosync_a5,tpack,matmul_mx_low_precision,gemvmx,tquant_mx"
+          A3_ONLY_CASES="partition5d,partition5d_dynamic,mrgsort,tmatmulk_autosync,movfp_fixpipe_reuse_a3"
+          A5_ONLY_CASES="partition5d_a5,partition5d_dynamic_a5,mrgsort_a5,tmatmulk_autosync_a5,tpack,matmul_mx_low_precision,gemvmx,tquant_mx,movfp_fixpipe_reuse"
 
           sv_lc="$(printf '%s' "${SOC_VERSION}" | tr '[:upper:]' '[:lower:]')"
           is_a5=0

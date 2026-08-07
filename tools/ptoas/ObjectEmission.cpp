@@ -9,12 +9,14 @@
 #include "ObjectEmission.h"
 
 #include "PTO/Transforms/VPTOLLVMEmitter.h"
+#include "VFSIMTSizePatcher.h"
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/IR/Module.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -33,6 +35,33 @@
 namespace {
 
 using llvm::StringRef;
+
+enum class BishengVFAutoSyncMode {
+  Unspecified,
+  Off,
+  Fused,
+  Global,
+};
+
+static llvm::cl::opt<bool> enableBishengVecMISched(
+    "enable-bisheng-vec-misched",
+    llvm::cl::desc("Use Bisheng's default vector MI scheduler behavior for "
+                   "VPTO device compilation instead of explicitly disabling "
+                   "the scheduler"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<BishengVFAutoSyncMode> bishengVFAutoSyncMode(
+    "bisheng-vf-auto-sync",
+    llvm::cl::desc("Explicit Bisheng VF auto-sync mode for VPTO device "
+                   "compilation; omit to use the toolchain default"),
+    llvm::cl::value_desc("off|fused|global"),
+    llvm::cl::values(clEnumValN(BishengVFAutoSyncMode::Off, "off",
+                                "Disable Bisheng VF auto-sync"),
+                     clEnumValN(BishengVFAutoSyncMode::Fused, "fused",
+                                "Use Bisheng fused VF auto-sync"),
+                     clEnumValN(BishengVFAutoSyncMode::Global, "global",
+                                "Use Bisheng global VF auto-sync")),
+    llvm::cl::init(BishengVFAutoSyncMode::Unspecified));
 
 static bool runCommandWithStderr(llvm::StringRef program,
                                  llvm::ArrayRef<std::string> ownedArgs,
@@ -258,6 +287,18 @@ getTargetCPU(mlir::pto::ObjectEmissionDeviceTarget target) {
   llvm_unreachable("unknown object emission device target");
 }
 
+static std::string resolveTargetCPU(llvm::Module &module,
+                                    mlir::pto::ObjectEmissionDeviceTarget fallback) {
+  for (llvm::Function &f : module) {
+    if (f.hasFnAttribute("target-cpu")) {
+      std::string cpu = f.getFnAttribute("target-cpu").getValueAsString().str();
+      if (!cpu.empty())
+        return cpu;
+    }
+  }
+  return getTargetCPU(fallback).str();
+}
+
 class VPTOFatobjArtifacts {
 public:
   explicit VPTOFatobjArtifacts(mlir::pto::TempFileRegistry &tempFiles)
@@ -292,15 +333,37 @@ public:
 
   bool emitVectorObject(llvm::Module *module,
                         const mlir::pto::CANNToolchain &toolchain,
+                        mlir::pto::VFSIMTSizeFixMode vfsimtSizeFixMode,
                         llvm::raw_ostream &diagOS) {
     if (!module)
       return true;
     if (failed(tempFiles.create("ptoas-device", ".ll", vectorLLPath, diagOS)))
       return false;
-    if (failed(tempFiles.create("ptoas-device", ".o", vectorObjPath, diagOS)))
+    std::string rawVectorObjPath;
+    if (failed(tempFiles.create("ptoas-device-vector-raw", ".o",
+                                rawVectorObjPath, diagOS)))
       return false;
-    return succeeded(mlir::pto::emitVPTOVectorDeviceObject(
-        *module, vectorLLPath, vectorObjPath, toolchain, stderrPath, diagOS));
+    if (failed(mlir::pto::emitVPTOVectorDeviceObject(
+            *module, vectorLLPath, rawVectorObjPath, toolchain, stderrPath,
+            diagOS)))
+      return false;
+    if (vfsimtSizeFixMode == mlir::pto::VFSIMTSizeFixMode::Off) {
+      vectorObjPath = std::move(rawVectorObjPath);
+      return true;
+    }
+
+    std::string patchedVectorObjPath;
+    if (failed(tempFiles.create("ptoas-device-vector-patched", ".o",
+                                patchedVectorObjPath, diagOS)))
+      return false;
+    mlir::FailureOr<mlir::pto::VFSIMTSizePatchResult> result =
+        mlir::pto::verifyAndPatchVFSIMTSize(
+            *module, rawVectorObjPath, patchedVectorObjPath,
+            vfsimtSizeFixMode, diagOS);
+    if (failed(result))
+      return false;
+    vectorObjPath = std::move(result->objectPath);
+    return true;
   }
 
   bool mergeDeviceObjects(const mlir::pto::CANNToolchain &toolchain,
@@ -421,7 +484,7 @@ static bool compileDeviceLLVMToObject(llvm::StringRef llPath,
                                       llvm::StringRef bishengPath,
                                       llvm::StringRef stderrPath,
                                       llvm::raw_ostream &diagOS) {
-  llvm::SmallVector<std::string, 16> args = {
+  llvm::SmallVector<std::string, 24> args = {
       bishengPath.str(),
       std::string("--cce-aicore-arch=") + targetCPU.str(),
       "--cce-aicore-only",
@@ -430,17 +493,39 @@ static bool compileDeviceLLVMToObject(llvm::StringRef llPath,
       "-cce-bitcode-is-aicore",
       "-Wno-override-module",
       "-dc",
+      "--cce-long-scbz=true",
       "-mllvm",
       "-cce-dyn-kernel-stack-size=true",
-      "-mllvm",
-      "-cce-vf-auto-sync=global",
-      "-c",
-      "-x",
-      "ir",
-      "-",
-      "-o",
-      outObjPath.str(),
   };
+  switch (bishengVFAutoSyncMode) {
+  case BishengVFAutoSyncMode::Unspecified:
+    break;
+  case BishengVFAutoSyncMode::Off:
+    args.push_back("-mllvm");
+    args.push_back("-cce-vf-auto-sync=off");
+    break;
+  case BishengVFAutoSyncMode::Fused:
+    args.push_back("-mllvm");
+    args.push_back("-cce-vf-auto-sync=fused");
+    break;
+  case BishengVFAutoSyncMode::Global:
+    args.push_back("-mllvm");
+    args.push_back("-cce-vf-auto-sync=global");
+    break;
+  }
+  // Enabling vector MI scheduling deliberately omits this argument instead of
+  // passing `=1`, so Bisheng retains the default behavior of the selected
+  // toolchain version.
+  if (!enableBishengVecMISched) {
+    args.push_back("-mllvm");
+    args.push_back("--cce-aicore-vec-misched=0");
+  }
+  args.push_back("-c");
+  args.push_back("-x");
+  args.push_back("ir");
+  args.push_back("-");
+  args.push_back("-o");
+  args.push_back(outObjPath.str());
   return runCommandWithStderr(bishengPath, args, stderrPath, diagOS,
                               "device LLVM compilation", llPath);
 }
@@ -523,6 +608,19 @@ static bool compileCppDeviceSourceToFatobj(
                               "C++ fatobj compilation");
 }
 
+static std::string resolveHostTargetCPU() {
+  if (const char *envCPU = std::getenv("PTOAS_HOST_TARGET_CPU")) {
+    if (envCPU[0] != '\0')
+      return std::string(envCPU);
+  }
+  std::string hostCPU = llvm::sys::getHostCPUName().str();
+  if (hostCPU == "cortex-x925")
+    return "tsv200m";
+  if (hostCPU == "znver4" || hostCPU == "znver5")
+    return "znver3";
+  return hostCPU;
+}
+
 static bool compileHostStubToObject(llvm::StringRef stubPath,
                                     llvm::StringRef outObjPath,
                                     llvm::StringRef moduleId,
@@ -534,6 +632,7 @@ static bool compileHostStubToObject(llvm::StringRef stubPath,
   std::string coverageDir = ".";
   std::string debugDir = ".";
   std::string hostTriple = llvm::sys::getProcessTriple();
+  std::string hostTargetCPU = resolveHostTargetCPU();
 
   llvm::SmallVector<std::string, 32> args = {
       toolchain.bishengCc1Path,
@@ -541,7 +640,7 @@ static bool compileHostStubToObject(llvm::StringRef stubPath,
       "-triple",
       hostTriple,
       "-target-cpu",
-      llvm::sys::getHostCPUName().str(),
+      hostTargetCPU,
       "-fcce-aicpu-legacy-launch",
       "-fcce-is-host",
       "-cce-enable-mix",
@@ -914,9 +1013,12 @@ mlir::LogicalResult mlir::pto::emitVPTOVectorDeviceObject(
     return failure();
   if (failed(writeLLVMModule(module, llPath, diagOS)))
     return failure();
-  return compileLLVMToDeviceObject(llPath, outObjPath,
-                                   ObjectEmissionDeviceTarget::Vector,
-                                   toolchain, stderrPath, diagOS);
+  return compileDeviceLLVMToObject(llPath, outObjPath,
+                                   resolveTargetCPU(module,
+                                                    ObjectEmissionDeviceTarget::Vector),
+                                   toolchain.bishengPath, stderrPath, diagOS)
+             ? success()
+             : failure();
 }
 
 mlir::LogicalResult mlir::pto::emitVPTOCubeDeviceObject(
@@ -930,16 +1032,20 @@ mlir::LogicalResult mlir::pto::emitVPTOCubeDeviceObject(
     return failure();
   if (failed(writeLLVMModule(module, llPath, diagOS)))
     return failure();
-  return compileLLVMToDeviceObject(llPath, outObjPath,
-                                   ObjectEmissionDeviceTarget::Cube,
-                                   toolchain, stderrPath, diagOS);
+  return compileDeviceLLVMToObject(llPath, outObjPath,
+                                   resolveTargetCPU(module,
+                                                    ObjectEmissionDeviceTarget::Cube),
+                                   toolchain.bishengPath, stderrPath, diagOS)
+             ? success()
+             : failure();
 }
 
 mlir::LogicalResult mlir::pto::emitFatobjLLVM(
     llvm::Module *cubeModule, llvm::Module *vectorModule,
     llvm::StringRef stubSource, llvm::StringRef outputPath,
     llvm::StringRef moduleId, const CANNToolchain &toolchain,
-    TempFileRegistry &tempFiles, llvm::raw_ostream &diagOS) {
+    TempFileRegistry &tempFiles, VFSIMTSizeFixMode vfsimtSizeFixMode,
+    llvm::raw_ostream &diagOS) {
   if (!cubeModule && !vectorModule) {
     diagOS << "Error: VPTO fatobj emission requires at least one LLVM module.\n";
     return failure();
@@ -952,7 +1058,8 @@ mlir::LogicalResult mlir::pto::emitFatobjLLVM(
     return failure();
   if (!artifacts.emitCubeObject(cubeModule, toolchain, diagOS))
     return failure();
-  if (!artifacts.emitVectorObject(vectorModule, toolchain, diagOS))
+  if (!artifacts.emitVectorObject(vectorModule, toolchain,
+                                  vfsimtSizeFixMode, diagOS))
     return failure();
   if (!artifacts.mergeDeviceObjects(toolchain, diagOS))
     return failure();
@@ -999,6 +1106,7 @@ mlir::LogicalResult mlir::pto::linkFatobjs(
 mlir::LogicalResult mlir::pto::emitFatobjLLVMWithRuntime(
     llvm::Module *cubeModule, llvm::Module *vectorModule,
     llvm::StringRef stubSource, llvm::ToolOutputFile &outputFile,
+    VFSIMTSizeFixMode vfsimtSizeFixMode,
     llvm::raw_ostream &diagOS) {
   if (!cubeModule && !vectorModule) {
     diagOS << "Error: VPTO fatobj emission requires at least one LLVM module.\n";
@@ -1018,7 +1126,8 @@ mlir::LogicalResult mlir::pto::emitFatobjLLVMWithRuntime(
 
   if (!artifacts.emitCubeObject(cubeModule, *toolchain, diagOS))
     return failure();
-  if (!artifacts.emitVectorObject(vectorModule, *toolchain, diagOS))
+  if (!artifacts.emitVectorObject(vectorModule, *toolchain,
+                                  vfsimtSizeFixMode, diagOS))
     return failure();
 
   if (!artifacts.mergeDeviceObjects(*toolchain, diagOS))

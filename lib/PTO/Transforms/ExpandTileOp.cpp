@@ -9,8 +9,8 @@
 //===- ExpandTileOp.cpp ---------------------------------------------------===//
 //===----------------------------------------------------------------------===//
 //
-// Expand tile-level ops (pto.tadd, pto.tsub, ...) by invoking the TileLang
-// Python DSL to instantiate template libraries.
+// Expand tile-level ops (pto.tadd, pto.tsub, ...) by invoking the selected
+// Python TileLib backend to instantiate template libraries.
 //
 // The generated template functions use tile_buf parameters. After this pass,
 // the Inline pass inlines the template body, and FoldTileBufIntrinsics
@@ -18,16 +18,20 @@
 //
 // Workflow per tile op:
 //   1. Extract SpecKey from ALL operands' tile_buf types.
-//   2. Invoke Python DSL helper to generate a specialized MLIR function
-//      (with tile_buf parameters).
-//   3. Parse the generated MLIR and clone the function into the module.
-//   4. Replace the original tile op with func.call, passing tile_buf
+//   2. For PTODSL, read candidates attached by InsertTemplateAttributes and
+//      select the first candidate still present.
+//   3. Invoke the selected TileLib helper to generate a specialized MLIR
+//      function (with tile_buf parameters).
+//   4. Parse the generated MLIR and clone the function into the module.
+//   5. Replace the original tile op with func.call, passing tile_buf
 //      operands directly (no type bridging needed).
 //
 
 #include "PTO/IR/PTO.h"
 #include "PTO/IR/PTOTypeUtils.h"
+#include "PTO/Support/PythonExecutable.h"
 #include "PTO/Transforms/Passes.h"
+#include "PTO/Transforms/TileOpExpansionUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -56,6 +60,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <unistd.h>
 
@@ -76,6 +81,8 @@ namespace pto {
 
 namespace {
 
+constexpr llvm::StringLiteral kCandidatesAttr = "candidates";
+
 // ============================================================================
 // OperandTypeInfo: describes one operand for template specialization.
 //
@@ -83,9 +90,10 @@ namespace {
 //   Tile   — from TileBufType.  dtype + shape + memorySpace + config
 //            all participate in the specialization key (SpecKey).
 //   View   — from MemRefType (lowered PartitionTensorViewType). The element
-//            dtype and optional explicit layout participate in SpecKey;
-//            shape/strides/memorySpace remain JSON-only metadata for Python
-//            constraint checking and must not perturb C++ codegen caching.
+//            dtype, shape, strides, memory space, and optional explicit layout
+//            participate in SpecKey. PTODSL templates compile ViewSpec metadata
+//            into helper bodies, so helpers with different view strides must not
+//            share one cached specialization.
 //   Vector — from builtin VectorType. The element dtype and vector shape
 //            participate in SpecKey so helper-side schema filtering can
 //            distinguish auxiliary vector operands such as tmrgsort's
@@ -133,8 +141,10 @@ struct OperandTypeInfo {
       return vectorShape == rhs.vectorShape;
     if (kind == OperandKind::Scalar)
       return scalarValue == rhs.scalarValue;
-    // View: dtype + explicit layout are sufficient for template caching.
-    return viewLayout == rhs.viewLayout;
+    return viewShape == rhs.viewShape &&
+           viewStrides == rhs.viewStrides &&
+           viewMemorySpace == rhs.viewMemorySpace &&
+           viewLayout == rhs.viewLayout;
   }
 };
 
@@ -178,6 +188,11 @@ struct SpecKeyInfo : public llvm::DenseMapInfo<SpecKey> {
           h = llvm::hash_combine(h, *op.scalarValue);
       }
       if (op.kind == OperandKind::View) {
+        h = llvm::hash_combine(h, op.viewMemorySpace);
+        for (int64_t d : op.viewShape)
+          h = llvm::hash_combine(h, d);
+        for (int64_t d : op.viewStrides)
+          h = llvm::hash_combine(h, d);
         h = llvm::hash_combine(h, op.viewLayout.has_value());
         if (op.viewLayout)
           h = llvm::hash_combine(h, static_cast<int>(*op.viewLayout));
@@ -237,13 +252,15 @@ static StringRef getTileOpName(Operation *op) {
   return op->getName().stripDialect();
 }
 
-static std::string getTargetArchString(ModuleOp mod) {
-  if (!mod)
+static std::string getTargetArchString(Operation *op) {
+  if (!op)
     return "";
-  auto targetAttr = mod->getAttrOfType<StringAttr>("pto.target_arch");
-  if (!targetAttr)
-    return "";
-  return targetAttr.getValue().str();
+  for (ModuleOp current = op->getParentOfType<ModuleOp>(); current;
+       current = current->getParentOfType<ModuleOp>()) {
+    if (auto targetAttr = current->getAttrOfType<StringAttr>("pto.target_arch"))
+      return targetAttr.getValue().str();
+  }
+  return "";
 }
 
 static std::string stringifyMemorySpace(pto::AddressSpace space) {
@@ -323,6 +340,11 @@ static std::optional<pto::Layout> resolveViewLayout(Value value) {
     }
     if (auto reinterpret = dyn_cast<memref::ReinterpretCastOp>(def)) {
       value = reinterpret.getSource();
+      def = value.getDefiningOp();
+      continue;
+    }
+    if (auto partition = dyn_cast<pto::PartitionViewOp>(def)) {
+      value = partition.getSource();
       def = value.getDefiningOp();
       continue;
     }
@@ -488,6 +510,31 @@ static void appendOpContextAttrs(
           "mask_pattern",
           stringifyMaskPattern(maskPatternAttr.getValue()).str());
     }
+    if (auto axisAttr = tgather.getAxisAttr()) {
+      attrs.emplace_back("axis_value", axisAttr.getValue().str());
+    }
+  }
+  if (auto ttri = dyn_cast<pto::TTriOp>(op)) {
+    attrs.emplace_back("upper_or_lower", std::to_string(ttri.getUpperOrLower()));
+  }
+  if (auto thistogram = dyn_cast<pto::THistogramOp>(op)) {
+    int byte = 1;
+    if (auto byteAttr = thistogram.getByteAttr())
+      byte = byteAttr.getInt();
+    attrs.emplace_back("byte", std::to_string(byte));
+  }
+  if (auto tci = dyn_cast<pto::TCIOp>(op)) {
+    attrs.emplace_back("descending", tci.getDescending() ? "true" : "false");
+  }
+  if (auto tscatter = dyn_cast<pto::TScatterOp>(op)) {
+    if (auto maskPatternAttr = tscatter.getMaskPatternAttr()) {
+      attrs.emplace_back(
+          "mask_pattern",
+          stringifyMaskPattern(maskPatternAttr.getValue()).str());
+    }
+    if (auto axisAttr = tscatter.getAxisAttr()) {
+      attrs.emplace_back("axis_value", axisAttr.getValue().str());
+    }
   }
   (void)(tryAppendPrecisionType<pto::TExpOp>(
              op, attrs, pto::ExpPrecision::HighPrecision) ||
@@ -564,6 +611,35 @@ static void populateViewShapeAndStrides(Value value,
                                         SmallVectorImpl<int64_t> &strides) {
   if (!value)
     return;
+
+  if (auto partition = value.getDefiningOp<pto::PartitionViewOp>()) {
+    populateViewShapeAndStrides(partition.getSource(), shape, strides);
+    SmallVector<int64_t> partitionShape;
+    partitionShape.reserve(partition.getSizes().size());
+    for (Value size : partition.getSizes()) {
+      int64_t staticSize = ShapedType::kDynamic;
+      (void)getStaticIntFromValue(size, staticSize);
+      partitionShape.push_back(staticSize);
+    }
+    shape = std::move(partitionShape);
+    return;
+  }
+
+  if (auto makeView = value.getDefiningOp<pto::MakeTensorViewOp>()) {
+    shape.clear();
+    strides.clear();
+    for (Value dim : makeView.getShape()) {
+      int64_t staticDim = ShapedType::kDynamic;
+      (void)getStaticIntFromValue(dim, staticDim);
+      shape.push_back(staticDim);
+    }
+    for (Value stride : makeView.getStrides()) {
+      int64_t staticStride = ShapedType::kDynamic;
+      (void)getStaticIntFromValue(stride, staticStride);
+      strides.push_back(staticStride);
+    }
+    return;
+  }
 
   if (auto subview = value.getDefiningOp<memref::SubViewOp>()) {
     populateViewShapeAndStrides(subview.getSource(), shape, strides);
@@ -655,6 +731,22 @@ static std::optional<OperandTypeInfo> buildOperandTypeInfo(Value value) {
     return info;
   }
 
+  if (auto viewTy = dyn_cast<pto::PartitionTensorViewType>(ty)) {
+    OperandTypeInfo info;
+    info.kind = OperandKind::View;
+    info.dtype = getDtypeString(viewTy.getElementType());
+    if (info.dtype.empty())
+      return std::nullopt;
+    info.viewMemorySpace = "gm";
+    info.viewLayout = resolveViewLayout(value);
+    populateViewShapeAndStrides(value, info.viewShape, info.viewStrides);
+    if (info.viewShape.empty())
+      info.viewShape.assign(viewTy.getShape().begin(), viewTy.getShape().end());
+    if (info.viewStrides.empty())
+      info.viewStrides.assign(viewTy.getRank(), ShapedType::kDynamic);
+    return info;
+  }
+
   // Auxiliary vector operand — from builtin VectorType (e.g. vector<4xi16>).
   if (auto vecTy = dyn_cast<VectorType>(ty)) {
     OperandTypeInfo info;
@@ -681,7 +773,7 @@ static std::optional<OperandTypeInfo> buildOperandTypeInfo(Value value) {
 static std::optional<SpecKey> buildSpecKey(Operation *op) {
   SpecKey key;
   key.opName = getTileOpName(op).str();
-  key.targetArch = getTargetArchString(op->getParentOfType<ModuleOp>());
+  key.targetArch = getTargetArchString(op);
 
   for (unsigned i = 0; i < op->getNumOperands(); ++i) {
     auto info = buildOperandTypeInfo(op->getOperand(i));
@@ -702,15 +794,17 @@ static std::optional<SpecKey> buildSpecKey(Operation *op) {
 struct ExpandState {
   std::vector<OwningOpRef<ModuleOp>> parsedModules;  // Keep parsed modules alive
 
-  std::string tilelangPath;
-  std::string tilelangPkgPath;
+  std::string tileLibPkgPath;
+  std::string daemonHelperModule;
   std::string pythonExe;
   std::string daemonSocketPath;
 
-  func::FuncOp invokeTilelangDSL(const SpecKey &key, Operation *tileOp,
-                                  ModuleOp mod, MLIRContext *ctx);
-  func::FuncOp invokeTilelangDaemon(const SpecKey &key, Operation *tileOp,
-                                     ModuleOp mod, MLIRContext *ctx);
+  std::optional<std::string>
+  invokeTileLibHelper(const SpecKey &key, StringRef candidateId = {});
+  func::FuncOp invokeTileLib(const SpecKey &key, Operation *tileOp,
+                             ModuleOp mod, MLIRContext *ctx);
+  func::FuncOp invokeTileLibDaemon(const SpecKey &key, StringRef candidateId,
+                                   ModuleOp mod, MLIRContext *ctx);
 
   LogicalResult expandTileOpsInFunction(func::FuncOp func, ModuleOp mod,
                                         MLIRContext *ctx);
@@ -825,6 +919,12 @@ static std::string buildOperandSpecsJson(const SpecKey &key) {
   return json;
 }
 
+static std::string dimSuffix(int64_t dim) {
+  if (ShapedType::isDynamic(dim))
+    return "d";
+  return std::to_string(dim);
+}
+
 static std::string buildUniqueFunctionBaseName(const SpecKey &key) {
   std::string uniqueName = "__pto_tilelang_" + key.targetArch + "_" + key.opName;
   for (const auto &op : key.operands) {
@@ -843,6 +943,13 @@ static std::string buildUniqueFunctionBaseName(const SpecKey &key) {
       uniqueName += "_fr" + std::to_string(op.fractal);
       uniqueName += "_pd" + llvm::utohexstr(op.pad, /*LowerCase=*/false);
     } else if (op.kind == OperandKind::View) {
+      uniqueName += "_ms_" + op.viewMemorySpace;
+      uniqueName += "_shape";
+      for (int64_t d : op.viewShape)
+        uniqueName += "_" + dimSuffix(d);
+      uniqueName += "_strides";
+      for (int64_t d : op.viewStrides)
+        uniqueName += "_" + dimSuffix(d);
       if (op.viewLayout)
         uniqueName += "_vl_" + stringifyLayout(*op.viewLayout).str();
     } else if (op.kind == OperandKind::Vector) {
@@ -874,41 +981,37 @@ static std::string buildContextAttrsJson(const SpecKey &key) {
 }
 
 // ============================================================================
-// Invoke Python DSL daemon RPC to generate a specialized template function.
+// Invoke the configured one-shot helper and return its stdout.
 // ============================================================================
-func::FuncOp ExpandState::invokeTilelangDaemon(const SpecKey &key,
-                                               Operation *tileOp,
-                                               ModuleOp mod, MLIRContext *ctx) {
-  // 1. Locate the Python executable.
-  auto pythonPath = llvm::sys::findProgramByName(pythonExe);
+std::optional<std::string>
+ExpandState::invokeTileLibHelper(const SpecKey &key,
+                                StringRef candidateId) {
+  auto pythonPath = pto::resolvePythonExecutable(pythonExe);
   if (!pythonPath) {
     llvm::errs() << "ExpandTileOp: cannot find '" << pythonExe << "'\n";
-    return nullptr;
+    return std::nullopt;
   }
 
-  // 2. Build operand schema JSON for daemon RPC.
   std::string operandSpecsJson = buildOperandSpecsJson(key);
   std::string contextAttrsJson = buildContextAttrsJson(key);
   if (key.targetArch.empty()) {
     llvm::errs() << "ExpandTileOp: missing pto.target_arch module attribute\n";
-    return nullptr;
+    return std::nullopt;
   }
 
-  // 3. Create temp file for stdout redirect.
   SmallString<128> tmpPath;
   int tmpFD;
-  if (auto ec = llvm::sys::fs::createTemporaryFile("tilelang_daemon", "mlir",
-                                                     tmpFD, tmpPath)) {
+  if (auto ec = llvm::sys::fs::createTemporaryFile("tilelib_helper", "out",
+                                                    tmpFD, tmpPath)) {
     llvm::errs() << "ExpandTileOp: cannot create temp file: "
                  << ec.message() << "\n";
-    return nullptr;
+    return std::nullopt;
   }
   ::close(tmpFD);
 
-  // 4. Build command args for daemon helper.
   std::string opName = "pto." + key.opName;
   SmallVector<StringRef> args = {
-      *pythonPath, "-m", "tilelang_dsl.daemon_helper",
+      *pythonPath, "-m", daemonHelperModule,
       "--socket",      daemonSocketPath,
       "--target",      key.targetArch,
       "--op",          opName,
@@ -918,18 +1021,21 @@ func::FuncOp ExpandState::invokeTilelangDaemon(const SpecKey &key,
     args.push_back("--context-attrs");
     args.push_back(contextAttrsJson);
   }
+  if (!candidateId.empty()) {
+    args.push_back("--candidate-id");
+    args.push_back(candidateId);
+  }
 
-  // 5. Set up environment with PYTHONPATH.
   std::optional<StringRef> redirects[] = {std::nullopt, StringRef(tmpPath),
                                           std::nullopt};
 
   SmallVector<StringRef> envp;
   std::string pythonPathEnv;
   std::vector<std::string> envStorage;
-  bool hasPythonPath = !tilelangPkgPath.empty();
+  bool hasPythonPath = !tileLibPkgPath.empty();
   if (hasPythonPath) {
     const char *existingPath = ::getenv("PYTHONPATH");
-    pythonPathEnv = "PYTHONPATH=" + tilelangPkgPath;
+    pythonPathEnv = "PYTHONPATH=" + tileLibPkgPath;
     if (existingPath && existingPath[0] != '\0') {
       pythonPathEnv += ":";
       pythonPathEnv += existingPath;
@@ -945,7 +1051,6 @@ func::FuncOp ExpandState::invokeTilelangDaemon(const SpecKey &key,
       envp.push_back(s);
   }
 
-  // 6. Execute daemon helper.
   std::string errMsg;
   int rc = llvm::sys::ExecuteAndWait(
       *pythonPath, args,
@@ -953,27 +1058,40 @@ func::FuncOp ExpandState::invokeTilelangDaemon(const SpecKey &key,
       redirects, /*secondsToWait=*/30, /*memoryLimit=*/0, &errMsg);
 
   if (rc != 0) {
-    llvm::errs() << "ExpandTileOp: daemon helper failed (rc=" << rc
+    llvm::errs() << "ExpandTileOp: daemon helper instantiate failed (rc="
+                 << rc
                  << "): " << errMsg << "\n";
     llvm::sys::fs::remove(tmpPath);
-    return nullptr;
+    return std::nullopt;
   }
 
-  // 7. Read the generated MLIR.
   auto bufOrErr = llvm::MemoryBuffer::getFile(tmpPath);
   llvm::sys::fs::remove(tmpPath);
   if (!bufOrErr) {
     llvm::errs() << "ExpandTileOp: cannot read daemon output\n";
-    return nullptr;
+    return std::nullopt;
   }
-  StringRef mlirText = (*bufOrErr)->getBuffer();
-  if (mlirText.empty()) {
+  std::string output = (*bufOrErr)->getBuffer().str();
+  if (output.empty()) {
     llvm::errs() << "ExpandTileOp: empty daemon output\n";
-    return nullptr;
+    return std::nullopt;
   }
+  return output;
+}
 
-  // 8. Parse the MLIR text.
-  auto parsedMod = parseSourceString<ModuleOp>(mlirText, ctx);
+// ============================================================================
+// Invoke the daemon RPC to generate a specialized template function.
+// ============================================================================
+func::FuncOp ExpandState::invokeTileLibDaemon(const SpecKey &key,
+                                              StringRef candidateId,
+                                              ModuleOp mod,
+                                              MLIRContext *ctx) {
+  auto mlirText = invokeTileLibHelper(key, candidateId);
+  if (!mlirText)
+    return nullptr;
+
+  // Parse the rendered MLIR.
+  auto parsedMod = parseSourceString<ModuleOp>(*mlirText, ctx);
   if (!parsedMod) {
     llvm::errs() << "ExpandTileOp: failed to parse daemon output\n";
     return nullptr;
@@ -994,6 +1112,8 @@ func::FuncOp ExpandState::invokeTilelangDaemon(const SpecKey &key,
   SmallVector<func::FuncOp, 4> clonedFuncs;
 
   std::string uniqueName = buildUniqueFunctionBaseName(key);
+  if (!candidateId.empty())
+    uniqueName += "__" + candidateId.str();
   SymbolTable targetSymTable(mod);
   if (auto existingFunc = targetSymTable.lookup(uniqueName))
     return cast<func::FuncOp>(existingFunc);
@@ -1043,204 +1163,40 @@ func::FuncOp ExpandState::invokeTilelangDaemon(const SpecKey &key,
 }
 
 // ============================================================================
-// Invoke Python DSL helper to generate a specialized template function.
+// Invoke the selected TileLib backend to generate a specialized template.
 // ============================================================================
-func::FuncOp ExpandState::invokeTilelangDSL(const SpecKey &key,
-                                              Operation *tileOp,
-                                              ModuleOp mod, MLIRContext *ctx) {
-  // Try daemon first if daemon socket path is provided.
-  if (!daemonSocketPath.empty()) {
-    func::FuncOp daemonResult = invokeTilelangDaemon(key, tileOp, mod, ctx);
-    if (daemonResult)
-      return daemonResult;
-    // Daemon failed, fall back to subprocess mode.
-    llvm::errs() << "ExpandTileOp: daemon RPC failed, falling back to subprocess mode\n";
-  }
-
-  // 1. Locate the Python executable.
-  auto pythonPath = llvm::sys::findProgramByName(pythonExe);
-  if (!pythonPath) {
-    llvm::errs() << "ExpandTileOp: cannot find '" << pythonExe << "'\n";
+func::FuncOp ExpandState::invokeTileLib(const SpecKey &key,
+                                        Operation *tileOp, ModuleOp mod,
+                                        MLIRContext *ctx) {
+  if (daemonSocketPath.empty()) {
+    llvm::errs() << "ExpandTileOp: PTODSL backend requires its daemon\n";
     return nullptr;
   }
 
-  // 2. Build operand schema JSON for mixed tile/scalar specialization.
-  std::string operandSpecsJson = buildOperandSpecsJson(key);
-  std::string contextAttrsJson = buildContextAttrsJson(key);
-  if (key.targetArch.empty()) {
-    llvm::errs() << "ExpandTileOp: missing pto.target_arch module attribute\n";
+  auto candidates = tileOp->getAttrOfType<ArrayAttr>(kCandidatesAttr);
+  if (!candidates || candidates.empty()) {
+    tileOp->emitError("ExpandTileOp requires at least one template candidate");
     return nullptr;
   }
 
-  // 3. Create temp file for stdout redirect.
-  SmallString<128> tmpPath;
-  int tmpFD;
-  if (auto ec = llvm::sys::fs::createTemporaryFile("tilelang_expand", "mlir",
-                                                     tmpFD, tmpPath)) {
-    llvm::errs() << "ExpandTileOp: cannot create temp file: "
-                 << ec.message() << "\n";
+  auto selected = dyn_cast<DictionaryAttr>(candidates[0]);
+  if (!selected) {
+    tileOp->emitError("ExpandTileOp candidate 0 must be a dictionary");
     return nullptr;
   }
-  ::close(tmpFD);
-
-  // 4. Build command args.
-  std::string opName = "pto." + key.opName;
-  SmallVector<StringRef> args = {
-      *pythonPath, "-m", "tilelang_dsl.expand_helper",
-      "--template-dir", tilelangPath,
-      "--target",       key.targetArch,
-      "--op",           opName,
-      "--operand-specs", operandSpecsJson,
-  };
-  if (!key.contextAttrs.empty()) {
-    args.push_back("--context-attrs");
-    args.push_back(contextAttrsJson);
-  }
-
-  // 5. Set up environment with PYTHONPATH.
-  std::optional<StringRef> redirects[] = {std::nullopt, StringRef(tmpPath),
-                                          std::nullopt};
-
-  SmallVector<StringRef> envp;
-  std::string pythonPathEnv;
-  std::vector<std::string> envStorage;
-  bool hasPythonPath = !tilelangPkgPath.empty();
-  if (hasPythonPath) {
-    const char *existingPath = ::getenv("PYTHONPATH");
-    pythonPathEnv = "PYTHONPATH=" + tilelangPkgPath;
-    if (existingPath && existingPath[0] != '\0') {
-      pythonPathEnv += ":";
-      pythonPathEnv += existingPath;
-    }
-    for (char **e = environ; *e; ++e) {
-      StringRef entry(*e);
-      if (entry.starts_with("PYTHONPATH="))
-        continue;
-      envStorage.push_back(std::string(entry));
-    }
-    envStorage.push_back(pythonPathEnv);
-    for (auto &s : envStorage)
-      envp.push_back(s);
-  }
-
-  // 6. Execute.
-  std::string errMsg;
-  int rc = llvm::sys::ExecuteAndWait(
-      *pythonPath, args,
-      hasPythonPath ? std::optional<ArrayRef<StringRef>>(envp) : std::nullopt,
-      redirects, /*secondsToWait=*/30, /*memoryLimit=*/0, &errMsg);
-
-  if (rc != 0) {
-    std::string cmd;
-    llvm::raw_string_ostream os(cmd);
-    bool first = true;
-    auto appendToken = [&](StringRef token) {
-      if (!first)
-        os << ' ';
-      first = false;
-      llvm::sys::printArg(os, token, /*Quote=*/true);
-    };
-    if (hasPythonPath) {
-      appendToken("env");
-      appendToken(pythonPathEnv);
-    }
-    for (StringRef arg : args)
-      appendToken(arg);
-    os.flush();
-
-    llvm::errs() << "ExpandTileOp: tilelang DSL helper failed (rc=" << rc
-                 << "): " << errMsg << "\n";
-    llvm::errs() << "ExpandTileOp: run: " << cmd << "\n";
-    llvm::sys::fs::remove(tmpPath);
+  auto selectedName = selected.getAs<StringAttr>("name");
+  if (!selectedName) {
+    tileOp->emitError("ExpandTileOp candidate 0 requires a string name");
     return nullptr;
   }
 
-  // 7. Read the generated MLIR.
-  auto bufOrErr = llvm::MemoryBuffer::getFile(tmpPath);
-  llvm::sys::fs::remove(tmpPath);
-  if (!bufOrErr) {
-    llvm::errs() << "ExpandTileOp: cannot read DSL output\n";
-    return nullptr;
-  }
-  StringRef mlirText = (*bufOrErr)->getBuffer();
-  if (mlirText.empty()) {
-    llvm::errs() << "ExpandTileOp: empty DSL output\n";
-    return nullptr;
-  }
+  func::FuncOp daemonResult =
+      invokeTileLibDaemon(key, selectedName.getValue(), mod, ctx);
+  if (daemonResult)
+    return daemonResult;
 
-  // 8. Parse the MLIR text.
-  auto parsedMod = parseSourceString<ModuleOp>(mlirText, ctx);
-  if (!parsedMod) {
-    llvm::errs() << "ExpandTileOp: failed to parse DSL output\n";
-    return nullptr;
-  }
-
-  // 9. Clone the generated function set into the target module. The TileLang
-  // output may include private inline helper funcs referenced by the entry.
-  SmallVector<func::FuncOp, 4> parsedFuncs;
-  for (auto fn : parsedMod->getOps<func::FuncOp>())
-    parsedFuncs.push_back(fn);
-  if (parsedFuncs.empty()) {
-    llvm::errs() << "ExpandTileOp: no func.func in DSL output\n";
-    return nullptr;
-  }
-  OpBuilder builder(ctx);
-  builder.setInsertionPointToEnd(mod.getBody());
-  SmallVector<func::FuncOp, 4> clonedFuncs;
-  llvm::StringMap<std::string> renamedSymbols;
-
-  std::string uniqueName = buildUniqueFunctionBaseName(key);
-
-  // Check if function already exists in module (deduplication)
-  SymbolTable targetSymTable(mod);
-  if (auto existingFunc = targetSymTable.lookup(uniqueName)) {
-    // Function already exists, return it directly (avoid redefinition)
-    llvm::errs() << "ExpandTileOp: reuse existing function @" << uniqueName << "\n";
-    return cast<func::FuncOp>(existingFunc);
-  }
-
-  std::vector<std::string> newNameStorage;
-  for (auto [index, fn] : llvm::enumerate(parsedFuncs)) {
-    IRMapping mapping;
-    auto cloned = cast<func::FuncOp>(builder.clone(*fn, mapping));
-    std::string newName;
-    if (index == 0) {
-      newName = uniqueName;
-      cloned.setVisibility(SymbolTable::Visibility::Private);
-    } else {
-      newName = uniqueName + "__" + std::string(fn.getSymName());
-    }
-    newNameStorage.push_back(newName);
-    renamedSymbols[fn.getSymName()] = newNameStorage.back();
-    cloned.setName(newNameStorage.back());
-    clonedFuncs.push_back(cloned);
-  }
-
-  for (func::FuncOp fn : clonedFuncs) {
-    fn.walk([&](func::CallOp call) {
-      StringRef callee = call.getCallee();
-      if (callee.empty())
-        return;
-      auto renameIt = renamedSymbols.find(callee);
-      if (renameIt == renamedSymbols.end())
-        return;
-      call.setCallee(renameIt->second);
-    });
-  }
-
-  auto cloned = clonedFuncs.front();
-  // The pto.tilelang.instance attribute should already be set by the
-  // TileLang DSL frontend in the generated MLIR. Verify it exists.
-  if (!cloned->hasAttr("pto.tilelang.instance")) {
-    llvm::errs() << "ExpandTileOp: warning: DSL output function @"
-                 << cloned.getSymName()
-                 << " missing pto.tilelang.instance attribute\n";
-  }
-
-  // Keep the parsed module alive.
-  parsedModules.push_back(std::move(parsedMod));
-
-  return cloned;
+  llvm::errs() << "ExpandTileOp: PTODSL daemon RPC failed\n";
+  return nullptr;
 }
 
 // ============================================================================
@@ -1254,9 +1210,7 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
   // Collect tile ops first (avoid modifying while iterating).
   SmallVector<Operation *, 16> tileOps;
   func.walk([&](Operation *op) {
-    if (isa<pto::TReshapeOp>(op))
-      return;
-    if (isa<pto::OpPipeInterface>(op))
+    if (pto::isTileLibExpandableOp(op))
       tileOps.push_back(op);
   });
 
@@ -1268,11 +1222,11 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
       return failure();
     }
 
-    // Invoke tilelang DSL (with caching).
-    func::FuncOp dslFn = invokeTilelangDSL(*specKeyOpt, op, mod, ctx);
+    // Invoke the selected TileLib backend (with daemon-side caching).
+    func::FuncOp dslFn = invokeTileLib(*specKeyOpt, op, mod, ctx);
     if (!dslFn) {
       StringRef opName = getTileOpName(op);
-      op->emitError("ExpandTileOp: failed to instantiate tilelang template for " +
+      op->emitError("ExpandTileOp: failed to instantiate TileLib template for " +
                     opName);
       return failure();
     }
@@ -1306,16 +1260,33 @@ void ExpandTileOpPass::runOnOperation() {
   ModuleOp mod = getOperation();
   MLIRContext *ctx = &getContext();
 
-  if (tilelangPath.empty()) {
-    mod.emitError(
-        "ExpandTileOp requires a non-empty tilelang-path on the VPTO backend");
+  bool hasExpandableOps = false;
+  mod.walk([&](Operation *op) {
+    if (pto::isTileLibExpandableOp(op)) {
+      hasExpandableOps = true;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  if (!hasExpandableOps)
+    return;
+
+  if (tileLibBackend != "ptodsl") {
+    mod.emitError("ExpandTileOp received unsupported tile-lib-backend '" +
+                  std::string(tileLibBackend) + "'");
+    signalPassFailure();
+    return;
+  }
+
+  if (daemonSocketPath.empty()) {
+    mod.emitError("ExpandTileOp requires a running PTODSL TileLib daemon");
     signalPassFailure();
     return;
   }
 
   ExpandState state;
-  state.tilelangPath = std::string(tilelangPath);
-  state.tilelangPkgPath = std::string(tilelangPkgPath);
+  state.tileLibPkgPath = std::string(tileLibPkgPath);
+  state.daemonHelperModule = std::string(daemonHelperModule);
   state.pythonExe = std::string(pythonExe);
   state.daemonSocketPath = std::string(daemonSocketPath);
 

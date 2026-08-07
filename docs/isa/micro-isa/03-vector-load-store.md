@@ -186,13 +186,17 @@ deinterleave forms.
 ### `pto.vldus`
 
 - **syntax:** `%result, %align_out = pto.vldus %source, %align : !pto.ptr<T, ub>, !pto.align -> !pto.vreg<NxT>, !pto.align`
+- **post-update syntax:** `%result, %align_out, %base_out = pto.vldus %source, %align, %increment : !pto.ptr<T, ub>, !pto.align, index -> !pto.vreg<NxT>, !pto.align, !pto.ptr<T, ub>`
 - **semantics:** Unaligned load using primed align state.
 - **inputs:**
   `%source` is the current UB address and `%align` is the incoming load
-  alignment state primed by `pto.vldas` or a prior `pto.vldus`.
+  alignment state primed by `pto.vldas` or a prior `pto.vldus`. In the
+  post-update form, `%increment` is the number of `T` elements by which the
+  base advances after this access.
 - **outputs:**
   `%result` is the assembled vector value and `%align_out` is the updated
-  alignment state.
+  alignment state. The post-update form additionally returns `%base_out`,
+  equivalent to `%source` advanced by `%increment` elements.
 - **constraints and limitations:**
   A matching `pto.vldas` MUST appear before the first dependent `pto.vldus`
   stream in the same vector loop. The installed no-post A5 interface keeps a
@@ -201,13 +205,16 @@ deinterleave forms.
   value and only exposes the updated align carrier. Reusing the original
   `%source` starts a new explicit access point; if the caller wants another
   no-post access, it should compute the next source pointer explicitly and pair
-  it with the required align setup.
+  it with the required align setup. The align carrier already has its own SSA
+  update chain in both forms; enabling base post-update does not change that
+  chain's semantics.
 - **Latency:** **9** cycles.
 
 **Unaligned load pattern:**
 ```mlir
 %align = pto.vldas %ub : !pto.ptr<f32, ub> -> !pto.align
 %vec, %align2 = pto.vldus %ub, %align : !pto.ptr<f32, ub>, !pto.align -> !pto.vreg<64xf32>, !pto.align
+%vec2, %align3, %next = pto.vldus %ub, %align2, %c64 : !pto.ptr<f32, ub>, !pto.align, index -> !pto.vreg<64xf32>, !pto.align, !pto.ptr<f32, ub>
 ```
 
 ---
@@ -230,13 +237,14 @@ deinterleave forms.
 
 ### `pto.vldsx2`
 
-- **syntax:** `%low, %high = pto.vldsx2 %source[%offset], "DIST" : !pto.ptr<T, ub>, index -> !pto.vreg<NxT>, !pto.vreg<NxT>`
+- **syntax:** `%low, %high [, %updated_base] = pto.vldsx2 %source[%offset], "DIST" : !pto.ptr<T, ub>, index -> !pto.vreg<NxT>, !pto.vreg<NxT> [, !pto.ptr<T, ub>]`
 - **semantics:** Dual load with deinterleave (AoS → SoA conversion).
 - **inputs:**
   `%source` is the UB base pointer, `%offset` is the displacement, and `DIST`
   selects a dual-load/deinterleave layout.
 - **outputs:**
-  `%low` and `%high` are the two destination vectors.
+  `%low` and `%high` are the two destination vectors. If requested,
+  `%updated_base` is the source pointer advanced by `%offset`.
 - **constraints and limitations:**
   This family is only legal for interleave/deinterleave style distributions.
   The two outputs form an ordered pair, and that pairing MUST be preserved.
@@ -269,14 +277,15 @@ for (int i = 0; i < 64; i++) {
 
 ### `pto.vsldb`
 
-- **syntax:** `%result = pto.vsldb %source, %block_stride, %repeat_stride, %mask : !pto.ptr<T, ub>, i16, i16, !pto.mask<G> -> !pto.vreg<NxT>`
+- **syntax:** `%result [, %updated_base] = pto.vsldb %source, %block_stride, %repeat_stride, %mask : !pto.ptr<T, ub>, i16, i16, !pto.mask<G> -> !pto.vreg<NxT> [, !pto.ptr<T, ub>]`
 - **semantics:** Block-strided load for 2D tile access.
 - **inputs:**
   `%source` is the UB base pointer. `%block_stride` and `%repeat_stride` are
   the two 16-bit fields of the hardware control word, and `%mask` controls
   which blocks participate.
 - **outputs:**
-  `%result` is the loaded vector.
+  `%result` is the loaded vector. If requested, `%updated_base` is the source
+  pointer advanced by `%repeat_stride` 32-byte blocks.
 - **constraints and limitations:**
   PTO surface does not expose the packed control word directly. If a block is
   masked off, the corresponding destination block is zeroed and MUST NOT raise
@@ -302,14 +311,46 @@ for (int blk = 0; blk < 8; ++blk) {
 - **syntax:** `%result = pto.vgather2 %source, %offsets, %mask : !pto.ptr<T, ub>, !pto.vreg<NxI>, !pto.mask<G> -> !pto.vreg<NxT>`
 - **semantics:** Indexed gather from UB.
 - **inputs:**
-  `%source` is the UB base pointer, `%offsets` provides per-lane element
-  offsets, and `%mask` selects the active requests.
+  `%source` is the UB base pointer, `%offsets` provides one unsigned element
+  index for each logical gather lane, and `%mask` selects those logical
+  index/result lanes.
 - **outputs:**
   `%result` is the gathered vector.
+- **addressing:**
+  Each active lane computes its UB byte address from the source element width:
+
+  ```text
+  addr[i] = byte_address(%source) + unsigned(%offsets[i]) * sizeof(source element)
+  ```
+
+  For `i8/ui8` sources, `sizeof(source element) == 1`; for 16-bit sources it is
+  `2`; for 32-bit sources it is `4`. The computed address must be aligned for
+  the source element type. For `i8/ui8` sources, each loaded 8-bit payload is
+  zero-extended into a 16-bit result lane.
+- **semantic pseudocode:**
+
+  ```text
+  for i in lanes:
+    if mask[i]:
+      value = UB_load(source_element_type, addr[i])
+      if source_element_type is i8 or ui8:
+        result[i] = zero_extend_to_16_bits(value)
+      else:
+        result[i] = value
+    else:
+      result[i] = 0
+  ```
 - **constraints and limitations:**
   Only masked-on indices participate. The index element width
   and interpretation MUST match the selected gather form, and each effective
   address must satisfy that form's alignment rules.
+  Supported forms are:
+  `i8/ui8 -> i16/ui16` with `!pto.vreg<128xui16>` offsets and
+  `!pto.mask<b16>`; `i16/ui16/f16/bf16 -> same type` with
+  `!pto.vreg<128xui16>` offsets and `!pto.mask<b16>`; and
+  `i32/ui32/f32 -> same type` with `!pto.vreg<64xui32>` offsets and
+  `!pto.mask<b32>`. Signless integer offsets are accepted as storage-compatible
+  aliases for the unsigned offset register payload.
 - **Latency:** **27–28** cycles per `RV_VGATHER2`; throughput much lower than contiguous `RV_VLD` (see **Latency and throughput (A5)** at the start of this chapter).
 
 ```c
@@ -482,21 +523,34 @@ for (int blk = 0; blk < 8; ++blk) {
 - **semantics:** Indexed scatter to UB.
 - **inputs:**
   `%value` is the source vector, `%dest` is the UB base pointer, `%offsets`
-  provides per-lane or per-block indices, and `%mask` selects the active
-  requests.
+  provides unsigned element indices relative to `%dest`, and `%mask` selects
+  the active requests. The legal type combinations are:
+
+  | Value and destination type | Offset type | Mask type | Requests |
+  | --- | --- | --- | --- |
+  | `b8` (`!pto.vreg<256xT>`) | `!pto.vreg<128xui16>` or `!pto.vreg<128xi16>` | `!pto.mask<b16>` | 128 |
+  | `b16` (`!pto.vreg<128xT>`) | `!pto.vreg<128xui16>` or `!pto.vreg<128xi16>` | `!pto.mask<b16>` | 128 |
+  | `b32` (`!pto.vreg<64xT>`) | `!pto.vreg<64xui32>` or `!pto.vreg<64xi32>` | `!pto.mask<b32>` | 64 |
+
+  Signless offset element types have the same unsigned interpretation as the
+  corresponding `ui16` or `ui32` type.
 - **outputs:**
   This op writes UB memory and returns no SSA value.
 - **constraints and limitations:**
-  Only `b8`, `b16`, and `b32` element sizes are supported. The index vector
-  must use a supported integer element type and layout for this family.
-  Each computed address MUST be element-aligned. If two or more indices alias,
-  only one write is guaranteed and the winning lane is implementation-defined.
+  Only `b8`, `b16`, and `b32` element sizes are supported, and `%dest` must have
+  the same element type as `%value`. Each destination address is
+  `%dest + %offsets[i]` in elements, equivalently
+  `byte_address(%dest) + unsigned(%offsets[i]) * sizeof(T)`, and MUST be
+  element-aligned. For `b8`, request `i` stores `%value[2*i]`; odd-numbered
+  source bytes are ignored. If two or more active indices are equal, only one
+  write is guaranteed and the winning request is implementation-defined.
 - **Latency:** **~17** cycles for **`Dtype: B16`**.
 
 ```c
-for (int i = 0; i < N; i++)
+for (int i = 0; i < num_requests; i++)
     if (mask[i])
-        UB[base + offsets[i] * sizeof(T)] = src[i];
+        dest[unsigned(offsets[i])] =
+            sizeof(T) == 1 ? value[2 * i] : value[i];
 ```
 
 ---
@@ -515,42 +569,52 @@ for (int i = 0; i < N; i++)
 
 ### `pto.sprsti`
 
-- **syntax:** `pto.sprsti "AR", %dest[%offset] : !pto.ptr<ui32, ub>, i32`
+- **syntax:**
+  - normal: `pto.sprsti "AR", %dest[%offset] : !pto.ptr<ui32, ub>, i32`
+  - post-update: `%next = pto.sprsti "AR", %dest[%offset] : !pto.ptr<ui32, ub>, i32 -> !pto.ptr<ui32, ub>`
 - **semantics:** Store SPR AR to UB using a signed 8-bit immediate offset.
 - **inputs:**
-  `%dest` is the UB base pointer and `%offset` is the immediate offset in units
-  of the SPR data width.
+  `%dest` is the UB base pointer and `%offset` counts 4-byte words.
+- **outputs:**
+  The normal form returns no SSA value. The post-update form returns `%next`,
+  which advances `%dest` by `4 * %offset` bytes.
 - **constraints and limitations:**
   Only `"AR"` is supported. `%dest` must be a `ui32` or signless `i32` UB
-  pointer. `%offset` must be a constant signed 8-bit `i32`. The current VPTO
-  surface models only the no-post-update form, so no updated base pointer is
-  returned.
+  pointer. `%offset` must be a constant signed 8-bit `i32`.
 
 ---
 
 ### `pto.sprsts`
 
-- **syntax:** `pto.sprsts "AR", %dest[%offset] : !pto.ptr<ui32, ub>, i32`
+- **syntax:**
+  - normal: `pto.sprsts "AR", %dest[%offset] : !pto.ptr<ui32, ub>, i32`
+  - post-update: `%next = pto.sprsts "AR", %dest[%offset] : !pto.ptr<ui32, ub>, i32 -> !pto.ptr<ui32, ub>`
 - **semantics:** Store SPR AR to UB using a scalar-register offset.
 - **inputs:**
   `%dest` is the UB base pointer and `%offset` is the scalar offset in bytes.
+- **outputs:**
+  The normal form returns no SSA value. The post-update form returns `%next`,
+  which advances `%dest` by `%offset` bytes.
 - **constraints and limitations:**
   Only `"AR"` is supported. `%dest` must be a `ui32` or signless `i32` UB
-  pointer. The current VPTO surface models only the no-post-update form, so no
-  updated base pointer is returned.
+  pointer.
 
 ---
 
 ## Alignment State Stores
 
 ### `pto.vstas`
-- **syntax:** `pto.vstas %value, %dest, %offset : !pto.align, !pto.ptr<T, ub>, i32`
+- **syntax:**
+  - normal: `pto.vstas %value, %dest, %offset : !pto.align, !pto.ptr<T, ub>, i32`
+  - post-update: `%next = pto.vstas %value, %dest, %offset : !pto.align, !pto.ptr<T, ub>, i32 -> !pto.ptr<T, ub>`
 - **semantics:** Scalar-register-offset form of alignment-state flush.
 - **inputs:**
   `%value` is the pending store-alignment state, `%dest` is the UB base
-  pointer, and `%offset` is the scalar-register style displacement.
+  pointer, and `%offset` is the displacement in destination elements.
 - **outputs:**
-  This op writes buffered tail bytes to UB and returns no SSA value.
+  This op writes buffered tail bytes to UB. The normal form returns no SSA
+  value. The post-update form returns `%next`, which advances `%dest` by
+  `%offset` destination elements.
 - **constraints and limitations:**
   This family flushes pending store-alignment state using an explicit scalar
   offset and keeps the scalar-offset form explicit. The incoming `%value`
@@ -604,13 +668,15 @@ These ops make reference-updated state explicit as SSA results.
 ### `pto.vstus`
 
 - **syntax:** `%align_out = pto.vstus %align_in, %offset, %value, %base : !pto.align, i32, !pto.vreg<NxT>, !pto.ptr<T, ub> -> !pto.align`
-- **semantics:** No-post unaligned store with scalar offset.
+- **post-update syntax:** `%align_out, %base_out = pto.vstus %align_in, %offset, %value, %base : !pto.align, i32, !pto.vreg<NxT>, !pto.ptr<T, ub> -> !pto.align, !pto.ptr<T, ub>`
+- **semantics:** Unaligned store with scalar stream advance and optional base post-update.
 - **inputs:**
-  `%align_in` is the incoming store-alignment state, `%offset` is the scalar
-  displacement, `%value` is the vector being stored, and `%base` is the UB base
-  pointer.
+  `%align_in` is the incoming store-alignment state, `%offset` is the number of
+  `T` elements by which the store stream advances, `%value` is the vector being
+  stored, and `%base` is the UB base pointer.
 - **outputs:**
-  `%align_out` is the updated buffered-tail state.
+  `%align_out` is the updated buffered-tail state. In the post-update form,
+  `%base_out` is `%base` advanced by `%offset` elements.
 - **constraints and limitations:**
   This is the scalar-offset stateful form of the unaligned store family. The
   scalar offset width MUST match the selected form, and a later flush op is
@@ -619,8 +685,10 @@ These ops make reference-updated state explicit as SSA results.
   `%base + %offset`". Instead, `%offset` describes how far the store stream
   advances at this step, and `%align_out` carries any residual tail that could
   not be committed yet. The no-post surface does not expose an updated base
-  pointer. A later flush op must therefore use an explicit destination/offset
-  pair that identifies the same logical flush point as this `pto.vstus`.
+  pointer, while the post-update form returns that pointer directly. The align
+  carrier remains an independent SSA state chain in either form. A later flush
+  op must use a destination/offset pair that identifies the same logical flush
+  point as this `pto.vstus` stream.
 - **Latency:** **9** cycles.
 
 ---

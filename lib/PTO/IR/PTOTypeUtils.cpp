@@ -40,6 +40,44 @@ bool mlir::pto::isPTOFloat4PackedType(Type t) {
   return isa<F4E1M2x2Type, F4E2M1x2Type>(t);
 }
 
+bool mlir::pto::isPTOPackedLdgStgVectorType(Type t) {
+  // !pto.hif8x2 is a 2-byte packed hif8 value type (not a VectorType).
+  if (isPTOHiFloat8x2Type(t))
+    return true;
+  auto vecType = dyn_cast<VectorType>(t);
+  if (!vecType || vecType.isScalable() || vecType.getRank() != 1)
+    return false;
+  int64_t lanes = vecType.getDimSize(0);
+  Type elemType = vecType.getElementType();
+  bool validElem = false;
+  if (isPTOFloat8Type(elemType)) {
+    validElem = lanes == 2 || lanes == 4 || lanes == 8;
+  } else {
+    validElem =
+        lanes == 2 &&
+        (elemType.isF16() || elemType.isBF16() || elemType.isF32());
+  }
+  if (!validElem) {
+    if (auto intTy = dyn_cast<IntegerType>(elemType)) {
+      unsigned w = intTy.getWidth();
+      validElem = lanes == 2 && (w == 8 || w == 16 || w == 32);
+    }
+  }
+  if (!validElem)
+    return false;
+  unsigned totalBits =
+      vecType.getDimSize(0) * getPTOStorageElemBitWidth(elemType);
+  return totalBits == 16 || totalBits == 32 || totalBits == 64;
+}
+
+unsigned mlir::pto::getPTOPackedLdgStgTotalBits(Type t) {
+  if (isPTOHiFloat8x2Type(t))
+    return getPTOStorageElemBitWidth(t); // 16
+  auto vecType = cast<VectorType>(t);
+  return vecType.getDimSize(0) *
+         getPTOStorageElemBitWidth(vecType.getElementType());
+}
+
 bool mlir::pto::isPTOLowPrecisionType(Type t) {
   return isPTOFloat8Type(t) || isPTOHiFloat8Type(t) || isPTOF8E8M0Type(t) ||
          isPTOHiFloat8x2Type(t) || isPTOFloat4PackedType(t);

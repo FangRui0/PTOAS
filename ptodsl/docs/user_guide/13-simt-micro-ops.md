@@ -10,8 +10,8 @@ scalar values loaded from tiles.
 #### `pto.store_vfsimt_info(dim_z, dim_y, dim_x) -> None`
 
 **Description**: Emits the low-level VPTO launch descriptor operation. Most
-code should use `body[dim_x, dim_y, dim_z](...)` or `pto.simt_launch(...)`
-instead.
+code should use `body[dim_x, dim_y, dim_z](...)`, `pto.simt_launch(...)`, or
+the inline form `with pto.simt(dim_x, dim_y, dim_z):` instead.
 
 **Parameters**:
 
@@ -279,23 +279,33 @@ def simt_ops_collective_probe(dst: pto.ptr(pto.i32, "gm")):
 
 ## 13.4 Scalar GM memory and atomic ops
 
-#### `pto.ldg(ptr: PtrType, offset: Index = 0, *, l1cache: str = "cache", l2cache: str = "nmfv") -> ScalarType`
-#### `pto.stg(value: ScalarType, ptr: PtrType, offset: Index = 0, *, l1cache: str = "cache", l2cache: str = "nmfv") -> None`
+#### `pto.ldg(ptr: PtrType, offset: Index = 0, *, l1cache: str = "cache", l2cache: str = "nmfv") -> ScalarType | VectorType`
+#### `pto.stg(value: ScalarType | VectorType, ptr: PtrType, offset: Index = 0, *, l1cache: str = "cache", l2cache: str = "nmfv") -> None`
 
-**Description**: Loads or stores one scalar value through a typed pointer with
-cache controls.
+**Description**: Loads or stores one element through a typed pointer with
+cache controls.  Supports both scalar and packed vector types.
 
 **Parameters**:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `ptr` | `pto.ptr(dtype, "gm")` | GM pointer |
-| `value` | PTO scalar | Store payload for `pto.stg` |
-| `offset` | index-like value | Element offset |
+| `ptr` | `pto.ptr(dtype, "gm")` | GM pointer (scalar or vector element type) |
+| `value` | PTO scalar or vector | Store payload for `pto.stg` |
+| `offset` | index-like value | Element offset (not byte offset) |
 | `l1cache` | `"cache"` or `"uncache"` | L1 cache policy |
 | `l2cache` | cache token string | L2 cache policy accepted by VPTO |
 
 **Returns**: `pto.ldg` returns the pointer element type. `pto.stg` returns None.
+
+Packed vector pointer element descriptors include `pto.f32x2`, `pto.f16x2`,
+`pto.bf16x2`, `pto.f8e4m3x2`, `pto.f8e4m3x4`, `pto.f8e4m3x8`,
+`pto.f8e5m2x2`, `pto.f8e5m2x4`, `pto.f8e5m2x8`, `pto.hif8x2`,
+`pto.i8x2`, `pto.i16x2`, and `pto.i32x2`.
+
+**Offset contract**: The offset is an element-level ``index``, not a byte
+offset.  For ``pto.ptr(pto.f32x2, "gm")``, offset 1 advances by 8 bytes
+(2 × sizeof(f32)).  Dynamic ``i64`` offsets must be cast to ``index`` via
+``scalar.index_cast(value)``.
 
 **Example**:
 
@@ -315,6 +325,29 @@ def simt_ops_ldg_stg_probe(
     dst: pto.ptr(pto.i32, "gm"),
 ):
     ldg_stg_probe[32, 1, 1](src, dst)
+```
+
+**Vector example** (``f32x2`` with dynamic ``i64`` offset):
+
+```python
+@pto.simt
+def gm_vector_ldst(
+    src: pto.ptr(pto.f32x2, "gm"),
+    dst: pto.ptr(pto.f32x2, "gm"),
+    offset: pto.i64,
+):
+    idx = scalar.index_cast(offset)
+    value = pto.ldg(src, idx)
+    pto.stg(value, dst, idx)
+
+
+@pto.jit(target="a5")
+def gm_vector_ldst_entry(
+    src: pto.ptr(pto.f32x2, "gm"),
+    dst: pto.ptr(pto.f32x2, "gm"),
+    offset: pto.i64,
+):
+    gm_vector_ldst[32, 1, 1](src, dst, offset)
 ```
 
 ---
@@ -583,3 +616,27 @@ def simt_ops_sync_state_probe(dst: pto.ptr(pto.i32, "gm")):
     save_lane_state[32, 1, 1]()
     use_lane_state[32, 1, 1](dst)
 ```
+
+## 13.5 SIMT allreduce
+
+`pto.simt_allreduce_sum`, `pto.simt_allreduce_max`, and `pto.simt_allreduce_min` reduce a scalar value across SIMT work-items.
+
+These are Python-level SIMT collective helpers. They are expanded inline into existing PTO IR such as `pto.redux_*`, `pto.shuffle_bfly`, `pto.load`, `pto.store`, `pto.syncthreads`, and structured control flow; they do not lower to dedicated `pto.simt_allreduce_*` ops.
+
+#### `pto.simt_allreduce_sum(value, *, threads, scale=1, thread_offset=0, scratch=None) -> ScalarType`
+#### `pto.simt_allreduce_max(value, *, threads, scale=1, thread_offset=0, scratch=None) -> ScalarType`
+#### `pto.simt_allreduce_min(value, *, threads, scale=1, thread_offset=0, scratch=None) -> ScalarType`
+
+**Description**: Reduce `value` across `threads` work-items. The result is replicated to every participating work-item.
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `value` | PTO scalar | Per-lane value to reduce |
+| `threads` | Python `int` | Number of work-items participating in the reduction |
+| `scale` | Python `int` | Number of consecutive work-items that share the same reduced result; must divide `threads` |
+| `thread_offset` | Python `int` | Offset subtracted from `get_tid_x()` for lane-index computation |
+| `scratch` | UB pointer or `None` | Required unless `threads ≤ scale` or `(threads ≤ 32 ∧ pow2(threads) ∧ pow2(scale))` |
+
+**Returns**: PTO scalar with the same type as `value`.

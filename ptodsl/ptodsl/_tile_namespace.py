@@ -54,8 +54,10 @@ def _resolve_row_reduction_tmp(src, tmp):
 
 class _TileNamespace:
     mov = staticmethod(_ops.tmov)
+    transpose = staticmethod(_ops.ttrans)
     extract = staticmethod(_ops.textract)
     insert = staticmethod(_ops.tinsert)
+    concat = staticmethod(_ops.tconcat)
     matmul = staticmethod(_ops.tmatmul)
     matmul_acc = staticmethod(_ops.tmatmul_acc)
     matmul_mx = staticmethod(_ops.tmatmul_mx)
@@ -92,6 +94,7 @@ class _TileNamespace:
         return _ops.tstore(tile, part)
 
     add = staticmethod(_ops.tadd)
+    addrelu = staticmethod(_ops.taddrelu)
     sub = staticmethod(_ops.tsub)
     mul = staticmethod(_ops.tmul)
     div = staticmethod(_ops.tdiv)
@@ -112,6 +115,7 @@ class _TileNamespace:
     recip = staticmethod(_ops.trecip)
     abs = staticmethod(_ops.tabs)
     neg = staticmethod(_ops.tneg)
+    dequant = staticmethod(_ops.tdequant)
 
     relu = staticmethod(_ops.trelu)
     lrelu = staticmethod(_ops.tlrelu)
@@ -174,10 +178,16 @@ class _TileNamespace:
     sort32 = staticmethod(_ops.tsort32)
     mrgsort = staticmethod(_ops.tmrgsort)
     gather = staticmethod(_ops.tgather)
+    gatherb = staticmethod(_ops.tgatherb)
+    scatter = staticmethod(_ops.tscatter)
+
+    tri = staticmethod(_ops.ttri)
+    histogram = staticmethod(_ops.tthistogram)
 
     sel = staticmethod(_ops.tsel)
     sels = staticmethod(_ops.tsels)
     cvt = staticmethod(_ops.tcvt)
+    ci = staticmethod(_ops.tci)
 
     bit_not = staticmethod(_ops.tnot)
     bit_and = staticmethod(_ops.tand)

@@ -58,12 +58,12 @@ pipe_barrier(pipe);
 
 ```mlir
 // Both stores target the same GM address — order matters!
-pto.mte_ub_gm %ub_partial_0, %gm_result, ...
+pto.mte_ub_gm %ub_partial_0, %gm_result, %len_burst ...
 // Without pipe_barrier, MTE3 could execute the second copy before the first
 // completes, producing a non-deterministic result at %gm_result.
 pto.pipe_barrier "PIPE_MTE3"
 // After barrier: first copy is guaranteed complete. Second copy overwrites deterministically.
-pto.mte_ub_gm %ub_partial_1, %gm_result, ...
+pto.mte_ub_gm %ub_partial_1, %gm_result, %len_burst ...
 ```
 
 ---
@@ -113,6 +113,32 @@ The `mode` parameter controls how `get_buf` and `rls_buf` interact with pipeline
 
 ---
 
+### `pto.get_buf_dyn` / `pto.rls_buf_dyn`
+
+Dynamic variants of `get_buf`/`rls_buf` where `buf_id` is provided as an SSA value instead of a static integer attribute. This enables runtime-computed buf_id patterns such as SIMT ping-pong buffering.
+
+- **syntax:**
+  - String shorthand: `pto.get_buf_dyn "PIPE_MTE2", %buf_id, 0`
+  - Bracket form: `pto.get_buf_dyn [TLOAD, %buf_id, 0]`
+- **semantics:** Same as `get_buf`/`rls_buf`, but the buffer-id is an `index`-typed SSA value resolved at runtime.
+- **inputs:**
+  - `op_type`: same pipe-like attribute as the static form
+  - `buf_id`: an SSA value of `index` type (e.g. `iter & 1` for ping-pong)
+  - `mode`: same mode parameter (default `0`)
+- **constraints and limitations:** The BufidSync auto-insertion pass only uses the static form (`get_buf`/`rls_buf`). Use the dynamic form (`get_buf_dyn`/`rls_buf_dyn`) when buf_id must be computed at runtime.
+
+Example (SIMT double-buffering with `iter & 1`):
+
+```mlir
+  %c1 = arith.constant 1 : index
+  %buf_id = arith.andi %iter, %c1 : index
+  pto.get_buf_dyn [TLOAD, %buf_id, 0]
+  // ... tload to ubuf slot %buf_id ...
+  pto.rls_buf_dyn [TLOAD, %buf_id, 0]
+```
+
+---
+
 ### `pto.mem_bar`
 
 - **syntax:** `pto.mem_bar "BARRIER_TYPE"`
@@ -144,6 +170,63 @@ mem_bar(barrier_type);
 pto.vsts %v0, %ub[%c0] : !pto.vreg<64xf32>, !pto.ptr<f32, ub>
 pto.mem_bar "VST_VLD"
 %v1 = pto.vlds %ub[%c0] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
+```
+
+---
+
+### `pto.dsb`
+
+- **syntax:** `pto.dsb "MEM_DOMAIN"`
+- **semantics:** Issues a data synchronization barrier for the selected memory domain. All prior memory effects covered by the domain must become complete before subsequent memory effects proceed.
+
+**Memory domains:**
+
+| Domain | Meaning |
+|--------|---------|
+| `ALL` | Wait for all memory-access classes covered by the target |
+| `DDR` | Wait for DDR/GM memory-access effects |
+| `UB` | Wait for UB memory-access effects |
+| `SEQ` | Wait for sequencer-visible memory-access effects |
+
+**Example:** Ensure prior GM stores are complete before publishing a scalar signal:
+
+```mlir
+pto.dsb "DDR"
+```
+
+---
+
+### `pto.dcci`
+
+- **syntax:** `pto.dcci %ptr "CACHE_SCOPE" : !pto.ptr<T, gm|ub>`
+- **syntax:** `pto.dcci %ptr "CACHE_SCOPE", "CACHE_DST" : !pto.ptr<T, gm|ub>`
+- **semantics:** Performs data-cache clean/invalidate maintenance for the selected cache scope. The pointer address space selects whether the operation applies to GM or UB-backed cache state. The optional destination domain further restricts which cache-line class is affected.
+
+**Cache scopes:**
+
+| Scope | Meaning |
+|-------|---------|
+| `SINGLE_CACHE_LINE` | Apply maintenance to the cache line containing `%ptr` |
+| `ENTIRE_DATA_CACHE` | Apply maintenance to the entire data cache; `%ptr` is still required by the IR form |
+
+**Destination domains:**
+
+| Destination | Meaning |
+|-------------|---------|
+| `CACHELINE_ALL` | All supported cache-line domains |
+| `CACHELINE_UB` | UB cache-line domain |
+| `CACHELINE_OUT` | Output/GM-visible cache-line domain |
+| `CACHELINE_ATOMIC` | Atomic cache-line domain |
+
+**Constraints:**
+- `%ptr` must be a PTO pointer or buffer-like value in GM or UB address space.
+- Omitting `CACHE_DST` uses the target's default destination-domain form.
+
+**Example:** Flush GM-visible cache state after scalar GM stores:
+
+```mlir
+pto.dcci %gm "ENTIRE_DATA_CACHE", "CACHELINE_OUT" : !pto.ptr<i8, gm>
+pto.dsb "ALL"
 ```
 
 ---
@@ -284,7 +367,7 @@ pto.set_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
 // MTE3 waits until Vector's signal arrives
 pto.wait_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
 
-pto.mte_ub_gm %ub_out, %gm_out, ...
+pto.mte_ub_gm %ub_out, %gm_out, %len_burst ...
 ```
 
 **Key property:** Every cross-pipeline edge is an explicit `(set_flag, wait_flag)` pair. Simple for straight-line code, but gets verbose in loops (see Example 3).
@@ -324,7 +407,7 @@ pto.rls_buf "PIPE_V", %bufid_ub_out, %c0 : i64, i64
 // ─── Stage 3: MTE3 stores result to GM ───
 // MTE3 acquires ub_out — blocks until Vector releases it (RAW: V write → MTE3 read)
 pto.get_buf "PIPE_MTE3", %bufid_ub_out, %c0 : i64, i64
-pto.mte_ub_gm %ub_out, %gm_out, ...
+pto.mte_ub_gm %ub_out, %gm_out, %len_burst ...
 // MTE3 done reading ub_out — release so Vector can reuse it in next iteration
 pto.rls_buf "PIPE_MTE3", %bufid_ub_out, %c0 : i64, i64
 ```
@@ -400,7 +483,7 @@ scf.for %i = %c0 to %N step %c1 {
   // ── MTE3: store result from buf_out[i%2] to GM ──
   // RAW: wait for Vector to finish writing buf_out[i%2]
   pto.wait_flag["PIPE_V", "PIPE_MTE3", "EVT_OUT_FWD_{pp}"]
-  pto.mte_ub_gm %ub_out[%pp], %gm_out[%i], ...
+  pto.mte_ub_gm %ub_out[%pp], %gm_out[%i], %len_burst ...
   // WAR: tell Vector "done reading buf_out[i%2]"
   pto.set_flag["PIPE_MTE3", "PIPE_V", "EVT_OUT_REV_{pp}"]
 }
@@ -451,7 +534,7 @@ scf.for %i = %c0 to %N step %c1 {
   // ── MTE3: store result ──
   // Acquires out[i%2] — blocks until Vector releases it (RAW: automatic)
   pto.get_buf "PIPE_MTE3", %bufid_out[%pp], %c0 : i64, i64
-  pto.mte_ub_gm %ub_out[%pp], %gm_out[%i], ...
+  pto.mte_ub_gm %ub_out[%pp], %gm_out[%i], %len_burst ...
   pto.rls_buf "PIPE_MTE3", %bufid_out[%pp], %c0 : i64, i64
 }
 // No post-loop drain needed — last rls_buf completes the pipeline.

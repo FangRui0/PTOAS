@@ -7,8 +7,8 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from mlir.ir import Context, F32Type, IndexType, InsertionPoint, Location, Module, UnitAttr
-from mlir.dialects import arith, func, pto
+from ptoas.mlir.ir import Context, F32Type, IndexType, InsertionPoint, Location, Module, UnitAttr
+from ptoas.mlir.dialects import arith, func, pto
 
 
 def build():
@@ -43,6 +43,7 @@ def build():
                 sec_cube = pto.SectionCubeOp()
                 with InsertionPoint(sec_cube.body.blocks.append()):
                     pto.sync_set(pipe_fix, evt)
+                    pto.sync_set(pipe_fix, evt + 16)
 
                 sec_vec = pto.SectionVectorOp()
                 with InsertionPoint(sec_vec.body.blocks.append()):

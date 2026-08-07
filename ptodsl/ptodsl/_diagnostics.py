@@ -79,6 +79,15 @@ def jit_illegal_formal_annotation_error(name: str, annotation: object) -> TypeEr
     )
 
 
+def jit_struct_annotation_error(name: str) -> TypeError:
+    """Return one diagnostic for an invalid stack-local struct ABI annotation."""
+    return TypeError(
+        f"@pto.jit parameter '{name}' cannot use pto.struct_type(...) as an ABI annotation. "
+        "Stack-local structs must be created inside the traced function with "
+        "pto.declare_struct(...)."
+    )
+
+
 def jit_helper_illegal_formal_annotation_error(name: str, annotation: object) -> TypeError:
     """Return one diagnostic for unsupported ``@pto.jit(entry=False)`` module annotations."""
     return TypeError(
@@ -323,6 +332,11 @@ def subkernel_argument_type_error(role: str, name: str, expected: str, observed:
 def illegal_subkernel_placement_error(role: str, outer_role: str | None) -> RuntimeError:
     """Return one diagnostic for a subkernel call placed outside the supported layer graph."""
     if role == "simt":
+        if outer_role == "tileop":
+            return RuntimeError(
+                "@pto.tileop may only invoke @pto.simt through an explicit launch; "
+                "use helper[dim_x, dim_y, dim_z](...) or pto.simt_launch(...)."
+            )
         return RuntimeError(
             "@pto.simt helper materialization is only supported from the top-level @pto.jit body; "
             f"it cannot be materialized inside @pto.{outer_role}."
@@ -359,11 +373,59 @@ def inline_subkernel_value_escape_error(role: str, type_text: str) -> RuntimeErr
     )
 
 
+def physical_section_value_escape_error(source_kind: str, type_text: str) -> RuntimeError:
+    """Return a diagnostic for a value escaping a physical section."""
+    return RuntimeError(
+        f"cannot use a value defined in pto.section.{source_kind} outside that physical section "
+        f"(got {type_text}). Physical sections have lexical SSA scope; pass shared data "
+        "through a GM/UB buffer with explicit synchronization, or recompute the value "
+        "from section-entry inputs."
+    )
+
+
 def simd_value_escape_error(type_text: str) -> RuntimeError:
     """Return one diagnostic for transient SIMD values escaping a simd subkernel boundary."""
     return RuntimeError(
         f"@pto.simd cannot return transient SIMD values across the subkernel boundary "
         f"(got {type_text}). Write the value back to a Tile/UB buffer instead."
+    )
+
+
+def legacy_subkernel_decorator_error(role: str) -> TypeError:
+    """Return one diagnostic for the removed SIMD/Cube helper interfaces."""
+    return TypeError(
+        f"pto.{role} is a legacy single-core subkernel interface and is no longer supported "
+        f"as either @pto.{role} or with pto.{role}():. Use @pto.tileop for reusable helpers "
+        "or with pto.tileop(): for inline Tile/Scalar compute scopes; PTOAS "
+        "infers whether the helper is Vector or Cube from its body. Move MTE operations, "
+        "pipe synchronization, and other orchestration into the calling @pto.jit kernel."
+    )
+
+
+def inline_tileop_capture_type_error(position: int, type_text: str) -> TypeError:
+    """Return one diagnostic for an illegal inline TileOp capture."""
+    return TypeError(
+        f"with pto.tileop(): captured boundary value #{position} with unsupported type "
+        f"{type_text}. Inline TileOp scopes may capture only pto.Tile and PTO scalar values, "
+        "matching the @pto.tileop parameter ABI. Keep pointers, tensor views, transient "
+        "vector/mask values, MTE operations, and synchronization in the calling @pto.jit kernel."
+    )
+
+
+def tileop_return_annotation_error(annotation: object) -> TypeError:
+    """Return one diagnostic for an illegal ``@pto.tileop`` result annotation."""
+    return TypeError(
+        f"@pto.tileop helpers must return None, but the function declares {annotation!r}. "
+        "Write results through mutable Tile parameters instead of a Python return value."
+    )
+
+
+def tileop_return_value_error(result: object) -> TypeError:
+    """Return one diagnostic for an illegal ``@pto.tileop`` return value."""
+    return TypeError(
+        "@pto.tileop helpers must return None. "
+        f"Got {type(result).__name__!r} instead; write results through mutable Tile "
+        "parameters instead of a Python return value."
     )
 
 
@@ -438,14 +500,11 @@ def unsupported_public_surface_error(name: str) -> AttributeError:
     hints = {
         "ukernel": (
             'Use @pto.jit(mode="explicit") for explicit DMA orchestration, and call or inline '
-            "@pto.simd/@pto.simt/@pto.cube directly from that kernel."
+            "@pto.tileop/@pto.simt helpers directly from that kernel."
         ),
         "tile_buf_type": (
             "Use pto.alloc_tile(shape=..., dtype=..., memory_space=..., valid_shape=..., addr=...) "
             "to author tiles, and keep explicit tile-type construction inside internal implementation code only."
-        ),
-        "vecscope": (
-            "Use @pto.simd for named SIMD helpers, or inline SIMD code with `with pto.simd():`."
         ),
         "as_ptr": (
             "Use tile.as_ptr(), view.as_ptr(), or partition.as_ptr() on the authored object itself "
@@ -459,6 +518,10 @@ def unsupported_public_surface_error(name: str) -> AttributeError:
         ),
         "constexpr": (
             "Use pto.const_expr for compile-time @pto.jit parameters and trace-time control-flow guards."
+        ),
+        "copy_ubuf_to_ubuf": (
+            "Use pto.mte_ub_ub(src, dst, len_burst, nburst=(n_burst, src_stride, dst_stride)) "
+            "for authored UB-to-UB DMA instead of the removed raw copy helper."
         ),
         "tensor_spec": (
             "Host tensor ABI hints were removed from the PTODSL public surface. Use explicit "
@@ -482,12 +545,14 @@ __all__ = [
     "explicit_mode_required_with_context_error",
     "host_tensor_metadata_error",
     "jit_illegal_formal_annotation_error",
+    "jit_struct_annotation_error",
     "jit_constexpr_missing_default_error",
     "jit_keyword_only_non_constexpr_error",
     "jit_legacy_tensor_spec_entry_error",
     "jit_missing_annotation_error",
     "jit_non_gm_ptr_entry_error",
     "inline_subkernel_value_escape_error",
+    "physical_section_value_escape_error",
     "make_tensor_view_missing_metadata_error",
     "illegal_inline_subkernel_placement_error",
     "illegal_subkernel_placement_error",
@@ -506,6 +571,7 @@ __all__ = [
     "invalid_jit_mode_error",
     "invalid_jit_backend_error",
     "jit_legacy_tensor_spec_helper_error",
+    "legacy_subkernel_decorator_error",
     "native_python_control_flow_error",
     "simd_value_escape_error",
     "subkernel_argument_type_error",

@@ -18,7 +18,7 @@ ptodsl/
 │   ├── __init__.py      # exports: pto, scalar
 │   ├── pto.py           # main PTO DSL namespace
 │   ├── scalar.py        # top-level scalar.* helper namespace
-│   ├── _bootstrap.py    # MLIR path setup + context factory
+│   ├── _context.py      # MLIR context factory
 │   ├── _types.py        # lazy dtype descriptors and type constructors
 │   ├── _ops.py          # PTO operation wrappers
 │   ├── _control_flow.py # for_, if_, yield_ context managers
@@ -42,7 +42,7 @@ to make `import ptodsl` available are:
 
 ```bash
 # 1) Released or CI-built wheel: installs PTOAS + PTODSL together
-pip install /path/to/ptoas-*.whl
+pip install /path/to/ptoas*.whl
 
 # 2) Non-editable source install from the repository root
 cd $PTOAS_REPO_ROOT
@@ -62,21 +62,53 @@ python3 -c "import ptodsl; from ptodsl import pto, scalar; print(ptodsl.__file__
 Not supported:
 
 - `cd ptodsl && pip install -e .`
-- repo-walk / `PYTHONPATH` / `sys.path` repair just to locate the `ptodsl` package
+- runtime repository walks or `sys.path` repair to locate MLIR/PTO bindings
+
+Direct CTest/developer-tree execution must provide the matching MLIR and PTO
+Python roots explicitly through the test environment or `PYTHONPATH`; PTODSL
+does not search nearby build and install directories at import time.
 
 Artifact boundary:
 
 - `ptoas` wheel: PTODSL-capable Python distribution
 - `ptoas-bin-*.tar.gz`: compiler-only artifact, does **not** imply `import ptodsl`
 
-If you are working from a source checkout and want the repository helper
-scripts (`scripts/sim_dsl.sh`, sample runners, direct CLI debugging) to pick up
-the local build/install tree, you may still source:
+For source development, install the checkout into the active Python environment.
+The editable install retains an incremental CMake build tree without requiring
+manual `PYTHONPATH` or build-tree wrapper setup:
 
 ```bash
 cd $PTOAS_REPO_ROOT
-source scripts/ptoas_env.sh
+LLVM_BUILD_DIR=/path/to/llvm/build ./quick_install.sh
 ```
+
+---
+
+## PTODSL TileLib backend
+
+PTOAS uses the PTODSL TileLib daemon by default for VPTO tile-op expansion:
+
+```bash
+ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto \
+  input.pto -o -
+```
+
+Wheel and CMake-tree launchers pass the Python root containing their own
+installed or staged `ptodsl` package to the native driver. Use
+`--ptodsl-pkg-path=/path/to/package/root` for an explicit command-line
+override. PTODSL daemon failures are reported as errors and never fall back to
+the TileLang implementation.
+
+`InsertTemplateAttributes` queries legal-candidate metadata before fusion and
+stores an ordered `candidates` array containing only `id`, `name`,
+`loop_depth`, `postupdate`, and `tail`. Fusion may filter this array.
+Candidates are ordered by unique `id`. `ExpandTileOp` renders the first
+candidate that remains, providing a deterministic fallback when several
+candidates reach expansion.
+
+See the
+[PTODSL TileLib migration test checklist](docs/tilelib-migration-testing.md)
+for the complete test inventory, commands, and expected outcomes.
 
 ---
 
@@ -101,7 +133,6 @@ Set up the environment in each new shell:
 ```bash
 cd $PTOAS_REPO_ROOT
 pip install -e . --no-build-isolation
-source scripts/ptoas_env.sh
 source "${ASCEND_HOME_PATH}/bin/setenv.bash"
 ```
 
@@ -182,6 +213,37 @@ Direct run on a real NPU:
 python3 ptodsl/examples/flash_attention_softmax_launch.py
 ```
 
+### `rms_norm/rmsnorm_alloc_buffer_simt.py`
+
+Compile-only RMSNorm example for explicit-mode SIMT kernels. It models the
+RMSNorm SIMT-VF token body with a named `@pto.simt` helper launched from the
+main kernel through `helper[threads, 1, 1](...)`.
+
+The example exercises the PTODSL surfaces needed by this style of kernel:
+
+- SIMT-local `pto.alloc_buffer(...)` for per-thread fragment storage
+- hand-authored dynamic UB scratch layout with `pto.castptr` / `pto.addptr`
+- contiguous vector loads through `scalar.load(..., contiguous=N)` and vector
+  stores through `scalar.store(vector, ...)`
+- `pto.Vec(..., init=scalar)` for scalar-to-vector broadcast
+- `pto.simt_allreduce_sum(...)` lowered inline through `pto.redux_add` and
+  `pto.syncthreads`
+- explicit pipe `set_flag` / `wait_flag` synchronization, including dynamic
+  ping-pong event ids inside the token loop
+- a runtime token loop that lowers to `scf.for`
+
+```bash
+python3 ptodsl/examples/rms_norm/rmsnorm_alloc_buffer_simt.py --variant x128 > /tmp/rmsnorm_x128.mlir
+python3 ptodsl/examples/rms_norm/rmsnorm_alloc_buffer_simt.py --variant x64 > /tmp/rmsnorm_x64.mlir
+```
+
+Expected: MLIR containing `@rmsnorm_4096_alloc_buffer_simt_context_kernel`,
+the named SIMT helper `@rmsnorm_simt_token_body__simt_...`, explicit
+`pto.simt_launch`, `scf.for`, `vector<4xf32>`, `llvm.alloca` for local
+fragments, inline `pto.redux_add` / `pto.syncthreads` allreduce operations, and
+dynamic `pto.set_flag_dyn` / `pto.wait_flag_dyn` operations for the ping-pong
+events.
+
 ### Launch artifacts
 
 - `~/.cache/ptodsl/` — JIT-compiled kernel `.so` cache
@@ -217,7 +279,10 @@ ptodsl_docs_as_test: PASS
 
 `ptodsl/tests/` is the canonical home for PTODSL-specific regression scripts.
 The launchable sources under `ptodsl/examples/` remain examples; the
-regressions that protect them live here alongside compile-only and docs checks.
+regressions that protect compile-only behavior live here alongside docs checks.
+Runtime correctness coverage for PTODSL examples belongs under `test/dsl-st/`;
+for example, the RMSNorm alloc-buffer/SIMT example is covered by
+`test/dsl-st/rmsnorm_alloc_buffer_simt.py`.
 
 `test_docs_as_test.py` is the docs-as-test regression for the PTODSL user
 guide under `ptodsl/docs/user_guide/`. It scans every Python fenced code block
@@ -276,7 +341,7 @@ The user guide under `ptodsl/docs/user_guide/` is the canonical PTODSL API
 reference. This README keeps only a compact map of the public surface:
 
 - `@pto.jit`: the only host-visible kernel entry
-- `@pto.cube`, `@pto.simd`, `@pto.simt`: hardware-unit sub-kernels
+- `@pto.tileop`, `@pto.simt`: reusable single-core and SIMT helpers
 - `pto.ptr(...)` + runtime PTO scalar annotations: public entry ABI
 - `pto.make_tensor_view(...)`, `pto.partition_view(...)`, `pto.alloc_tile(...)`:
   core data-model builders
@@ -296,6 +361,7 @@ Start here for the full reference:
 - `ptodsl/docs/user_guide/09-predicate-and-mask-ops.md`
 - `ptodsl/docs/user_guide/10-sync-ops.md`
 - `ptodsl/docs/user_guide/13-simt-micro-ops.md`
+- `ptodsl/docs/user_guide/15-special-scalar.md`
 
 ## How the IR check works
 

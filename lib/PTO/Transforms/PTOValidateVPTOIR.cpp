@@ -21,7 +21,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "PTO/IR/PTO.h"
+#include "PTO/IR/PTOTypeUtils.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -343,7 +345,7 @@ public:
   }
 
   static bool isResidualEmissionScaffold(Operation *op) {
-    return isa<BindTileOp, memref::SubViewOp, memref::ReinterpretCastOp,
+    return isa<memref::SubViewOp, memref::ReinterpretCastOp,
                memref::MemorySpaceCastOp>(op) ||
            isTrivialEmissionCastPtr(op);
   }
@@ -480,6 +482,16 @@ private:
     }
     if (dist == "PK_B32") {
       if (width == 16)
+        return VPTOMaskGranularity::B32;
+      return std::nullopt;
+    }
+    if (dist == "PK_B64") {
+      if (width == 32)
+        return VPTOMaskGranularity::B32;
+      return std::nullopt;
+    }
+    if (dist == "PK4_B32") {
+      if (width == 8)
         return VPTOMaskGranularity::B32;
       return std::nullopt;
     }
@@ -988,6 +1000,23 @@ private:
   }
 
   LogicalResult validateAuthoringOperationSurface() {
+    WalkResult constantWalkResult =
+        helper.getModule().walk([&](arith::ConstantOp constant) {
+          Type resultType = constant.getType();
+          Type elementType = resultType;
+          if (auto vectorType = dyn_cast<VectorType>(resultType))
+            elementType = vectorType.getElementType();
+          if (!pto::isPTOFloat8Type(elementType))
+            return WalkResult::advance();
+
+          constant.emitOpError()
+              << "does not support directly constructed FP8 constants in "
+                 "the VPTO backend; produce FP8 values with pto.convert";
+          return WalkResult::interrupt();
+        });
+    if (constantWalkResult.wasInterrupted())
+      return failure();
+
     WalkResult loopWalkResult = helper.getModule().walk([&](scf::ForOp loop) {
       if (!VPTOLegalityHelper::isAIVectorScopeCarrier(loop))
         return WalkResult::advance();
@@ -1076,6 +1105,14 @@ private:
 
   LogicalResult validateEmissionOperationSurface() {
     WalkResult walkResult = helper.getModule().walk([&](Operation *op) {
+      if (isa<BuildAsyncSessionOp, TPutAsyncOp, TGetAsyncOp,
+              WaitAsyncEventOp, TestAsyncEventOp>(op)) {
+        op->emitOpError()
+            << "is not supported by the VPTO backend; async SDMA session "
+               "operations currently require the EmitC backend";
+        return WalkResult::interrupt();
+      }
+
       VPTOBufferAddressFamily family =
           VPTOLegalityHelper::classifyBufferAddressFamily(op);
 

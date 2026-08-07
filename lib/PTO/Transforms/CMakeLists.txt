@@ -11,7 +11,19 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
+set(_ptoas_transforms_private_link_libs)
+if(TARGET vfsim::native_core)
+  list(APPEND _ptoas_transforms_private_link_libs
+    $<BUILD_INTERFACE:vfsim::native_core>)
+endif()
+if(TARGET vfsim::ir_planner)
+  list(APPEND _ptoas_transforms_private_link_libs
+    $<BUILD_INTERFACE:vfsim::ir_planner>)
+endif()
+
 add_mlir_dialect_library(PTOTransforms
+  ENABLE_AGGREGATION
+
   TileFusion/FusionAnalysis.cpp
   TileFusion/FusionOpSemantics.cpp
   TileFusion/PTOPreFusionAnalysis.cpp
@@ -23,6 +35,7 @@ add_mlir_dialect_library(PTOTransforms
   TileFusion/PTOLowLevelLoopFusion.cpp
   TileFusion/PTOFusionPredicateElision.cpp
   TileFusion/PTOFusionLoadStoreElision.cpp
+  TileFusion/PTOUnrollAfterLoopFusion.cpp
   TileFusion/PTOFlattenFusionRegion.cpp
   VPTOLLVMEmitter.cpp
   VPTOCANN900LLVMEmitter.cpp
@@ -30,35 +43,58 @@ add_mlir_dialect_library(PTOTransforms
   VPTOLLVMEmitterHelper.cpp
   VPTOPtrNormalize.cpp
   VPTOPtrCastCleanup.cpp
+  VPTOOptimizeVcvt.cpp
+  VPTOMaskSimplify.cpp
   VPTOExpandWrapperOps.cpp
+  VPTOSoftPostUpdate.cpp
   PTOVPTOPtrBoundary.cpp
   VPTOBufferMaterialization.cpp
   PTOValidateVPTOIR.cpp
+  PTONarrowVPTOLoopCounters.cpp
   PTOUnrollSIMTForPass.cpp
+  PTOValidateVMIIR.cpp
+  VMIPreAssignmentCombine.cpp
+  VMIControlFlowSupport.cpp
+  VMILegalizeArithSelect.cpp
+  VMIMaskGranularityAssignment.cpp
+  VMILowerUnifiedToLegacy.cpp
+  VMINormalizeSignlessIntToUnsigned.cpp
+  VMILayoutAssignment.cpp
+  VMILayoutFold.cpp
+  VMILayoutPropagation.cpp
+  VMILayoutSupport.cpp
+  VMILayoutRematerialize.cpp
+  VMILayoutSinkMaterialization.cpp
+  VMIToVPTO.cpp
+  SIMTPersistentFragmentAnalysis.cpp
+  PTOAnalyzeSIMTPersistentFragment.cpp
+  PTOMaterializeSIMTPersistentFragment.cpp
+  PTOOutlineSIMTSections.cpp
   PTOInferVPTOVecScope.cpp
 
   InsertSync/PTOInsertSync.cpp
   PTOInjectBarrierAllSync.cpp
   InsertSync/InsertSyncDebug.cpp
-  PTOViewToMemref.cpp
+  PTORematerializeFixpipeVectorQuant.cpp
   PTOValidateIntToPtrUses.cpp
+  InsertTemplateAttributes.cpp
   ExpandTileOp.cpp
   FoldTileBufIntrinsics.cpp
+  LowerPTOToUBufOps.cpp
   PTOLowerToOpLibCalls.cpp
   PTOInstantiateAndInlineOpLib.cpp
   PTOToEmitC.cpp
   CppPostprocess.cpp
   Utils.cpp
   OptMemPlanForPipeline.cpp
-  AllocToPointerCast.cpp
   InferPTOMemScope.cpp
   PTOPlanMemory.cpp
+  PTOPlanMemoryModern.cpp
   PTORemoveRedundantBarrier.cpp
   InferPTOLayout.cpp
   PTOA5NormalizeTMovPass.cpp
   PTORemoveIdentityTMov.cpp
   PTOCanonicalizeIR.cpp
-  PTOMaterializeTileHandles.cpp
   BufferizableOpInterfaceImpl.cpp
   ConvertToPTOOp.cpp
   PTOAssignDefaultFrontendPipeIdPass.cpp
@@ -69,6 +105,8 @@ add_mlir_dialect_library(PTOTransforms
   SlotAffineAnalysis.cpp
   PTOWrapFunctionsInSectionsPass.cpp
   PTONormalizeUncoveredTileSections.cpp
+  PTOValidatePhysicalSectionBoundaries.cpp
+  PTOMaterializeTileOpSections.cpp
   VPTONormalizeContainer.cpp
   VPTOSplitCVModule.cpp
   InsertSync/PTOIRTranslator.cpp
@@ -95,7 +133,6 @@ add_mlir_dialect_library(PTOTransforms
   GraphSyncSolver/SyncSolverCodeGen.cpp
   LoweringSyncToPipe.cpp
   PTOVerifyTFreePass.cpp
-  PTOVerifySubkernelPipeContractPass.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${PROJECT_SOURCE_DIR}/include/PTO
@@ -107,7 +144,8 @@ add_mlir_dialect_library(PTOTransforms
   LINK_COMPONENTS
   Analysis
 
-  LINK_LIBS PUBLIC
+  LINK_LIBS
+  PUBLIC
   PTOIR
   MLIRIR
   MLIRPass
@@ -121,6 +159,7 @@ add_mlir_dialect_library(PTOTransforms
   MLIRTransforms
   MLIRTensorDialect
   MLIRSCFDialect
+  MLIRSCFUtils
   MLIRVectorDialect
   MLIRParser
   MLIRArithTransforms
@@ -130,6 +169,8 @@ add_mlir_dialect_library(PTOTransforms
   MLIRConvertToLLVMPass
   MLIRTargetLLVMIRExport
   MLIRToLLVMIRTranslationRegistration
+  PRIVATE
+  ${_ptoas_transforms_private_link_libs}
 )
 
 install(TARGETS PTOTransforms
@@ -145,3 +186,19 @@ target_include_directories(PTOTransforms INTERFACE
   $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
+
+if(TARGET vfsim::native_core AND TARGET obj.PTOTransforms)
+  # Preserve the simulator target's compile usage requirements on the object
+  # library; its link dependency is already captured in aggregation metadata.
+  target_link_libraries(obj.PTOTransforms PRIVATE
+    $<BUILD_INTERFACE:vfsim::native_core>)
+endif()
+
+if(TARGET vfsim::ir_planner)
+  target_compile_definitions(PTOTransforms PRIVATE PTO_ENABLE_VFSIM_IR_PLANNER=1)
+  if(TARGET obj.PTOTransforms)
+    target_link_libraries(obj.PTOTransforms PRIVATE
+      $<BUILD_INTERFACE:vfsim::ir_planner>)
+    target_compile_definitions(obj.PTOTransforms PRIVATE PTO_ENABLE_VFSIM_IR_PLANNER=1)
+  endif()
+endif()

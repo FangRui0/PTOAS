@@ -25,6 +25,7 @@ struct PointerLikeInfo {
   std::optional<int64_t> allocateSize;
   std::optional<pto::AddressSpace> addressSpace;
   LoopLikeOpInterface parentLoop{nullptr};
+  bool aliasesUnknownRange{false};
 
   PointerLikeInfo() = default;
   explicit PointerLikeInfo(Operation *op) : op(op) {}
@@ -69,8 +70,6 @@ struct MemInfo {
 };
 
 llvm::SmallVector<int64_t> getAddresses(const llvm::SmallVector<Value> &addrs);
-
-PointerLikeInfo getPointerLikeInfo(pto::PointerCastOp pointerCastOp);
 
 MemInfo getMemInfo(Value val);
 

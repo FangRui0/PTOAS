@@ -199,11 +199,12 @@ PTO 指令在 Davinci 架构上以 Unified Buffer（UB）中驻留的数据块�
 
 #### 4.2.1 生效条件
 
-融合仅在 `tools/ptoas/ptoas.cpp` 的 A5 VPTO 后端主线上生效，需同时满足以下全部条件：
+融合仅在 `tools/ptoas/ptoas.cpp` 的 A5 EmitC 或 VPTO 后端主线上生效，需同时满足以下全部条件：
 
-- `--pto-backend=vpto`
+- `--pto-backend=emitc` 或 `--pto-backend=vpto`
 - `--pto-arch=a5`
-- `--enable-op-fusion` 未显式设置时默认开启；可通过 `--enable-op-fusion=false` 关闭
+- `--pto-level=level2` 或 `--pto-level=level3`
+- 显式传入 `--enable-op-fusion=true`；未设置或传入 `false` 时均保持关闭
 
 迭代域推导由 `--enable-shape-inference` 开关控制（同样作用于 EmitC 后端的
 `FusionPlan`）：
@@ -219,6 +220,16 @@ PTO 指令在 Davinci 架构上以 Unified Buffer（UB）中驻留的数据块�
 `--enable-shape-inference` 只作用于 `FusionPlan`：这是唯一读取 iteration
 domain classes、做出融合决策的 pass。`PTOFusionRegionGen` 只消费 `FusionPlan`
 产出的 `pto.fusion.group_id`/`pto.fusion.order` 注解并封装成 `pto.fusion_region`。
+
+`OpScheduling` 是 `FusionPlan` metadata 与下游消费者之间的规范化边界：它在最终
+物理顺序上把无法压紧的 planned group 降级为独立连续 span，清除 singleton
+metadata，并以函数级唯一 ID 重新编号。`RegionGen` 仍保持严格校验；绕过
+`OpScheduling` 直接向 `RegionGen` 提供断裂或不完整 metadata 属于非法
+pipeline/input，不在 `RegionGen` 中静默修复。
+
+全函数重新编号（而非只给被拆分的段分配新 ID）是有意为之：所有 surviving span
+统一重新编号，保证跨 block 与嵌套 region 的 ID 唯一性与确定性，并避免旧 ID
+碰撞或 max-old-ID 记账。
 
 #### 4.2.2 输入层级支持
 
@@ -269,8 +280,7 @@ domain classes、做出融合决策的 pass。`PTOFusionRegionGen` 只消费 `Fu
 
 #### 4.2.4 非目标路径
 
-- EmitC 后端会忽略 `--enable-op-fusion`。
-- 显式传入 `--enable-op-fusion=false` 时，普通 VPTO 路径不会形成 `pto.fusion_region`，也不会进入 post-lowering 融合生命周期。
+- 未显式传入 `--enable-op-fusion=true` 时，EmitC 不生成 `pto.last_use`，VPTO 不形成 `pto.fusion_region`，两条路径均不进入 TileOp fusion 生命周期。
 - 后端分界线已固定为 `ExpandTileOp`；原有的 `View2Memref` / `PTOToA5VM` 主线已移除。
 
 ---
