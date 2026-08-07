@@ -554,6 +554,25 @@ class VectorCubeSurfaceTest(unittest.TestCase):
             )
             self.assertEqual(cb_op.call_args.kwargs, {"transpose": True})
 
+    def test_mte_l1_l0_explicit_controls_reject_fp4(self):
+        source = SimpleNamespace(type="!pto.ptr<!pto.f4E2M1x2, l1>")
+        destination = object()
+        controls = {
+            "m_start": 3,
+            "k_start": 5,
+            "m_step": 16,
+            "k_step": 2,
+            "src_stride": 8,
+            "dst_stride": 2,
+        }
+
+        with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_ops, "_coerce_i64", side_effect=lambda value, *, context: f"{context}:{value}"):
+            with self.assertRaisesRegex(TypeError, "explicit-control FP4 loads are not supported yet"):
+                _ops.mte_l1_l0a(source, destination, **controls, transpose=True)
+            with self.assertRaisesRegex(TypeError, "using FP4 in source may silently select an incorrect intrinsic"):
+                _ops.mte_l1_l0b(source, destination, **controls, transpose=True)
+
     def test_mte_l1_l0_legacy_forms_preserve_keyword_compatibility(self):
         source = object()
         destination = object()
