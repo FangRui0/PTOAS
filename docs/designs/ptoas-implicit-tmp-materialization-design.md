@@ -114,21 +114,30 @@ target_op(no tmp)
 
 ### level3
 
-level3 下用户显式管理 local 地址，memplan 通常跳过。因此不应自动创建无地址 tmp。
+level3 下用户显式管理 local 地址，memplan 通常跳过。pass 通过构造参数 `requireExplicitTmp` 判定 level3（`createPTOMaterializeImplicitTmpPass(effectiveLevel == Level3)`）。
 
-通用规则：
-
-```text
-level3 + target_op(no tmp) => pass/verifier 报错
-```
-
-用户在 level3 使用已纳入改造的目标 op 时，必须显式提供合法 tmp，并保证 tmp 自身带合法 local addr，或满足现有 level3 显式地址规则。
-
-诊断信息示例：
+对 **A2/A3 实际使用 tmp 的 op**，level3 不自动创建无地址 tmp，缺省 tmp 直接报错：
 
 ```text
-<op> requires explicit tmp when compiling at level3 because PlanMemory is skipped
+level3 + A2/A3 target_op(no tmp) => pass 报错
 ```
+
+实际诊断字符串（`PTOMaterializeImplicitTmp.cpp`）：
+
+```text
+<op> requires explicit tmp when PlanMemory is skipped
+```
+
+个别 op 有更具体的变体，例如 binary tcolsum 为 `requires explicit tmp for binary tcolsum when PlanMemory is skipped`，非 32 对齐 tsort32 为 `requires explicit tmp for non-32-aligned tsort32 when PlanMemory is skipped`。
+
+A2/A3 用户在 level3 使用这些 op 时，必须显式提供合法 tmp，并保证 tmp 自身带合法 local addr，或满足现有 level3 显式地址规则。
+
+**A5 例外**：对 A5 只接受但不使用 tmp 的 op，pass 通过 `!isA5` 跳过上述 level3 报错：
+
+- 若后端 C++ 签名仍要求 tmp（row/arg reduction、TXOR/TXORS、TSEL/TSELS、TPRELU、TREM/TREMS 等），pass 即使在 level3 也自动生成固定 32 字节的 ABI placeholder（`makeA5PlaceholderTmpType`，形状 `{1, 32/sizeof(elem)}`）。该 placeholder 不建模 Read/Write MemoryEffects、不参与 memplan、无需回写地址，因此不违反 level3“不自动分配 tmp 地址”的非目标。
+- 若后端存在 no-tmp overload（TCI、TROWEXPAND*、TQUANT 等），A5 直接保持 no-tmp 形态，不补 placeholder。
+
+因此当前实现下不存在 “A5 + level3 + 缺省 tmp” 报错的路径：要么 pass 自动补 placeholder，要么保持合法的 no-tmp 形态，verifier 的 no-tmp overload 也无条件接受。
 
 ## EmitC Lowering
 
@@ -594,10 +603,11 @@ TSORT32, TQUANT
 ### 通用规则
 
 - level1/level2：只有该 op 在当前 arch / 模式下实际需要 tmp，且 IR 允许省略 tmp 时，才自动 materialize `pto.alloc_tile(no addr)`。
-- level3：若该 op 在当前 arch / 模式下需要 tmp 且用户省略 tmp，则报错；若当前 arch / 模式不使用 tmp，则不强制补 tmp。
-- A5 仅接受但不使用 tmp 的 op：若后端存在 no-tmp overload，则不自动补 tmp；若 C++ 签名仍要求 tmp，则自动生成 ABI placeholder。placeholder 不建模 tmp 的 Read/Write，用户显式 tmp 也不按 A2/A3 容量规则校验。
+- level3：若该 op 在 A2/A3 当前模式下需要 tmp 且用户省略 tmp，则报错（`requires explicit tmp when PlanMemory is skipped`）。A5 见下一条，即使 level3 也不因缺省 tmp 报错。
+- A5 仅接受但不使用 tmp 的 op：若后端存在 no-tmp overload，则不自动补 tmp；若 C++ 签名仍要求 tmp，则自动生成固定 32 字节 ABI placeholder（level1/2/3 一致，通过 `!isA5` 绕过 level3 显式 tmp 检查）。placeholder 不建模 tmp 的 Read/Write（`getEffects` 以 `!tmp.empty() && arch != A5` 守卫）、不参与 memplan、无需地址，用户显式 tmp 也不按 A2/A3 容量规则校验。
 - tmp 是 scratch 的 op：MemoryEffects 需要建模为 `Read(tmp) + Write(tmp)`，或在 semantic no-alias side table 中显式加入 `forbidAlias(tmp, dst/output)`。
 - 原 mandatory tmp op 已统一改为 optional，并保持显式 tmp 文本格式兼容。
+- 容量校验统一走 `verifyTmpCapacityAtLeast`，按 tmp 的**声明 shape** × `sizeof(dtype)` 计算（`getStaticByteSize`，非 valid 区域），A5 分支不执行该校验。对 row/arg reduction 的 32 字节下限：因 `pto.alloc_tile` 已对 row-major none_box tile 强制行 `cols * sizeof(dtype)` 32 字节对齐，而 reduction `src` 必须是这类 tile，故任何合法 src 单行即 ≥32 字节，同形状 tmp 恒满足下限；materialize 无需为 sub-block src 额外兜底容量（<32 字节的合法 reduction src 无法构造）。
 
 ### Arg reduction 类
 
@@ -625,9 +635,15 @@ TROWARGMAX / TROWARGMIN：
 - tmp 行数与 `src` 相同；每行 stride 按 PTO-ISA 文档公式计算。
 - 当前 PTOAS ODS 只有单输出索引模式；该模式仍需满足后端显式 tmp 参数签名，因此 level1/2 生成保守同形状 tmp。未来接入值+索引模式后，再按输出模式和归约阶段收紧容量。
 
+容量校验：
+
+- A2/A3 verifier 在按 `tmpGapEles` / 布局（DN 1 列、ND 2 列、min stride 等）校验后，统一以 `verifyTmpCapacityAtLeast(op, tmp, 32)` 兜底；容量按声明 shape 计算，同 row reduction 一样被 `pto.alloc_tile` 的 32 字节行对齐恒满足。
+- A5 arg-reduction verifier（`verifyTColArgReductionOpA5` / `verifyTRowArgReductionOpA5`）不含任何容量校验。
+
 MemoryEffects / alias：
 
 - A2/A3 实际使用 tmp 时建模 `Read(src) + Read(tmp) + Write(tmp) + Write(dstIdx/dstVal)`。
+- A5 placeholder 不建模 tmp 的 Read/Write（`getEffects` 以 `!tmp.empty() && arch != A5` 守卫）。
 - tmp 不应与同 op 的输出 alias；如果 MemoryEffects 无法覆盖，应加入 `forbidAlias(tmp, dstIdx)` 和必要的 `forbidAlias(tmp, dstVal)`。
 
 ### Row reduction 类
@@ -646,19 +662,20 @@ TROWPROD, TROWSUM, TROWMAX, TROWMIN
 tmp 规格：
 
 - tmp dtype 与 `src` / `dst` 一致。
-- 整数路径最小需要 1 个 vector block：`int32` 为 8 列，`int16` 为 16 列。
-- 浮点路径用于二叉树归约；安全默认形状可设为与 `src` 相同。
-- `TROWPROD` 的安全默认也可设为与 `src` 相同；最小需求为 1 行和 1 个 vector block。
+- ISA 最小需求为 1 行 1 个 vector block（32 字节）：`int32` 为 8 列，`int16` 为 16 列；浮点二叉树归约同样以 1 个 block 为下限。
+- A2/A3 materialize 直接生成与 `src` 同形状的 tmp（`makeSameShapeTmpType`），不做逐 dtype 的特化裁剪；`TROWPROD` 亦同。
+- 容量校验：A2/A3 verifier 走 `verifyTmpCapacityAtLeast(op, tmp, 32)`，按声明 shape × `sizeof(dtype)` 计算。**该 32 字节下限对合法 IR 恒被满足**——reduction `src` 必须是 row-major none_box tile，`pto.alloc_tile` 已对其强制行 32 字节对齐，故同形状 tmp 单行即 ≥32 字节，无需为 sub-block src 特殊兜底。
 
 Pass 行为：
 
-- A2/A3 level1/2：若 IR 已支持 optional tmp 且缺省 tmp，则自动生成 vec row-major none-box tmp。
-- A5：生成后端签名需要的 ABI placeholder，但不为其添加 tmp MemoryEffects。
-- level3：A2/A3 需要 tmp 时缺省 tmp 报错；A5 不强制 tmp。
+- A2/A3 level1/2：若 IR 已支持 optional tmp 且缺省 tmp，则自动生成与 `src` 同形状的 vec row-major none-box tmp。
+- A5：生成后端签名需要的固定 32 字节 ABI placeholder，但不为其添加 tmp MemoryEffects，也不跑 32 字节容量校验。
+- level3：A2/A3 需要 tmp 时缺省 tmp 报错（`requires explicit tmp when PlanMemory is skipped`）；A5 通过 `!isA5` 跳过报错，仍自动生成 ABI placeholder。
 
 MemoryEffects / alias：
 
 - A2/A3 建模 `Read(src) + Read(tmp) + Write(tmp) + Write(dst)`。
+- A5 placeholder 不建模 tmp 的 Read/Write（`getEffects` 以 `!tmp.empty() && arch != A5` 守卫）。
 - tmp 与 `dst` 禁止 alias。
 
 ### Column sum 类
