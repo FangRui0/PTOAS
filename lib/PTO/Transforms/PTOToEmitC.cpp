@@ -14148,12 +14148,22 @@ static AICORE inline void PTOAS__DCCI_SINGLE_CACHE_LINE(Ptr ptr) {
 
       // A static-stride `GlobalTensor` produced by the partition_view static
       // pattern and the fully-dynamic-stride `GlobalTensor` demanded by the
-      // type converter have no C++ converting constructor. Forward the value
-      // instead of emitting an invalid C-style cast.
+      // type converter have no C++ converting constructor. Forwarding the
+      // refined (static) value is only safe when every consumer accepts a
+      // more-specific GlobalTensor template instantiation (e.g. MGATHER /
+      // MSCATTER, which are C++ templates). A `return` must match the enclosing
+      // function's fixed (dynamic) result type exactly, so forwarding there
+      // would break verification -- fall through to the emitc.cast branch in
+      // that case.
       if (areRefinableGlobalTensorTypes(inTy, outTy)) {
-        output.replaceAllUsesWith(input);
-        castsToErase.push_back(cast);
-        return;
+        bool feedsReturn = llvm::any_of(output.getUsers(), [](Operation *user) {
+          return isa<func::ReturnOp, emitc::ReturnOp>(user);
+        });
+        if (!feedsReturn) {
+          output.replaceAllUsesWith(input);
+          castsToErase.push_back(cast);
+          return;
+        }
       }
 
       if (emitc::isSupportedEmitCType(inTy) && emitc::isSupportedEmitCType(outTy)) {
