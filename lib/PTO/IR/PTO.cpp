@@ -13077,7 +13077,7 @@ mlir::LogicalResult mlir::pto::TSelOp::verify() {
       unsigned elemBits = getPTOStorageElemBitWidth(elem);
       if (elemBits != 16 && elemBits != 32)
         return emitOpError("expects A2/A3 tsel data element type to be 16 or 32 bits");
-      uint64_t minBytes = elemBits == 16 ? 64 : 32;
+      uint64_t minBytes = elemBits == 16 ? 16 : 8;
       if (failed(verifyTmpCapacityAtLeast(*this, tmpTy, minBytes)))
         return failure();
     }
