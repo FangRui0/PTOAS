@@ -13072,9 +13072,8 @@ mlir::LogicalResult mlir::pto::TSelOp::verify() {
           "expects A2/A3 tsel src0, src1, and dst element type to be i16/i32/f16/bf16/f32");
     if (getTmp()) {
       Type tmpTy = getTmp().getType();
-      auto tmpElem = dyn_cast<IntegerType>(getElemTy(tmpTy));
-      if (!tmpElem || tmpElem.getWidth() != 32)
-        return emitOpError("expects A2/A3 tsel tmp element type to be i32");
+      if (getElemByteSize(getElemTy(tmpTy)) != 4)
+        return emitOpError("expects A2/A3 tsel tmp element type to be 4 bytes wide");
       unsigned elemBits = getPTOStorageElemBitWidth(elem);
       if (elemBits != 16 && elemBits != 32)
         return emitOpError("expects A2/A3 tsel data element type to be 16 or 32 bits");
