@@ -3412,9 +3412,14 @@ struct PTOMGatherToMGATHER : public OpConversionPattern<pto::MGatherOp> {
   LogicalResult matchAndRewrite(pto::MGatherOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     auto *ctx = rewriter.getContext();
-    Value mem = adaptor.getMem();
-    Value idx = adaptor.getIdx();
-    Value dst = adaptor.getDst();
+    // MGATHER is a template intrinsic that accepts the concrete descriptor
+    // directly, so peel any type-converter materialization bridge and feed the
+    // producing value. This keeps the compile-time static-stride GlobalTensor
+    // from the partition_view pattern instead of the dynamic-stride bridge,
+    // whose GlobalTensor<...> C-style cast would not compile (issue #1165).
+    Value mem = peelUnrealized(adaptor.getMem());
+    Value idx = peelUnrealized(adaptor.getIdx());
+    Value dst = peelUnrealized(adaptor.getDst());
 
     Value memArg = mem;
     auto coalescePropAttr =
@@ -6169,9 +6174,12 @@ struct PTOMScatterToMSCATTER : public OpConversionPattern<pto::MScatterOp> {
   LogicalResult matchAndRewrite(pto::MScatterOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     auto *ctx = rewriter.getContext();
-    Value src = adaptor.getSrc();
-    Value idx = adaptor.getIdx();
-    Value mem = adaptor.getMem();
+    // MSCATTER is a template intrinsic that accepts the concrete descriptor
+    // directly, so peel any type-converter materialization bridge and feed the
+    // producing value (static-stride GlobalTensor). See MGATHER above / #1165.
+    Value src = peelUnrealized(adaptor.getSrc());
+    Value idx = peelUnrealized(adaptor.getIdx());
+    Value mem = peelUnrealized(adaptor.getMem());
     auto coalesceAttr =
         dyn_cast_or_null<pto::CoalesceAttr>(op.getProperties().coalesce);
     auto scatterAtomicAttr =
@@ -13669,61 +13677,6 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   populateBranchOpInterfaceTypeConversionPattern(patterns, typeConverter);
 }
 
-// A cast between two `GlobalTensor<...>` opaque C++ types that are identical
-// except that one side carries concrete Shape/Stride template values while the
-// other uses the fully-dynamic `-1` placeholders (as produced by the
-// PTOToEmitCTypeConverter, which cannot recover strides from the stride-less
-// tensor_view type) has no valid C++ converting constructor. The values are
-// interchangeable at every templated backend call site (e.g. MGATHER/MSCATTER),
-// so such a bridge must forward the value rather than lower to an invalid
-// C-style `emitc.cast`.
-static bool areRefinableGlobalTensorTypes(Type a, Type b) {
-  auto oa = dyn_cast<emitc::OpaqueType>(a);
-  auto ob = dyn_cast<emitc::OpaqueType>(b);
-  if (!oa || !ob)
-    return false;
-  StringRef sa = oa.getValue();
-  StringRef sb = ob.getValue();
-  if (!sa.contains("GlobalTensor<") || !sb.contains("GlobalTensor<"))
-    return false;
-
-  SmallVector<int64_t, 5> shapeA, shapeB, strideA, strideB;
-  if (!parseIntegerTemplateList(sa, "Shape<", shapeA) ||
-      !parseIntegerTemplateList(sb, "Shape<", shapeB) ||
-      !parseIntegerTemplateList(sa, "Stride<", strideA) ||
-      !parseIntegerTemplateList(sb, "Stride<", strideB))
-    return false;
-
-  // Element-wise compatible if equal or one side is the `-1` wildcard.
-  auto listsRefinable = [](ArrayRef<int64_t> x, ArrayRef<int64_t> y) {
-    if (x.size() != y.size())
-      return false;
-    for (auto [u, v] : llvm::zip(x, y))
-      if (u != v && u != -1 && v != -1)
-        return false;
-    return true;
-  };
-  if (!listsRefinable(shapeA, shapeB) || !listsRefinable(strideA, strideB))
-    return false;
-
-  // Everything outside the Shape<...>/Stride<...> lists (element type, layout,
-  // overall structure) must match exactly.
-  auto blank = [](StringRef s, StringRef marker) -> std::string {
-    std::string out = s.str();
-    size_t pos = out.find(marker.str());
-    if (pos == std::string::npos)
-      return out;
-    size_t start = pos + marker.size();
-    size_t end = out.find('>', start);
-    if (end == std::string::npos)
-      return out;
-    out.erase(start, end - start);
-    return out;
-  };
-  return blank(blank(sa, "Shape<"), "Stride<") ==
-         blank(blank(sb, "Shape<"), "Stride<");
-}
-
 //===----------------------------------------------------------------------===//
 // Pass
 //===----------------------------------------------------------------------===//
@@ -14144,26 +14097,6 @@ static AICORE inline void PTOAS__DCCI_SINGLE_CACHE_LINE(Ptr ptr) {
         output.replaceAllUsesWith(extracted.getResult(0));
         castsToErase.push_back(cast);
         return;
-      }
-
-      // A static-stride `GlobalTensor` produced by the partition_view static
-      // pattern and the fully-dynamic-stride `GlobalTensor` demanded by the
-      // type converter have no C++ converting constructor. Forwarding the
-      // refined (static) value is only safe when every consumer accepts a
-      // more-specific GlobalTensor template instantiation (e.g. MGATHER /
-      // MSCATTER, which are C++ templates). A `return` must match the enclosing
-      // function's fixed (dynamic) result type exactly, so forwarding there
-      // would break verification -- fall through to the emitc.cast branch in
-      // that case.
-      if (areRefinableGlobalTensorTypes(inTy, outTy)) {
-        bool feedsReturn = llvm::any_of(output.getUsers(), [](Operation *user) {
-          return isa<func::ReturnOp, emitc::ReturnOp>(user);
-        });
-        if (!feedsReturn) {
-          output.replaceAllUsesWith(input);
-          castsToErase.push_back(cast);
-          return;
-        }
       }
 
       if (emitc::isSupportedEmitCType(inTy) && emitc::isSupportedEmitCType(outTy)) {
