@@ -13669,6 +13669,61 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   populateBranchOpInterfaceTypeConversionPattern(patterns, typeConverter);
 }
 
+// A cast between two `GlobalTensor<...>` opaque C++ types that are identical
+// except that one side carries concrete Shape/Stride template values while the
+// other uses the fully-dynamic `-1` placeholders (as produced by the
+// PTOToEmitCTypeConverter, which cannot recover strides from the stride-less
+// tensor_view type) has no valid C++ converting constructor. The values are
+// interchangeable at every templated backend call site (e.g. MGATHER/MSCATTER),
+// so such a bridge must forward the value rather than lower to an invalid
+// C-style `emitc.cast`.
+static bool areRefinableGlobalTensorTypes(Type a, Type b) {
+  auto oa = dyn_cast<emitc::OpaqueType>(a);
+  auto ob = dyn_cast<emitc::OpaqueType>(b);
+  if (!oa || !ob)
+    return false;
+  StringRef sa = oa.getValue();
+  StringRef sb = ob.getValue();
+  if (!sa.contains("GlobalTensor<") || !sb.contains("GlobalTensor<"))
+    return false;
+
+  SmallVector<int64_t, 5> shapeA, shapeB, strideA, strideB;
+  if (!parseIntegerTemplateList(sa, "Shape<", shapeA) ||
+      !parseIntegerTemplateList(sb, "Shape<", shapeB) ||
+      !parseIntegerTemplateList(sa, "Stride<", strideA) ||
+      !parseIntegerTemplateList(sb, "Stride<", strideB))
+    return false;
+
+  // Element-wise compatible if equal or one side is the `-1` wildcard.
+  auto listsRefinable = [](ArrayRef<int64_t> x, ArrayRef<int64_t> y) {
+    if (x.size() != y.size())
+      return false;
+    for (auto [u, v] : llvm::zip(x, y))
+      if (u != v && u != -1 && v != -1)
+        return false;
+    return true;
+  };
+  if (!listsRefinable(shapeA, shapeB) || !listsRefinable(strideA, strideB))
+    return false;
+
+  // Everything outside the Shape<...>/Stride<...> lists (element type, layout,
+  // overall structure) must match exactly.
+  auto blank = [](StringRef s, StringRef marker) -> std::string {
+    std::string out = s.str();
+    size_t pos = out.find(marker.str());
+    if (pos == std::string::npos)
+      return out;
+    size_t start = pos + marker.size();
+    size_t end = out.find('>', start);
+    if (end == std::string::npos)
+      return out;
+    out.erase(start, end - start);
+    return out;
+  };
+  return blank(blank(sa, "Shape<"), "Stride<") ==
+         blank(blank(sb, "Shape<"), "Stride<");
+}
+
 //===----------------------------------------------------------------------===//
 // Pass
 //===----------------------------------------------------------------------===//
@@ -14087,6 +14142,16 @@ static AICORE inline void PTOAS__DCCI_SINGLE_CACHE_LINE(Ptr ptr) {
             cast.getLoc(), outTy, "PTOAS__TILE_DATA", ArrayAttr{},
             ArrayAttr{}, ValueRange{input});
         output.replaceAllUsesWith(extracted.getResult(0));
+        castsToErase.push_back(cast);
+        return;
+      }
+
+      // A static-stride `GlobalTensor` produced by the partition_view static
+      // pattern and the fully-dynamic-stride `GlobalTensor` demanded by the
+      // type converter have no C++ converting constructor. Forward the value
+      // instead of emitting an invalid C-style cast.
+      if (areRefinableGlobalTensorTypes(inTy, outTy)) {
+        output.replaceAllUsesWith(input);
         castsToErase.push_back(cast);
         return;
       }
