@@ -7806,26 +7806,32 @@ static LogicalResult verifyMxDestinationAlignment(Operation *op,
 
 template <typename OpTy>
 static LogicalResult verifyExplicitCubeBridgeLoadControls(OpTy op) {
-  auto checkNonNegativeConst = [&](Value value, StringRef name) -> LogicalResult {
+  auto checkConstRange = [&](Value value, StringRef name, int64_t min,
+                             int64_t max) -> LogicalResult {
     APInt intValue;
-    if (matchPattern(value, m_ConstantInt(&intValue)) && intValue.isNegative())
-      return op.emitOpError() << name << " must be non-negative";
-    return success();
-  };
-  auto checkPositiveConst = [&](Value value, StringRef name) -> LogicalResult {
-    APInt intValue;
-    if (matchPattern(value, m_ConstantInt(&intValue)) &&
-        (intValue.isNegative() || intValue.isZero()))
-      return op.emitOpError() << name << " must be greater than zero";
+    if (!matchPattern(value, m_ConstantInt(&intValue)))
+      return success();
+    int64_t signedValue = intValue.getSExtValue();
+    if (signedValue < min)
+      return op.emitOpError()
+             << name
+             << (min == 0 ? " must be non-negative"
+                          : " must be greater than zero");
+    if (signedValue > max)
+      return op.emitOpError()
+             << name << " must be <= " << max
+             << " to fit the hardware control field";
     return success();
   };
 
-  if (failed(checkNonNegativeConst(op.getMStart(), "m_start")) ||
-      failed(checkNonNegativeConst(op.getKStart(), "k_start")) ||
-      failed(checkPositiveConst(op.getMStep(), "m_step")) ||
-      failed(checkPositiveConst(op.getKStep(), "k_step")) ||
-      failed(checkPositiveConst(op.getSrcStride(), "src_stride")) ||
-      failed(checkPositiveConst(op.getDstStride(), "dst_stride")))
+  constexpr int64_t kU16Max = 65535;
+  constexpr int64_t kU8Max = 255;
+  if (failed(checkConstRange(op.getMStart(), "m_start", 0, kU16Max)) ||
+      failed(checkConstRange(op.getKStart(), "k_start", 0, kU16Max)) ||
+      failed(checkConstRange(op.getMStep(), "m_step", 1, kU8Max)) ||
+      failed(checkConstRange(op.getKStep(), "k_step", 1, kU8Max)) ||
+      failed(checkConstRange(op.getSrcStride(), "src_stride", 1, kU16Max)) ||
+      failed(checkConstRange(op.getDstStride(), "dst_stride", 1, kU16Max)))
     return failure();
   return success();
 }
