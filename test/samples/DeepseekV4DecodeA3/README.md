@@ -11,7 +11,7 @@ Notes:
 - This directory vendors the 87 representative families that compile with `--pto-level=level3 --pto-arch=a3`; the other 9 are explicitly accounted for below.
 - `kernels/` preserves the PyPTO output hierarchy and byte-for-byte PTO files; no section-prefix flattening or kernel renaming is applied.
 - Each raw kernel basename has a sibling `<case>_golden.py`; shared reference logic lives in `deepseek_v4_decode_golden_lib.py`.
-- The shared helper generates deterministic inputs only; board-validation falls back to first-run output capture when no `golden_*.bin` is emitted.
+- The shared helper provides independent CPU oracles for `kv_hadamard` and `rms_norm`. Cases without an independent oracle are reported as `DETERMINISM_ONLY`, separately from correctness `OK` results.
 - `runop.sh` defaults these cases to `--pto-level=level3` and skips the A3 directory on non-A3 targets.
 
 Families excluded from the 96-family source snapshot (9 total):

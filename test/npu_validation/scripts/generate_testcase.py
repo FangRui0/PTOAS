@@ -90,6 +90,7 @@ CASE_INT_SCALAR_DEFAULTS = {
 }
 
 CASE_INT_SCALAR_DEFAULTS["hc_head_reduce"] = {"v9": 0, "v10": 1}
+CASE_INT_SCALAR_DEFAULTS["rms_norm"] = {"v4": 0, "v5": 1}
 
 # Qwen3 decode exports use compact per-block inputs.  The generic fallback of
 # `1` for every dynamic integer selects the second batch/pair and makes the
@@ -113,6 +114,7 @@ CASE_INT_SCALAR_DEFAULTS.update({
 CASE_BOOL_SCALAR_DEFAULTS = {}
 
 CASE_POINTER_COUNT_MINIMUMS = {
+    "kv_hadamard": {"v1": 2_048, "v2": 2_048, "v3": 16_384},
     "merge_norm": {
         # The packed sparse output is written through a large tiled GM address
         # space even though each individual store only covers 448 bf16 values.
@@ -148,6 +150,7 @@ CASE_POINTER_COUNT_MINIMUMS = {
     "lm_head_matmul": {"v1": 1_034_240, "v2": 65_536, "v3": 264_765_440},
     "proj_a_mm": {"v1": 262_144, "v2": 33_554_432, "v3": 131_072},
     "proj_b_mm": {"v1": 524_288, "v2": 131_072, "v3": 33_554_432},
+    "rms_norm": {"v1": 32_768, "v2": 32_768, "v3": 4_096},
     "sh_gate_mm": {"v1": 32_768, "v2": 8_388_608, "v3": 32_768},
     "sh_up_mm": {"v1": 32_768, "v2": 8_388_608, "v3": 32_768},
     "tquant_mx": {

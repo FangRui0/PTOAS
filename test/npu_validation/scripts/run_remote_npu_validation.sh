@@ -494,6 +494,7 @@ pto_isa_has_symbol() {
 
 status=0
 ok_count=0
+determinism_only_count=0
 fail_count=0
 skip_count=0
 printf "testcase\tstatus\tstage\tinfo\n" > "${RESULTS_TSV}"
@@ -636,6 +637,8 @@ while IFS= read -r -d '' cpp; do
     log "ERROR: generate_testcase failed (exit ${gen_rc}): ${testcase}"
     continue
   fi
+  determinism_marker="${nv_dir}/.determinism_only"
+  rm -f "${determinism_marker}"
 
   set +e
   (
@@ -708,7 +711,9 @@ while IFS= read -r -d '' cpp; do
         python3 ./golden.py
         LD_LIBRARY_PATH="${LD_LIBRARY_PATH_NPU}" ./build/${testcase}
         if ! has_golden_outputs; then
+          log "WARN: no independent golden for ${testcase}; validating NPU run-to-run determinism only"
           copy_outputs_as_golden
+          : > "${determinism_marker}"
           python3 ./golden.py
           LD_LIBRARY_PATH="${LD_LIBRARY_PATH_NPU}" ./build/${testcase}
         fi
@@ -726,7 +731,6 @@ while IFS= read -r -d '' cpp; do
         exit 2
         ;;
     esac
-    log "OK: ${testcase}"
   )
   case_rc=$?
   set -euo pipefail
@@ -735,14 +739,19 @@ while IFS= read -r -d '' cpp; do
     fail_count=$((fail_count + 1))
     printf "%s\tFAIL\t%s\texit=%s\n" "${testcase}" "${STAGE}" "${case_rc}" >> "${RESULTS_TSV}"
     log "ERROR: testcase failed (exit ${case_rc}): ${testcase}"
+  elif [[ -f "${determinism_marker}" ]]; then
+    determinism_only_count=$((determinism_only_count + 1))
+    printf "%s\tDETERMINISM_ONLY\t%s\tno independent golden; repeated NPU output matched\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
+    log "DETERMINISM_ONLY: ${testcase}"
   else
     ok_count=$((ok_count + 1))
     printf "%s\tOK\t%s\t-\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
+    log "OK: ${testcase}"
   fi
 done < <(find "${ROOT_DIR}/test/samples" -type f -name '*-pto.cpp' -print0)
 
 log "=== SUMMARY ==="
-log "OK=${ok_count} FAIL=${fail_count} SKIP=${skip_count}"
+log "OK=${ok_count} DETERMINISM_ONLY=${determinism_only_count} FAIL=${fail_count} SKIP=${skip_count}"
 log "RESULTS_TSV=${RESULTS_TSV}"
 
 exit "${status}"

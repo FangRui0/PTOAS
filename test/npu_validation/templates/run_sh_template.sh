@@ -339,9 +339,11 @@ case "${GOLDEN_MODE}" in
     python3 "${ROOT_DIR}/golden.py"
     LD_LIBRARY_PATH="${LD_LIBRARY_PATH_NPU}" "${ROOT_DIR}/${BUILD_DIR}/@EXECUTABLE@"
     if ! has_golden_outputs; then
+      echo "[WARN] no independent golden; validating NPU run-to-run determinism only"
       copy_outputs_as_golden
       python3 "${ROOT_DIR}/golden.py"
       LD_LIBRARY_PATH="${LD_LIBRARY_PATH_NPU}" "${ROOT_DIR}/${BUILD_DIR}/@EXECUTABLE@"
+      echo "[INFO] DETERMINISM_ONLY: repeated NPU output will be compared"
     fi
     COMPARE_STRICT=1 python3 "${ROOT_DIR}/compare.py"
     ;;
