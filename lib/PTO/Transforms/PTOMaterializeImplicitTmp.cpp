@@ -627,6 +627,8 @@ static LogicalResult materializeFixedMandatoryTmp(Operation *op,
       .Case<pto::TTransOp>([&](auto typedOp) -> LogicalResult {
         if (typedOp.getTmp())
           return success();
+        bool isA5 =
+            pto::getTargetArch(op) == pto::PTOArch::A5;
         auto srcTy = dyn_cast<pto::TileBufType>(typedOp.getSrc().getType());
         auto dstTy = dyn_cast<pto::TileBufType>(typedOp.getDst().getType());
         auto srcShape = getShapeVec(typedOp.getSrc().getType());
@@ -643,16 +645,17 @@ static LogicalResult materializeFixedMandatoryTmp(Operation *op,
         bool usesTmp = dstShape[1] % rowStride == 0 &&
                        srcShape[1] % elemPerBlock == 0 &&
                        srcShape[1] / elemPerBlock <= 255;
-        FailureOr<pto::TileBufType> type = makeSameShapeTmpType(
-            ctx, typedOp.getSrc());
-        if (!usesTmp)
+        FailureOr<pto::TileBufType> type =
+            isA5 ? makeA5PlaceholderTmpType(ctx, typedOp.getSrc())
+                 : makeSameShapeTmpType(ctx, typedOp.getSrc());
+        if (!isA5 && !usesTmp)
           type = makeVecTmpType(ctx, {1, elemPerBlock},
                                 srcTy.getElementType(), {1, elemPerBlock});
         if (failed(type))
           return typedOp.emitOpError("failed to build implicit ttrans tmp");
         return replaceFixedDpsOpWithTmp(
             op, {typedOp.getSrc(), Value(), typedOp.getDst()}, *type,
-            {1, 1, 1}, requireExplicitTmp, "ttrans");
+            {1, 1, 1}, isA5 ? false : requireExplicitTmp, "ttrans");
       })
       .Default([](Operation *) { return success(); });
 }
