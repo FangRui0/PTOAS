@@ -944,17 +944,21 @@ Cube compute step; it does not issue those transfers itself.
 
 **Description**: Explicit-control L1-to-L0A/L0B loads. This overload preserves
 the authored fractal-block control fields and does not infer strides from a
-logical tile shape.
+logical tile shape. It currently rejects FP4 packed source pointers because
+the compatibility wrapper cannot yet guarantee selection of the FP4-specific
+L1-to-L0 intrinsic on this path. For FP4 packed operands, use the structured
+shape-derived `mte_l1_l0a(..., m, k, ...)` or `mte_l1_l0b(..., k, n, ...)`
+form below.
 
 **Parameters**:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `src` | `PtrType` (L1/MAT) | L1 source pointer; parent-allocation matrix offsets are represented by the control fields below. |
+| `src` | `PtrType` (L1/MAT) | L1 source pointer; parent-allocation matrix offsets are represented by the control fields below. FP4 packed source pointers are not supported by this explicit-control overload. |
 | `dst` | `PtrType` (L0A/L0B) | L0 destination pointer; stage/version offsets belong in this pointer. |
-| `m_start`, `k_start` | `int` | Source fractal-block coordinates at which the load begins. |
-| `m_step`, `k_step` | `int` | Number of fractal blocks transferred along the two source axes. |
-| `src_stride`, `dst_stride` | `int` | Physical outer strides of the complete L1 and L0 allocations, in fractal-block units. They are independent of the transferred region extents. |
+| `m_start`, `k_start` | `int` in `0..65535` | Source fractal-block coordinates at which the load begins. |
+| `m_step`, `k_step` | `int` in `1..255` | Number of fractal blocks transferred along the two source axes. |
+| `src_stride`, `dst_stride` | `int` in `1..65535` | Physical outer strides of the complete L1 and L0 allocations, in fractal-block units. They are independent of the transferred region extents. |
 | `transpose` | `bool` | Final hardware transpose attribute. |
 
 **Returns**: None (side-effect operation).
