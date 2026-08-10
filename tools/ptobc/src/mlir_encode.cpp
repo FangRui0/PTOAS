@@ -75,12 +75,13 @@ using FunctionVector = llvm::SmallVector<mlir::func::FuncOp,
 } // namespace
 
 static bool canUseLegacyTMovFpWireOpcode(mlir::pto::TMovOp op) {
-  return !op.getAccToVecModeAttr() &&
+  return op->getNumResults() == 0 && !op.getAccToVecModeAttr() &&
          op.getReluPreMode() == mlir::pto::ReluPreMode::NoRelu;
 }
 
 static bool canUseLegacyTStoreFpWireOpcode(mlir::pto::TStoreOp op) {
-  return op.getAtomicType() == mlir::pto::AtomicType::AtomicNone &&
+  return op->getNumResults() == 0 &&
+         op.getAtomicType() == mlir::pto::AtomicType::AtomicNone &&
          op.getReluPreMode() == mlir::pto::ReluPreMode::NoRelu;
 }
 
@@ -101,7 +102,7 @@ static bool shouldEncodeViaGenericV0CompatibilityShim(mlir::Operation &op) {
   if (auto tinsert = llvm::dyn_cast<mlir::pto::TInsertOp>(&op))
     return static_cast<bool>(tinsert.getPreQuantScalar());
   if (auto tmov = llvm::dyn_cast<mlir::pto::TMovOp>(&op)) {
-    if (tmov.getPreQuantScalar())
+    if (tmov.getPreQuantScalar() || tmov->getNumResults() != 0)
       return true;
     // The removed pto.tmov.fp op carried only src/fp/dst. Its legacy opcode
     // would silently discard mode/relu semantics when read by an older PTOAS.
@@ -109,6 +110,12 @@ static bool shouldEncodeViaGenericV0CompatibilityShim(mlir::Operation &op) {
     // so use the generic v0 record for the extended unified form.
     return tmov.getFp() && !canUseLegacyTMovFpWireOpcode(tmov);
   }
+  // The fixed pto.tstore schema also predates its optional tensor result.
+  // Result-bearing non-fp forms are readable by older unified pto.tstore
+  // readers through generic v0. The fp form is rejected separately because
+  // no pre-unification operation represented both fp and a result.
+  if (auto tstore = llvm::dyn_cast<mlir::pto::TStoreOp>(&op))
+    return tstore->getNumResults() != 0;
   if (llvm::isa<mlir::pto::CmoCacheInvalidOp, mlir::pto::FenceBarrierAllOp>(
           &op))
     return true;
@@ -150,9 +157,9 @@ getUnsupportedV0EncodingReason(mlir::Operation &op) {
   if (!tstore || !tstore.getFp() || canUseLegacyTStoreFpWireOpcode(tstore))
     return std::nullopt;
 
-  return "pto.tstore fp with non-default atomicType or reluPreMode cannot "
-         "be represented safely in PTO-BC v0; legacy opcode 0x1066 would "
-         "silently drop those semantics";
+  return "pto.tstore fp with a result or non-default atomicType/reluPreMode "
+         "cannot be represented safely in PTO-BC v0; legacy opcode 0x1066 "
+         "would silently drop those semantics";
 }
 
 static bool omitsDerivedOperandSegmentsInV0(uint16_t opcode) {

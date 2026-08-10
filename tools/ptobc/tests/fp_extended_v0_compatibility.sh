@@ -54,6 +54,24 @@ grep -F "TMOV<" "${TMOV_CURRENT_CPP}" \
   | grep -F "AccToVecMode::SingleModeVec0" \
   | grep -F "ReluPreMode::NormalRelu" >/dev/null
 
+TMOV_RESULT_IN="${TESTDATA_DIR}/tmov_fp_result_v0_roundtrip.pto"
+TMOV_RESULT_BC="${OUT_DIR}/tmov_fp_result_v0_roundtrip.ptobc"
+TMOV_RESULT_CURRENT_IR="${OUT_DIR}/tmov_fp_result_v0.current.pto"
+"${PTOBC_BIN}" encode "${TMOV_RESULT_IN}" -o "${TMOV_RESULT_BC}"
+"${PYTHON_EXECUTABLE}" - <<'PY' "${TMOV_RESULT_BC}"
+from pathlib import Path
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+if b"\x39\x10" in data:
+    raise SystemExit("result-bearing tmov fp form reused resultless opcode 0x1039")
+if b"\xff\xff" not in data:
+    raise SystemExit("result-bearing tmov fp form did not use generic v0 encoding")
+PY
+"${PTOBC_BIN}" decode "${TMOV_RESULT_BC}" -o "${TMOV_RESULT_CURRENT_IR}"
+grep -E "%[0-9]+ = pto\.tmov " "${TMOV_RESULT_CURRENT_IR}" >/dev/null
+grep -E "return %[0-9]+ : tensor<32x32xi8>" "${TMOV_RESULT_CURRENT_IR}" >/dev/null
+
 TSTORE_EXTENDED_IN="${TESTDATA_DIR}/tstore_fp_extended_v0_reject.pto"
 TSTORE_ERROR="${OUT_DIR}/tstore_fp_extended_v0.stderr"
 if "${PTOBC_BIN}" encode "${TSTORE_EXTENDED_IN}" \
@@ -63,6 +81,16 @@ if "${PTOBC_BIN}" encode "${TSTORE_EXTENDED_IN}" \
 fi
 grep -F "cannot be represented safely in PTO-BC v0" "${TSTORE_ERROR}" >/dev/null
 grep -F "legacy opcode 0x1066 would silently drop those semantics" "${TSTORE_ERROR}" >/dev/null
+
+TSTORE_RESULT_IN="${TESTDATA_DIR}/tstore_fp_result_v0_reject.pto"
+TSTORE_RESULT_ERROR="${OUT_DIR}/tstore_fp_result_v0.stderr"
+if "${PTOBC_BIN}" encode "${TSTORE_RESULT_IN}" \
+    -o "${OUT_DIR}/tstore_fp_result_v0.ptobc" 2>"${TSTORE_RESULT_ERROR}"; then
+  echo "error: result-bearing tstore fp unexpectedly encoded as PTO-BC v0" >&2
+  exit 1
+fi
+grep -F "pto.tstore fp with a result" "${TSTORE_RESULT_ERROR}" >/dev/null
+grep -F "cannot be represented safely in PTO-BC v0" "${TSTORE_RESULT_ERROR}" >/dev/null
 
 if [[ -z "${LEGACY_PTOBC_BIN}" ]]; then
   exit 0
@@ -80,6 +108,13 @@ grep -F "reluPreMode = #pto<relu_pre_mode normal_relu>" "${TMOV_LEGACY_IR}" >/de
 grep -F "TMOV<" "${TMOV_LEGACY_CPP}" \
   | grep -F "AccToVecMode::SingleModeVec0" \
   | grep -F "ReluPreMode::NormalRelu" >/dev/null
+
+# The old generic reader must also reconstruct the result before decoding the
+# following func.return operand. A missing result makes that value ID invalid.
+TMOV_RESULT_LEGACY_IR="${OUT_DIR}/tmov_fp_result_v0.legacy.pto"
+"${LEGACY_PTOBC_BIN}" decode "${TMOV_RESULT_BC}" -o "${TMOV_RESULT_LEGACY_IR}"
+grep -E "%[0-9]+ = pto\.tmov " "${TMOV_RESULT_LEGACY_IR}" >/dev/null
+grep -E "return %[0-9]+ : tensor<32x32xi8>" "${TMOV_RESULT_LEGACY_IR}" >/dev/null
 
 # The simple form remains on 0x1066 and must still lower through the removed
 # legacy pto.tstore_fp operation.
