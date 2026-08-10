@@ -125,6 +125,12 @@ CASE_INT_SCALAR_DEFAULTS.update({
 # overrides sample-scoped because identically named kernels in other model
 # revisions can have different scalar signatures.
 SAMPLE_CASE_INT_SCALAR_DEFAULTS = {
+    "deepseekv4decodea5": {
+        "idx_qr_proj_matmul": {"v4": 0, "v5": 1},
+        # Exercise one complete 16-row tile instead of truncating arg5 / 16
+        # to zero, and select the first SPMD worker.
+        "kv_proj_matmul": {"v6": 16, "v7": 16, "v8": 0, "v9": 1},
+    },
     "deepseekv4prodecodea5": {
         "idx_qr_proj_matmul": {"v4": 0, "v5": 1},
         "kv_score_proj": {"v8": 0, "v9": 1},
@@ -135,6 +141,21 @@ SAMPLE_CASE_INT_SCALAR_DEFAULTS = {
         "qr_proj_matmul": {"v8": 0, "v9": 1},
         "lm_head_combine_gather": {"v4": 0, "v5": 1},
         "rmsnorm_rope": {"v7": 0, "v8": 1},
+    },
+}
+
+# The generated EmitC for these atomic-add matmuls aliases the destination
+# tensor through intermediate GlobalTensor objects.  The generic writer scan
+# can lose that alias and fall back to the final pointer (the weight tensor),
+# which makes determinism validation compare an unchanged input.  Pin the
+# actual PTO destination parameter for the affected sample revisions.
+SAMPLE_CASE_OUTPUT_PARAMS = {
+    "deepseekv4decodea5": {
+        "kv_proj_matmul": ["v1"],
+    },
+    "deepseekv4flashdsparka5": {
+        "kv_proj_matmul": ["v1"],
+        "qr_proj_matmul": ["v1"],
     },
 }
 
@@ -219,6 +240,13 @@ CASE_POINTER_COUNT_MINIMUMS = {
 # source revision.  Scope by sample so older DeepSeek variants with the same
 # testcase names retain their already validated layouts.
 SAMPLE_CASE_POINTER_COUNT_MINIMUMS = {
+    "deepseekv4decodea5": {
+        "kv_proj_matmul": {
+            "v1": 16 * 512,
+            "v2": 16 * 4_096,
+            "v3": 4_096 * 512,
+        },
+    },
     "deepseekv4prodecodea5": {
         "idx_qr_proj_matmul": {
             "v1": 16 * 8_192,
@@ -2129,6 +2157,13 @@ def generate_testcase(
     for writer_text in kernel_info["writer_texts"]:
         output_param_names.extend(_detect_output_pointer_params(writer_text, non_runtime_pointer_param_names))
     output_param_names = _ordered_unique(output_param_names)
+    sample_output_param_names = (
+        SAMPLE_CASE_OUTPUT_PARAMS
+        .get(sample_root.name.lower(), {})
+        .get(testcase)
+    )
+    if sample_output_param_names is not None:
+        output_param_names = list(sample_output_param_names)
     if not output_param_names and non_runtime_pointer_param_names:
         output_param_names = [
             non_runtime_pointer_param_names[0]
