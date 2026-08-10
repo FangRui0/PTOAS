@@ -19,6 +19,29 @@ See LICENSE in the root of the software repository for the full text of the Lice
   - pto-isa 本地快照 `7af803bc4056af8b39a55751ac2f4b75cdb47fbd`（下称"快照"）
 - 目标接口：`pto.tquant.mx`、exponent 布局转换 op
 
+### 1.1 修订记录
+
+**rev2（本次）**：按第一轮评审修正 5 个 P1 + 2 个 P2。这些都是会直接写进 verifier 的
+硬约束，rev1 的版本会产出**能通过 verifier 但在设备上越界、不写输出或编译失败**的 IR：
+
+| 编号 | rev1 的错误 | rev2 的结论 | 位置 |
+|---|---|---|---|
+| P1-1 | ND `tmp` 下界写成 `32 + …` | 常数项是 `2 * BLOCK_SIZE = 64`，两端各一个 32B block；少 32B 会被尾部 `vstus` 越界写 | §3.2、§7.2 规则 11 |
+| P1-2 | `interleave` 校验自相矛盾：exp/max/scaling 先按普通分组形状统查，随后又要求 exp 是 `[M/64, 2N]` | max/scaling 恒为分组形状，**只有 exp 随 interleave 二选一**；另补 64 对齐与 physical `align32(2N)` | §7.1 |
+| P1-3 | ND 规则用错坐标系：对 exponent 列数写 `% 64 == 0` | exponent 列数已是 `N/32`，真实约束是**列数为偶数**；行对齐要求撤销（ISA 用 ceil + 零填充显式支持非 16 对齐） | §7.2 规则 8 |
+| P1-4 | 把 `srcRows == 1`（`M = 32`）当退化 identity 放行，还列了 ST 正向用例 | `numPairs = hatM / 2 = 0`，主循环零次迭代，**`dst` 根本不被写**；改为拒绝，用例转负向 | §7.2 规则 9、§11.6 |
+| P1-5 | 元素类型集合写成 `{ui8, i8, f8E8M0}` | ISA 接受 `uint8_t` / `hifloat8_t` / `float8_e8m0_t`；`i8` 降成 `int8_t` 会在 C++ 期炸 `static_assert`，`!pto.hif8` 被漏 | §7.2 规则 4 |
+| P2-1 | 称 DN `tmp` 下界"未知"，并计划做大小 `tmp` 对照实验 | DN 实现是 `(void)tmp;`，**根本不用**；对照实验无意义，内存效应改为按轴区分 | §3.2、§9、§13-1 |
+| P2-2 | 称 pin 有"五处、由 updater 统一管理"，并把 pin 覆盖列为开放问题 | 树内有 **3 个不同 SHA**、updater 只覆盖 **3 处**（漏 `ci_sim.yml`、`Dockerfile.dev`）；`interleave` 必须 bump，已非开放问题 | §10、§12 提交 0、§13-2 |
+
+另新增开放问题 7（动态维度处理）与对应的 `dn_dynamic` lit 用例。
+
+**核对状态**：P1-1/3/4/5 与 P2-1/2 均已在基线快照与本仓库源码上**逐条自证**（含
+`wc -l`、`grep` 与函数体阅读）。**P1-2 的 interleave 常量无法自证**——基线快照
+`TQuant.hpp` 共 3106 行、`grep "bool interleave"` 零命中，该 overload 在快照里不存在；
+评审引用的 L3394-L3406 来自更新的修订，撰写时受网络限制无法拉取核对，故采信评审并在
+§7.1 显式标注来源、在 §12 把 pin bump 前置为提交 0。
+
 本文只定义 A5 MX 量化的分组轴（`grp_axis`）表达，以及 E8M0 exponent 从 ND/DN
 到 ZZ 的布局转换在 PTO IR 与 EmitC 中的表达方式。不改变 INT8 量化、不改变
 `pto.tmov` 现有的 ND-to-NZ / acc-to-vec / FP 语义。
@@ -29,7 +52,8 @@ See LICENSE in the root of the software repository for the full text of the Lice
    pto-isa `MxQuantAlg` 是精确的一一映射，`MxQuantAlg` 由 EmitC 合成。
 2. **`pto.tquant.mx` 新增 `grp_axis` 与 `interleave` 属性**，默认
    `grp_axis = 1`、`interleave = false`，保持现有 IR 逐字兼容。
-3. **verifier 的分组 shape 校验按轴分派**，替换当前"只比较总元素数"的写法。
+3. **verifier 的分组 shape 校验按轴分派**，替换当前"只比较总元素数"的写法；
+   其中 `max`/`scaling` 恒为分组形状，只有 `exp` 随 `interleave` 改形（§7.1）。
 4. **exponent X-to-ZZ 新增独立 op `pto.tmov.x2zz`**，不扩展 `pto.tmov`。
 5. **现有 `exp_zz` + `storeMode` fused 路径标记为 deprecated**，理由见 §5.4：
    该 overload 在快照里只有 CPU-sim 实现，A5 设备头文件没有对应实现。
@@ -102,15 +126,27 @@ rowBlockCount = ceil(validRow / 16)
 P             = validCol / 2
 tmpBytes      = (BLOCK_SIZE / sizeof(uint16_t) + rowBlockCount * P
                  + BLOCK_SIZE / sizeof(uint16_t)) * sizeof(uint16_t)
-              = BLOCK_SIZE + rowBlockCount * validCol          // 化简，BLOCK_SIZE = 32
-              = 32 + ceil(validRow / 16) * validCol
+              = 2 * BLOCK_SIZE + rowBlockCount * validCol      // 化简，BLOCK_SIZE = 32
+              = 64 + ceil(validRow / 16) * validCol
 ```
+
+**两端各有一个 32 字节 block**，不是共用一个：`basePtr` 占前 `blkElem = 16` 个 `uint16_t`
+（`GenerateB8IndicesZZToUB` 开头的 `vsts(vb16_base, basePtr, ...)`），`offsetBuf` 从
+`basePtr + blkElem` 起占 `rowBlockCount * P` 个 `uint16_t`，循环之后还有一次
+`vstus(ureg_align, blkElem, ...)` 写出**尾部又一个 16 元素块**。因此常数项是 `2 * 32 = 64`。
+`rowBlockCount * P` 个 `uint16_t` 即 `rowBlockCount * validCol` 字节（`P = validCol / 2`）。
+
+> 早期版本的本文档把常数项误写为 32。按那个下界放行的 `tmp` 会**少 32 字节**，
+> 尾部 `vstus` 直接越界写 UB，属未定义行为且极难定位。规则 11 必须用 64。
 
 其中 `validRow` / `validCol` 取自 **`dst`**（见上面第 2 条）。
 
-DN-to-ZZ 的 `tmp` 用量在 `GenerateB8IndicesDN2ZZToUB` 内部，快照里没有等价的闭式表达。
-本设计**不在 verifier 里推导 DN 的 `tmp` 下界**，只做类型/布局/地址空间校验，容量由
-调用方保证；见 §13 开放问题 1。
+DN-to-ZZ **完全不使用 `tmp`**：`GenerateB8IndicesDN2ZZToUB` 函数体第一行就是 `(void)tmp;`，
+上方注释也写明 "tmp is unused (kept in the signature to match the ND->ZZ TMOV interface)"。
+它只做 `vlds` + `vintlv` + `vsstb`，不需要索引表。
+
+所以 DN 的 `tmp` 下界**不是"未知"，而是 0**；`tmp` 在 DN 形态下纯粹是为了对齐 ND 的三参数
+签名而保留的占位。本设计不对 DN 的 `tmp` 做容量校验，其内存效应按轴区分，见 §9。
 
 ### 3.3 fused NZ store overload 的真实位置
 
@@ -358,15 +394,42 @@ if (isDn) {
 }
 
 // (2) 分组 tile 的逐维 shape，而不再是总元素数
-const int64_t expRows = isDn ? srcRows / 32 : srcRows;
-const int64_t expCols = isDn ? srcCols      : srcCols / 32;
-for (auto [name, ty] : {{"exp", expTy}, {"max", maxTy}, {"scaling", scalingTy}}) {
-  auto v = getValidShapeVec(ty);
-  if (v[0] != kDynamic && v[0] != expRows)
-    return emitOpError() << "expects " << name << " valid_shape[0] to be " << expRows
-                         << " for grpAxis=" << stringifyMxGroupAxis(getGrpAxis());
-  if (v[1] != kDynamic && v[1] != expCols)
-    return emitOpError() << "expects " << name << " valid_shape[1] to be " << expCols << " ...";
+//
+// 关键：max/scaling 永远是"每组一个标量"的普通分组形状；只有 exp 会被 interleave 改形。
+// 因此不能把三者塞进同一个循环用同一份期望值（早期版本的本文档就是这么写的，
+// 导致合法的 interleave 输入先在通用检查里被拒 —— 见下方注记）。
+//
+// 期望值本身可能因 src 动态而无法计算，必须先判 src 维是否 dynamic，
+// 再判被检查维是否 dynamic；两侧任一为 dynamic 都跳过该维。
+const int64_t grpRows = isDn ? divIfStatic(srcRows, 32) : srcRows;   // dynamic 传染
+const int64_t grpCols = isDn ? srcCols                  : divIfStatic(srcCols, 32);
+
+auto checkDim = [&](StringRef name, Type ty, unsigned d, int64_t expected) -> LogicalResult {
+  if (expected == kDynamic) return success();          // 期望值不可知
+  int64_t got = getValidShapeVec(ty)[d];
+  if (got == kDynamic) return success();               // 实际值不可知
+  if (got != expected)
+    return emitOpError() << "expects " << name << " valid_shape[" << d << "] to be "
+                         << expected << " for grpAxis="
+                         << stringifyMxGroupAxis(getGrpAxis())
+                         << (name == "exp" && getInterleave() ? " with interleave=true" : "");
+  return success();
+};
+
+// max / scaling：与 interleave 无关，始终是分组形状
+for (auto [name, ty] : {std::pair{"max", maxTy}, std::pair{"scaling", scalingTy}}) {
+  if (failed(checkDim(name, ty, 0, grpRows))) return failure();
+  if (failed(checkDim(name, ty, 1, grpCols))) return failure();
+}
+
+// exp：随 interleave 二选一
+if (!getInterleave()) {
+  if (failed(checkDim("exp", expTy, 0, grpRows))) return failure();
+  if (failed(checkDim("exp", expTy, 1, grpCols))) return failure();
+} else {
+  // interleave 只在 DN 下合法（见下方 interleave 小节），形状为 [M/64, 2N]
+  if (failed(checkDim("exp", expTy, 0, divIfStatic(srcRows, 64)))) return failure();
+  if (failed(checkDim("exp", expTy, 1, mulIfStatic(srcCols, 2)))) return failure();
 }
 ```
 
@@ -375,18 +438,35 @@ for (auto [name, ty] : {{"exp", expTy}, {"max", maxTy}, {"scaling", scalingTy}})
 
 `interleave` 相关：
 
+exp 的 **valid shape** 已在上面 (2) 里按 `interleave` 二选一检查完，这里只补充 interleave
+**额外**要求的对齐与 physical shape：
+
 ```cpp
 if (getInterleave()) {
   if (!isDn)
     return emitOpError("expects interleave to be used only with grpAxis=axis0");
-  // interleave 输出 exponent 形状为 [ceil(M/32/2), 2N]，即 [ceil(srcRows/64), 2*srcCols]
-  //   —— 只作用于 exp，dst/max/scaling 不受影响
-  if (expValid[0] != kDynamic && expValid[0] != ceilDiv(srcRows, 64))
-    return emitOpError("expects interleaved exp valid_shape[0] to be ceil(src rows / 64)");
-  if (expValid[1] != kDynamic && expValid[1] != 2 * srcCols)
-    return emitOpError("expects interleaved exp valid_shape[1] to be 2 * src cols");
+
+  // 行数必须 64 对齐（不是 ceil 向上取整）：interleave 把相邻两个 32 行组拼进一行，
+  // 落单的半组没有定义。physical 与 valid 两侧都要查。
+  for (auto [what, rows] : {std::pair{"valid", srcRowsValid}, std::pair{"physical", srcRowsPhys}}) {
+    if (rows != kDynamic && rows % 64 != 0)
+      return emitOpError() << "expects src " << what << " rows to be a multiple of 64 "
+                           << "when interleave is true (got " << rows << ")";
+  }
+
+  // physical exp shape：列方向按 32 字节对齐
+  if (expPhys[0] != kDynamic && expPhys[0] != divIfStatic(srcRowsPhys, 64))
+    return emitOpError("expects interleaved exp physical rows to be src physical rows / 64");
+  if (expPhys[1] != kDynamic && expPhys[1] != alignTo(mulIfStatic(srcColsPhys, 2), 32))
+    return emitOpError("expects interleaved exp physical cols to be align32(2 * src physical cols)");
 }
 ```
+
+> **来源标注**：上面这组 interleave 约束（64 对齐、`align32(2N)` physical shape）来自评审
+> 指出的 PTO-ISA `include/pto/npu/a5/TQuant.hpp` L3394-L3406。**本文档基线快照
+> `7af803bc`（`TQuant.hpp` 共 3106 行）里根本没有 `bool interleave` 这个 overload**，
+> `grep "bool interleave"` 零命中，故本节无法在该快照上自证。实现前必须在**目标 pin**
+> 上重新核对，核对命令见 §13 开放问题 2。这也直接决定了 interleave 必须先 bump pin。
 
 `exp_zz` 互斥（§5.4）：
 
@@ -405,20 +485,42 @@ if (getExpZz() && isDn)
 | 1 | `src`/`dst`/`tmp` 均为 vec tile | `expects src/dst/tmp to be vec tiles` |
 | 2 | `tmp` 不得位于 scaling 地址空间 | `expects tmp not to be in the scaling address space; a scaling tmp selects the FP TMOV overload in PTO-ISA` |
 | 3 | 三者元素类型相同 | `expects src, dst, and tmp to share one element type` |
-| 4 | 元素类型 ∈ {ui8, i8, `!pto.f8E8M0`} | `expects an 8-bit exponent element type (ui8/i8/f8E8M0)` |
+| 4 | 元素类型 ∈ {`ui8`, `!pto.hif8`, `!pto.f8E8M0`}；**`i8` 必须拒绝** | `expects element type to be one of ui8, !pto.hif8, !pto.f8E8M0 (i8 lowers to int8_t, which PTO-ISA CommonCheckZZ rejects)` |
 | 5 | `src` 为 `row_major` + `none_box` | `expects src to use blayout=row_major, slayout=none_box` |
 | 6 | `dst` 为 `row_major` + `slayout=row_major` | `expects dst to use blayout=row_major, slayout=row_major (ZZ box)` |
 | 7 | rank-2 valid shape | `expects rank-2 valid_shape for src/dst/tmp` |
-| 8 | ND：`dstRows % 16 == 0 && dstCols % 64 == 0` | `expects ND-to-ZZ dst valid_shape to satisfy rows % 16 == 0 and cols % 64 == 0` |
-| 9 | DN：`srcRows` 对应 `M/32`，要求 `M % 64 == 0`，即 `srcRows % 2 == 0`；`srcRows == 1` 为退化 identity | `expects DN-to-ZZ src valid_shape[0] to be even (M % 64 == 0), or 1 for the degenerate identity case` |
+| 8 | ND：`dstCols % 2 == 0`。**不检查行对齐** | `expects ND-to-ZZ dst valid_shape[1] (the grouped exponent column count) to be even` |
+| 9 | DN：`srcRows % 2 == 0 && srcRows >= 2`。**`srcRows == 1` 必须拒绝** | `expects DN-to-ZZ src valid_shape[0] to be an even count >= 2; a single row-group produces no output in PTO-ISA` |
 | 10 | DN：`srcCols % 16 == 0` | `expects DN-to-ZZ src valid_shape[1] to be a multiple of 16` |
-| 11 | ND：`tmp` 物理容量 ≥ `32 + ceil(dstRows / 16) * dstCols` 字节（§3.2） | `expects tmp to provide at least <N> bytes for ND-to-ZZ (32 + ceil(dst rows / 16) * dst cols)` |
+| 11 | ND：`tmp` 物理容量 ≥ `64 + ceil(dstRows / 16) * dstCols` 字节（§3.2） | `expects tmp to provide at least <N> bytes for ND-to-ZZ (64 + ceil(dst rows / 16) * dst cols)` |
 | 12 | src/dst 元素总数相等 | `expects src and dst to hold the same exponent count` |
 
 规则 8/9/10 的驱动侧不同（ND 看 `dst`，DN 看 `src`），实现时**必须按轴选择被检查的 tile**，
 这一点在 §3.2 已单独标注。
 
-规则 11 只对 ND 施加；DN 的 `tmp` 下界见 §13 开放问题 1，先不做数值校验。
+**规则 8 的坐标系**（早期版本写错，必须注意）：`src`/`dst` 在这个 op 里已经是 **exponent
+tile**，它的列数是原矩阵的 `N / 32`。ISA 侧的真实约束来自 `GenerateB8IndicesZZToUB` 里
+`P = groupedCols / 2` 这个整除——要求 **exponent 列数为偶数**，换算回原矩阵才是 `N % 64 == 0`。
+早期版本直接对 exponent 列数写 `% 64 == 0`，等于把约束放大了 32 倍，**会拒掉本文档自己
+列出的每一个 ND 用例**：§11.1 的 `nd_fp8_ocp`（src `16x64` → exp `16x2`，`2 % 64 != 0`）、
+§11.6 的 `nd_fp8_ocp_16x128`（exp `16x4`，`4 % 64 != 0`）无一幸免。
+
+**规则 8 不检查行对齐**：`rowBlockCount = (rows + 15) / 16` 是显式的 ceil-divide，注释写着
+"to support non-16-aligned row counts"，并且 `ZeroSourcePaddingB16` 会把 `validRow` 之外、
+补到 16 对齐为止的那段源数据清零，避免 `vgather2` 读到 UB 里的残留。所以非 16 对齐行数是
+**ISA 支持的**。若 PTOAS 仍想收紧，那是 PTOAS 自己的策略选择，必须单独给理由，
+不能声称是 ISA 约束。注意规则 11 的容量公式里仍然用 `ceil`——padding 占的空间要算进去。
+
+**规则 9 为什么必须拒绝 `srcRows == 1`**：`GenerateB8IndicesDN2ZZToUB` 里
+`numPairs = hatM / 2`，主循环是 `for (p = 0; p < numPairs; ++p)`。`hatM == 1` 时
+`numPairs == 0`，循环一次都不执行，**`dst` 完全不被写入**。早期版本把 `M = 32`（即
+`hatM = 1`）当作"退化 identity"放行，只有在 `src`/`dst` 地址别名时才碰巧成立；
+对独立分配的 `dst` 就是读未初始化内存。若确实需要支持 `M = 32`，应当在 lowering 阶段
+显式降成一次 copy（或证明别名），而不是生成 `TMOV<0>`。§11.3 原计划的 `m=32` ST 用例
+相应改为**负向 lit 用例**。
+
+规则 11 只对 ND 施加。DN 侧不做 `tmp` 容量校验，理由见 §9 与 §13 开放问题 1：
+当前 ISA 实现里 DN 的 `tmp` 是 `(void)tmp;`，**根本不使用**。
 
 ## 8. EmitC 设计
 
@@ -476,17 +578,29 @@ TMOV<0>(dst, src, tmp);
 
 `TMovX2ZzOp` 的 `MemoryEffectsOpInterface` 实现：
 
-| operand | effect |
-|---|---|
-| `src` | `MemoryEffects::Read` |
-| `dst` | `MemoryEffects::Write` |
-| `tmp` | `MemoryEffects::Read` + `MemoryEffects::Write` |
+| operand | `grpAxis = axis1`（ND） | `grpAxis = axis0`（DN） |
+|---|---|---|
+| `src` | `Read` | `Read` |
+| `dst` | `Write` | `Write` |
+| `tmp` | `Read` + `Write` | **无效应** |
 
-`tmp` 必须同时声明读写，否则：
+**ND 的 `tmp` 必须同时声明读写**，否则：
 
 - PlanMemory 可能把 `tmp` 与仍然活跃的 buffer 复用；
 - CSE / DCE 可能认为写 `tmp` 无副作用而删除或合并；
 - InsertSync 的宏模型拿不到该 tile 的依赖边。
+
+**DN 的 `tmp` 按轴区分、不声明效应**（早期版本对两个轴一律声明 Read+Write）。ISA 侧
+DN 路径是 `(void)tmp;`，一个字节都不碰（§3.2）。若仍统一声明 Read+Write，会凭空拉长该
+buffer 的 liveness、阻止 PlanMemory 复用它，在 UB 吃紧的 kernel 里是实打实的浪费。
+
+`grpAxis` 是编译期常量属性，因此 `getEffects()` 可以直接按它分支，不存在动态不确定性。
+
+> **代价与缓解**：这条建模绑定了"当前 pin 的 DN 实现不使用 `tmp`"这个事实。若未来某个
+> pto-isa 版本让 DN 也用上 `tmp`，效应声明就会漏报，症状是 PlanMemory 复用后的静默数据
+> 损坏。缓解：在 §12 的提交里附一条注释指向 `GenerateB8IndicesDN2ZZToUB` 的 `(void)tmp;`，
+> 并把"复核 DN 是否仍不使用 tmp"写进 pin bump 的检查清单（§13 开放问题 1）。
+> 保守起见也可以只声明 `Write` 不声明 `Read`——但既然一个字节都不碰，那同样是虚构的效应。
 
 `pto.tquant.mx` 的效应不变（新增的是属性，不是 operand）。
 
@@ -506,6 +620,7 @@ TMOV<0>(dst, src, tmp);
 | PTO-BC | `tools/ptobc/generated/ptobc_opcodes_v0.h` 给 `pto.tmov.x2zz` 分配**新 opcode**（取当前未使用值，不复用空洞）；新属性走属性字典，不改 `pto.tquant.mx` 的既有 payload schema |
 | 文档 | `docs/PTO_IR_manual.md`（两个 op 章节）、`docs/release/PTO-tile-Instruction-SPEC-v0.4.md`、本设计文档 |
 | 测试 | 见 §11 |
+| **pto-isa pin** | `interleave` 需要 bump 到含该 overload 的修订（§13 开放问题 2）。**同时要扩展 `.github/scripts/update_pto_isa_pin.py`**：它当前只覆盖 `ci.yml` / `docker/Dockerfile` / `run_remote_npu_validation.sh`，漏掉 `.github/workflows/ci_sim.yml` 和 `docker/Dockerfile.dev` |
 | ReleaseNotes | 新增 `pto.tmov.x2zz`、`grpAxis`/`interleave`；标注 `exp_zz`/`storeMode` deprecated；说明 §8.1 的生成文本变化 |
 
 **PTO-BC 注意事项**：`pto.tquant.mx` 的 opcode payload schema **不得改动**（参考 #1122 的
@@ -530,12 +645,21 @@ TMOV<0>(dst, src, tmp);
 | `nd_fp8_nv` | axis1 | MXFP8 × NV | `16x64` | `16x2` | `TQUANT<1, MxQuantAlg::NvMxFp8E4M3>` |
 | `dn_fp8_ocp` | axis0 | MXFP8 × OCP | `64x16` | `2x16` | `TQUANT<0, MxQuantAlg::OcpMxFp8E4M3>` |
 | `dn_fp4_ocp` | axis0 | MXFP4_E2M1 × OCP | `64x16` (f16) | `2x16` | `TQUANT<0, MxQuantAlg::OcpMxFp4E2M1>` |
-| `dn_fp8_interleave` | axis0 | MXFP8 × OCP | `128x16` | exp `2x32`（`ceil(128/64) x 2*16`）；max/scaling `4x16` | `TQUANT<0, MxQuantAlg::OcpMxFp8E4M3, true>` |
+| `dn_fp8_interleave` | axis0 | MXFP8 × OCP | `128x16` | exp `2x32`（`128/64 x 2*16`）；max/scaling `4x16`（`128/32 x 16`） | `TQUANT<0, MxQuantAlg::OcpMxFp8E4M3, true>` |
+| `dn_dynamic` | axis0 | MXFP8 × OCP | `?x?` | `?x?` | `TQUANT<0, MxQuantAlg::OcpMxFp8E4M3>` |
 
 CHECK 要点：
 - 断言**完整的模板参数串**，而不只是 `TQUANT(`，否则 axis/alg 写错测不出来；
 - 加 `// EMITC-NOT: VecStoreMode`，确认新路径不再走 fused 形态；
-- `A3-REJECT` 断言 `tquant.mx is only supported on A5`。
+- `A3-REJECT` 断言 `tquant.mx is only supported on A5`；
+- `dn_fp8_interleave` 这一行同时钉住了 §7.1 的分派：**exp 走 interleave 形状、
+  max/scaling 走普通分组形状**。早期版本的 verifier 把三者一起按 `4x16` 检查，
+  这个合法用例会先在通用检查里被拒——它是那个 bug 的回归哨兵；
+- `dn_dynamic` 覆盖 §13 开放问题 7：`src` 维为 `?` 时期望值无法计算，verifier 必须跳过
+  而不是拿 `kDynamic / 32` 去比。
+
+负向侧对应地补一条 `nd_shape_flat`：ND 下 exp 写成 `1x(M*N/32)`，用来固定"逐维检查"
+相对旧的"总元素数相等"确实收紧了（配合 §13 开放问题 3 的摸底结论决定保留还是放宽）。
 
 ### 11.2 lit 正向：`test/lit/pto/tmov_x2zz_emitc.pto`
 
@@ -566,11 +690,19 @@ CHECK 要点：
 
 - `tmp_in_scaling_space`（规则 2）——这条最容易被忽略且后果最隐蔽；
 - `mismatched_elem_type`（规则 3）；
+- `elem_type_i8`（规则 4）——**必须有**：`i8` 会被 EmitC 降成 `int8_t`
+  （`PTOToEmitC.cpp:445`），而 `CommonCheckZZ` 只接受 `uint8_t` / `hifloat8_t` /
+  `float8_e8m0_t`。少了这条就是"verifier 放行、C++ 编译期 `static_assert` 才炸"，
+  报错点离 IR 十万八千里；
 - `src_wrong_layout` / `dst_wrong_layout`（规则 5/6）；
-- `nd_dst_cols_not_64`（规则 8）；
+- `nd_dst_cols_odd`（规则 8）——注意是**奇数列**，不是"非 64 倍数"；
 - `dn_src_rows_odd`（规则 9）；
-- `tmp_too_small`（规则 11）；
+- `dn_src_rows_is_one`（规则 9）——即原 `m = 32` 用例，见 §11.6；
+- `tmp_too_small`（规则 11）——`tmp` 取 `63 + ceil(rows/16)*cols`，
+  即**只差 1 字节**，用来钉住常数项是 64 而不是 32；
 - `on_a3`（arch 拒绝）。
+
+另需一条 `!pto.hif8` 的**正向**用例（放 §11.2），确保规则 4 没有把合法类型一并拒掉。
 
 ### 11.5 精度用例：`test/samples/TquantMxDn/`
 
@@ -629,12 +761,20 @@ CASES = [
     {"name": "dn_fp8_ocp_128x32",   "m": 128, "n": 32,  "grp_axis": 0, "alg": "ocp", "eps": 0.0},
     {"name": "dn_fp8_nv_64x64",     "m": 64,  "n": 64,  "grp_axis": 0, "alg": "nv",  "eps": 0.0},
     {"name": "dn_fp4_ocp_64x64",    "m": 64,  "n": 64,  "grp_axis": 0, "alg": "ocp", "fp4": True},
-    {"name": "dn_identity_32x64",   "m": 32,  "n": 64,  "grp_axis": 0, "alg": "ocp"},  # 退化 identity
-    {"name": "nd_fp8_ocp_16x128",   "m": 16,  "n": 128, "grp_axis": 1, "alg": "ocp"},
+    {"name": "dn_fp8_ocp_64x96",    "m": 64,  "n": 96,  "grp_axis": 0, "alg": "ocp"},   # hatM=2 最小合法
+    {"name": "nd_fp8_ocp_16x128",   "m": 16,  "n": 128, "grp_axis": 1, "alg": "ocp"},   # 非 16 对齐行的邻居
+    {"name": "nd_fp8_ocp_20x128",   "m": 20,  "n": 128, "grp_axis": 1, "alg": "ocp"},   # 行数非 16 对齐
 ]
 ```
 
-`m = 32`（DN-to-ZZ 退化为 identity）必须单独成 case，它是 §7.2 规则 9 的边界。
+**`m = 32` 不再作为 ST 正向用例**（早期版本把它列为"退化 identity"）。`m = 32` 时
+`hatM = 1`、`numPairs = 0`，ISA 主循环零次迭代、`dst` 不被写入——它是**非法输入**，
+按 §7.2 规则 9 应被 verifier 拒绝。相应地它移入 §11.4 的负向 lit
+（`dn_src_rows_is_one`），而不是在板上跑一个读未初始化内存的 case。
+
+`m = 64`（`hatM = 2`，`numPairs = 1`）才是真正的最小合法边界，必须单独成 case。
+`m = 20` 的 ND 用例用来钉住"非 16 对齐行数由 ISA 的 ceil + `ZeroSourcePaddingB16` 处理"
+这条结论（§7.2 规则 8 注记）——它同时验证 `tmp` 容量公式里的 `ceil` 没有算少。
 
 ### 11.7 PTO-BC roundtrip
 
@@ -686,10 +826,11 @@ PTOAS_BIN=build/tools/ptoas/ptoas ./test/samples/runop.sh -t TquantMx
 
 ## 12. 实施顺序
 
-建议按可独立回滚的粒度切成 7 个提交：
+建议按可独立回滚的粒度切成 8 个提交：
 
 | # | 内容 | 验证 |
 |---|---|---|
+| 0 | **pto-isa pin bump 到含 `interleave` overload 的修订，并扩展 `update_pto_isa_pin.py` 覆盖 `ci_sim.yml` / `Dockerfile.dev`**（§13 开放问题 2）。若 #1122 已在做 bump，则本提交只做 updater 扩展并声明依赖 | `ci` + `ci_sim` 全绿；bump 后按 §13 开放问题 1 复核 DN 仍是 `(void)tmp;` |
 | 1 | `MxGroupAxis` 枚举 + `TQuantMxOp` 两个属性（ODS/parser/printer/CAPI/Python） | 现有 lit 全绿（默认值保证零行为变化） |
 | 2 | `TQuantMxOp::verify()` 按轴分派 + §11.3 负向用例 | 定向 lit |
 | 3 | `PTOQuantMxToEmitC` 形态 B + §11.1 正向用例 + 更新受影响的既有 lit 期望 | 定向 lit + `check-pto` |
@@ -700,18 +841,42 @@ PTOAS_BIN=build/tools/ptoas/ptoas ./test/samples/runop.sh -t TquantMx
 
 提交 3 会改动既有 lit 的期望文本（§8.1），单独成一个提交便于 review 和回滚。
 
+提交 0 必须**排在最前**：`interleave` 的 verifier 常量（64 对齐、`align32(2N)`）来自评审
+提供的较新修订，本文档基线快照无法自证（§7.1 来源标注）。先 bump 再实现，才能在写
+verifier 之前用真实头文件核对这些常量，而不是照抄文档。
+
 ## 13. 风险与开放问题
 
-1. **DN-to-ZZ 的 `tmp` 容量下界未知。** 快照里 ND 有闭式公式，DN 的用量在
-   `GenerateB8IndicesDN2ZZToUB` 内部。本设计先不做数值校验（只校验类型/布局/地址空间）。
-   → **行动**：实现前从 pin 的 pto-isa 读出 DN 的实际用量并补进 §7.2 规则 11；在 ST 里用
-   一个刚好够大的 `tmp` 和一个偏小的 `tmp` 做对照，确认行为。
-2. **pto-isa pin 是否包含所需接口。** issue 要求"至少 `f03c2454`"。仓库当前 pin 的是
-   `ce3262e3`（`ci.yml` / `docker/Dockerfile` / `run_remote_npu_validation.sh` /
-   `ci_sim.yml` / `no_npu_compile_only_guide_zh.md` 五处，由
-   `.github/scripts/update_pto_isa_pin.py` 统一管理）。
-   → **行动**：实现前先确认 `ce3262e3` 是否含 §3.1/§3.2 的接口；不含则本特性需连同
-   pin bump 一起推进，且五处必须同步（用该脚本，勿手改）。
+1. **~~DN-to-ZZ 的 `tmp` 容量下界未知~~ —— 已关闭，结论是"不使用"。**
+   `GenerateB8IndicesDN2ZZToUB` 第一行 `(void)tmp;`，DN 路径不碰 `tmp`。因此不存在"推导
+   下界"的问题，也不需要"大小 `tmp` 对照实验"（两者都会通过，对照不出任何东西）。
+   → **遗留行动**：这条事实被 §9 的按轴效应建模所依赖，因此把"复核 DN 是否仍不使用
+   `tmp`"写进 **pin bump 检查清单**：
+   `grep -n "void)tmp" include/pto/npu/a5/TMov.hpp` 应在 DN 函数体内命中。
+2. **~~pto-isa pin 是否包含所需接口~~ —— 已关闭，结论是必须 bump。**
+   评审确认：`ce3262e3` 有 grouped `TQUANT` / `TMOV`，但**没有 `bool interleave` 这个
+   overload**，`f03c2454` 才有。因此只要实现 `interleave`，pin bump 就是前置依赖，
+   不再是开放问题。
+   （本文档基线快照 `7af803bc` 同样没有 interleave overload，见 §7.1 的来源标注；
+   受限于网络，撰写时无法直接拉取 `ce3262e3` / `f03c2454` 自证，此结论采信评审。
+   核对命令：`git clone https://gitcode.com/cann/pto-isa.git && git checkout <sha> &&`
+   `grep -rn "bool interleave" include/pto/npu/a5/TQuant.hpp`。）
+   → **行动 A**：确认与 #1122 的先后关系——若该 PR 已在推进 pin bump，本 PR 声明依赖它；
+   否则本 PR 自带 bump。
+   → **行动 B（重要，早期版本写错）**：pin **不是"五处由 `update_pto_isa_pin.py` 统一
+   管理"**。实测树内有 **3 个不同 SHA**、脚本只覆盖 3 处：
+
+   | 位置 | 当前 SHA | 被 updater 覆盖 |
+   |---|---|---|
+   | `.github/workflows/ci.yml:430` | `ce3262e3` | 是（`--ci-workflow` 默认值） |
+   | `docker/Dockerfile:122,123` | `ce3262e3` | 是（`--dockerfile` 默认值） |
+   | `test/npu_validation/scripts/run_remote_npu_validation.sh:17` | `ce3262e3` | 是 |
+   | `.github/workflows/ci_sim.yml:122` | `a8168c6c` | **否** |
+   | `docker/Dockerfile.dev:17` | `662d7f2a` | **否** |
+
+   即 `ci_sim.yml` 与 `Dockerfile.dev` 会被漏掉，而 vpto-sim 正是本特性的主要验证通道。
+   本 PR 应**一并扩展 `update_pto_isa_pin.py` 覆盖这两处**（或明确记录为何它们有意
+   使用不同 SHA），否则 bump 之后 sim 侧仍编译不出新接口，且失败点离根因很远。
 3. **ND 分组 shape 校验收紧的影响面。** §7.1 把"总元素数相等"改成"逐维相等"。
    存量 IR 里若有 `[1, M*N/32]` 这类扁平写法会被新 verifier 拒绝。
    → **行动**：实现前先跑一遍 `check-pto` + `runop.sh all` 摸底；若确有存量，考虑对
@@ -721,8 +886,15 @@ PTOAS_BIN=build/tools/ptoas/ptoas ./test/samples/runop.sh -t TquantMx
    → **行动**：提交 3 单独处理，并在 ReleaseNotes 说明。
 5. **`exp_zz` fused 路径的最终去向。** 本次只标 deprecated。若确认其设备侧不可用，
    应单开 PR 删除，并按 #1122 的做法处理 PTO-BC 兼容（保留 wire alias 或明确不兼容）。
-6. **`interleave` 的 exponent 形状** 取自 issue 的 `[ceil(M/64), 2N]`。
-   → **行动**：实现前用 pin 的 pto-isa 复核 DN interleave 实现的实际写出形状，以代码为准。
+6. **`interleave` 的 exponent 形状。** 早期版本取自 issue 的 `[ceil(M/64), 2N]`，
+   评审据较新 pto-isa 修正为：valid `[M/64, 2N]`（**行数 64 严格对齐，不是 ceil**）、
+   physical `[M/64, align32(2N)]`。已按此改写 §7.1。
+   → **行动**：仍需在目标 pin 上以代码为准复核一次（同开放问题 2 的命令），
+   因为基线快照无此 overload。
+7. **动态维度的处理。** §7.1 的逐维校验里，期望值本身可能因 `src` 维为 `kDynamic` 而
+   无法计算（`srcRows / 32` 对 dynamic 无意义）。必须**两侧都判**：期望侧不可知就跳过，
+   实际侧不可知也跳过。
+   → **行动**：§11.1 增加一个全动态 shape 的正向 lit 用例，确保 verifier 不误报。
 
 ## 14. 验收标准
 
