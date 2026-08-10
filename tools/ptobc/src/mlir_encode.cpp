@@ -74,6 +74,16 @@ using FunctionVector = llvm::SmallVector<mlir::func::FuncOp,
 
 } // namespace
 
+static bool canUseLegacyTMovFpWireOpcode(mlir::pto::TMovOp op) {
+  return !op.getAccToVecModeAttr() &&
+         op.getReluPreMode() == mlir::pto::ReluPreMode::NoRelu;
+}
+
+static bool canUseLegacyTStoreFpWireOpcode(mlir::pto::TStoreOp op) {
+  return op.getAtomicType() == mlir::pto::AtomicType::AtomicNone &&
+         op.getReluPreMode() == mlir::pto::ReluPreMode::NoRelu;
+}
+
 static bool shouldEncodeViaGenericV0CompatibilityShim(mlir::Operation &op) {
   // PTOBC v0 already shipped fixed-width known-op payloads for legacy
   // pto.tci / pto.trowexpandadd forms without tmp. Newer tmp-operand forms
@@ -90,8 +100,15 @@ static bool shouldEncodeViaGenericV0CompatibilityShim(mlir::Operation &op) {
     return static_cast<bool>(textract.getPreQuantScalar());
   if (auto tinsert = llvm::dyn_cast<mlir::pto::TInsertOp>(&op))
     return static_cast<bool>(tinsert.getPreQuantScalar());
-  if (auto tmov = llvm::dyn_cast<mlir::pto::TMovOp>(&op))
-    return static_cast<bool>(tmov.getPreQuantScalar());
+  if (auto tmov = llvm::dyn_cast<mlir::pto::TMovOp>(&op)) {
+    if (tmov.getPreQuantScalar())
+      return true;
+    // The removed pto.tmov.fp op carried only src/fp/dst. Its legacy opcode
+    // would silently discard mode/relu semantics when read by an older PTOAS.
+    // The pre-unification pto.tmov op already understood fp plus these attrs,
+    // so use the generic v0 record for the extended unified form.
+    return tmov.getFp() && !canUseLegacyTMovFpWireOpcode(tmov);
+  }
   if (llvm::isa<mlir::pto::CmoCacheInvalidOp, mlir::pto::FenceBarrierAllOp>(
           &op))
     return true;
@@ -109,8 +126,7 @@ static bool shouldEncodeViaGenericV0CompatibilityShim(mlir::Operation &op) {
   return false;
 }
 
-static std::optional<uint16_t>
-getLegacyFpWireOpcode(mlir::Operation &op) {
+static std::optional<uint16_t> getLegacyFpWireOpcode(mlir::Operation &op) {
   if (auto textract = llvm::dyn_cast<mlir::pto::TExtractOp>(&op))
     return textract.getFp() ? std::optional<uint16_t>(kTExtractFpWireOpcode)
                             : std::nullopt;
@@ -118,12 +134,25 @@ getLegacyFpWireOpcode(mlir::Operation &op) {
     return tinsert.getFp() ? std::optional<uint16_t>(kTInsertFpWireOpcode)
                            : std::nullopt;
   if (auto tmov = llvm::dyn_cast<mlir::pto::TMovOp>(&op))
-    return tmov.getFp() ? std::optional<uint16_t>(kTMovFpWireOpcode)
-                        : std::nullopt;
+    return tmov.getFp() && canUseLegacyTMovFpWireOpcode(tmov)
+               ? std::optional<uint16_t>(kTMovFpWireOpcode)
+               : std::nullopt;
   if (auto tstore = llvm::dyn_cast<mlir::pto::TStoreOp>(&op))
-    return tstore.getFp() ? std::optional<uint16_t>(kTStoreFpWireOpcode)
-                          : std::nullopt;
+    return tstore.getFp() && canUseLegacyTStoreFpWireOpcode(tstore)
+               ? std::optional<uint16_t>(kTStoreFpWireOpcode)
+               : std::nullopt;
   return std::nullopt;
+}
+
+static std::optional<std::string>
+getUnsupportedV0EncodingReason(mlir::Operation &op) {
+  auto tstore = llvm::dyn_cast<mlir::pto::TStoreOp>(&op);
+  if (!tstore || !tstore.getFp() || canUseLegacyTStoreFpWireOpcode(tstore))
+    return std::nullopt;
+
+  return "pto.tstore fp with non-default atomicType or reluPreMode cannot "
+         "be represented safely in PTO-BC v0; legacy opcode 0x1066 would "
+         "silently drop those semantics";
 }
 
 static bool omitsDerivedOperandSegmentsInV0(uint16_t opcode) {
@@ -756,6 +785,9 @@ void Encoder::encodeOp(mlir::Operation& op, Buffer& out) {
   }
 
   auto fullName = op.getName().getStringRef();
+  if (auto reason = getUnsupportedV0EncodingReason(op))
+    throw std::runtime_error(*reason);
+
   if (auto tscatter = llvm::dyn_cast<mlir::pto::TScatterOp>(&op)) {
     uint16_t opcode = tscatter.getMaskPatternAttr()
                           ? ptobc::v0::kTscatterMaskOpcode

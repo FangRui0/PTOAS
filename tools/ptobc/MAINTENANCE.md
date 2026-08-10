@@ -30,6 +30,12 @@ Run (or rely on CI):
 - `ctest -R ptobc_opcode_coverage_check`
 - `ctest -R ptobc_v0_fp_schema_compatibility_check`
 - `ctest -R ptobc_tfillpad_legacy_v0_decode`
+- `ctest -R ptobc_fp_extended_v0_compatibility`
+
+CI additionally builds the last pre-unification v0 reader at commit
+`9c49c3697de35d4b36e2abc5a00da0b264ae1bb6` and runs the extended FP test as
+new writer -> legacy reader -> legacy lowering. Update that pin only when the
+minimum supported v0 reader changes deliberately.
 
 ## Notes
 - `ptobc_opcode_coverage_check` is a heuristic based on `mnemonic = "..."` occurrences.

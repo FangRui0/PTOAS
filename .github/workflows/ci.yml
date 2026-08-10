@@ -334,6 +334,48 @@ jobs:
           export PATH="${PTOAS_VENV}/bin:${LLVM_DIR}/bin:${PATH}"
           ctest --test-dir "${PTO_BUILD_DIR}" --output-on-failure -R '^ptobc_'
 
+      - name: Verify PTO-BC v0 against the pre-unification reader
+        shell: bash
+        env:
+          PTOBC_V0_LEGACY_COMMIT: 9c49c3697de35d4b36e2abc5a00da0b264ae1bb6
+        run: |
+          set -euo pipefail
+          legacy_root="${RUNNER_TEMP:-${GITHUB_WORKSPACE}/.tmp}/ptoas-v0-legacy"
+          legacy_src="${legacy_root}/src"
+          legacy_build="${legacy_root}/build"
+          rm -rf "${legacy_root}"
+          git fetch --no-tags --depth=1 \
+            https://github.com/hw-native-sys/PTOAS.git \
+            "${PTOBC_V0_LEGACY_COMMIT}"
+          git worktree add --detach "${legacy_src}" FETCH_HEAD
+
+          cmake -C "${legacy_src}/cmake/LinuxHardeningCache.cmake" \
+            -G Ninja \
+            -S "${legacy_src}" \
+            -B "${legacy_build}" \
+            -DLLVM_DIR="${LLVM_DIR}/lib/cmake/llvm" \
+            -DMLIR_DIR="${LLVM_DIR}/lib/cmake/mlir" \
+            -DPython3_EXECUTABLE="${PTOAS_VENV}/bin/python" \
+            -DPython_EXECUTABLE="${PTOAS_VENV}/bin/python" \
+            -DPython3_FIND_STRATEGY=LOCATION \
+            -Dpybind11_DIR="$("${PTOAS_VENV}/bin/python" -m pybind11 --cmakedir)" \
+            -Dnanobind_DIR="$("${PTOAS_VENV}/bin/python" -m nanobind --cmake_dir)" \
+            -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
+            -DPTO_ENABLE_PYTHON_BINDING=ON \
+            -DBUILD_TESTING=OFF \
+            -DCMAKE_C_COMPILER="${PTOAS_CMAKE_C_COMPILER}" \
+            -DCMAKE_CXX_COMPILER="${PTOAS_CMAKE_CXX_COMPILER}"
+          cmake --build "${legacy_build}" --target PTOASPythonPackage ptobc
+
+          PTOBC_BIN="${PTO_BUILD_DIR}/tools/ptobc/ptobc" \
+          PTOAS_BIN="${PTO_BUILD_DIR}/tools/ptoas/ptoas" \
+          PYTHON_EXECUTABLE="${PTOAS_VENV}/bin/python" \
+          TESTDATA_DIR="${GITHUB_WORKSPACE}/tools/ptobc/testdata" \
+          LEGACY_PTOBC_BIN="${legacy_build}/tools/ptobc/ptobc" \
+          LEGACY_PTOAS_BIN="${legacy_build}/tools/ptoas/ptoas" \
+          OUT_DIR="${legacy_root}/cross-version-output" \
+            bash tools/ptobc/tests/fp_extended_v0_compatibility.sh
+
       - name: Run lit tests
         shell: bash
         env:
