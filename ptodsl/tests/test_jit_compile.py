@@ -3307,6 +3307,26 @@ def explicit_mx_scale_staging_surface_probe():
 
 
 @pto.jit(target="a5", mode="explicit")
+def explicit_fp4_s4_staging_surface_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    a_l1 = pto.castptr(zero_u64, pto.ptr(pto.f4e1m2x2, "mat"))
+    a_l0 = pto.castptr(zero_u64, pto.ptr(pto.f4e1m2x2, "left"))
+    b_l1 = pto.castptr(zero_u64, pto.ptr(pto.f4e2m1x2, "mat"))
+    b_l0 = pto.castptr(zero_u64, pto.ptr(pto.f4e2m1x2, "right"))
+
+    pto.mte_l1_l0a(
+        a_l1, a_l0,
+        m_start=0, k_start=4, m_step=16, k_step=4,
+        src_stride=16, dst_stride=16,
+    )
+    pto.mte_l1_l0b(
+        b_l1, b_l0,
+        m_start=0, k_start=4, m_step=16, k_step=4,
+        src_stride=16, dst_stride=16, transpose=True,
+    )
+
+
+@pto.jit(target="a5", mode="explicit")
 def fixed_width_integer_specialization_probe():
     zero_u64 = pto.const(0, dtype=pto.ui64)
     gm_src = pto.castptr(zero_u64, pto.ptr(pto.f16, "gm"))
@@ -6425,6 +6445,11 @@ def main() -> None:
         explicit_mx_scale_staging_text,
         "explicit MX scale staging specialization",
     )
+    explicit_fp4_s4_staging_text = explicit_fp4_s4_staging_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        explicit_fp4_s4_staging_text,
+        "explicit FP4 S4 staging specialization",
+    )
     acc_store_pre_quant_text = acc_store_pre_quant_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(acc_store_pre_quant_text, "acc-store pre_quant public mode specialization")
     expect(
@@ -6921,6 +6946,24 @@ def main() -> None:
     expect("pto.mte_l1_l0b" in public_surface_text, "mte_l1_l0b(...) should lower to pto.mte_l1_l0b")
     expect(public_surface_text.count("pto.load_cbuf_to_ca") == 1, "explicit mte_l1_l0a(...) should lower directly to pto.load_cbuf_to_ca")
     expect(public_surface_text.count("pto.load_cbuf_to_cb") == 1, "explicit mte_l1_l0b(...) should lower directly to pto.load_cbuf_to_cb")
+    expect(
+        explicit_fp4_s4_staging_text.count("pto.load_cbuf_to_ca_s4") == 1,
+        "FP4 explicit mte_l1_l0a(...) should select pto.load_cbuf_to_ca_s4",
+    )
+    expect(
+        explicit_fp4_s4_staging_text.count("pto.load_cbuf_to_cb_s4") == 1,
+        "FP4 explicit mte_l1_l0b(...) should select pto.load_cbuf_to_cb_s4",
+    )
+    for op_name in ("load_cbuf_to_ca_s4", "load_cbuf_to_cb_s4"):
+        expect(
+            re.search(
+                rf"pto\.{op_name} .*%c0_i64(?:_\d+)?, %c4_i64(?:_\d+)?, "
+                rf"%c16_i64(?:_\d+)?, %c4_i64(?:_\d+)?, "
+                rf"%c16_i64(?:_\d+)?, %c16_i64(?:_\d+)?",
+                explicit_fp4_s4_staging_text,
+            ) is not None,
+            f"{op_name} should preserve raw packed-S4 k_start/k_step and strides",
+        )
     explicit_ca_controls = (
         r"pto\.load_cbuf_to_ca .*%c4_i64(?:_\d+)?, %c0_i64(?:_\d+)?, "
         r"%c4_i64(?:_\d+)?, %c16_i64(?:_\d+)?, "

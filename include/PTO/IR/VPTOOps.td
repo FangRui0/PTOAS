@@ -1387,6 +1387,7 @@ def PTO_LoadCbufToCaS4Op : PTO_MteOp<"load_cbuf_to_ca_s4"> {
   );
 
   let results = (outs);
+  let hasVerifier = 1;
 
   let assemblyFormat = [{
     $source `,` $destination `,` $m_start `,` $k_start `,` $m_step `,`
@@ -1436,6 +1437,7 @@ def PTO_LoadCbufToCbS4Op : PTO_MteOp<"load_cbuf_to_cb_s4"> {
   );
 
   let results = (outs);
+  let hasVerifier = 1;
 
   let assemblyFormat = [{
     $source `,` $destination `,` $m_start `,` $k_start `,` $m_step `,`

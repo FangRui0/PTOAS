@@ -672,6 +672,81 @@ pto.mte_l1_l0b %l1_b, %l0b, %c32_i64, %c16_i64, %c0_i64, %c0_i64
 
 ---
 
+### Explicit Packed-FP4 L1 to L0 Loads
+
+`pto.load_cbuf_to_ca_s4` and `pto.load_cbuf_to_cb_s4` move an explicitly
+selected two-dimensional region of packed FP4 data from L1 into L0A or L0B.
+They preserve authored start, extent, and stride controls instead of deriving
+them from a logical matrix shape.
+
+- **syntax:**
+```mlir
+pto.load_cbuf_to_ca_s4 %src, %dst, %m_start, %k_start, %m_step,
+  %k_step, %src_stride, %dst_stride, %transpose
+  : !pto.ptr<T, l1>, !pto.ptr<T, l0a>, i64, i64, i64, i64, i64, i64, i64
+
+pto.load_cbuf_to_cb_s4 %src, %dst, %m_start, %k_start, %m_step,
+  %k_step, %src_stride, %dst_stride, %transpose
+  : !pto.ptr<T, l1>, !pto.ptr<T, l0b>, i64, i64, i64, i64, i64, i64, i64
+```
+
+**Parameter Table:**
+
+| Parameter | Width | Description |
+|-----------|-------|-------------|
+| `%src` | ptr | Packed-FP4 source in `l1` |
+| `%dst` | ptr | Destination in `l0a` for the CA form or `l0b` for the CB form |
+| `%m_start` | unsigned 16-bit | First source block on the M axis |
+| `%k_start` | unsigned 16-bit | First source block on the packed-S4 K axis |
+| `%m_step` | unsigned 8-bit | Number of source blocks transferred on the M axis; must be nonzero |
+| `%k_step` | unsigned 8-bit | Number of source blocks transferred on the packed-S4 K axis; must be nonzero |
+| `%src_stride` | unsigned 16-bit | Source outer stride in packed fractal-block units; must be nonzero |
+| `%dst_stride` | unsigned 16-bit | Destination outer stride in packed fractal-block units; must be nonzero |
+| `%transpose` | i64 flag | `0` disables transposition; `1` enables transposition |
+
+`%k_start` and `%k_step` use packed-S4 units: one unit contains two FP4
+values. Values supplied to these operands are consumed directly and are not
+divided by two. This differs from shape-derived operations, which may convert
+logical FP4 extents while deriving their controls.
+
+Conceptually, with transposition disabled, the operation selects the following
+block region:
+
+```text
+for m_block in 0 .. m_step:
+  for k_block in 0 .. k_step:
+    dst_block[m_block, k_block; dst_stride] =
+        src_block[m_start + m_block, k_start + k_block; src_stride]
+```
+
+When `%transpose` is `1`, the selected source region is placed using the
+transposed Cube operand layout.
+
+**Constraints:**
+
+- `%src` must be in `l1`; the CA destination must be in `l0a`, and the CB
+  destination must be in `l0b`.
+- `T` must be `!pto.f4E1M2x2` or `!pto.f4E2M1x2`, and source and destination
+  must use the same packed FP4 type.
+- Start and stride values must fit their 16-bit fields. Step values must be in
+  `1..255`. `%transpose` must be `0` or `1`.
+
+**Example:**
+
+```mlir
+pto.load_cbuf_to_ca_s4 %l1_a, %l0a, %c0_i64, %c4_i64, %c16_i64,
+  %c4_i64, %c16_i64, %c16_i64, %c0_i64
+  : !pto.ptr<!pto.f4E2M1x2, l1>, !pto.ptr<!pto.f4E2M1x2, l0a>,
+    i64, i64, i64, i64, i64, i64, i64
+
+pto.load_cbuf_to_cb_s4 %l1_b, %l0b, %c0_i64, %c4_i64, %c16_i64,
+  %c4_i64, %c16_i64, %c16_i64, %c1_i64
+  : !pto.ptr<!pto.f4E2M1x2, l1>, !pto.ptr<!pto.f4E2M1x2, l0b>,
+    i64, i64, i64, i64, i64, i64, i64
+```
+
+---
+
 ### MX Scale Load Model
 
 MX scale loads prepare the scale payloads consumed by `pto.mad_mx*`. Each scale

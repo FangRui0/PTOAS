@@ -15,7 +15,7 @@ import ptodsl._ops as _ops
 import ptodsl._pipe_namespace as _pipe_namespace
 from ptodsl._context import make_context
 from ptodsl import pto
-from ptoas.mlir.ir import F32Type
+from ptoas.mlir.ir import F32Type, Type
 def _identity(value):
     return value
 
@@ -607,7 +607,8 @@ class VectorCubeSurfaceTest(unittest.TestCase):
         }
 
         with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
-             patch.object(_ops, "_coerce_i64", side_effect=lambda value, *, context: f"{context}:{value}"):
+             patch.object(_ops, "_coerce_i64", side_effect=lambda value, *, context: f"{context}:{value}"), \
+             patch.object(_ops, "_is_fp4_packed_pointer_value", return_value=False):
             ca_op = MagicMock()
             with patch.object(_ops._pto, "LoadCbufToCaOp", ca_op):
                 _ops.mte_l1_l0a(source, destination, **controls, transpose=True)
@@ -644,24 +645,142 @@ class VectorCubeSurfaceTest(unittest.TestCase):
             )
             self.assertEqual(cb_op.call_args.kwargs, {"transpose": True})
 
-    def test_mte_l1_l0_explicit_controls_reject_fp4(self):
-        source = SimpleNamespace(type="!pto.ptr<!pto.f4E2M1x2, l1>")
-        destination = object()
+    def test_mte_l1_l0_explicit_controls_dispatch_fp4_to_s4_ops(self):
         controls = {
-            "m_start": 3,
-            "k_start": 5,
+            "m_start": 0,
+            "k_start": 4,
             "m_step": 16,
-            "k_step": 2,
-            "src_stride": 8,
-            "dst_stride": 2,
+            "k_step": 4,
+            "src_stride": 16,
+            "dst_stride": 16,
         }
 
+        with make_context():
+            for dtype in ("f4E1M2x2", "f4E2M1x2"):
+                source = SimpleNamespace(
+                    type=Type.parse(f"!pto.ptr<!pto.{dtype}, l1>")
+                )
+                destination_a = SimpleNamespace(
+                    type=Type.parse(f"!pto.ptr<!pto.{dtype}, l0a>")
+                )
+                destination_b = SimpleNamespace(
+                    type=Type.parse(f"!pto.ptr<!pto.{dtype}, l0b>")
+                )
+                with self.subTest(dtype=dtype), \
+                     patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+                     patch.object(_ops, "_coerce_i64", side_effect=lambda value, *, context: f"{context}:{value}"), \
+                     patch.object(_ops._pto, "LoadCbufToCaS4Op") as ca_s4, \
+                     patch.object(_ops._pto, "LoadCbufToCbS4Op") as cb_s4:
+                    _ops.mte_l1_l0a(
+                        source, destination_a, **controls, transpose=0
+                    )
+                    _ops.mte_l1_l0b(
+                        source, destination_b, **controls, transpose=1
+                    )
+
+                ca_s4.assert_called_once_with(
+                    source,
+                    destination_a,
+                    "mte_l1_l0a m_start:0",
+                    "mte_l1_l0a k_start:4",
+                    "mte_l1_l0a m_step:16",
+                    "mte_l1_l0a k_step:4",
+                    "mte_l1_l0a src_stride:16",
+                    "mte_l1_l0a dst_stride:16",
+                    "mte_l1_l0a transpose:0",
+                )
+                cb_s4.assert_called_once_with(
+                    source,
+                    destination_b,
+                    "mte_l1_l0b m_start:0",
+                    "mte_l1_l0b k_start:4",
+                    "mte_l1_l0b m_step:16",
+                    "mte_l1_l0b k_step:4",
+                    "mte_l1_l0b src_stride:16",
+                    "mte_l1_l0b dst_stride:16",
+                    "mte_l1_l0b transpose:1",
+                )
+
+    def test_mte_l1_l0_explicit_controls_normalize_legacy_transpose(self):
+        controls = {
+            "m_start": 0,
+            "k_start": 4,
+            "m_step": 16,
+            "k_step": 4,
+            "src_stride": 8,
+            "dst_stride": 16,
+        }
+
+        source = object()
+        destination = object()
         with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
-             patch.object(_ops, "_coerce_i64", side_effect=lambda value, *, context: f"{context}:{value}"):
-            with self.assertRaisesRegex(TypeError, "explicit-control FP4 loads are not supported yet"):
-                _ops.mte_l1_l0a(source, destination, **controls, transpose=True)
-            with self.assertRaisesRegex(TypeError, "using FP4 in source may silently select an incorrect intrinsic"):
-                _ops.mte_l1_l0b(source, destination, **controls, transpose=True)
+             patch.object(_ops, "_coerce_i64", side_effect=lambda value, *, context: value), \
+             patch.object(_ops, "_is_fp4_packed_pointer_value", return_value=False), \
+             patch.object(_ops._pto, "LoadCbufToCaOp") as ca_op:
+            _ops.mte_l1_l0a(source, destination, **controls, transpose=1)
+        self.assertEqual(ca_op.call_args.kwargs, {"transpose": True})
+
+        with self.assertRaisesRegex(
+            TypeError, "mte_l1_l0a transpose expects bool or integer 0/1"
+        ):
+            _ops.mte_l1_l0a(source, destination, **controls, transpose=2)
+        with self.assertRaisesRegex(
+            TypeError, "mte_l1_l0b transpose expects bool or integer 0/1"
+        ):
+            _ops.mte_l1_l0b(object(), object(), **controls, transpose="true")
+
+    def test_mte_l1_l0_shape_transpose_accepts_legacy_zero_one(self):
+        source = object()
+        destination = object()
+        with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_ops, "_coerce_i64", side_effect=lambda value, *, context: value), \
+             patch.object(_ops._pto, "MteL1L0aOp") as ca_op:
+            _ops.mte_l1_l0a(source, destination, 16, 32, transpose=0)
+        self.assertEqual(ca_op.call_args.kwargs, {"transpose": False})
+
+        with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_ops, "_coerce_i64", side_effect=lambda value, *, context: value), \
+             patch.object(_ops._pto, "MteL1L0bOp") as cb_op:
+            _ops.mte_l1_l0b(source, destination, 32, 16, transpose=1)
+        self.assertEqual(cb_op.call_args.kwargs, {"transpose": True})
+
+    def test_mte_l1_l0_explicit_controls_reject_mixed_fp4_types(self):
+        controls = {
+            "m_start": 0,
+            "k_start": 0,
+            "m_step": 1,
+            "k_step": 1,
+            "src_stride": 1,
+            "dst_stride": 1,
+        }
+        with make_context():
+            cases = [
+                (
+                    "regular source with FP4 destination",
+                    "!pto.ptr<i8, l1>",
+                    "!pto.ptr<!pto.f4E2M1x2, l0a>",
+                ),
+                (
+                    "FP4 source with regular destination",
+                    "!pto.ptr<!pto.f4E2M1x2, l1>",
+                    "!pto.ptr<i8, l0a>",
+                ),
+                (
+                    "mismatched FP4 element types",
+                    "!pto.ptr<!pto.f4E1M2x2, l1>",
+                    "!pto.ptr<!pto.f4E2M1x2, l0a>",
+                ),
+            ]
+            for name, source_type, destination_type in cases:
+                with self.subTest(case=name):
+                    source = SimpleNamespace(type=Type.parse(source_type))
+                    destination = SimpleNamespace(
+                        type=Type.parse(destination_type)
+                    )
+                    with self.assertRaisesRegex(TypeError, "packed FP4"):
+                        _ops.mte_l1_l0a(
+                            source, destination, **controls, transpose=False
+                        )
 
     def test_mte_l1_l0_legacy_forms_preserve_keyword_compatibility(self):
         source = object()

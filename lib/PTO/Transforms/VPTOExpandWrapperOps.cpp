@@ -880,11 +880,18 @@ deriveLoadCbufToCbControl(Location loc, Value k, Value n, Type elementType,
     // to the raw *_s4 bridge op. This matches the pto-isa TExtract helpers.
     return rewriter.create<arith::DivUIOp>(loc, value, constant(2));
   };
+  auto deriveKStep = [&](Value byteExtent) -> Value {
+    // A packed FP4 element contains two logical values.  The S4 bridge
+    // consumes one 32-byte block, so a partial 64-value FP4 block still
+    // requires one hardware step.  Round before converting to the packed
+    // control unit instead of truncating ceilDiv(..., 32) / 2.
+    return ceilDivConst(byteExtent, isFp4Packed ? 64 : 32);
+  };
 
   if (!transpose) {
     Value mStep = ceilDivConst(n, 16);
     Value kBytes = rewriter.create<arith::MulIOp>(loc, k, constant(elemBytes));
-    Value kStep = maybeScaleS4KCoord(ceilDivConst(kBytes, 32));
+    Value kStep = deriveKStep(kBytes);
     Value stride = ceilDivConst(n, 16);
     return LoadCbufToCbControl{mStart, maybeScaleS4KCoord(kStart), mStep, kStep,
                                stride, stride};
@@ -898,7 +905,7 @@ deriveLoadCbufToCbControl(Location loc, Value k, Value n, Type elementType,
   nAlign = rewriter.create<arith::MulIOp>(loc, nAlign, constant(c0Size));
   Value mStep = ceilDivConst(kAlign, 16);
   Value nBytes = rewriter.create<arith::MulIOp>(loc, nAlign, constant(elemBytes));
-  Value kStep = maybeScaleS4KCoord(ceilDivConst(nBytes, 32));
+  Value kStep = deriveKStep(nBytes);
   Value srcStride = ceilDivConst(kAlign, 16);
   Value dstStride = ceilDivConst(nAlign, 16);
   return LoadCbufToCbControl{mStart, maybeScaleS4KCoord(kStart), mStep, kStep,
@@ -934,11 +941,18 @@ deriveLoadCbufToCaControl(Location loc, Value m, Value k, Type elementType,
     // to the raw *_s4 bridge op. This matches the pto-isa TExtract helpers.
     return rewriter.create<arith::DivUIOp>(loc, value, constant(2));
   };
+  auto deriveKStep = [&](Value byteExtent) -> Value {
+    // A packed FP4 element contains two logical values.  The S4 bridge
+    // consumes one 32-byte block, so a partial 64-value FP4 block still
+    // requires one hardware step.  Round before converting to the packed
+    // control unit instead of truncating ceilDiv(..., 32) / 2.
+    return ceilDivConst(byteExtent, isFp4Packed ? 64 : 32);
+  };
 
   if (!transpose) {
     Value mStep = ceilDivConst(m, 16);
     Value kBytes = rewriter.create<arith::MulIOp>(loc, k, constant(elemBytes));
-    Value kStep = maybeScaleS4KCoord(ceilDivConst(kBytes, 32));
+    Value kStep = deriveKStep(kBytes);
     Value stride = ceilDivConst(m, 16);
     return LoadCbufToCbControl{mStart, maybeScaleS4KCoord(kStart), mStep, kStep,
                                stride, stride};
@@ -952,7 +966,7 @@ deriveLoadCbufToCaControl(Location loc, Value m, Value k, Type elementType,
   kAlign = rewriter.create<arith::MulIOp>(loc, kAlign, constant(c0Size));
   Value mStep = ceilDivConst(kAlign, 16);
   Value mBytes = rewriter.create<arith::MulIOp>(loc, mAlign, constant(elemBytes));
-  Value kStep = maybeScaleS4KCoord(ceilDivConst(mBytes, 32));
+  Value kStep = deriveKStep(mBytes);
   Value srcStride = ceilDivConst(kAlign, 16);
   Value dstStride = ceilDivConst(mAlign, 16);
   return LoadCbufToCbControl{mStart, maybeScaleS4KCoord(kStart), mStep, kStep,

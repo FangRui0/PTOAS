@@ -8714,37 +8714,82 @@ static LogicalResult verifyMxLoadAlignment(Operation *op, Value source,
                                   kMxDestinationAddressUnitBytes);
 }
 
+static LogicalResult verifyStaticControlRange(Operation *op, Value value,
+                                              StringRef name, int64_t min,
+                                              int64_t max) {
+  APInt intValue;
+  if (!matchPattern(value, m_ConstantInt(&intValue)))
+    return success();
+  int64_t signedValue = intValue.getSExtValue();
+  if (signedValue < min)
+    return op->emitOpError() << name
+                             << (min == 0 ? " must be non-negative"
+                                          : " must be greater than zero");
+  if (signedValue > max)
+    return op->emitOpError() << name << " must be <= " << max
+                             << " to fit the hardware control field";
+  return success();
+}
+
 template <typename OpTy>
 static LogicalResult verifyExplicitCubeBridgeLoadControls(OpTy op) {
-  auto checkConstRange = [&](Value value, StringRef name, int64_t min,
-                             int64_t max) -> LogicalResult {
-    APInt intValue;
-    if (!matchPattern(value, m_ConstantInt(&intValue))) {
-      return success();
-    }
-    int64_t signedValue = intValue.getSExtValue();
-    if (signedValue < min)
-      return op.emitOpError()
-             << name
-             << (min == 0 ? " must be non-negative"
-                          : " must be greater than zero");
-    if (signedValue > max)
-      return op.emitOpError()
-             << name << " must be <= " << max
-             << " to fit the hardware control field";
-    return success();
-  };
-
   constexpr int64_t kU16Max = 65535;
   constexpr int64_t kU8Max = 255;
-  if (failed(checkConstRange(op.getMStart(), "m_start", 0, kU16Max)) ||
-      failed(checkConstRange(op.getKStart(), "k_start", 0, kU16Max)) ||
-      failed(checkConstRange(op.getMStep(), "m_step", 1, kU8Max)) ||
-      failed(checkConstRange(op.getKStep(), "k_step", 1, kU8Max)) ||
-      failed(checkConstRange(op.getSrcStride(), "src_stride", 1, kU16Max)) ||
-      failed(checkConstRange(op.getDstStride(), "dst_stride", 1, kU16Max)))
+  Operation *operation = op.getOperation();
+  if (failed(verifyStaticControlRange(operation, op.getMStart(), "m_start", 0,
+                                      kU16Max)) ||
+      failed(verifyStaticControlRange(operation, op.getKStart(), "k_start", 0,
+                                      kU16Max)) ||
+      failed(verifyStaticControlRange(operation, op.getMStep(), "m_step", 1,
+                                      kU8Max)) ||
+      failed(verifyStaticControlRange(operation, op.getKStep(), "k_step", 1,
+                                      kU8Max)) ||
+      failed(verifyStaticControlRange(operation, op.getSrcStride(),
+                                      "src_stride", 1, kU16Max)) ||
+      failed(verifyStaticControlRange(operation, op.getDstStride(),
+                                      "dst_stride", 1, kU16Max)))
     return failure();
   return success();
+}
+
+template <typename OpTy>
+static LogicalResult verifyS4CubeBridgeLoad(OpTy op,
+                                            AddressSpace expectedDstSpace,
+                                            StringRef dstName) {
+  if (failed(verifyCubeBridgeLoadLikeOp(op, expectedDstSpace, dstName)))
+    return failure();
+
+  Type sourceElem = getBufferElementType(op.getSource().getType());
+  Type destinationElem = getBufferElementType(op.getDestination().getType());
+  if (!pto::isPTOFloat4PackedType(sourceElem))
+    return op.emitOpError(
+        "requires packed FP4 source element type f4e1m2x2 or f4e2m1x2");
+  if (!pto::isPTOFloat4PackedType(destinationElem))
+    return op.emitOpError(
+        "requires packed FP4 destination element type f4e1m2x2 or f4e2m1x2");
+  if (sourceElem != destinationElem)
+    return op.emitOpError(
+        "requires source and destination packed FP4 element types to match");
+  if (failed(verifyExplicitCubeBridgeLoadControls(op)))
+    return failure();
+  return verifyStaticControlRange(op.getOperation(), op.getTranspose(),
+                                  "transpose", 0, 1);
+}
+
+template <typename OpTy>
+static LogicalResult verifyRegularCubeBridgeLoad(OpTy op,
+                                                 AddressSpace expectedDstSpace,
+                                                 StringRef dstName) {
+  if (failed(verifyCubeBridgeLoadLikeOp(op, expectedDstSpace, dstName)))
+    return failure();
+  Type sourceElem = getBufferElementType(op.getSource().getType());
+  Type destinationElem = getBufferElementType(op.getDestination().getType());
+  if (pto::isPTOFloat4PackedType(sourceElem))
+    return op.emitOpError("packed FP4 source requires the S4 load operation");
+  if (pto::isPTOFloat4PackedType(destinationElem))
+    return op.emitOpError(
+        "packed FP4 destination requires the S4 load operation");
+  return verifyExplicitCubeBridgeLoadControls(op);
 }
 
 LogicalResult MteL0cL1Op::verify() {
@@ -8855,17 +8900,19 @@ LogicalResult LoadCbufToCbMxOp::verify() {
 }
 
 LogicalResult LoadCbufToCaOp::verify() {
-  if (failed(verifyCubeBridgeLoadLikeOp(*this, AddressSpace::LEFT, "LEFT"))) {
-    return failure();
-  }
-  return verifyExplicitCubeBridgeLoadControls(*this);
+  return verifyRegularCubeBridgeLoad(*this, AddressSpace::LEFT, "LEFT");
 }
 
 LogicalResult LoadCbufToCbOp::verify() {
-  if (failed(verifyCubeBridgeLoadLikeOp(*this, AddressSpace::RIGHT, "RIGHT"))) {
-    return failure();
-  }
-  return verifyExplicitCubeBridgeLoadControls(*this);
+  return verifyRegularCubeBridgeLoad(*this, AddressSpace::RIGHT, "RIGHT");
+}
+
+LogicalResult LoadCbufToCaS4Op::verify() {
+  return verifyS4CubeBridgeLoad(*this, AddressSpace::LEFT, "LEFT");
+}
+
+LogicalResult LoadCbufToCbS4Op::verify() {
+  return verifyS4CubeBridgeLoad(*this, AddressSpace::RIGHT, "RIGHT");
 }
 
 void MteL1L0aOp::getEffects(

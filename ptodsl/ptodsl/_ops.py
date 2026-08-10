@@ -5361,20 +5361,84 @@ def mem_bar(barrier_type):
     _pto.MemBarOp(kind=_membar_attr(barrier_name))
 
 
-def _is_fp4_packed_pointer_value(value) -> bool:
-    type_text = str(getattr(value, "type", ""))
-    return type_text.startswith("!pto.ptr<!pto.f4") and "x2, " in type_text
+def _is_fp4_packed_pointer_value(value, *, context: str) -> bool:
+    elem_type = _pointer_element_type(value, context=context)
+    return any(
+        _isinstance_pto_type(elem_type, type_name)
+        for type_name in ("F4E1M2x2Type", "F4E2M1x2Type")
+    )
 
 
-def _reject_explicit_fp4_load(source_value, *, op_name: str, source_role: str):
-    if _is_fp4_packed_pointer_value(source_value):
+def _normalize_cube_transpose(value, *, context: str) -> bool:
+    """Normalize the legacy BoolAttr-compatible 0/1 spelling."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    raise TypeError(f"{context} transpose expects bool or integer 0/1")
+
+
+def _emit_explicit_l1_l0_load(
+    source,
+    destination,
+    controls,
+    transpose,
+    *,
+    op_name: str,
+    regular_op,
+    s4_op,
+):
+    source_value = unwrap_surface_value(source)
+    destination_value = unwrap_surface_value(destination)
+    control_names = (
+        "m_start",
+        "k_start",
+        "m_step",
+        "k_step",
+        "src_stride",
+        "dst_stride",
+    )
+    source_is_fp4 = _is_fp4_packed_pointer_value(
+        source_value, context=f"{op_name} source"
+    )
+    destination_is_fp4 = _is_fp4_packed_pointer_value(
+        destination_value, context=f"{op_name} destination"
+    )
+    if source_is_fp4 != destination_is_fp4:
         raise TypeError(
-            f"{op_name} explicit-control FP4 loads are not supported yet because "
-            "the compatibility wrapper would currently emit the regular load path; "
-            f"using FP4 in {source_role} may silently select an incorrect intrinsic. "
-            "Use the "
-            "shape-derived m/k or k/n form for FP4 L1-to-L0 loads."
+            f"{op_name} source and destination must both use packed FP4 "
+            "or both use regular element types"
         )
+    if source_is_fp4:
+        source_elem_type = _pointer_element_type(
+            source_value, context=f"{op_name} source"
+        )
+        destination_elem_type = _pointer_element_type(
+            destination_value, context=f"{op_name} destination"
+        )
+        if source_elem_type != destination_elem_type:
+            raise TypeError(
+                f"{op_name} source and destination packed FP4 element types "
+                "must match"
+            )
+    normalized_controls = tuple(
+        _coerce_i64(value, context=f"{op_name} {name}")
+        for name, value in zip(control_names, controls)
+    )
+    if source_is_fp4:
+        s4_op(
+            source_value,
+            destination_value,
+            *normalized_controls,
+            _coerce_i64(int(transpose), context=f"{op_name} transpose"),
+        )
+        return
+    regular_op(
+        source_value,
+        destination_value,
+        *normalized_controls,
+        transpose=transpose,
+    )
 
 
 @_explicit_mode_only("pto.mte_l1_l0a(...)")
@@ -5397,9 +5461,9 @@ def mte_l1_l0a(
     """``pto.mte_l1_l0a`` – structured or explicit-control L1-to-L0A load.
 
     Use either the existing shape-derived ``m``/``k`` form or provide all six
-    explicit L1-to-L0A controls. The explicit-control overload currently rejects
-    FP4 packed pointers; use the shape-derived form for FP4 staging.
+    explicit L1-to-L0A controls. Packed FP4 sources select the S4 load path.
     """
+    transpose = _normalize_cube_transpose(transpose, context="mte_l1_l0a")
     controls = (m_start, k_start, m_step, k_step, src_stride, dst_stride)
     has_explicit_controls = any(control is not None for control in controls)
     if has_explicit_controls:
@@ -5416,19 +5480,14 @@ def mte_l1_l0a(
                 "mte_l1_l0a explicit controls require m_start, k_start, "
                 "m_step, k_step, src_stride, and dst_stride"
             )
-        source_value = unwrap_surface_value(source)
-        destination_value = unwrap_surface_value(destination)
-        _reject_explicit_fp4_load(source_value, op_name="mte_l1_l0a", source_role="source")
-        _pto.LoadCbufToCaOp(
-            source_value,
-            destination_value,
-            _coerce_i64(m_start, context="mte_l1_l0a m_start"),
-            _coerce_i64(k_start, context="mte_l1_l0a k_start"),
-            _coerce_i64(m_step, context="mte_l1_l0a m_step"),
-            _coerce_i64(k_step, context="mte_l1_l0a k_step"),
-            _coerce_i64(src_stride, context="mte_l1_l0a src_stride"),
-            _coerce_i64(dst_stride, context="mte_l1_l0a dst_stride"),
-            transpose=transpose,
+        _emit_explicit_l1_l0_load(
+            source,
+            destination,
+            controls,
+            transpose,
+            op_name="mte_l1_l0a",
+            regular_op=_pto.LoadCbufToCaOp,
+            s4_op=_pto.LoadCbufToCaS4Op,
         )
         return
     if m is None or k is None:
@@ -5464,9 +5523,9 @@ def mte_l1_l0b(
     """``pto.mte_l1_l0b`` – structured or explicit-control L1-to-L0B load.
 
     Use either the existing shape-derived ``k``/``n`` form or provide all six
-    explicit L1-to-L0B controls. The explicit-control overload currently rejects
-    FP4 packed pointers; use the shape-derived form for FP4 staging.
+    explicit L1-to-L0B controls. Packed FP4 sources select the S4 load path.
     """
+    transpose = _normalize_cube_transpose(transpose, context="mte_l1_l0b")
     controls = (m_start, k_start, m_step, k_step, src_stride, dst_stride)
     has_explicit_controls = any(control is not None for control in controls)
     if has_explicit_controls:
@@ -5483,19 +5542,14 @@ def mte_l1_l0b(
                 "mte_l1_l0b explicit controls require m_start, k_start, "
                 "m_step, k_step, src_stride, and dst_stride"
             )
-        source_value = unwrap_surface_value(source)
-        destination_value = unwrap_surface_value(destination)
-        _reject_explicit_fp4_load(source_value, op_name="mte_l1_l0b", source_role="source")
-        _pto.LoadCbufToCbOp(
-            source_value,
-            destination_value,
-            _coerce_i64(m_start, context="mte_l1_l0b m_start"),
-            _coerce_i64(k_start, context="mte_l1_l0b k_start"),
-            _coerce_i64(m_step, context="mte_l1_l0b m_step"),
-            _coerce_i64(k_step, context="mte_l1_l0b k_step"),
-            _coerce_i64(src_stride, context="mte_l1_l0b src_stride"),
-            _coerce_i64(dst_stride, context="mte_l1_l0b dst_stride"),
-            transpose=transpose,
+        _emit_explicit_l1_l0_load(
+            source,
+            destination,
+            controls,
+            transpose,
+            op_name="mte_l1_l0b",
+            regular_op=_pto.LoadCbufToCbOp,
+            s4_op=_pto.LoadCbufToCbS4Op,
         )
         return
     if k is None or n is None:
