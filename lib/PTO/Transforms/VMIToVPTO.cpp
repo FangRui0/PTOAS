@@ -7771,6 +7771,40 @@ struct OneToNVMIStoreOpPattern : OpConversionPattern<VMIStoreOp> {
     }
 
     ValueRange valueParts = adaptor.getValue();
+    // A one-lane VMI value is a scalar memory operation. Although its
+    // physical carrier is a full vreg, a regular vsts still requires a
+    // 32-byte-aligned address even with a PAT_VL1 mask. Select the ISA
+    // point-store form so adjacent scalar elements can be addressed normally.
+    if (valueVMIType.getElementCount() == 1) {
+      if (valueParts.size() != 1)
+        return rewriter.notifyMatchFailure(
+            op, "scalar store requires one physical value part");
+      auto valueType = dyn_cast<VRegType>(valueParts.front().getType());
+      if (!valueType)
+        return rewriter.notifyMatchFailure(op,
+                                           "scalar store value must be vreg");
+      std::optional<std::string> pointDist =
+          getPointStoreDistToken(valueVMIType.getElementType());
+      if (!pointDist)
+        return rewriter.notifyMatchFailure(
+            op, "scalar store requires 1PT_B8/B16/B32 store support");
+      FailureOr<MaskType> maskType =
+          getMaskTypeForVReg(valueType, rewriter.getContext());
+      if (failed(maskType))
+        return rewriter.notifyMatchFailure(
+            op, "unsupported element type for scalar store mask");
+      FailureOr<Value> mask =
+          createPrefixMask(op.getLoc(), *maskType, "PAT_VL1", rewriter);
+      if (failed(mask))
+        return rewriter.notifyMatchFailure(
+            op, "failed to create scalar store mask");
+      rewriter.create<VstsOp>(op.getLoc(), /*updated_base=*/Type{},
+                              valueParts.front(), *destination, *offset,
+                              rewriter.getStringAttr(*pointDist), *mask);
+      rewriter.eraseOp(op);
+      return success();
+    }
+
     if (std::optional<std::string> dist =
             getDenseLaneStrideStoreDistToken(valueVMIType)) {
       std::optional<StringRef> maskGranularity =
