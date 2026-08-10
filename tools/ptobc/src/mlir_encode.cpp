@@ -102,7 +102,7 @@ static bool shouldEncodeViaGenericV0CompatibilityShim(mlir::Operation &op) {
   if (auto tinsert = llvm::dyn_cast<mlir::pto::TInsertOp>(&op))
     return static_cast<bool>(tinsert.getPreQuantScalar());
   if (auto tmov = llvm::dyn_cast<mlir::pto::TMovOp>(&op)) {
-    if (tmov.getPreQuantScalar() || tmov->getNumResults() != 0)
+    if (tmov.getPreQuantScalar())
       return true;
     // The removed pto.tmov.fp op carried only src/fp/dst. Its legacy opcode
     // would silently discard mode/relu semantics when read by an older PTOAS.
@@ -153,6 +153,12 @@ static std::optional<uint16_t> getLegacyFpWireOpcode(mlir::Operation &op) {
 
 static std::optional<std::string>
 getUnsupportedV0EncodingReason(mlir::Operation &op) {
+  if (auto tmov = llvm::dyn_cast<mlir::pto::TMovOp>(&op);
+      tmov && tmov.getFp() && tmov->getNumResults() != 0)
+    return "pto.tmov fp with a result cannot be represented safely in "
+           "PTO-BC v0; legacy opcode 0x1039 would silently drop the result, "
+           "and PTOAS backends do not lower the generic result-bearing form";
+
   auto tstore = llvm::dyn_cast<mlir::pto::TStoreOp>(&op);
   if (!tstore || !tstore.getFp() || canUseLegacyTStoreFpWireOpcode(tstore))
     return std::nullopt;
