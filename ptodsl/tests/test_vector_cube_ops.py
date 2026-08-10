@@ -579,6 +579,157 @@ class VectorCubeSurfaceTest(unittest.TestCase):
                         getattr(_ops, func_name)(*args)
                     self.assertEqual(op_ctor.call_args.args, expected_call)
 
+    def test_mte_l1_l0_explicit_controls_dispatch_to_load_cbuf_ops(self):
+        source = object()
+        destination = object()
+        controls = {
+            "m_start": 3,
+            "k_start": 5,
+            "m_step": 16,
+            "k_step": 2,
+            "src_stride": 8,
+            "dst_stride": 2,
+        }
+
+        with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_ops, "_coerce_i64", side_effect=lambda value, *, context: f"{context}:{value}"):
+            ca_op = MagicMock()
+            with patch.object(_ops._pto, "LoadCbufToCaOp", ca_op):
+                _ops.mte_l1_l0a(source, destination, **controls, transpose=True)
+            self.assertEqual(
+                ca_op.call_args.args,
+                (
+                    source,
+                    destination,
+                    "mte_l1_l0a m_start:3",
+                    "mte_l1_l0a k_start:5",
+                    "mte_l1_l0a m_step:16",
+                    "mte_l1_l0a k_step:2",
+                    "mte_l1_l0a src_stride:8",
+                    "mte_l1_l0a dst_stride:2",
+                ),
+            )
+            self.assertEqual(ca_op.call_args.kwargs, {"transpose": True})
+
+            cb_op = MagicMock()
+            with patch.object(_ops._pto, "LoadCbufToCbOp", cb_op):
+                _ops.mte_l1_l0b(source, destination, **controls, transpose=True)
+            self.assertEqual(
+                cb_op.call_args.args,
+                (
+                    source,
+                    destination,
+                    "mte_l1_l0b m_start:3",
+                    "mte_l1_l0b k_start:5",
+                    "mte_l1_l0b m_step:16",
+                    "mte_l1_l0b k_step:2",
+                    "mte_l1_l0b src_stride:8",
+                    "mte_l1_l0b dst_stride:2",
+                ),
+            )
+            self.assertEqual(cb_op.call_args.kwargs, {"transpose": True})
+
+    def test_mte_l1_l0_explicit_controls_reject_fp4(self):
+        source = SimpleNamespace(type="!pto.ptr<!pto.f4E2M1x2, l1>")
+        destination = object()
+        controls = {
+            "m_start": 3,
+            "k_start": 5,
+            "m_step": 16,
+            "k_step": 2,
+            "src_stride": 8,
+            "dst_stride": 2,
+        }
+
+        with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_ops, "_coerce_i64", side_effect=lambda value, *, context: f"{context}:{value}"):
+            with self.assertRaisesRegex(TypeError, "explicit-control FP4 loads are not supported yet"):
+                _ops.mte_l1_l0a(source, destination, **controls, transpose=True)
+            with self.assertRaisesRegex(TypeError, "using FP4 in source may silently select an incorrect intrinsic"):
+                _ops.mte_l1_l0b(source, destination, **controls, transpose=True)
+
+    def test_mte_l1_l0_legacy_forms_preserve_keyword_compatibility(self):
+        source = object()
+        destination = object()
+
+        with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_ops, "_coerce_i64", side_effect=lambda value, *, context: f"{context}:{value}"):
+            ca_op = MagicMock()
+            with patch.object(_ops._pto, "MteL1L0aOp", ca_op):
+                _ops.mte_l1_l0a(
+                    source,
+                    destination,
+                    m=128,
+                    k=64,
+                    start_row=2,
+                    start_col=4,
+                    transpose=True,
+                )
+            self.assertEqual(
+                ca_op.call_args.args,
+                (
+                    source,
+                    destination,
+                    "mte_l1_l0a m:128",
+                    "mte_l1_l0a k:64",
+                    "mte_l1_l0a start_row:2",
+                    "mte_l1_l0a start_col:4",
+                ),
+            )
+            self.assertEqual(ca_op.call_args.kwargs, {"transpose": True})
+
+            cb_op = MagicMock()
+            with patch.object(_ops._pto, "MteL1L0bOp", cb_op):
+                _ops.mte_l1_l0b(
+                    source,
+                    destination,
+                    k=64,
+                    n=128,
+                    start_row=4,
+                    start_col=2,
+                    transpose=True,
+                )
+            self.assertEqual(
+                cb_op.call_args.args,
+                (
+                    source,
+                    destination,
+                    "mte_l1_l0b k:64",
+                    "mte_l1_l0b n:128",
+                    "mte_l1_l0b start_row:4",
+                    "mte_l1_l0b start_col:2",
+                ),
+            )
+            self.assertEqual(cb_op.call_args.kwargs, {"transpose": True})
+
+    def test_mte_l1_l0_explicit_controls_reject_ambiguous_forms(self):
+        source = object()
+        destination = object()
+        complete_controls = {
+            "m_start": 3,
+            "k_start": 5,
+            "m_step": 16,
+            "k_step": 2,
+            "src_stride": 8,
+            "dst_stride": 2,
+        }
+
+        invalid_cases = [
+            lambda: _ops.mte_l1_l0a(source, destination, m_start=3),
+            lambda: _ops.mte_l1_l0b(source, destination, m_start=3),
+            lambda: _ops.mte_l1_l0a(source, destination, m=128, k=64, **complete_controls),
+            lambda: _ops.mte_l1_l0b(source, destination, k=64, n=128, **complete_controls),
+            lambda: _ops.mte_l1_l0a(source, destination, start_row=1, **complete_controls),
+            lambda: _ops.mte_l1_l0b(source, destination, start_col=1, **complete_controls),
+        ]
+        for invalid_call in invalid_cases:
+            with self.subTest(call=invalid_call):
+                with self.assertRaises(TypeError):
+                    invalid_call()
+
+        self.assertFalse(hasattr(pto, "load_cbuf_to_ca"))
+        self.assertFalse(hasattr(pto, "load_cbuf_to_cb"))
+
     def test_mad_option_wrappers_dispatch_to_generated_ops(self):
         lhs = object()
         rhs = object()
