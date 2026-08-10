@@ -19,12 +19,6 @@ import numpy as np
 
 _DEVICE = "npu:0"
 
-# The ST runner is also used from an editable PTOAS checkout.  Use the
-# generated bindings staged by the selected build tree rather than an older
-# editable-install redirect when a test covers a newly added op.
-sys.meta_path[:] = [finder for finder in sys.meta_path if "editable" not in repr(finder).lower()]
-
-
 def init_runtime():
     import torch
     import torch_npu  # noqa: F401
