@@ -586,8 +586,14 @@ struct PlannerAnalysis {
     if (outputRoots.empty())
       return;
 
-    for (Value scratch : getWrittenNonDpsOperands(op, dpsInits))
+    for (Value scratch : getWrittenNonDpsOperands(op, dpsInits)) {
       addForbidAliasBetweenRoots(getRoots(scratch), outputRoots);
+      for (Value operand : op->getOperands()) {
+        if (operand == scratch || llvm::is_contained(dpsInits, operand))
+          continue;
+        addForbidAliasBetweenRoots(getRoots(scratch), getRoots(operand));
+      }
+    }
   }
 
   void recordInplacePolicyConflicts(Operation *op, ValueRange dpsInits) {
