@@ -786,6 +786,7 @@ def TPrefetchAsyncOp : PTO_Op<"tprefetch_async"> {
 }
 
 def TStoreOp: PTO_TOp<"tstore", [
+  AttrSizedOperandSegments,
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -801,6 +802,7 @@ def TStoreOp: PTO_TOp<"tstore", [
   let arguments = (ins
     PTODpsType:$src,
     PTODpsType:$dst,
+    Optional<PTODpsType>:$fp,
     Optional<I64>:$preQuantScalar,
     DefaultValuedAttr<PTO_STPhaseAttr, "::mlir::pto::STPhase::Unspecified">:$stPhase,
     DefaultValuedAttr<PTO_AtomicTypeAttr, "::mlir::pto::AtomicType::AtomicNone">:$atomicType,
@@ -815,6 +817,7 @@ def TStoreOp: PTO_TOp<"tstore", [
 
   let assemblyFormat = [{
     `ins` `(` $src `:` qualified(type($src))
+           (`fp` $fp^ `:` qualified(type($fp)))?
            (`,` $preQuantScalar^ `:` type($preQuantScalar))? `)`
     `outs` `(` $dst `:` qualified(type($dst) ) `)`
     attr-dict
@@ -4505,6 +4508,7 @@ def TExpandsOp : PTO_TOp<"texpands", [
 }
 
 def TExtractOp : PTO_TOp<"textract", [
+  AttrSizedOperandSegments,
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -4515,8 +4519,9 @@ def TExtractOp : PTO_TOp<"textract", [
     PTODpsType:$src,
     Index:$indexRow,
     Index:$indexCol,
-    Optional<I64>:$preQuantScalar,
     PTODpsType:$dst,
+    Optional<PTODpsType>:$fp,
+    Optional<I64>:$preQuantScalar,
     OptionalAttr<PTO_AccToVecModeAttr>:$accToVecMode,
     DefaultValuedAttr<PTO_ReluPreModeAttr, "::mlir::pto::ReluPreMode::NoRelu">:$reluPreMode
   );
@@ -4526,7 +4531,10 @@ def TExtractOp : PTO_TOp<"textract", [
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    `ins` `(` $src `,` $indexRow `,` $indexCol (`,` $preQuantScalar^)? `:` qualified(type($src)) `,` type($indexRow) `,` type($indexCol) (`,` type($preQuantScalar)^)? `)`
+    `ins` `(` $src `,` $indexRow `,` $indexCol
+    (`,` $preQuantScalar^)? `:` qualified(type($src)) `,` type($indexRow) `,` type($indexCol)
+    (`,` type($preQuantScalar)^)?
+    (`fp` $fp^ `:` qualified(type($fp)))? `)`
     `outs` `(` $dst `:` qualified(type($dst) ) `)`
     attr-dict
   }];
@@ -4568,7 +4576,8 @@ def TExtractOp : PTO_TOp<"textract", [
       if ((s == ::mlir::pto::AddressSpace::VEC &&
            d == ::mlir::pto::AddressSpace::MAT) ||
           (s == ::mlir::pto::AddressSpace::ACC &&
-           d == ::mlir::pto::AddressSpace::MAT)) {
+           (d == ::mlir::pto::AddressSpace::MAT ||
+            d == ::mlir::pto::AddressSpace::VEC))) {
         return ::mlir::pto::PIPE::PIPE_FIX;
       }
 
@@ -4580,39 +4589,6 @@ def TExtractOp : PTO_TOp<"textract", [
       // Default to vector pipe for unmatched combinations.
       return ::mlir::pto::PIPE::PIPE_V;
     }
-    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
-  }];
-}
-
-def TExtractFPOp : PTO_TOp<"textract_fp", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "Extract acc tile window into dst using fp/scaling tile (tilebuf, DPS)";
-
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$fp,
-    Index:$indexRow,
-    Index:$indexCol,
-    PTODpsType:$dst,
-    OptionalAttr<PTO_AccToVecModeAttr>:$accToVecMode,
-    DefaultValuedAttr<PTO_ReluPreModeAttr, "::mlir::pto::ReluPreMode::NoRelu">:$reluPreMode
-  );
-
-  let results = (outs);
-
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `ins` `(` $src `,` $fp `,` $indexRow `,` $indexCol `:` qualified(type($src)) `,` qualified(type($fp)) `,` type($indexRow) `,` type($indexCol) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    attr-dict
-  }];
-
-  let extraClassDeclaration = [{
-    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_FIX; }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
 }
@@ -4705,45 +4681,12 @@ def TInsertOp : PTO_TOp<"tinsert", [
   }];
 }
 
-def TInsertFPOp : PTO_TOp<"tinsert_fp", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "Insert acc tile window into dst using fp/scaling tile (tilebuf, DPS)";
-
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$fp,
-    Index:$indexRow,
-    Index:$indexCol,
-    PTODpsType:$dst,
-    OptionalAttr<PTO_AccToVecModeAttr>:$accToVecMode,
-    DefaultValuedAttr<PTO_ReluPreModeAttr, "::mlir::pto::ReluPreMode::NoRelu">:$reluPreMode
-  );
-
-  let results = (outs);
-
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `ins` `(` $src `,` $fp `,` $indexRow `,` $indexCol `:` qualified(type($src)) `,` qualified(type($fp)) `,` type($indexRow) `,` type($indexCol) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    attr-dict
-  }];
-
-  let extraClassDeclaration = [{
-    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_FIX; }
-    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
-  }];
-}
-
 def TFillPadOp : PTO_TOp<"tfillpad", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
-  let summary = "Copy src into dst and fill padded elements using dst PadVal (tilebuf, DPS)";
+  let summary = "Fill padding with compiler-inferred lowering semantics (tilebuf, DPS)";
 
   let arguments = (ins
     PTODpsType:$src,
@@ -4782,62 +4725,6 @@ def TFillPadOp : PTO_TOp<"tfillpad", [
         return ::mlir::pto::PIPE::PIPE_MTE1;
       return ::mlir::pto::PIPE::PIPE_V;
     }
-    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
-  }];
-}
-
-def TFillPadExpandOp : PTO_TOp<"tfillpad_expand", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "Copy src into dst and fill padded elements using dst PadVal, allowing dst to be larger (tilebuf, DPS)";
-
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst
-  );
-
-  let results = (outs);
-
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `ins`  `(` $src `:` qualified(type($src)) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    attr-dict
-  }];
-
-  let extraClassDeclaration = [{
-    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
-    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
-  }];
-}
-
-def TFillPadInplaceOp : PTO_TOp<"tfillpad_inplace", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "In-place fill padding on shared backing storage: src supplies valid-region bounds, dst supplies target pad bounds (tilebuf, DPS)";
-
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst
-  );
-
-  let results = (outs);
-
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `ins`  `(` $src `:` qualified(type($src)) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    attr-dict
-  }];
-
-  let extraClassDeclaration = [{
-    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
 }
@@ -5079,37 +4966,6 @@ def TMinSOp : PTO_TOp<"tmins", [
 
   let extraClassDeclaration = [{
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
-    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
-  }];
-}
-
-def TMovFPOp : PTO_TOp<"tmov.fp", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "TMOV_FP: move/convert using fp (scaling) tile (tilebuf, DPS)";
-
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$fp,
-    PTODpsType:$dst
-  );
-
-  let results = (outs);
-
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `ins` `(` $src `,` $fp `:` qualified(type($src)) `,` qualified(type($fp)) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    attr-dict
-  }];
-
-  let extraClassDeclaration = [{
-    // TMOV_FP is an ACC->MAT move (Cc->Cb) with vector quant parameters in
-    // SCALING (fbuf). Treat it as a data-movement op for sync insertion.
-    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_MTE1; }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
 }
@@ -6616,41 +6472,6 @@ def TSqrtOp: PTO_TOp<"tsqrt", [
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
 }
-
-//===----------------------------------------------------------------------===//
-// PTOOps.td  (add TSTORE_FP TBDPS/tile buffer op)
-//===----------------------------------------------------------------------===//
-
-def TStoreFPOp: PTO_TOp<"tstore_fp", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
-]> {
-  let summary = "TSTORE_FP: Store an accumulator tile into global memory using a scaling (fp) tile for vector quantization parameters.";
-
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$fp,
-    PTODpsType:$dst
-  );
-
-  let results = (outs);
-
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `ins` `(` $src `,` $fp `:` qualified(type($src)) `,` qualified(type($fp)) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    attr-dict
-  }];
-  let extraClassDeclaration = [{
-    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_FIX; }
-    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
-  }];
-}
-//===----------------------------------------------------------------------===//
-// PTOOps.td  (add TSUB TBDPS/tile buffer op)
-//===----------------------------------------------------------------------===//
 
 def TSubOp: PTO_TOp<"tsub", [
   PTO_DpsInitOpInterface,
