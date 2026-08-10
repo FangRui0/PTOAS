@@ -5,6 +5,7 @@
 > Index materialization. Produces an index vector; the single physical reg
 > backing is replicate-read until a Category B/C edge needs the expanded form.
 
+
 ---
 
 ## `pto.vmi.vci`

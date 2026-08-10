@@ -8,6 +8,7 @@
 > distribution. The author never spells `EVEN`/`ODD`, `P0`–`P3`, `PK`/`UNPK`,
 > or `VL/2` addresses.
 
+
 ---
 
 ## `pto.vmi.vcvt`
@@ -119,6 +120,7 @@
   - Radix-4 (8↔32) is **not** a stacked predicate chain and **not** a UB
     roundtrip; the 1↔4 lane spread rides data load/store distribution
     (`UNPK_B*`/`PK4_B32`) or a `vselr` byte-gather.
+
 
 ---
 

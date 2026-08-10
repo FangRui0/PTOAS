@@ -33,7 +33,7 @@ def template_tadd(src0, src1, dst):
     ...
 ```
 
-The function parameter order is the operand binding contract. The daemon binds
+The function parameter order is the operand binding contract. The TileLib runtime binds
 MLIR operands positionally to these parameter names before evaluating
 constraints or rendering. If a TileLangDSL template had multiple callable
 forms, either match the ST operand order exactly or register separate PTODSL
@@ -110,6 +110,8 @@ forwards selected attributes as context attrs:
 - `cmp_mode`
 - `mask_pattern`
 - `precisionType`
+- `acc_to_vec_mode`
+- `relu_pre_mode`
 
 If a template needs a new op attribute, update the C++ context-attr forwarding
 before relying on it in Python. A template that silently assumes a default when

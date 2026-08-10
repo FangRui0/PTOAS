@@ -9,6 +9,7 @@
 > expanded to `K` copies). Under the `K ≤ 4` core profile these fan out as
 > fully-unrolled straight-line code.
 
+
 ---
 
 ## 3.1 Binary Arithmetic
@@ -107,6 +108,7 @@
   ```
   `#mi = K`, `dep = 1`.
 
+
 ---
 
 ## 3.2 Unary Arithmetic & Activation
@@ -195,6 +197,7 @@
   ```
   `#mi = K`, `dep = 1`.
 
+
 ---
 
 ## 3.3 Bitwise Ops
@@ -202,9 +205,10 @@
 ### `pto.vmi.vand` / `pto.vmi.vor` / `pto.vmi.vxor`
 
 - **semantics:** Elementwise bitwise AND / OR / XOR. Operands and result are
-  vregs by default; will also support mask-typed operands, performing a per-lane
-  predicate boolean op and yielding a mask (the data operands themselves are
-  masks, distinct from the governing `mask`).
+  vregs by default. These ops also accept mask-typed operands, performing a
+  per-lane predicate boolean op and yielding a mask. When the operands are
+  masks (predicate type), no governing `mask` operand may be given — a mask
+  operand would be ambiguous with the predicate data operands themselves.
 
   ```c
   for (int i = 0; i < L; i++)
@@ -213,9 +217,14 @@
 
 - **syntax:**
   ```mlir
+  // vreg operands (optional governing mask)
   %r = pto.vmi.vand %lhs, %rhs, %mask : !pto.vmi.vreg<L×T>, !pto.vmi.vreg<L×T>, !pto.vmi.mask<L> -> !pto.vmi.vreg<L×T>
+
+  // mask operands (no governing mask)
+  %r = pto.vmi.vand %lhs, %rhs : !pto.vmi.mask<L>, !pto.vmi.mask<L> -> !pto.vmi.mask<L>
+  %r = pto.vmi.vxor %lhs, %rhs : !pto.vmi.mask<L>, !pto.vmi.mask<L> -> !pto.vmi.mask<L>
   ```
-- **datatypes:** `i8`–`i32` (integer bitwise)
+- **datatypes:** `i8`–`i32` (integer bitwise); `pred` (per-lane boolean op)
 - **lowering to `pto.mi`:**
   ```
   K × pto.vand / pto.vor / pto.vxor
@@ -225,9 +234,10 @@
 ### `pto.vmi.vnot`
 
 - **semantics:** Elementwise bitwise NOT. Operand and result are vregs by
-  default; will also support a mask-typed operand, performing a per-lane predicate
-  complement and yielding a mask (the data operand itself is a mask, distinct
-  from the governing `mask`).
+  default. This op also accepts a mask-typed operand, performing a per-lane
+  predicate complement and yielding a mask. When the operand is a mask
+  (predicate type), no governing `mask` operand may be given — a mask operand
+  would be ambiguous with the predicate data operand itself.
 
   ```c
   for (int i = 0; i < L; i++)
@@ -236,14 +246,19 @@
 
 - **syntax:**
   ```mlir
+  // vreg operand (optional governing mask)
   %r = pto.vmi.vnot %src, %mask : !pto.vmi.vreg<L×T>, !pto.vmi.mask<L> -> !pto.vmi.vreg<L×T>
+
+  // mask operand (no governing mask)
+  %r = pto.vmi.vnot %src : !pto.vmi.mask<L> -> !pto.vmi.mask<L>
   ```
-- **datatypes:** `i8`–`i32`
+- **datatypes:** `i8`–`i32`; `pred` (predicate complement)
 - **lowering to `pto.mi`:**
   ```
   K × pto.vnot
   ```
   `#mi = K`, `dep = 1`.
+
 
 ---
 
@@ -270,6 +285,7 @@
   K × pto.vshl / pto.vshr
   ```
   `#mi = K`, `dep = 1`.
+
 
 ---
 
@@ -342,6 +358,7 @@ scalar type must match the vector element type.
   K × pto.vshls / pto.vshrs
   ```
   `#mi = K`, `dep = 1`.
+
 
 ---
 
@@ -564,6 +581,7 @@ scalar type must match the vector element type.
   %r = pto.vmi.vselr %src, %idx
       : !pto.vmi.vreg<128×f16>, !pto.vmi.vreg<128×i16> -> !pto.vmi.vreg<128×f16>
   ```
+
 
 ---
 
