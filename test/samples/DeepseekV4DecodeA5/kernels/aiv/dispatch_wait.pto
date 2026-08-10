@@ -6,14 +6,14 @@ module attributes {pto.target_arch = "a5"} {
   %c2_index = arith.constant 2 : index
   %c0_index = arith.constant 0 : index
   %c32_index = arith.constant 32 : index
-  %indices_inline3532__ssa_v0_view = pto.make_tensor_view %arg0, shape = [%c8_index, %c6_index], strides = [%c6_index, %c1_index] {layout = #pto.layout<nd>} : !pto.tensor_view<?x?xi32>
+  %indices_inline3354__ssa_v0_view = pto.make_tensor_view %arg0, shape = [%c8_index, %c6_index], strides = [%c6_index, %c1_index] {layout = #pto.layout<nd>} : !pto.tensor_view<?x?xi32>
   %data_arrived__ssa_v0_view = pto.make_tensor_view %arg1, shape = [%c2_index, %c1_index], strides = [%c1_index, %c2_index] {layout = #pto.layout<dn>} : !pto.tensor_view<?x?xi32>
-  %_idx_anchor_inline2660_inline3512__tile = pto.load_scalar %arg0[%c0_index] : !pto.ptr<i32> -> i32
-  scf.for %src_inline2629_inline3411__idx_v0 = %c0_index to %c2_index step %c1_index {
+  %_idx_anchor_inline2638_inline3333__tile = pto.load_scalar %arg0[%c0_index] : !pto.ptr<i32> -> i32
+  scf.for %src_inline2659_inline3331__idx_v0 = %c0_index to %c2_index step %c1_index {
     %0 = arith.index_cast %arg2 : i32 to index
-    %1 = arith.cmpi ne, %src_inline2629_inline3411__idx_v0, %0 : index
+    %1 = arith.cmpi ne, %src_inline2659_inline3331__idx_v0, %0 : index
     scf.if %1 {
-      %2 = arith.maxsi %src_inline2629_inline3411__idx_v0, %c0_index : index
+      %2 = arith.maxsi %src_inline2659_inline3331__idx_v0, %c0_index : index
       %data_arrived__ssa_v0_local_pview = pto.partition_view %data_arrived__ssa_v0_view, offsets = [%2, %c0_index], sizes = [%c1_index, %c1_index] : !pto.tensor_view<?x?xi32> -> !pto.partition_tensor_view<1x1xi32>
       %3 = arith.index_cast %c1_index : index to i32
       %4 = arith.index_cast %3 : i32 to index

@@ -2116,7 +2116,8 @@ def generate_testcase(
         for name, count in partial_counts.items():
             inferred_counts[name] = max(inferred_counts.get(name, 0), count)
     pointer_count_minimums = CASE_POINTER_COUNT_MINIMUMS.get(testcase, {})
-    if sample_root.name.lower().startswith("qwen3decode"):
+    sample_name_lc = sample_root.name.lower()
+    if sample_name_lc.startswith("qwen") and "decode" in sample_name_lc:
         pointer_count_minimums = {
             **pointer_count_minimums,
             **QWEN3_DECODE_POINTER_COUNT_MINIMUMS.get(testcase, {}),

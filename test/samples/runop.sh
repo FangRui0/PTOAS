@@ -20,7 +20,19 @@ PTOAS_OUT_DIR="${PTOAS_OUT_DIR:-}"
 PTO_BUILD_DIR="${PTO_BUILD_DIR:-}"
 PTOAS_ENABLE_INSERT_SYNC="${PTOAS_ENABLE_INSERT_SYNC:-1}"
 PTOAS_FLAGS="${PTOAS_FLAGS:-}"
-PTO_PTO_DIRS="${PTO_PTO_DIRS:-Sync Qwen3DecodeA3 Qwen3DecodeA5 DeepseekV4DecodeA3 DeepseekV4DecodeA5 CommSync Prelu Rem Rems Gemvmx MatmulMxLowPrecision TquantMx Movfp}"
+MODEL_PTO_DIRS=""
+for model_path in "${BASE_DIR}"/Qwen* "${BASE_DIR}"/Deepseek*; do
+  [[ -d "${model_path}" ]] || continue
+  model_name="$(basename "${model_path}")"
+  case "${model_name}" in
+    *A3|*A5)
+      if find "${model_path}" -type f -name '*.pto' -print -quit | grep -q .; then
+        MODEL_PTO_DIRS+=" ${model_name}"
+      fi
+      ;;
+  esac
+done
+PTO_PTO_DIRS="${PTO_PTO_DIRS:-Sync${MODEL_PTO_DIRS} CommSync Prelu Rem Rems Gemvmx MatmulMxLowPrecision TquantMx Movfp}"
 ENABLE_BC=0
 
 usage() {
@@ -38,7 +50,7 @@ Env:
   PTO_BUILD_DIR  # build directory root that contains tools/ptobc (optional)
   PTOAS_FLAGS  # extra flags passed to ptoas (e.g. --enable-insert-sync)
   PTOAS_ENABLE_INSERT_SYNC  # 1 to append --enable-insert-sync to PTOAS_FLAGS (default: 1)
-  PTO_PTO_DIRS  # space-separated dirs to run .pto directly (default: Sync Qwen3DecodeA3 Qwen3DecodeA5 DeepseekV4DecodeA3 DeepseekV4DecodeA5 CommSync Prelu Rem Rems Gemvmx MatmulMxLowPrecision TquantMx Movfp)
+  PTO_PTO_DIRS  # space-separated dirs to run .pto directly (default: Sync, every Qwen*/Deepseek* A3/A5 model dir, and the legacy direct-PTO dirs)
 
 Flags:
   --enablebc  # enable: python -> .pto -> ptobc -> .pto -> ptoas
@@ -153,9 +165,13 @@ direct_pto_files() {
 process_one_dir() {
   local A="$1" # folder name (e.g. Abs)
   local out_dir="$2"
-  local dir ptoas ptobc python out_subdir
+  local dir ptoas ptobc python out_subdir model_arch=""
   dir="${BASE_DIR}/${A}"
   out_subdir="${out_dir}/${A}"
+  case "${A}" in
+    Qwen*A3|Deepseek*A3) model_arch="a3" ;;
+    Qwen*A5|Deepseek*A5) model_arch="a5" ;;
+  esac
   mkdir -p "${out_subdir}"
   copy_validation_assets "${dir}" "${out_dir}" "${out_subdir}"
 
@@ -166,7 +182,7 @@ process_one_dir() {
   if [[ "${ENABLE_BC}" == "1" ]]; then
     use_ptobc_roundtrip=1
   fi
-  if [[ "$A" == "Qwen3DecodeA3" || "$A" == "Qwen3DecodeA5" || "$A" == "DeepseekV4DecodeA3" || "$A" == "DeepseekV4DecodeA5" ]]; then
+  if [[ -n "${model_arch}" ]]; then
     use_ptobc_roundtrip=0
   fi
   local -a ptoas_flags=()
@@ -205,7 +221,7 @@ process_one_dir() {
       fi
     done
   fi
-  if [[ "$A" == "Qwen3DecodeA5" || "$A" == "DeepseekV4DecodeA5" ]]; then
+  if [[ "${model_arch}" == "a5" ]]; then
     if [[ $has_pto_arch_override -eq 0 ]]; then
       ptoas_flags+=(--pto-arch a5)
       target_arch="a5"
@@ -213,7 +229,7 @@ process_one_dir() {
     if [[ $has_pto_level_override -eq 0 ]]; then
       ptoas_flags+=(--pto-level=level3)
     fi
-  elif [[ "$A" == "Qwen3DecodeA3" || "$A" == "DeepseekV4DecodeA3" ]]; then
+  elif [[ "${model_arch}" == "a3" ]]; then
     if [[ $has_pto_level_override -eq 0 ]]; then
       ptoas_flags+=(--pto-level=level3)
     fi
@@ -251,28 +267,28 @@ process_one_dir() {
     echo -e "${A}\tSKIP\tMissing dir: $dir"
     return 0
   fi
-  if [[ ( "$A" == "Qwen3DecodeA3" || "$A" == "DeepseekV4DecodeA3" ) && "${target_arch_lc}" != "a3" ]]; then
+  if [[ "${model_arch}" == "a3" && "${target_arch_lc}" != "a3" ]]; then
     local direct_case
     while IFS= read -r -d '' direct_case; do
       echo -e "${A}($(basename "$direct_case"))\tSKIP\trequires --pto-arch=a3"
     done < <(direct_pto_files "$dir")
     return 0
   fi
-  if [[ ( "$A" == "Qwen3DecodeA3" || "$A" == "DeepseekV4DecodeA3" ) && -n "${soc_lc}" && ( "${soc_lc}" == *"a5"* || "${soc_lc}" == *"950"* ) ]]; then
+  if [[ "${model_arch}" == "a3" && -n "${soc_lc}" && ( "${soc_lc}" == *"a5"* || "${soc_lc}" == *"950"* ) ]]; then
     local direct_case
     while IFS= read -r -d '' direct_case; do
       echo -e "${A}($(basename "$direct_case"))\tSKIP\trequires A3 target SOC"
     done < <(direct_pto_files "$dir")
     return 0
   fi
-  if [[ ( "$A" == "Qwen3DecodeA5" || "$A" == "DeepseekV4DecodeA5" ) && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a5" ]]; then
+  if [[ "${model_arch}" == "a5" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a5" ]]; then
     local direct_case
     while IFS= read -r -d '' direct_case; do
       echo -e "${A}($(basename "$direct_case"))\tSKIP\trequires --pto-arch=a5"
     done < <(direct_pto_files "$dir")
     return 0
   fi
-  if [[ ( "$A" == "Qwen3DecodeA5" || "$A" == "DeepseekV4DecodeA5" ) && -n "${soc_lc}" && "${soc_lc}" != *"a5"* && "${soc_lc}" != *"950"* ]]; then
+  if [[ "${model_arch}" == "a5" && -n "${soc_lc}" && "${soc_lc}" != *"a5"* && "${soc_lc}" != *"950"* ]]; then
     local direct_case
     while IFS= read -r -d '' direct_case; do
       echo -e "${A}($(basename "$direct_case"))\tSKIP\trequires A5 target SOC"
@@ -1339,7 +1355,7 @@ PY
       ptobc_file="${out_subdir}/${base}.ptobc"
       decoded_pto="${out_subdir}/${base}-roundtrip.pto"
       cpp="${out_subdir}/${base}.cpp"
-      if [[ "$A" == "Qwen3DecodeA3" || "$A" == "Qwen3DecodeA5" || "$A" == "DeepseekV4DecodeA3" || "$A" == "DeepseekV4DecodeA5" ]]; then
+      if [[ -n "${model_arch}" ]]; then
         cpp="${out_subdir}/${base}-pto.cpp"
       elif [[ "$base" == "tquant_mx" ]]; then
         # Board validation currently discovers generated sample kernels via

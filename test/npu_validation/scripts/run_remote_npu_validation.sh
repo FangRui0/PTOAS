@@ -251,11 +251,13 @@ run_only_matches() {
   local list="$1"
   local testcase="$2"
   local sample_name="$3"
-  local sample_lc token token_lc
+  local case_id="$4"
+  local sample_lc case_id_lc token token_lc
   local -a tokens=()
 
   list_contains "${list}" "${testcase}" && return 0
   sample_lc="$(printf '%s' "${sample_name}" | tr '[:upper:]' '[:lower:]')"
+  case_id_lc="$(printf '%s' "${case_id}" | tr '[:upper:]' '[:lower:]')"
   IFS=',' read -r -a tokens <<< "${list}"
   for token in "${tokens[@]}"; do
     token_lc="$(printf '%s' "${token}" | tr '[:upper:]' '[:lower:]')"
@@ -267,6 +269,9 @@ run_only_matches() {
         [[ "${sample_lc}" == qwen* ]] && return 0
         ;;
       "${sample_lc}")
+        return 0
+        ;;
+      "${case_id_lc}")
         return 0
         ;;
     esac
@@ -511,8 +516,10 @@ while IFS= read -r -d '' cpp; do
   testcase="${testcase%_pto}"
   case_dir="$(cd "$(dirname "${cpp}")" && pwd)"
   sample_name="$(basename "${case_dir}")"
+  sample_name_lc="$(printf '%s' "${sample_name}" | tr '[:upper:]' '[:lower:]')"
+  case_id="${sample_name}/${testcase}"
 
-  if [[ -n "${RUN_ONLY_CASES_NORM}" ]] && ! run_only_matches "${RUN_ONLY_CASES_NORM}" "${testcase}" "${sample_name}"; then
+  if [[ -n "${RUN_ONLY_CASES_NORM}" ]] && ! run_only_matches "${RUN_ONLY_CASES_NORM}" "${testcase}" "${sample_name}" "${case_id}"; then
     continue
   fi
 
@@ -521,7 +528,7 @@ while IFS= read -r -d '' cpp; do
   # execution, so skip it in runtime stage.
   if [[ "${STAGE}" == "run" && "${testcase}" == "async_comm" ]]; then
     skip_count=$((skip_count + 1))
-    printf "%s\tSKIP\t%s\truntime skip: async_comm\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
+    printf "%s\tSKIP\t%s\truntime skip: async_comm\n" "${case_id}" "${STAGE}" >> "${RESULTS_TSV}"
     log "SKIP: ${testcase} (runtime skip)"
     continue
   fi
@@ -532,7 +539,7 @@ while IFS= read -r -d '' cpp; do
   # allowing build coverage and A5 runtime validation.
   if [[ "${STAGE}" == "run" && "${testcase}" == "tprefetch_async_binding" && "${PTOAS_BOARD_IS_A5:-0}" != "1" ]]; then
     skip_count=$((skip_count + 1))
-    printf "%s\tSKIP\t%s\trequires A5 SDMA workspace runtime support\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
+    printf "%s\tSKIP\t%s\trequires A5 SDMA workspace runtime support\n" "${case_id}" "${STAGE}" >> "${RESULTS_TSV}"
     log "SKIP: ${testcase} (requires A5 SDMA workspace runtime)"
     continue
   fi
@@ -544,7 +551,7 @@ while IFS= read -r -d '' cpp; do
   if [[ "${STAGE}" == "run" && "${testcase}" == "hc_head_reduce" \
         && "${sample_name}" == "DeepseekV4DecodeA3" ]]; then
     skip_count=$((skip_count + 1))
-    printf "%s\tSKIP\t%s\tA3 legacy EmitC dynamic-stride MTE runtime incompatibility\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
+    printf "%s\tSKIP\t%s\tA3 legacy EmitC dynamic-stride MTE runtime incompatibility\n" "${case_id}" "${STAGE}" >> "${RESULTS_TSV}"
     log "SKIP: ${testcase} (A3 legacy EmitC dynamic-stride MTE runtime incompatibility)"
     continue
   fi
@@ -553,9 +560,9 @@ while IFS= read -r -d '' cpp; do
   # direct model export: repeated A3/A5 runs disagree in the valid output
   # region or fault in the D-cache/UB transfer.
   if [[ "${STAGE}" == "run" && "${testcase}" == "out_proj_residual" \
-        && ( "${sample_name}" == "Qwen3DecodeA3" || "${sample_name}" == "Qwen3DecodeA5" ) ]]; then
+        && "${sample_name_lc}" == qwen* ]]; then
     skip_count=$((skip_count + 1))
-    printf "%s\tSKIP\t%s\tlegacy EmitC mixed C2V runtime incompatibility\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
+    printf "%s\tSKIP\t%s\tlegacy EmitC mixed C2V runtime incompatibility\n" "${case_id}" "${STAGE}" >> "${RESULTS_TSV}"
     log "SKIP: ${testcase} (legacy EmitC mixed C2V runtime incompatibility)"
     continue
   fi
@@ -564,9 +571,9 @@ while IFS= read -r -d '' cpp; do
   # incorrect bf16 output on both current A3 and A5 runtimes. Keep direct
   # export and build coverage while making the runtime limitation explicit.
   if [[ "${STAGE}" == "run" && "${testcase}" == "down_proj_residual" \
-        && ( "${sample_name}" == "Qwen3DecodeA3" || "${sample_name}" == "Qwen3DecodeA5" ) ]]; then
+        && "${sample_name_lc}" == qwen* ]]; then
     skip_count=$((skip_count + 1))
-    printf "%s\tSKIP\t%s\tlegacy EmitC Qwen down-projection C2V runtime incompatibility\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
+    printf "%s\tSKIP\t%s\tlegacy EmitC Qwen down-projection C2V runtime incompatibility\n" "${case_id}" "${STAGE}" >> "${RESULTS_TSV}"
     log "SKIP: ${testcase} (legacy EmitC Qwen down-projection C2V runtime incompatibility)"
     continue
   fi
@@ -577,26 +584,26 @@ while IFS= read -r -d '' cpp; do
   # export coverage and make the board-runtime limitation explicit.
   if [[ "${STAGE}" == "run" && ( "${testcase}" == "moe_signal_clear" || "${testcase}" == "lm_head_signal_clear" ) ]]; then
     skip_count=$((skip_count + 1))
-    printf "%s\tSKIP\t%s\tlegacy EmitC partition-tensor CMO host-compile incompatibility\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
+    printf "%s\tSKIP\t%s\tlegacy EmitC partition-tensor CMO host-compile incompatibility\n" "${case_id}" "${STAGE}" >> "${RESULTS_TSV}"
     log "SKIP: ${testcase} (legacy EmitC partition-tensor CMO host-compile incompatibility)"
     continue
   fi
 
   if [[ -n "${SKIP_CASES_NORM}" ]] && list_contains "${SKIP_CASES_NORM}" "${testcase}"; then
     skip_count=$((skip_count + 1))
-    printf "%s\tSKIP\t%s\tlisted in SKIP_CASES\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
+    printf "%s\tSKIP\t%s\tlisted in SKIP_CASES\n" "${case_id}" "${STAGE}" >> "${RESULTS_TSV}"
     log "SKIP: ${testcase} (SKIP_CASES)"
     continue
   fi
   if [[ "${STAGE}" == "run" && "${RUN_MODE}" == "npu" ]] && case_requires_multicard_comm "${cpp}"; then
     skip_count=$((skip_count + 1))
-    printf "%s\tSKIP\t%s\trequires multi-card communication harness\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
+    printf "%s\tSKIP\t%s\trequires multi-card communication harness\n" "${case_id}" "${STAGE}" >> "${RESULTS_TSV}"
     log "SKIP: ${testcase} (requires multi-card communication harness)"
     continue
   fi
   if [[ "${testcase}" == "partarg" ]] && ! pto_isa_has_symbol "TPARTARGMAX("; then
     skip_count=$((skip_count + 1))
-    printf "%s\tSKIP\t%s\tpto-isa missing TPARTARGMAX/TPARTARGMIN\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
+    printf "%s\tSKIP\t%s\tpto-isa missing TPARTARGMAX/TPARTARGMIN\n" "${case_id}" "${STAGE}" >> "${RESULTS_TSV}"
     log "SKIP: ${testcase} (pto-isa missing TPARTARG intrinsics)"
     continue
   fi
@@ -604,13 +611,13 @@ while IFS= read -r -d '' cpp; do
     soc_lc="$(printf '%s' "${SOC_VERSION:-}" | tr '[:upper:]' '[:lower:]')"
     if [[ "$soc_lc" != *"a5"* && "$soc_lc" != *"950"* ]]; then
       skip_count=$((skip_count + 1))
-      printf "%s\tSKIP\t%s\trequires A5 (set SOC_VERSION to A5/950)\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
+      printf "%s\tSKIP\t%s\trequires A5 (set SOC_VERSION to A5/950)\n" "${case_id}" "${STAGE}" >> "${RESULTS_TSV}"
       log "SKIP: ${testcase} (requires A5 SOC_VERSION)"
       continue
     fi
     if [[ "${PTOAS_BOARD_IS_A3:-0}" == "1" ]]; then
       skip_count=$((skip_count + 1))
-      printf "%s\tSKIP\t%s\trequires A5 board\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
+      printf "%s\tSKIP\t%s\trequires A5 board\n" "${case_id}" "${STAGE}" >> "${RESULTS_TSV}"
       log "SKIP: ${testcase} (requires A5 board)"
       continue
     fi
@@ -633,7 +640,7 @@ while IFS= read -r -d '' cpp; do
   if [[ $gen_rc -ne 0 ]]; then
     status=1
     fail_count=$((fail_count + 1))
-    printf "%s\tFAIL\tgen\texit=%s\n" "${testcase}" "${gen_rc}" >> "${RESULTS_TSV}"
+    printf "%s\tFAIL\tgen\texit=%s\n" "${case_id}" "${gen_rc}" >> "${RESULTS_TSV}"
     log "ERROR: generate_testcase failed (exit ${gen_rc}): ${testcase}"
     continue
   fi
@@ -737,21 +744,23 @@ while IFS= read -r -d '' cpp; do
   if [[ $case_rc -ne 0 ]]; then
     status=1
     fail_count=$((fail_count + 1))
-    printf "%s\tFAIL\t%s\texit=%s\n" "${testcase}" "${STAGE}" "${case_rc}" >> "${RESULTS_TSV}"
+    printf "%s\tFAIL\t%s\texit=%s\n" "${case_id}" "${STAGE}" "${case_rc}" >> "${RESULTS_TSV}"
     log "ERROR: testcase failed (exit ${case_rc}): ${testcase}"
   elif [[ -f "${determinism_marker}" ]]; then
     determinism_only_count=$((determinism_only_count + 1))
-    printf "%s\tDETERMINISM_ONLY\t%s\tno independent golden; repeated NPU output matched\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
+    printf "%s\tOK\t%s\tvalidation=determinism-only; repeated NPU output matched\n" "${case_id}" "${STAGE}" >> "${RESULTS_TSV}"
     log "DETERMINISM_ONLY: ${testcase}"
   else
     ok_count=$((ok_count + 1))
-    printf "%s\tOK\t%s\t-\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
+    printf "%s\tOK\t%s\tvalidation=independent-golden\n" "${case_id}" "${STAGE}" >> "${RESULTS_TSV}"
     log "OK: ${testcase}"
   fi
 done < <(find "${ROOT_DIR}/test/samples" -type f -name '*-pto.cpp' -print0)
 
 log "=== SUMMARY ==="
-log "OK=${ok_count} DETERMINISM_ONLY=${determinism_only_count} FAIL=${fail_count} SKIP=${skip_count}"
+passed_count=$((ok_count + determinism_only_count))
+matched_count=$((passed_count + fail_count + skip_count))
+log "MATCHED=${matched_count} PASS=${passed_count} CORRECTNESS_OK=${ok_count} DETERMINISM_ONLY=${determinism_only_count} FAIL=${fail_count} SKIP=${skip_count}"
 log "RESULTS_TSV=${RESULTS_TSV}"
 
 exit "${status}"

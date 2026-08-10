@@ -7,13 +7,13 @@ module attributes {pto.target_arch = "a5"} {
   %c8_index = arith.constant 8 : index
   %x_out__rv_v2_view = pto.make_tensor_view %arg0, shape = [%arg4, %c4096_index], strides = [%c4096_index, %c1_index] {layout = #pto.layout<nd>} : !pto.tensor_view<?x?xbf16>
   %lm_head_hidden_done__ssa_v0_view = pto.make_tensor_view %arg1, shape = [%c2_index, %c1_index], strides = [%c1_index, %c2_index] {layout = #pto.layout<dn>} : !pto.tensor_view<?x?xi32>
-  %_hidden_anchor_inline37_inline7402__tile = pto.load_scalar %arg0[%c0_index] : !pto.ptr<bf16> -> bf16
-  scf.for %owner_tp_inline13_inline7359__idx_v0 = %c0_index to %c2_index step %c1_index {
+  %_hidden_anchor_inline30_inline7424__tile = pto.load_scalar %arg0[%c0_index] : !pto.ptr<bf16> -> bf16
+  scf.for %owner_tp_inline29_inline7421__idx_v0 = %c0_index to %c2_index step %c1_index {
     %0 = arith.index_cast %arg2 : i32 to index
     %1 = arith.remsi %0, %c2_index : index
-    %3 = arith.cmpi ne, %owner_tp_inline13_inline7359__idx_v0, %1 : index
+    %3 = arith.cmpi ne, %owner_tp_inline29_inline7421__idx_v0, %1 : index
     scf.if %3 {
-      %4 = arith.maxsi %owner_tp_inline13_inline7359__idx_v0, %c0_index : index
+      %4 = arith.maxsi %owner_tp_inline29_inline7421__idx_v0, %c0_index : index
       %lm_head_hidden_done__ssa_v0_local_pview = pto.partition_view %lm_head_hidden_done__ssa_v0_view, offsets = [%4, %c0_index], sizes = [%c1_index, %c1_index] : !pto.tensor_view<?x?xi32> -> !pto.partition_tensor_view<1x1xi32>
       %6 = arith.muli %c1_index, %c8_index : index
       %7 = arith.index_cast %6 : index to i32
