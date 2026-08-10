@@ -393,14 +393,30 @@ static LogicalResult replaceTSort32WithTmp(pto::TSort32Op op,
   if (op.getTmp())
     return success();
   auto valid = getValidShapeVec(op.getSrc().getType());
-  if (valid.size() != 2 || valid[1] == ShapedType::kDynamic ||
-      valid[1] % 32 == 0)
+  if (valid.size() != 2)
+    return success();
+  // Only a statically-known 32-aligned width provably skips the tail path and
+  // needs no tmp. A dynamic width may be non-aligned at runtime, so it must be
+  // treated conservatively rather than assumed aligned.
+  bool dynamicWidth = valid[1] == ShapedType::kDynamic;
+  if (!dynamicWidth && valid[1] % 32 == 0)
     return success();
   if (requireExplicitTmp)
     return op.emitOpError(
-        "requires explicit tmp for non-32-aligned tsort32 when PlanMemory is skipped");
+        "requires explicit tmp for tsort32 with dynamic or non-32-aligned width "
+        "when PlanMemory is skipped");
 
-  FailureOr<pto::TileBufType> tmpType = makeSameShapeTmpType(ctx, op.getSrc());
+  FailureOr<pto::TileBufType> tmpType = failure();
+  if (dynamicWidth) {
+    // The runtime width may be non-32-aligned, so size the scratch buffer by
+    // the full physical width to guarantee room for the tail path.
+    auto srcTy = dyn_cast<pto::TileBufType>(op.getSrc().getType());
+    auto shape = getShapeVec(op.getSrc().getType());
+    if (srcTy && shape.size() == 2 && !hasDynamicDim(shape))
+      tmpType = makeVecTmpType(ctx, shape, srcTy.getElementType(), shape);
+  } else {
+    tmpType = makeSameShapeTmpType(ctx, op.getSrc());
+  }
   if (failed(tmpType))
     return op.emitOpError(
         "requires static tile_buf src to materialize implicit tsort32 tmp");
@@ -747,8 +763,17 @@ static LogicalResult materializeTMrgSortTmp(pto::TMrgSortOp op,
   }
   if (!elementType || totalCols <= 0)
     return op.emitOpError("failed to infer tmrgsort format2 tmp type");
+  // The verifier requires tmp.cols >= dst.cols as well as tmp.cols >=
+  // sum(src.cols), so size the scratch by the wider of the two.
+  int64_t dstCols = 0;
+  for (Value dst : op.getDsts()) {
+    auto dstShape = getShapeVec(dst.getType());
+    if (dstShape.size() == 2 && dstShape[1] != ShapedType::kDynamic)
+      dstCols = std::max(dstCols, dstShape[1]);
+  }
+  int64_t tmpCols = std::max(totalCols, dstCols);
   pto::TileBufType tmpType =
-      makeVecTmpType(ctx, {1, totalCols}, elementType, {1, totalCols});
+      makeVecTmpType(ctx, {1, tmpCols}, elementType, {1, tmpCols});
   OpBuilder builder(op);
   FailureOr<Value> tmp = createAllocTmp(builder, op.getLoc(), tmpType);
   if (failed(tmp))
