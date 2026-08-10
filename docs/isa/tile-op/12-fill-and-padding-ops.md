@@ -41,7 +41,7 @@ pto.tfillpad ins(%src : !pto.tile_buf<...>)
 - The destination tile must carry a meaningful pad configuration.
 - In-place and expand lowering are VEC-only. Normal lowering also supports the homogeneous MAT overload.
 - Expand inference compares physical `shape`, not `valid_shape`.
-- When physical shapes are equal, PTOAS compares exact starting addresses after PlanMemory. If equality cannot be proven, it conservatively chooses normal lowering.
+- When physical shapes are equal, PTOAS compares exact starting addresses after PlanMemory. If equality cannot be proven, it conservatively chooses alias-safe normal lowering, which copies the complete valid region before writing padding.
 - MAT always uses Normal lowering, including when source and destination share the same starting address.
 
 **Example:**

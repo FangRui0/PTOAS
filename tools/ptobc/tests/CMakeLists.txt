@@ -42,6 +42,15 @@ add_test(NAME ptobc_v0_fp_schema_compatibility_check
     ${CMAKE_SOURCE_DIR}/tools/ptobc/generated/ptobc_opcodes_v0.h
 )
 
+add_test(NAME ptobc_tfillpad_legacy_v0_decode
+  COMMAND ${CMAKE_COMMAND} -E env
+    PTOBC_BIN=$<TARGET_FILE:ptobc>
+    PTOAS_BIN=${CMAKE_BINARY_DIR}/tools/ptoas/ptoas
+    PYTHON_EXECUTABLE=${Python3_EXECUTABLE}
+    TESTDATA_DIR=${PTObc_TESTDATA_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/tfillpad_legacy_v0_decode.sh
+)
+
 add_test(NAME ptobc_trowexpandsub_v0_encode
   COMMAND ${CMAKE_COMMAND} -E env
     PTOBC_BIN=$<TARGET_FILE:ptobc>

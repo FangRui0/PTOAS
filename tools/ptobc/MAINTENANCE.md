@@ -29,6 +29,7 @@ Run (or rely on CI):
 - `ctest -R ptobc_to_ptoas_smoke`
 - `ctest -R ptobc_opcode_coverage_check`
 - `ctest -R ptobc_v0_fp_schema_compatibility_check`
+- `ctest -R ptobc_tfillpad_legacy_v0_decode`
 
 ## Notes
 - `ptobc_opcode_coverage_check` is a heuristic based on `mnemonic = "..."` occurrences.

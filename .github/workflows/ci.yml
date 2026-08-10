@@ -326,6 +326,14 @@ jobs:
           export PATH="${PTOAS_VENV}/bin:${LLVM_DIR}/bin:${PATH}"
           ctest --test-dir "${PTO_BUILD_DIR}" --output-on-failure -L PTODSL
 
+      - name: Run PTO-BC tests
+        shell: bash
+        env:
+          LLVM_DIR: ${{ env.LLVM_DIR }}
+        run: |
+          export PATH="${PTOAS_VENV}/bin:${LLVM_DIR}/bin:${PATH}"
+          ctest --test-dir "${PTO_BUILD_DIR}" --output-on-failure -R '^ptobc_'
+
       - name: Run lit tests
         shell: bash
         env:

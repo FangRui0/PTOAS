@@ -46,7 +46,10 @@ PY
 grep -F "pto.textract ins(" "${ROUNDTRIP}" >/dev/null
 grep -F "pto.tinsert ins(" "${ROUNDTRIP}" >/dev/null
 grep -F "pto.tmov ins(" "${ROUNDTRIP}" >/dev/null
-[[ $(grep -Fc " fp " "${ROUNDTRIP}") -eq 3 ]]
+[[ $(grep -Fc " fp " "${ROUNDTRIP}") -eq 2 ]]
+grep -F "pto.tmov ins(" "${ROUNDTRIP}" \
+  | grep -F ", %" \
+  | grep -F "!pto.tile_buf<scaling" >/dev/null
 
 # Parsing and verification prove that decoder-reconstructed segment metadata is
 # valid, including records encoded with the legacy FP wire operand ordering.

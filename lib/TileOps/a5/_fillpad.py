@@ -211,12 +211,30 @@ def register_fillpad():
         if lowering_kind == "in_place":
             _fill_inplace(dst, src_valid_rows, src_valid_cols, dst_valid_rows, dst_valid_cols)
             return
+        if lowering_kind == "normal":
+            # Normal is the conservative fallback when memory planning cannot
+            # prove whether the two tile addresses alias. Preserve the entire
+            # valid source region before padding so this path is correct for
+            # both distinct and exactly aliased storage.
+            _copy_region(src, dst, src_valid_rows, 0, src_valid_cols)
+            _fill_inplace(
+                dst,
+                src_valid_rows,
+                src_valid_cols,
+                dst_valid_rows,
+                dst_valid_cols,
+            )
+            return
         _copy_region(src, dst, src_valid_rows, 0, aligned_cols)
-        fill_row_stop = (
-            dst_valid_rows if lowering_kind == "expand" else src_valid_rows
-        )
         scalar_tail_start = _scalar_tail_start(dst, lanes)
-        _fill(dst, 0, fill_row_stop, aligned_cols, dst_valid_cols, scalar_tail_start=scalar_tail_start)
+        _fill(
+            dst,
+            0,
+            dst_valid_rows,
+            aligned_cols,
+            dst_valid_cols,
+            scalar_tail_start=scalar_tail_start,
+        )
         _copy_region(src, dst, src_valid_rows, aligned_cols, src_valid_cols)
         _fill(dst, src_valid_rows, dst_valid_rows, 0, dst_valid_cols, scalar_tail_start=scalar_tail_start)
 

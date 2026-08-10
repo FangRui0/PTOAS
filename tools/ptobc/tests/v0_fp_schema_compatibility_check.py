@@ -15,6 +15,9 @@ from pathlib import Path
 EXPECTED = {
     0x1021: ("pto.textract", 0x00, 4),
     0x1022: ("pto.textract", 0x00, 5),
+    0x1023: ("pto.tfillpad", 0x00, 2),
+    0x1024: ("pto.tfillpad", 0x00, 2),
+    0x1025: ("pto.tfillpad", 0x00, 2),
     0x102D: ("pto.tinsert", 0x00, 4),
     0x102E: ("pto.tinsert", 0x00, 5),
     0x1038: ("pto.tmov", 0x00, 2),

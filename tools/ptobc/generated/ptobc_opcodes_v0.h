@@ -102,6 +102,9 @@ inline constexpr OpInfo kOpTable[] = {
   // Legacy textract_fp wire opcode; decoded as the unified pto.textract op.
   {0x1022, "pto.textract", 0, 0x00, 0x00, 5, 0, 0, 0x00},
   {0x1023, "pto.tfillpad", 0, 0x00, 0x00, 2, 0, 0, 0x00},
+  // Legacy tfillpad wire opcodes; decoded as the unified pto.tfillpad op.
+  {0x1024, "pto.tfillpad", 0, 0x00, 0x00, 2, 0, 0, 0x00},
+  {0x1025, "pto.tfillpad", 0, 0x00, 0x00, 2, 0, 0, 0x00},
   {0x1026, "pto.tfmod", 0, 0x00, 0x00, 3, 0, 0, 0x00},
   {0x1027, "pto.tfmods", 0, 0x00, 0x00, 3, 0, 0, 0x00},
   {0x1028, "pto.tgather", 0, 0x00, 0x02, 0, 0, 0, 0x00},
