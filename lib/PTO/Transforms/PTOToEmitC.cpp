@@ -12846,6 +12846,17 @@ static bool needsWholeFunctionSCFToCF(func::FuncOp func) {
       return WalkResult::advance();
     }
 
+    // SCFToControlFlow must see the whole function for while-like control
+    // flow.  A while may be nested below an scf.for/scf.if region even when
+    // the immediate parent operation does not advertise SingleBlock.  Running
+    // the conversion only on the top-level function also lets it lower the
+    // enclosing SCF regions in a consistent order and avoids leaving a while
+    // behind for the local single-block-sensitive fallback below.
+    if (isa<scf::WhileOp, scf::IndexSwitchOp>(op)) {
+      needs = true;
+      return WalkResult::interrupt();
+    }
+
     if (parentOp && parentOp->hasTrait<OpTrait::SingleBlock>()) {
       needs = true;
       return WalkResult::interrupt();
@@ -13078,9 +13089,9 @@ struct SCFIndexSwitchToCF : public OpRewritePattern<scf::IndexSwitchOp> {
 
 // Lower scf.while into CFG blocks with cf.br/cf.cond_br.
 //
-// Note: This requires the parent region to allow multiple blocks. In
-// particular, scf.if/scf.for regions are single-block and cannot contain this
-// lowering.
+// The SCF-to-ControlFlow pre-pass may already have split nested regions into
+// multiple blocks. This pattern therefore moves complete regions, rather than
+// assuming that each region still consists of one block.
 struct SCFWhileToCF : public OpRewritePattern<scf::WhileOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -13111,47 +13122,6 @@ struct SCFWhileToCF : public OpRewritePattern<scf::WhileOp> {
       result.value().replaceAllUsesWith(exitArgs[result.index()]);
   }
 
-  static Block *createWhileHeaderBlock(PatternRewriter &rewriter,
-                                       scf::WhileOp op, Location loc,
-                                       Block *afterWhileBlock) {
-    SmallVector<Type> headerArgTypes;
-    for (Value init : op.getInits())
-      headerArgTypes.push_back(init.getType());
-    SmallVector<Location> headerArgLocs(headerArgTypes.size(), loc);
-    return rewriter.createBlock(afterWhileBlock->getParent(),
-                                afterWhileBlock->getIterator(), headerArgTypes,
-                                headerArgLocs);
-  }
-
-  static Block *createWhileBodyBlock(PatternRewriter &rewriter, scf::WhileOp op,
-                                     Location loc, Block *afterWhileBlock) {
-    Block &afterRegionBlock = op.getAfter().front();
-    SmallVector<Type> bodyArgTypes(afterRegionBlock.getArgumentTypes().begin(),
-                                   afterRegionBlock.getArgumentTypes().end());
-    SmallVector<Location> bodyArgLocs(bodyArgTypes.size(), loc);
-    return rewriter.createBlock(afterWhileBlock->getParent(),
-                                afterWhileBlock->getIterator(), bodyArgTypes,
-                                bodyArgLocs);
-  }
-
-  static void rewriteWhileTerminators(PatternRewriter &rewriter, Location loc,
-                                      Block *headerBlock, Block *bodyBlock,
-                                      Block *afterWhileBlock) {
-    auto condOp = cast<scf::ConditionOp>(headerBlock->getTerminator());
-    rewriter.setInsertionPoint(condOp);
-    rewriter.create<cf::CondBranchOp>(loc, condOp.getCondition(),
-                                      /*trueDest=*/bodyBlock,
-                                      /*trueOperands=*/condOp.getArgs(),
-                                      /*falseDest=*/afterWhileBlock,
-                                      /*falseOperands=*/condOp.getArgs());
-    rewriter.eraseOp(condOp);
-
-    auto yieldOp = cast<scf::YieldOp>(bodyBlock->getTerminator());
-    rewriter.setInsertionPoint(yieldOp);
-    rewriter.create<cf::BranchOp>(loc, headerBlock, yieldOp.getOperands());
-    rewriter.eraseOp(yieldOp);
-  }
-
   LogicalResult matchAndRewrite(scf::WhileOp op,
                                 PatternRewriter &rewriter) const override {
     Operation *parentOp = op->getParentOp();
@@ -13167,21 +13137,66 @@ struct SCFWhileToCF : public OpRewritePattern<scf::WhileOp> {
     auto loc = op.getLoc();
     Block *afterWhileBlock = splitAfterWhileBlock(rewriter, op);
     addWhileExitArguments(rewriter, op, loc, afterWhileBlock);
-    Block *headerBlock = createWhileHeaderBlock(rewriter, op, loc,
-                                                afterWhileBlock);
-    Block *bodyBlock = createWhileBodyBlock(rewriter, op, loc, afterWhileBlock);
 
-    // Move the before/after region bodies into the new CFG blocks.
-    Block &afterRegionBlock = op.getAfter().front();
-    rewriter.mergeBlocks(&op.getBefore().front(), headerBlock,
-                         headerBlock->getArguments());
-    rewriter.mergeBlocks(&afterRegionBlock, bodyBlock, bodyBlock->getArguments());
-    rewriteWhileTerminators(rewriter, loc, headerBlock, bodyBlock,
-                            afterWhileBlock);
+    // SCFToControlFlow may already have lowered nested scf.if/scf.for ops in
+    // either region, leaving the region with several blocks. Move all of the
+    // blocks into the parent CFG instead of merging only the entry block.
+    // This also keeps existing cf.br/cf.cond_br edges intact.
+    SmallVector<Block *> beforeBlocks;
+    SmallVector<Block *> afterBlocks;
+    for (Block &block : op.getBefore())
+      beforeBlocks.push_back(&block);
+    for (Block &block : op.getAfter())
+      afterBlocks.push_back(&block);
+    if (beforeBlocks.empty() || afterBlocks.empty())
+      return rewriter.notifyMatchFailure(op, "expected non-empty while regions");
+
+    Block *beforeEntry = beforeBlocks.front();
+    Block *afterEntry = afterBlocks.front();
+    Region *parentRegion = afterWhileBlock->getParent();
+    rewriter.inlineRegionBefore(op.getAfter(), *parentRegion,
+                                afterWhileBlock->getIterator());
+    rewriter.inlineRegionBefore(op.getBefore(), *parentRegion,
+                                afterWhileBlock->getIterator());
+
+    // The before region has one scf.condition terminator. Its true edge enters
+    // the after region and its false edge exits the loop with the carried
+    // values. The after region's scf.yield terminator(s) form back edges.
+    scf::ConditionOp condition;
+    for (Block *block : beforeBlocks) {
+      if (auto candidate = dyn_cast<scf::ConditionOp>(block->getTerminator())) {
+        if (condition)
+          return rewriter.notifyMatchFailure(
+              op, "expected exactly one scf.condition in the before region");
+        condition = candidate;
+      }
+    }
+    if (!condition)
+      return rewriter.notifyMatchFailure(op,
+                                         "expected scf.condition terminator");
+
+    rewriter.setInsertionPoint(condition);
+    rewriter.create<cf::CondBranchOp>(
+        loc, condition.getCondition(), afterEntry, condition.getArgs(),
+        afterWhileBlock, condition.getArgs());
+    rewriter.eraseOp(condition);
+
+    for (Block *block : afterBlocks) {
+      auto yield = dyn_cast<scf::YieldOp>(block->getTerminator());
+      if (!yield) {
+        if (isa<cf::BranchOp, cf::CondBranchOp>(block->getTerminator()))
+          continue;
+        return rewriter.notifyMatchFailure(
+            op, "expected scf.yield or control-flow terminator");
+      }
+      rewriter.setInsertionPoint(yield);
+      rewriter.create<cf::BranchOp>(loc, beforeEntry, yield.getOperands());
+      rewriter.eraseOp(yield);
+    }
 
     // Replace scf.while itself with a branch to the header.
     rewriter.setInsertionPoint(op);
-    rewriter.create<cf::BranchOp>(loc, headerBlock, op.getInits());
+    rewriter.create<cf::BranchOp>(loc, beforeEntry, op.getInits());
     rewriter.eraseOp(op);
     return success();
   }
@@ -13798,7 +13813,9 @@ static AICORE inline void PTOAS__DCCI_SINGLE_CACHE_LINE(Ptr ptr) {
       // scf.if). If we see such nesting, lower the entire function to the
       // ControlFlow dialect first.
       bool needsAnySCFToCF = false;
-      for (auto func : mop.getOps<func::FuncOp>()) {
+      SmallVector<func::FuncOp> functions;
+      mop.walk([&](func::FuncOp func) { functions.push_back(func); });
+      for (func::FuncOp func : functions) {
         if (needsWholeFunctionSCFToCF(func)) {
           needsAnySCFToCF = true;
           break;
@@ -13813,11 +13830,11 @@ static AICORE inline void PTOAS__DCCI_SINGLE_CACHE_LINE(Ptr ptr) {
         // Only eliminate the single-block SCF constructs; we'll pre-lower
         // scf.while/index_switch/execute_region ourselves afterwards.
         scfToCfTarget.addIllegalOp<scf::ForallOp, scf::ForOp, scf::IfOp,
-                                   scf::ParallelOp>();
+                                   scf::ParallelOp, scf::WhileOp>();
         scfToCfTarget.markUnknownOpDynamicallyLegal(
             [](Operation *) { return true; });
 
-        for (auto func : mop.getOps<func::FuncOp>()) {
+        for (func::FuncOp func : functions) {
           if (!needsWholeFunctionSCFToCF(func))
             continue;
           if (failed(applyPartialConversion(func, scfToCfTarget,
