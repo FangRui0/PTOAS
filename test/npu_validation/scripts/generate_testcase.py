@@ -90,7 +90,15 @@ CASE_INT_SCALAR_DEFAULTS = {
 }
 
 CASE_INT_SCALAR_DEFAULTS["hc_head_reduce"] = {"v9": 0, "v10": 1}
+CASE_INT_SCALAR_DEFAULTS["hc_post"] = {
+    "v6": 8,
+    "v7": 8,
+    "v8": 0,
+    "v9": 1,
+}
+CASE_INT_SCALAR_DEFAULTS["qr_hadamard_quant"] = {"v4": 0, "v5": 1}
 CASE_INT_SCALAR_DEFAULTS["rms_norm"] = {"v4": 0, "v5": 1}
+CASE_INT_SCALAR_DEFAULTS["swa_gather_kv"] = {"v4": 1, "v5": 0, "v6": 1}
 
 # Qwen3 decode exports use compact per-block inputs.  The generic fallback of
 # `1` for every dynamic integer selects the second batch/pair and makes the
@@ -114,6 +122,19 @@ CASE_INT_SCALAR_DEFAULTS.update({
 CASE_BOOL_SCALAR_DEFAULTS = {}
 
 CASE_POINTER_COUNT_MINIMUMS = {
+    # These PyPTO kernels use the explicit SPMD block index to select GM
+    # subviews.  The EmitC footprint analysis sees one tile at a time but does
+    # not prove all loop iterations or the enclosing block offset, which left
+    # the generated A5 harness buffers smaller than the accessed tensor views
+    # and caused exit=139 during board execution.  Use the complete PTO tensor
+    # view sizes for the single-worker validation defaults above.
+    "hc_post": {
+        "v1": 8 * 16_384,
+        "v2": 8 * 4,
+        "v3": 8 * 4_096,
+        "v4": 8 * 16,
+        "v5": 8 * 16_384,
+    },
     "kv_hadamard": {"v1": 2_048, "v2": 2_048, "v3": 16_384},
     "merge_norm": {
         # The packed sparse output is written through a large tiled GM address
@@ -150,9 +171,11 @@ CASE_POINTER_COUNT_MINIMUMS = {
     "lm_head_matmul": {"v1": 1_034_240, "v2": 65_536, "v3": 264_765_440},
     "proj_a_mm": {"v1": 262_144, "v2": 33_554_432, "v3": 131_072},
     "proj_b_mm": {"v1": 524_288, "v2": 131_072, "v3": 33_554_432},
+    "qr_hadamard_quant": {"v1": 512 * 128, "v2": 512, "v3": 512 * 128},
     "rms_norm": {"v1": 32_768, "v2": 32_768, "v3": 4_096},
     "sh_gate_mm": {"v1": 32_768, "v2": 8_388_608, "v3": 32_768},
     "sh_up_mm": {"v1": 32_768, "v2": 8_388_608, "v3": 32_768},
+    "swa_gather_kv": {"v1": 1_024 * 512, "v2": 8 * 128, "v3": 128 * 512},
     "tquant_mx": {
         # The generated MX auxiliary tiles use 1x32 Vec storage even though
         # the logical tensor views are 1x16. Keep the GM backing buffers large
