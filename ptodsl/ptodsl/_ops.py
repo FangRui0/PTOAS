@@ -6430,6 +6430,16 @@ def log(value):
     return _same_type_unary(_pto.LogOp, value)
 
 
+def sin(value):
+    """``pto.sin`` – A5 SIMT floating sine software-library hook."""
+    return _same_type_unary(_pto.SinOp, value)
+
+
+def cos(value):
+    """``pto.cos`` – A5 SIMT floating cosine software-library hook."""
+    return _same_type_unary(_pto.CosOp, value)
+
+
 def pow(lhs, rhs):
     """``pto.pow`` – SIMT floating power."""
     return _same_type_binary(_pto.PowOp, lhs, rhs, context="pow(lhs, rhs)")
@@ -6784,7 +6794,7 @@ __all__ = [
     "atomic_exch", "atomic_add", "atomic_sub", "atomic_min", "atomic_max",
     "atomic_and", "atomic_or", "atomic_xor", "atomic_cas",
     "prmt", "mulhi", "mul_i32toi64",
-    "absf", "sqrt", "exp", "log", "pow", "ceil", "floor", "rint", "round",
+    "absf", "sqrt", "exp", "log", "sin", "cos", "pow", "ceil", "floor", "rint", "round",
     "fmin", "fmax", "fma", "convert",
     "syncthreads", "threadfence", "threadfence_block", "trap", "keep", "resume",
     "pipe_barrier", "get_buf", "rls_buf",

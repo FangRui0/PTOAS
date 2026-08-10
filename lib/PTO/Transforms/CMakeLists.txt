@@ -66,6 +66,7 @@ add_mlir_dialect_library(PTOTransforms
   VMILayoutRematerialize.cpp
   VMILayoutSinkMaterialization.cpp
   VMIToVPTO.cpp
+  PTOExpandSoftLib.cpp
   SIMTPersistentFragmentAnalysis.cpp
   PTOAnalyzeSIMTPersistentFragment.cpp
   PTOMaterializeSIMTPersistentFragment.cpp
@@ -79,6 +80,7 @@ add_mlir_dialect_library(PTOTransforms
   PTORematerializeFixpipeVectorQuant.cpp
   PTOValidateIntToPtrUses.cpp
   TileLibService.cpp
+  SoftLibService.cpp
   InsertTemplateAttributes.cpp
   ExpandTileOp.cpp
   FoldTileBufIntrinsics.cpp

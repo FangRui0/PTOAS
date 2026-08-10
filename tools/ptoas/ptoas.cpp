@@ -2784,6 +2784,13 @@ static void prepareVPTOForEmission(PassManager &pm) {
       pto::createPTONarrowVPTOLoopCountersPass());
   kernelModulePM.addPass(createCanonicalizerPass());
   kernelModulePM.addPass(createCSEPass());
+  // SoftOps are materialized only after all VPTO optimization and layout
+  // decisions.  The materializer creates a temporary func.call; inline it
+  // immediately so the final legality check sees the actual VPTO sequence.
+  kernelModulePM.addPass(pto::createPTOExpandSoftLibPass());
+  kernelModulePM.addPass(pto::createPTOInlineLibCallPass());
+  kernelModulePM.addPass(createCanonicalizerPass());
+  kernelModulePM.addPass(createCSEPass());
   kernelModulePM.addPass(pto::createPTOValidateVPTOEmissionIRPass());
 }
 

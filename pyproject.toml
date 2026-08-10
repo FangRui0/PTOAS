@@ -49,6 +49,7 @@ install.components = ["PTOAS_Python"]
 ptodsl = "ptodsl/ptodsl"
 ptoas = "ptodsl/ptoas"
 TileOps = "lib/TileOps"
+SoftOps = "lib/SoftOps"
 
 [tool.scikit-build.cmake.define]
 PTOAS_RELEASE_VERSION_OVERRIDE = { env = "PTOAS_RELEASE_VERSION_OVERRIDE", default = "" }
