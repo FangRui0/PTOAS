@@ -8,6 +8,7 @@
 
 """PTODSL software-operation libraries shared by TileOps and late lowering."""
 
+from .div_int import div_i32_soft
 from .trig import cos_f32_soft, sin_f32_soft
 
-__all__ = ["sin_f32_soft", "cos_f32_soft"]
+__all__ = ["div_i32_soft", "sin_f32_soft", "cos_f32_soft"]

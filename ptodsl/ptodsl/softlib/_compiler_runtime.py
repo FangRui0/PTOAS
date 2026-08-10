@@ -16,7 +16,7 @@ import importlib
 from .. import pto
 from .._surface_values import unwrap_surface_value, wrap_surface_value
 from .._tracing import KernelModuleSpec, ModuleStyle, CallbackTracingRuntime
-from .._types import _resolve
+from .._types import _resolve, mask_type, vreg_type
 from ptoas.mlir.dialects import func
 from ptoas.mlir.ir import InsertionPoint, Location, Module, StringAttr, Attribute, UnitAttr
 
@@ -38,7 +38,20 @@ def materialize(target: str, op: str, operand_specs_json: str, context):
         specs = json.loads(operand_specs_json)
     except json.JSONDecodeError as exc:
         raise ValueError(f"invalid SoftLib materialization request: {exc}") from exc
-    if op in {"pto.sin", "pto.cos"}:
+    if op == "pto.vdiv" and specs.get("dtype") in {"i32", "si32"}:
+        lanes = int(specs.get("lanes", 64))
+        mask_bits = specs.get("mask", "b32")
+        module_name = "div_i32_soft"
+        helper = getattr(importlib.import_module("SoftOps"), module_name)
+        dtype = specs["dtype"]
+        integer_dtype = pto.si32 if dtype == "si32" else pto.i32
+        arg_types = [
+            vreg_type(lanes, integer_dtype),
+            vreg_type(lanes, integer_dtype),
+            mask_type(mask_bits),
+        ]
+        result_types = [arg_types[0]]
+    elif op in {"pto.sin", "pto.cos"}:
         module_name = "sin_f32_soft" if op == "pto.sin" else "cos_f32_soft"
         helper = getattr(importlib.import_module("SoftOps"), module_name)
         # Keep type construction lazy until the caller-provided context is

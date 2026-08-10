@@ -46,6 +46,32 @@ namespace {
 static constexpr llvm::StringLiteral kSoftLibInstanceAttr =
     "pto.softlib.instance";
 
+static bool isSignedI32VReg(Type type) {
+  auto vreg = dyn_cast<VRegType>(type);
+  if (!vreg)
+    return false;
+  auto integer = dyn_cast<IntegerType>(vreg.getElementType());
+  return integer && integer.getWidth() == 32 &&
+         (integer.isSigned() || integer.isSignless());
+}
+
+static StringRef getIntegerDtype(VdivOp op) {
+  auto vreg = cast<VRegType>(op.getLhs().getType());
+  auto integer = cast<IntegerType>(vreg.getElementType());
+  return integer.isSigned() ? StringRef("si32") : StringRef("i32");
+}
+
+static std::string buildVdivRequestJson(VdivOp op) {
+  auto vreg = cast<VRegType>(op.getLhs().getType());
+  std::string json = "{\"dtype\":\"" + getIntegerDtype(op).str() +
+                     "\",\"lanes\":";
+  json += std::to_string(vreg.getElementCount());
+  json += ",\"mask\":\"";
+  json += cast<MaskType>(op.getMask().getType()).getGranularity().str();
+  json += "\"}";
+  return json;
+}
+
 static std::string uniqueSoftLibName(ModuleOp module, StringRef base) {
   std::string stem = std::string("__pto_soft_") + base.str();
   unsigned suffix = 0;
@@ -151,6 +177,18 @@ struct PTOExpandSoftLibPass
                            op->getOperands(), op->getResult(0), service);
   }
 
+  LogicalResult materializeVdiv(VdivOp op, ModuleOp module,
+                                MLIRContext &context, StringRef target,
+                                const std::shared_ptr<SoftLibService> &service) {
+    auto vreg = cast<VRegType>(op.getLhs().getType());
+    std::string stem = "vdiv_" + getIntegerDtype(op).str() + "_" +
+                       std::to_string(vreg.getElementCount());
+    return materializeCall(op, module, context, target, "pto.vdiv",
+                           buildVdivRequestJson(op), stem,
+                           ValueRange{op.getLhs(), op.getRhs(), op.getMask()},
+                           op.getResult(), service);
+  }
+
   void runOnOperation() override {
     ModuleOp module = getOperation();
     ModuleOp topLevel = getTopLevelModuleOp(module);
@@ -161,7 +199,8 @@ struct PTOExpandSoftLibPass
       targetArch = attr.getValue();
     SmallVector<Operation *> candidates;
     module.walk([&](Operation *op) {
-      if (isa<SinOp, CosOp>(op))
+      if (isa<SinOp, CosOp>(op) ||
+          (isa<VdivOp>(op) && isSignedI32VReg(op->getResult(0).getType())))
         candidates.push_back(op);
     });
     if (candidates.empty())
@@ -173,6 +212,22 @@ struct PTOExpandSoftLibPass
       return;
     }
     for (Operation *op : candidates) {
+      if (auto vdiv = dyn_cast<VdivOp>(op)) {
+        if (!isSignedI32VReg(vdiv.getLhs().getType()) ||
+            !isSignedI32VReg(vdiv.getRhs().getType()) ||
+            vdiv.getLhs().getType() != vdiv.getRhs().getType() ||
+            vdiv.getLhs().getType() != vdiv.getResult().getType() ||
+            vdiv.getMask().getType() != MaskType::get(&getContext(), "b32")) {
+          vdiv.emitError(
+              "A5 SoftOps pto.vdiv requires matching signed i32 vectors and a b32 mask");
+          signalPassFailure();
+          continue;
+        }
+        if (failed(materializeVdiv(vdiv, module, getContext(), targetArch,
+                                   service)))
+          signalPassFailure();
+        continue;
+      }
       if (!op->getResult(0).getType().isF32() || !op->getOperand(0).getType().isF32()) {
         op->emitError("A5 SoftOps pto.sin/pto.cos require f32 scalar operands");
         signalPassFailure();
