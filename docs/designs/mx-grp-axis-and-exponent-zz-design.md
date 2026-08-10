@@ -21,7 +21,16 @@ See LICENSE in the root of the software repository for the full text of the Lice
 
 ### 1.1 修订记录
 
-**rev2（本次）**：按第一轮评审修正 5 个 P1 + 2 个 P2。这些都是会直接写进 verifier 的
+**rev3（本次）**：按第二轮评审修正 2 个 P1 + 2 个 P2。
+
+| 编号 | rev2 的错误 | rev3 的结论 | 位置 |
+|---|---|---|---|
+| P1-A | 说 updater "漏更" `ci_sim.yml` / `Dockerfile.dev`，应扩展覆盖 | **照做会搞坏 CI**：`ci_sim.yml` 指向 **GitHub** `hw-native-sys/pto-isa`，updater 对着 **GitCode** `cann/pto-isa`，SHA 空间不通，写进去必然 ref not found。且它有意携带 CPU-Sim duplicate-stub 修复；`Dockerfile.dev` 是 CANN 9.0 独立环境。改为按 (repo, revision, 兼容性) 三元组建模 | §10、§12 提交 0、§13-2 |
+| P1-B | 四条 interleave 约束只有一条笼统负向用例 | 按 valid/physical × rows/cols 拆成 4 条，另加顺序哨兵与 max 形状哨兵 | §11.3 |
+| P2-A | physical 检查只判 exp 侧动态，未判 src 侧 → `srcRowsPhys` 动态时对合法 IR 误报 | interleave 下**显式拒绝动态 physical shape**，之后全在静态值间比较；valid 仍可动态（跳过） | §7.1 |
+| P2-B | 先按 interleave 分派 exp 形状、后查 `!isDn`，导致 axis1+interleave 先报误导性 shape 错 | `interleave && !isDn` 提到所有 shape 推导之前，作为步骤 (0) | §7.1 |
+
+**rev2**：按第一轮评审修正 5 个 P1 + 2 个 P2。这些都是会直接写进 verifier 的
 硬约束，rev1 的版本会产出**能通过 verifier 但在设备上越界、不写输出或编译失败**的 IR：
 
 | 编号 | rev1 的错误 | rev2 的结论 | 位置 |
@@ -384,6 +393,15 @@ pto.tmov.x2zz ins(%exp, %tmp : !pto.tile_buf<...>, !pto.tile_buf<...>)
 ```cpp
 const bool isDn = getGrpAxis() == MxGroupAxis::Axis0;
 
+// (0) 语义合法性必须先于任何 shape 推导。
+//
+// interleave 的 exp 期望形状是按 DN 推出来的；若先做 shape 分派再查这条，
+// axis1 + interleave 这种非法 IR 会先撞上"exp shape 不匹配"，报出一条与真正
+// 病因无关的诊断，用户还得自己反推。rev2 就是这个顺序，导致 §11.3 的
+// interleave_on_nd 用例根本匹配不到预期文案。
+if (getInterleave() && !isDn)
+  return emitOpError("expects interleave to be used only with grpAxis=axis0");
+
 // (1) 分组轴上的整除约束
 if (isDn) {
   if (srcRows != kDynamic && srcRows % 32 != 0)
@@ -427,7 +445,7 @@ if (!getInterleave()) {
   if (failed(checkDim("exp", expTy, 0, grpRows))) return failure();
   if (failed(checkDim("exp", expTy, 1, grpCols))) return failure();
 } else {
-  // interleave 只在 DN 下合法（见下方 interleave 小节），形状为 [M/64, 2N]
+  // 走到这里必然是 DN（(0) 已拦掉 axis1 + interleave），形状为 [M/64, 2N]
   if (failed(checkDim("exp", expTy, 0, divIfStatic(srcRows, 64)))) return failure();
   if (failed(checkDim("exp", expTy, 1, mulIfStatic(srcCols, 2)))) return failure();
 }
@@ -443,24 +461,49 @@ exp 的 **valid shape** 已在上面 (2) 里按 `interleave` 二选一检查完�
 
 ```cpp
 if (getInterleave()) {
-  if (!isDn)
-    return emitOpError("expects interleave to be used only with grpAxis=axis0");
+  // !isDn 已在 (0) 拦掉，这里不再重复。
+
+  // physical shape 必须编译期静态。
+  //
+  // 原因：下面三条约束（rows % 64、exp physical rows/cols）都需要拿 src 的 physical
+  // 维去算期望值。若 src physical 维是 kDynamic，期望值就是 kDynamic，此时既不能与
+  // 静态的 exp 维比较（必然不等，误报），也不能"跳过"——跳过等于这条约束在动态形状下
+  // 完全失效，而 interleave 的 ZZ box 布局对 physical stride 是敏感的，静默放行会写错位。
+  // 所以选择显式拒绝，而不是 valid shape 那样的"两侧任一 dynamic 就跳过"。
+  for (auto [name, ty] : {std::pair{"src", srcTy}, std::pair{"exp", expTy}}) {
+    if (llvm::any_of(getPhysicalShapeVec(ty), ShapedType::isDynamic))
+      return emitOpError() << "expects a static physical shape for " << name
+                           << " when interleave is true";
+  }
+  // 走到这里，srcRowsPhys / srcColsPhys / expPhys[*] 全部是静态值。
 
   // 行数必须 64 对齐（不是 ceil 向上取整）：interleave 把相邻两个 32 行组拼进一行，
-  // 落单的半组没有定义。physical 与 valid 两侧都要查。
-  for (auto [what, rows] : {std::pair{"valid", srcRowsValid}, std::pair{"physical", srcRowsPhys}}) {
-    if (rows != kDynamic && rows % 64 != 0)
-      return emitOpError() << "expects src " << what << " rows to be a multiple of 64 "
-                           << "when interleave is true (got " << rows << ")";
-  }
+  // 落单的半组没有定义。valid 侧可以是 dynamic，dynamic 时跳过。
+  if (srcRowsValid != kDynamic && srcRowsValid % 64 != 0)
+    return emitOpError() << "expects src valid rows to be a multiple of 64 "
+                         << "when interleave is true (got " << srcRowsValid << ")";
+  if (srcRowsPhys % 64 != 0)
+    return emitOpError() << "expects src physical rows to be a multiple of 64 "
+                         << "when interleave is true (got " << srcRowsPhys << ")";
 
   // physical exp shape：列方向按 32 字节对齐
-  if (expPhys[0] != kDynamic && expPhys[0] != divIfStatic(srcRowsPhys, 64))
+  if (expPhys[0] != srcRowsPhys / 64)
     return emitOpError("expects interleaved exp physical rows to be src physical rows / 64");
-  if (expPhys[1] != kDynamic && expPhys[1] != alignTo(mulIfStatic(srcColsPhys, 2), 32))
+  if (expPhys[1] != alignTo(srcColsPhys * 2, 32))
     return emitOpError("expects interleaved exp physical cols to be align32(2 * src physical cols)");
 }
 ```
+
+> **rev2 的缺陷**：上面这段原来写成
+> `if (expPhys[0] != kDynamic && expPhys[0] != divIfStatic(srcRowsPhys, 64))`，
+> 只判了 exp 侧动态、没判 src 侧。`srcRowsPhys == kDynamic` 而 `expPhys[0]` 静态时，
+> `divIfStatic` 返回 `kDynamic`，比较必然不等 → **对合法 IR 误报**。
+> rev3 改为先统一拒绝动态 physical shape，之后所有比较都在静态值之间进行，
+> 既消除了误报，也避免"跳过检查"带来的静默写错位。对应负向用例
+> `interleave_dynamic_physical`（§11.3）。
+>
+> 注意 valid shape 与 physical shape 在这里策略**不同**：valid 可动态（跳过），
+> physical 必须静态（拒绝）。这是有意的——valid 只影响算多少，physical 决定地址步长。
 
 > **来源标注**：上面这组 interleave 约束（64 对齐、`align32(2N)` physical shape）来自评审
 > 指出的 PTO-ISA `include/pto/npu/a5/TQuant.hpp` L3394-L3406。**本文档基线快照
@@ -620,7 +663,7 @@ buffer 的 liveness、阻止 PlanMemory 复用它，在 UB 吃紧的 kernel 里�
 | PTO-BC | `tools/ptobc/generated/ptobc_opcodes_v0.h` 给 `pto.tmov.x2zz` 分配**新 opcode**（取当前未使用值，不复用空洞）；新属性走属性字典，不改 `pto.tquant.mx` 的既有 payload schema |
 | 文档 | `docs/PTO_IR_manual.md`（两个 op 章节）、`docs/release/PTO-tile-Instruction-SPEC-v0.4.md`、本设计文档 |
 | 测试 | 见 §11 |
-| **pto-isa pin** | `interleave` 需要 bump 到含该 overload 的修订（§13 开放问题 2）。**同时要扩展 `.github/scripts/update_pto_isa_pin.py`**：它当前只覆盖 `ci.yml` / `docker/Dockerfile` / `run_remote_npu_validation.sh`，漏掉 `.github/workflows/ci_sim.yml` 和 `docker/Dockerfile.dev` |
+| **pto-isa pin** | `interleave` 需要含该 overload 的修订（§13 开放问题 2）。pin **不是一个 SHA**：`ci_sim.yml` 指向 **GitHub** `hw-native-sys/pto-isa`，其余三处指向 **GitCode** `cann/pto-isa`，`Dockerfile.dev` 还是另一套 CANN 9.0 环境。**不得**用现有单 SHA updater 广播覆盖——那会让 `ci_sim` 的 `actions/checkout` 直接 ref not found |
 | ReleaseNotes | 新增 `pto.tmov.x2zz`、`grpAxis`/`interleave`；标注 `exp_zz`/`storeMode` deprecated；说明 §8.1 的生成文本变化 |
 
 **PTO-BC 注意事项**：`pto.tquant.mx` 的 opcode payload schema **不得改动**（参考 #1122 的
@@ -680,9 +723,20 @@ CHECK 要点：
 | `dn_rows_not_aligned` | `expects src valid_shape[0] to be a multiple of 32 when grpAxis is axis0` |
 | `dn_wrong_exp_shape`（给 `[M, N/32]`） | `expects exp valid_shape[0] to be ...` |
 | `nd_wrong_exp_shape`（给 `[M/32, N]`） | 同上 ND 版本 |
-| `interleave_on_nd` | `expects interleave to be used only with grpAxis=axis0` |
-| `interleave_wrong_exp_shape` | `expects interleaved exp valid_shape[...]` |
+| `interleave_on_nd`（axis1 + interleave） | `expects interleave to be used only with grpAxis=axis0`，**且不得先报成 shape 不匹配**（见 §7.1 的检查顺序） |
+| `interleave_exp_valid_rows_mismatch` | `expects exp valid_shape[0] to be ... with interleave=true` |
+| `interleave_exp_valid_cols_mismatch` | `expects exp valid_shape[1] to be ... with interleave=true` |
+| `interleave_valid_rows_not_multiple_of_64` | `expects src valid rows to be a multiple of 64 when interleave is true` |
+| `interleave_physical_rows_not_multiple_of_64` | `expects src physical rows to be a multiple of 64 when interleave is true` |
+| `interleave_exp_physical_rows_mismatch` | `expects interleaved exp physical rows to be src physical rows / 64` |
+| `interleave_exp_physical_cols_mismatch` | `expects interleaved exp physical cols to be align32(2 * src physical cols)` |
+| `interleave_max_shape_follows_grouping`（max 按 `[M/64, 2N]` 给，应被拒） | `expects max valid_shape[0] to be ...`——钉住 max/scaling **不**随 interleave 改形 |
+| `interleave_dynamic_physical` | `expects static physical shape when interleave is true`（见 §7.1 动态处理） |
 | `exp_zz_with_axis0` | `expects the deprecated exp_zz form to use grpAxis=axis1` |
+
+rev2 这里只有一条笼统的 `interleave_wrong_exp_shape`，证明不了 §7.1 的四条 interleave
+约束各自生效，与 §14"每条 verifier 规则都有负向用例"的验收标准不符。上表按分支拆开，
+`valid` / `physical`、`rows` / `cols` 四个组合各一条，外加顺序哨兵与 max 形状哨兵。
 
 ### 11.4 lit 负向：`test/lit/pto/tmov_x2zz_invalid.pto`
 
@@ -830,7 +884,7 @@ PTOAS_BIN=build/tools/ptoas/ptoas ./test/samples/runop.sh -t TquantMx
 
 | # | 内容 | 验证 |
 |---|---|---|
-| 0 | **pto-isa pin bump 到含 `interleave` overload 的修订，并扩展 `update_pto_isa_pin.py` 覆盖 `ci_sim.yml` / `Dockerfile.dev`**（§13 开放问题 2）。若 #1122 已在做 bump，则本提交只做 updater 扩展并声明依赖 | `ci` + `ci_sim` 全绿；bump 后按 §13 开放问题 1 复核 DN 仍是 `(void)tmp;` |
+| 0 | **pin 建模与 bump**（§13 开放问题 2）：把 pin 建成 (repo, revision, 兼容性约束) 三元组，为 GitCode 组 / GitHub `ci_sim` / `Dockerfile.dev` 各自定 revision；找到同时含 MX 支持与 CPU-Sim duplicate-stub 修复的共同后继。**不得**用现有单 SHA updater 广播 | `ci` + `ci_sim` + `Dockerfile.dev` 构建**三条线都要实跑**；bump 后按 §13-1 复核 DN 仍是 `(void)tmp;` |
 | 1 | `MxGroupAxis` 枚举 + `TQuantMxOp` 两个属性（ODS/parser/printer/CAPI/Python） | 现有 lit 全绿（默认值保证零行为变化） |
 | 2 | `TQuantMxOp::verify()` 按轴分派 + §11.3 负向用例 | 定向 lit |
 | 3 | `PTOQuantMxToEmitC` 形态 B + §11.1 正向用例 + 更新受影响的既有 lit 期望 | 定向 lit + `check-pto` |
@@ -844,6 +898,11 @@ PTOAS_BIN=build/tools/ptoas/ptoas ./test/samples/runop.sh -t TquantMx
 提交 0 必须**排在最前**：`interleave` 的 verifier 常量（64 对齐、`align32(2N)`）来自评审
 提供的较新修订，本文档基线快照无法自证（§7.1 来源标注）。先 bump 再实现，才能在写
 verifier 之前用真实头文件核对这些常量，而不是照抄文档。
+
+**若提交 0 一次拉不齐三条线，则拆分交付**：`grpAxis` 不依赖 bump（`ce3262e3` 已含
+grouped 接口），提交 1-5 可先走；`interleave` 相关的 ODS 属性、§7.1 interleave 分支、
+§11.1 `dn_fp8_interleave`、§11.3 的四条 interleave 负向用例整体后移到 bump 之后。
+这样避免"为了一个可选特性卡住整个 issue"。
 
 ## 13. 风险与开放问题
 
@@ -863,20 +922,52 @@ verifier 之前用真实头文件核对这些常量，而不是照抄文档。
    `grep -rn "bool interleave" include/pto/npu/a5/TQuant.hpp`。）
    → **行动 A**：确认与 #1122 的先后关系——若该 PR 已在推进 pin bump，本 PR 声明依赖它；
    否则本 PR 自带 bump。
-   → **行动 B（重要，早期版本写错）**：pin **不是"五处由 `update_pto_isa_pin.py` 统一
-   管理"**。实测树内有 **3 个不同 SHA**、脚本只覆盖 3 处：
+   → **行动 B（rev2 又写错了一次，rev3 更正）**：rev1 说"五处由 updater 统一管理"，
+   rev2 改口说"updater 漏了 `ci_sim.yml` 和 `Dockerfile.dev`，应扩展覆盖"——**这个说法同样
+   是错的，而且照做会直接搞坏 CI**。实测：
 
-   | 位置 | 当前 SHA | 被 updater 覆盖 |
-   |---|---|---|
-   | `.github/workflows/ci.yml:430` | `ce3262e3` | 是（`--ci-workflow` 默认值） |
-   | `docker/Dockerfile:122,123` | `ce3262e3` | 是（`--dockerfile` 默认值） |
-   | `test/npu_validation/scripts/run_remote_npu_validation.sh:17` | `ce3262e3` | 是 |
-   | `.github/workflows/ci_sim.yml:122` | `a8168c6c` | **否** |
-   | `docker/Dockerfile.dev:17` | `662d7f2a` | **否** |
+   | 位置 | 远端 | 当前 SHA | 能否由现 updater 管理 |
+   |---|---|---|---|
+   | `.github/workflows/ci.yml:430` | GitCode `cann/pto-isa` | `ce3262e3` | 是 |
+   | `docker/Dockerfile:122,123` | GitCode `cann/pto-isa` | `ce3262e3` | 是 |
+   | `test/npu_validation/scripts/run_remote_npu_validation.sh:17` | GitCode `cann/pto-isa` | `ce3262e3` | 是 |
+   | `.github/workflows/ci_sim.yml:122` | **GitHub `hw-native-sys/pto-isa`** | `a8168c6c` | **不能——是另一个仓库** |
+   | `docker/Dockerfile.dev:17` | GitCode `cann/pto-isa` | `662d7f2a` | 能，但**不应该**——环境不同 |
 
-   即 `ci_sim.yml` 与 `Dockerfile.dev` 会被漏掉，而 vpto-sim 正是本特性的主要验证通道。
-   本 PR 应**一并扩展 `update_pto_isa_pin.py` 覆盖这两处**（或明确记录为何它们有意
-   使用不同 SHA），否则 bump 之后 sim 侧仍编译不出新接口，且失败点离根因很远。
+   **`ci_sim.yml` 根本不是"漏更"，它指向另一个仓库。** `ci_sim.yml:348-353` 用
+   `actions/checkout` 拉 `repository: hw-native-sys/pto-isa`（GitHub），而
+   `update_pto_isa_pin.py:17` 的 `DEFAULT_REPO_URL` 是
+   `https://gitcode.com/cann/pto-isa.git`，`resolve_head_commit()` 也是对着 GitCode 做
+   `git ls-remote`。**两个仓库的 SHA 空间不通**——把一个 GitCode SHA 写进 `ci_sim.yml`，
+   `actions/checkout` 会直接以 "ref not found" 失败。`ci_sim.yml:119-121` 的注释还明说了
+   这条 pin 的用途：
+
+   > GitHub pin containing the two-argument Soft SYNCALL ABI from f24f7b7 and the
+   > follow-up CPU-Sim duplicate-stub fix. The GitCode mirror carries the ABI as
+   > d56d42d within the separate ce3262e3 remote-validation pin.
+
+   即它是**有意独立**的，携带 CPU-Sim duplicate-stub 修复，且与 GitCode 侧存在
+   `f24f7b7 ↔ d56d42d` 这样的**跨仓库映射**。机械同步会丢掉那个修复。
+
+   **`Dockerfile.dev` 也不是"漏更"**：它的基础镜像是
+   `quay.io/ascend/cann:9.0.0-910b-ubuntu22.04-py3.12`（CANN **9.0.0** + py3.12），
+   而主 `Dockerfile` 的 runtime 是 `cann:8.5.0-...-py3.11`（CANN **8.5.0** + py3.11）。
+   两个环境的工具链不同，`662d7f2a` 这个更老的 revision 很可能是为 CANN 9.0 兼容性
+   有意保留的。在没有确认之前，不能把它当成滞后。
+
+   → **修正后的行动**（替换 rev2 的"扩展 updater 覆盖两处"）：
+
+   1. **不要把 `ci_sim.yml` 塞进现有 updater。** 正确做法是把 pin 建模成
+      **(repo, revision, 兼容性约束) 三元组**：GitCode 组一个、GitHub `ci_sim` 一个、
+      `Dockerfile.dev` 一个。updater 若要扩展，应支持"每个目标各自的 repo + SHA"，
+      而不是把一个 SHA 广播到所有目标。
+   2. **优先方案**：找到**同时包含 MX 支持与 CPU-Sim duplicate-stub 修复**的共同后继
+      revision（GitCode 侧一个、GitHub 侧对应的一个），实测跑通 `ci` + `ci_sim`
+      + `Dockerfile.dev` 构建三条线，再落 pin。
+   3. **若 `Dockerfile.dev` 必须停在旧 pin**（CANN 9.0 不兼容新 revision），
+      在文件里写明兼容性理由并在本设计留档，**明确记录为有意保留，不是漏更**。
+   4. 本 PR 若无法一次拉齐三条线，则 `interleave` 的实现应与 pin bump **解耦**：
+      先落 `grpAxis`（`ce3262e3` 已含 grouped 接口），`interleave` 单独排期。
 3. **ND 分组 shape 校验收紧的影响面。** §7.1 把"总元素数相等"改成"逐维相等"。
    存量 IR 里若有 `[1, M*N/32]` 这类扁平写法会被新 verifier 拒绝。
    → **行动**：实现前先跑一遍 `check-pto` + `runop.sh all` 摸底；若确有存量，考虑对
