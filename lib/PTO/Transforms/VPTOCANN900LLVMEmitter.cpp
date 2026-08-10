@@ -3051,8 +3051,8 @@ template <>
 FailureOr<StringRef> buildBinaryScalarMathCallee<pto::FMinOp>(MLIRContext *context,
                                                               Type valueType) {
   std::string elem = getLLVMFloatBuiltinFragment(valueType);
-  if (elem != "f32" && elem != "bf16" && elem != "v2f16" &&
-      elem != "v2bf16")
+  if (elem != "f16" && elem != "f32" && elem != "bf16" &&
+      elem != "v2f16" && elem != "v2bf16")
     return failure();
   return StringAttr::get(context, "llvm.minnum." + elem).getValue();
 }
@@ -3061,8 +3061,8 @@ template <>
 FailureOr<StringRef> buildBinaryScalarMathCallee<pto::FMaxOp>(MLIRContext *context,
                                                               Type valueType) {
   std::string elem = getLLVMFloatBuiltinFragment(valueType);
-  if (elem != "f32" && elem != "bf16" && elem != "v2f16" &&
-      elem != "v2bf16")
+  if (elem != "f16" && elem != "f32" && elem != "bf16" &&
+      elem != "v2f16" && elem != "v2bf16")
     return failure();
   return StringAttr::get(context, "llvm.maxnum." + elem).getValue();
 }

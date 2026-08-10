@@ -124,8 +124,9 @@ def PTO_SimtUnaryFloatValueType : AnyTypeOf<[F16, F32, BF16, PTO_V2F16Type, PTO_
                                            "f16, f32, bf16, vector<2xf16> or vector<2xbf16>">;
 def PTO_SimtUnaryF16F32ValueType : AnyTypeOf<[F16, F32, PTO_V2F16Type],
                                             "f16, f32 or vector<2xf16>">;
-def PTO_SimtBinaryF32BF16ValueType : AnyTypeOf<[F32, BF16, PTO_V2F16Type, PTO_V2BF16Type],
-                                              "f32, bf16, vector<2xf16> or vector<2xbf16>">;
+def PTO_SimtBinaryFloatValueType : AnyTypeOf<
+  [F16, F32, BF16, PTO_V2F16Type, PTO_V2BF16Type],
+  "f16, f32, bf16, vector<2xf16> or vector<2xbf16>">;
 def PTO_SimtBinaryF16F32ValueType : AnyTypeOf<[F16, F32, PTO_V2F16Type],
                                              "f16, f32 or vector<2xf16>">;
 def PTO_SimtConvertValueType : AnyTypeOf<[I32, I64, F16, BF16, F32,
@@ -924,13 +925,13 @@ def PTO_FloorOp : PTO_UnaryFloatScalarOp<"floor">;
 def PTO_RintOp : PTO_UnaryFloatScalarOp<"rint">;
 def PTO_RoundOp : PTO_UnaryFloatScalarOp<"round">;
 
-class PTO_BinaryF32BF16ScalarOp<string mnemonic>
+class PTO_BinaryFloatValueOp<string mnemonic>
     : PTO_SimtOp<mnemonic, [Pure, AllTypesMatch<["lhs", "rhs", "result"]>]> {
   let arguments = (ins
-    PTO_SimtBinaryF32BF16ValueType:$lhs,
-    PTO_SimtBinaryF32BF16ValueType:$rhs
+    PTO_SimtBinaryFloatValueType:$lhs,
+    PTO_SimtBinaryFloatValueType:$rhs
   );
-  let results = (outs PTO_SimtBinaryF32BF16ValueType:$result);
+  let results = (outs PTO_SimtBinaryFloatValueType:$result);
 
   let assemblyFormat = [{
     $lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)
@@ -950,8 +951,8 @@ class PTO_BinaryF16F32ScalarOp<string mnemonic>
   }];
 }
 
-def PTO_FMinOp : PTO_BinaryF32BF16ScalarOp<"fmin">;
-def PTO_FMaxOp : PTO_BinaryF32BF16ScalarOp<"fmax">;
+def PTO_FMinOp : PTO_BinaryFloatValueOp<"fmin">;
+def PTO_FMaxOp : PTO_BinaryFloatValueOp<"fmax">;
 def PTO_PowOp : PTO_BinaryF16F32ScalarOp<"pow">;
 
 def PTO_FmaOp

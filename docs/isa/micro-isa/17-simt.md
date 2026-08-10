@@ -880,9 +880,10 @@ else:
 - **semantics:** Return the floating minimum of `%a` and `%b`.
 - **inputs:** `%a` and `%b` have the same type.
 - **outputs:** One value with the same type as the inputs.
-- **constraints and limitations:** `T` is `f32`, `bf16`, `vector<2xf16>`, or
-  `vector<2xbf16>`. For vector types, the minimum is computed element-wise. NaN
-  handling follows the target floating-point minimum rule.
+- **constraints and limitations:** `T` is `f16`, `f32`, `bf16`,
+  `vector<2xf16>`, or `vector<2xbf16>`. For vector types, the minimum is
+  computed element-wise. NaN handling follows the target floating-point
+  minimum rule.
 
 ### `pto.fmax`
 
@@ -890,9 +891,10 @@ else:
 - **semantics:** Return the floating maximum of `%a` and `%b`.
 - **inputs:** `%a` and `%b` have the same type.
 - **outputs:** One value with the same type as the inputs.
-- **constraints and limitations:** `T` is `f32`, `bf16`, `vector<2xf16>`, or
-  `vector<2xbf16>`. For vector types, the maximum is computed element-wise. NaN
-  handling follows the target floating-point maximum rule.
+- **constraints and limitations:** `T` is `f16`, `f32`, `bf16`,
+  `vector<2xf16>`, or `vector<2xbf16>`. For vector types, the maximum is
+  computed element-wise. NaN handling follows the target floating-point
+  maximum rule.
 
 ### `pto.fma`
 

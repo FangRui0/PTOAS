@@ -891,6 +891,7 @@ def simt_collective_math_probe():
     pto.mul_i32toi64(lane, lane, signedness="unsigned")
 
     as_f32 = pto.convert(lane, pto.f32, rounding="r", saturation="nosat", signedness="signed")
+    as_f16 = pto.const(1.0, dtype=pto.f16)
     pto.convert(as_f32, pto.i32, rounding="z", saturation="sat", signedness="signed")
     pto.absf(as_f32)
     pto.sqrt(as_f32)
@@ -903,6 +904,8 @@ def simt_collective_math_probe():
     pto.round(as_f32)
     pto.fmin(as_f32, as_f32)
     pto.fmax(as_f32, as_f32)
+    pto.fmin(as_f16, as_f16)
+    pto.fmax(as_f16, as_f16)
     pto.fma(as_f32, as_f32, as_f32)
 
 
@@ -5639,6 +5642,14 @@ def main() -> None:
         "pto.resume",
     ):
         expect(op_name in simt_full_text, f"full SIMT surface should contain {op_name}")
+    expect(
+        re.search(r"pto\.fmin .* : f16, f16 -> f16", simt_full_text) is not None,
+        "full SIMT surface should accept scalar f16 pto.fmin",
+    )
+    expect(
+        re.search(r"pto\.fmax .* : f16, f16 -> f16", simt_full_text) is not None,
+        "full SIMT surface should accept scalar f16 pto.fmax",
+    )
     for fp8_vec in (
         "vector<4xf8E4M3FN>",
         "vector<8xf8E4M3FN>",
