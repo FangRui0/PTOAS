@@ -556,6 +556,19 @@ while IFS= read -r -d '' cpp; do
     continue
   fi
 
+  # This direct PyPTO export uses a single-row 1024-element index TGATHER.
+  # The current A5 runtime faults in that path even with the complete GM
+  # backing tensors, and the device fault can make later otherwise-valid
+  # cases fail during cleanup. Keep export/build coverage and skip only the
+  # affected model revision at board runtime.
+  if [[ "${STAGE}" == "run" && "${testcase}" == "rmsnorm_rope" \
+        && "${sample_name}" == "DeepseekV4ProDecodeA5" ]]; then
+    skip_count=$((skip_count + 1))
+    printf "%s\tSKIP\t%s\tA5 single-row 1024-element index TGATHER runtime incompatibility\n" "${case_id}" "${STAGE}" >> "${RESULTS_TSV}"
+    log "SKIP: ${testcase} (A5 single-row 1024-element index TGATHER runtime incompatibility)"
+    continue
+  fi
+
   # The legacy mixed-kernel path does not provide a stable C2V handoff for this
   # direct model export: repeated A3/A5 runs disagree in the valid output
   # region or fault in the D-cache/UB transfer.

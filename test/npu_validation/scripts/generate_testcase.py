@@ -119,6 +119,25 @@ CASE_INT_SCALAR_DEFAULTS.update({
     "up_proj": {"v4": 0, "v5": 0, "v6": 0},
 })
 
+# PyPTO model exports pass the SPMD block index and block count as explicit
+# trailing scalar arguments.  The generated validation harness launches one
+# worker, so the representative invocation is always block 0 of 1.  Keep the
+# overrides sample-scoped because identically named kernels in other model
+# revisions can have different scalar signatures.
+SAMPLE_CASE_INT_SCALAR_DEFAULTS = {
+    "deepseekv4prodecodea5": {
+        "idx_qr_proj_matmul": {"v4": 0, "v5": 1},
+        "kv_score_proj": {"v8": 0, "v9": 1},
+    },
+    "deepseekv4flashdsparka5": {
+        "kv_proj_matmul": {"v8": 0, "v9": 1},
+        "qproj_matmul": {"v6": 0, "v7": 1},
+        "qr_proj_matmul": {"v8": 0, "v9": 1},
+        "lm_head_combine_gather": {"v4": 0, "v5": 1},
+        "rmsnorm_rope": {"v7": 0, "v8": 1},
+    },
+}
+
 CASE_BOOL_SCALAR_DEFAULTS = {}
 
 CASE_POINTER_COUNT_MINIMUMS = {
@@ -191,6 +210,56 @@ CASE_POINTER_COUNT_MINIMUMS = {
             "v3": 8192 * 64,
         }
         for testcase in DEEPSEEK_V4_DIRECT_CASES
+    },
+}
+
+# The generic footprint analysis follows the currently selected tile, but
+# these model kernels address strided weight tensors whose backing storage is
+# larger than that tile.  Use the full tensor-view extents for the affected
+# source revision.  Scope by sample so older DeepSeek variants with the same
+# testcase names retain their already validated layouts.
+SAMPLE_CASE_POINTER_COUNT_MINIMUMS = {
+    "deepseekv4prodecodea5": {
+        "idx_qr_proj_matmul": {
+            "v1": 16 * 8_192,
+            "v2": 8 * 1_536,
+            "v3": 1_536 * 8_192,
+        },
+        "kv_score_proj": {
+            "v1": 7_168,
+            "v2": 512 * 7_168,
+            "v3": 512 * 7_168,
+            "v4": 16 * 512,
+            "v5": 16 * 512,
+        },
+    },
+    "deepseekv4flashdsparka5": {
+        "kv_proj_matmul": {
+            "v1": 512,
+            "v2": 4_096,
+            "v3": 4_096 * 512,
+        },
+        "qproj_matmul": {
+            "v1": 32_768,
+            "v2": 1_024,
+            "v3": 1_024 * 32_768,
+        },
+        "qr_proj_matmul": {
+            "v1": 1_024,
+            "v2": 4_096,
+            "v3": 4_096 * 1_024,
+        },
+        "lm_head_combine_gather": {
+            "v1": 128 * 129_280,
+            "v2": 128 * 129_280,
+        },
+        "rmsnorm_rope": {
+            "v1": 16 * 64,
+            "v2": 16 * 64,
+            "v3": 16 * 128,
+            "v4": 16 * 128,
+            "v5": 128,
+        },
     },
 }
 
@@ -1179,8 +1248,21 @@ def _default_bf16_max_ulp_for_cpp_type(cpp_type: str) -> int:
     return 1 if _is_bf16_cpp_type(cpp_type) else 0
 
 
-def _integer_scalar_default_value(testcase: str, name: str, host_type: str) -> Optional[int]:
-    override = CASE_INT_SCALAR_DEFAULTS.get(testcase, {}).get(name)
+def _integer_scalar_default_value(
+    testcase: str,
+    name: str,
+    host_type: str,
+    sample_name: str = "",
+) -> Optional[int]:
+    sample_override = (
+        SAMPLE_CASE_INT_SCALAR_DEFAULTS
+        .get(sample_name.lower(), {})
+        .get(testcase, {})
+        .get(name)
+    )
+    override = sample_override
+    if override is None:
+        override = CASE_INT_SCALAR_DEFAULTS.get(testcase, {}).get(name)
     if override is not None:
         return int(override)
     if re.match(r"^(u?int)(8|16|32|64)_t$", host_type) or host_type in {"int", "unsigned", "size_t"}:
@@ -2107,7 +2189,14 @@ def generate_testcase(
         p["name"]: default_value
         for p in params
         if p["kind"] == "scalar"
-        for default_value in [_integer_scalar_default_value(testcase, p["name"], p["host_type"])]
+        for default_value in [
+            _integer_scalar_default_value(
+                testcase,
+                p["name"],
+                p["host_type"],
+                sample_root.name,
+            )
+        ]
         if default_value is not None
     }
     inferred_counts = {}
@@ -2117,6 +2206,16 @@ def generate_testcase(
             inferred_counts[name] = max(inferred_counts.get(name, 0), count)
     pointer_count_minimums = CASE_POINTER_COUNT_MINIMUMS.get(testcase, {})
     sample_name_lc = sample_root.name.lower()
+    sample_pointer_count_minimums = (
+        SAMPLE_CASE_POINTER_COUNT_MINIMUMS
+        .get(sample_name_lc, {})
+        .get(testcase, {})
+    )
+    if sample_pointer_count_minimums:
+        pointer_count_minimums = {
+            **pointer_count_minimums,
+            **sample_pointer_count_minimums,
+        }
     if sample_name_lc.startswith("qwen") and "decode" in sample_name_lc:
         pointer_count_minimums = {
             **pointer_count_minimums,
@@ -2206,7 +2305,12 @@ def generate_testcase(
             bool_override = _bool_scalar_default_value(testcase, p["name"])
             value = "true" if bool_override is None else ("true" if bool_override else "false")
         elif re.match(r"^(u?int)(8|16|32|64)_t$", t) or t in {"int", "unsigned", "size_t"}:
-            int_override = _integer_scalar_default_value(testcase, p["name"], t)
+            int_override = _integer_scalar_default_value(
+                testcase,
+                p["name"],
+                t,
+                sample_root.name,
+            )
             value = "1" if int_override is None else str(int_override)
         elif t in {"float"}:
             value = "1.0f"
