@@ -4991,9 +4991,14 @@ void SprstiOp::getEffects(
 }
 
 LogicalResult SprstiOp::verify() {
-  return verifySprStoreCommon(getOperation(), "pto.sprsti", getSpr(),
-                              getDestination(), getOffset(),
-                              /*requireImmediateOffset=*/true);
+  if (failed(verifySprStoreCommon(getOperation(), "pto.sprsti", getSpr(),
+                                  getDestination(), getOffset(),
+                                  /*requireImmediateOffset=*/true)))
+    return failure();
+  if (getUpdatedBase() &&
+      getUpdatedBase().getType() != getDestination().getType())
+    return emitOpError("requires updated base result to match base type");
+  return success();
 }
 
 void SprstsOp::getEffects(
@@ -5003,9 +5008,14 @@ void SprstsOp::getEffects(
 }
 
 LogicalResult SprstsOp::verify() {
-  return verifySprStoreCommon(getOperation(), "pto.sprsts", getSpr(),
-                              getDestination(), getOffset(),
-                              /*requireImmediateOffset=*/false);
+  if (failed(verifySprStoreCommon(getOperation(), "pto.sprsts", getSpr(),
+                                  getDestination(), getOffset(),
+                                  /*requireImmediateOffset=*/false)))
+    return failure();
+  if (getUpdatedBase() &&
+      getUpdatedBase().getType() != getDestination().getType())
+    return emitOpError("requires updated base result to match base type");
+  return success();
 }
 
 void VldusOp::getEffects(
@@ -5024,6 +5034,11 @@ LogicalResult VldusOp::verify() {
     return emitOpError("requires a pointer-like source");
   if (classifyMemoryRole(getSource().getType()) == MemoryRole::GM)
     return emitOpError("requires a UB-backed source");
+  if (static_cast<bool>(getIncrement()) != static_cast<bool>(getUpdatedBase()))
+    return emitOpError(
+        "requires increment and updated base result to appear together");
+  if (getUpdatedBase() && getUpdatedBase().getType() != getSource().getType())
+    return emitOpError("requires updated base result to match source type");
   return success();
 }
 
@@ -5374,6 +5389,9 @@ LogicalResult PldsOp::verify() {
     return emitOpError("requires index offset");
   if (!isSupportedPredicateLoadDist(getDist()))
     return emitOpError("requires predicate load dist to be NORM, US, or DS");
+  if (getUpdatedBase() &&
+      getUpdatedBase().getType() != getSource().getType())
+    return emitOpError("requires updated base result to match base type");
   return success();
 }
 
@@ -5394,6 +5412,9 @@ LogicalResult PldiOp::verify() {
     return emitOpError("requires offset to be a constant index immediate");
   if (!isSupportedPredicateLoadDist(getDist()))
     return emitOpError("requires predicate load dist to be NORM, US, or DS");
+  if (getUpdatedBase() &&
+      getUpdatedBase().getType() != getSource().getType())
+    return emitOpError("requires updated base result to match base type");
   return success();
 }
 
@@ -6459,6 +6480,9 @@ LogicalResult Vldsx2Op::verify() {
     return emitOpError("requires low/high results to share one vector type");
   if (!isSupportedVldx2DistToken(getDist()))
     return emitOpError("requires a supported x2 load distribution token");
+  if (getUpdatedBase() &&
+      getUpdatedBase().getType() != getSource().getType())
+    return emitOpError("requires updated base result to match base type");
   return success();
 }
 
@@ -6606,6 +6630,9 @@ LogicalResult VsldbOp::verify() {
     return emitOpError("requires block_stride to be i16");
   if (!getRepeatStride().getType().isSignlessInteger(16))
     return emitOpError("requires repeat_stride to be i16");
+  if (getUpdatedBase() &&
+      getUpdatedBase().getType() != getSource().getType())
+    return emitOpError("requires updated base result to match base type");
   return success();
 }
 
@@ -6634,6 +6661,9 @@ LogicalResult PstiOp::verify() {
     return emitOpError("requires offset to be a constant index immediate");
   if (!isSupportedPredicateStoreDist(getDist()))
     return emitOpError("requires predicate store dist to be NORM or PK");
+  if (getUpdatedBase() &&
+      getUpdatedBase().getType() != getDestination().getType())
+    return emitOpError("requires updated base result to match base type");
   return success();
 }
 
@@ -6649,6 +6679,9 @@ LogicalResult PstsOp::verify() {
     return emitOpError("requires index offset");
   if (!isSupportedPredicateStoreDist(getDist()))
     return emitOpError("requires predicate store dist to be NORM or PK");
+  if (getUpdatedBase() &&
+      getUpdatedBase().getType() != getDestination().getType())
+    return emitOpError("requires updated base result to match base type");
   return success();
 }
 
@@ -6691,6 +6724,9 @@ LogicalResult VstasOp::verify() {
     return emitOpError("requires a pointer-like destination");
   if (classifyMemoryRole(getDestination().getType()) == MemoryRole::GM)
     return emitOpError("requires a UB-backed destination");
+  if (getUpdatedBase() &&
+      getUpdatedBase().getType() != getDestination().getType())
+    return emitOpError("requires updated base result to match base type");
   return success();
 }
 
@@ -6759,6 +6795,8 @@ LogicalResult VstusOp::verify() {
     return emitOpError("requires a pointer-like base");
   if (classifyMemoryRole(getBase().getType()) == MemoryRole::GM)
     return emitOpError("requires a UB-backed base");
+  if (getBaseOut() && getBaseOut().getType() != getBase().getType())
+    return emitOpError("requires updated base result to match base type");
   return success();
 }
 
@@ -7735,19 +7773,306 @@ void MteL0cL1Op::print(OpAsmPrinter &printer) {
       getLoop3DstStride());
 }
 
-template <typename OpTy>
-static LogicalResult verifyCubeBridgeLoadStart(OpTy op) {
+static LogicalResult verifyCubeBridgeLoadStart(Operation *op, Value firstStart,
+                                               StringRef firstName,
+                                               Value secondStart,
+                                               StringRef secondName) {
   auto checkNonNegativeConst = [&](Value value, StringRef name) -> LogicalResult {
     APInt intValue;
     if (matchPattern(value, m_ConstantInt(&intValue)) && intValue.isNegative())
-      return op.emitOpError() << name << " must be non-negative";
+      return op->emitOpError() << name << " must be non-negative";
     return success();
   };
 
-  if (failed(checkNonNegativeConst(op.getStartRow(), "start_row")) ||
-      failed(checkNonNegativeConst(op.getStartCol(), "start_col")))
+  if (failed(checkNonNegativeConst(firstStart, firstName)) ||
+      failed(checkNonNegativeConst(secondStart, secondName)))
     return failure();
   return success();
+}
+
+template <typename OpTy>
+static LogicalResult verifyCubeBridgeLoadStart(OpTy op) {
+  return verifyCubeBridgeLoadStart(op.getOperation(), op.getStartRow(),
+                                   "start_row", op.getStartCol(), "start_col");
+}
+
+template <typename OpTy>
+static void setMxLoadOperandSegmentSizes(OperationState &result,
+                                         ArrayRef<int32_t> segmentSizes) {
+  auto &segments = result.getOrAddProperties<typename OpTy::Properties>()
+                       .operandSegmentSizes;
+  llvm::copy(segmentSizes, segments.begin());
+}
+
+struct MxLoadAsmOperand {
+  OpAsmParser::UnresolvedOperand operand;
+  Type type;
+  bool present = false;
+};
+
+static std::optional<unsigned>
+getMxLoadOperandIndex(StringRef keyword, ArrayRef<StringRef> shapeNames) {
+  for (auto [index, name] : llvm::enumerate(shapeNames))
+    if (keyword == name)
+      return index;
+
+  static constexpr StringRef kFullNames[] = {
+      "x_start", "y_start", "x_step", "y_step", "src_stride", "dst_stride"};
+  for (auto [index, name] : llvm::enumerate(kFullNames))
+    if (keyword == name)
+      return shapeNames.size() + index;
+  return std::nullopt;
+}
+
+template <typename OpTy>
+static ParseResult parseMteL1L0MxOp(OpAsmParser &parser,
+                                    OperationState &result,
+                                    ArrayRef<StringRef> shapeNames) {
+  OpAsmParser::UnresolvedOperand source;
+  OpAsmParser::UnresolvedOperand destination;
+  if (parser.parseOperand(source) || parser.parseComma() ||
+      parser.parseOperand(destination))
+    return failure();
+
+  SmallVector<OpAsmParser::UnresolvedOperand, 6> legacyOperands;
+  SmallVector<MxLoadAsmOperand, 10> namedOperands(10);
+  SmallVector<unsigned, 10> namedOperandOrder;
+  bool usesNamedOperands = false;
+
+  auto parseNamedOperand = [&](StringRef keyword) -> ParseResult {
+    std::optional<unsigned> index = getMxLoadOperandIndex(keyword, shapeNames);
+    if (!index)
+      return parser.emitError(parser.getCurrentLocation(),
+                              "unknown MX load operand '")
+             << keyword << "'";
+    if (namedOperands[*index].present)
+      return parser.emitError(parser.getCurrentLocation(),
+                              "duplicate MX load operand '")
+             << keyword << "'";
+    if (parser.parseLParen() || parser.parseOperand(namedOperands[*index].operand) ||
+        parser.parseRParen())
+      return failure();
+    namedOperands[*index].present = true;
+    namedOperandOrder.push_back(*index);
+    return success();
+  };
+
+  if (succeeded(parser.parseOptionalComma())) {
+    StringRef keyword;
+    if (succeeded(parser.parseOptionalKeyword(&keyword))) {
+      usesNamedOperands = true;
+      if (parseNamedOperand(keyword))
+        return failure();
+      while (succeeded(parser.parseOptionalComma())) {
+        if (parser.parseKeyword(&keyword) || parseNamedOperand(keyword))
+          return failure();
+      }
+    } else {
+      OpAsmParser::UnresolvedOperand operand;
+      if (parser.parseOperand(operand))
+        return failure();
+      legacyOperands.push_back(operand);
+      while (succeeded(parser.parseOptionalComma())) {
+        if (parser.parseOperand(operand))
+          return failure();
+        legacyOperands.push_back(operand);
+      }
+    }
+  }
+
+  if (!usesNamedOperands && legacyOperands.size() != 4 &&
+      legacyOperands.size() != 6)
+    return parser.emitError(parser.getCurrentLocation(),
+                            "expects either four shape-derived or six full "
+                            "positional MX operands");
+
+  if (parser.parseOptionalAttrDict(result.attributes) || parser.parseColon())
+    return failure();
+
+  Type sourceType;
+  Type destinationType;
+  if (parser.parseType(sourceType) || parser.parseComma() ||
+      parser.parseType(destinationType))
+    return failure();
+
+  SmallVector<Type, 6> legacyTypes;
+  if (usesNamedOperands) {
+    for (unsigned index : namedOperandOrder) {
+      Type type;
+      if (parser.parseComma() || parser.parseType(type))
+        return failure();
+      namedOperands[index].type = type;
+    }
+  } else {
+    for (size_t index = 0; index < legacyOperands.size(); ++index) {
+      Type type;
+      if (parser.parseComma() || parser.parseType(type))
+        return failure();
+      legacyTypes.push_back(type);
+    }
+  }
+
+  SmallVector<int32_t, 12> segmentSizes(12, 0);
+  segmentSizes[0] = 1;
+  segmentSizes[1] = 1;
+
+  if (parser.resolveOperand(source, sourceType, result.operands) ||
+      parser.resolveOperand(destination, destinationType, result.operands))
+    return failure();
+
+  if (usesNamedOperands) {
+    for (unsigned index = 0; index < namedOperands.size(); ++index) {
+      if (!namedOperands[index].present)
+        continue;
+      segmentSizes[2 + index] = 1;
+      if (parser.resolveOperand(namedOperands[index].operand,
+                                namedOperands[index].type,
+                                result.operands))
+        return failure();
+    }
+  } else {
+    const unsigned base = legacyOperands.size() <= 4 ? 0 : 4;
+    for (unsigned index = 0; index < legacyOperands.size(); ++index) {
+      segmentSizes[2 + base + index] = 1;
+      if (parser.resolveOperand(legacyOperands[index], legacyTypes[index],
+                                result.operands))
+        return failure();
+    }
+  }
+  setMxLoadOperandSegmentSizes<OpTy>(result, segmentSizes);
+  return success();
+}
+
+static void printMteL1L0MxOp(OpAsmPrinter &printer, Operation *operation,
+                             Value source, Value destination,
+                             ArrayRef<Value> shapeOperands,
+                             ArrayRef<StringRef> shapeNames,
+                             ArrayRef<Value> fullOperands) {
+  SmallVector<StringRef, 6> fullNames = {
+      "x_start", "y_start", "x_step", "y_step", "src_stride", "dst_stride"};
+
+  const bool hasShape = llvm::any_of(shapeOperands, [](Value value) {
+    return static_cast<bool>(value);
+  });
+  const bool hasFull = llvm::any_of(fullOperands, [](Value value) {
+    return static_cast<bool>(value);
+  });
+  const bool isShapeForm = hasShape && !hasFull &&
+      llvm::all_of(shapeOperands, [](Value value) { return static_cast<bool>(value); });
+  const bool isFullForm = hasFull && !hasShape &&
+      llvm::all_of(fullOperands, [](Value value) { return static_cast<bool>(value); });
+
+  printer << " " << source << ", " << destination;
+  SmallVector<Value, 10> printedOperands;
+  if (isShapeForm) {
+    for (Value value : shapeOperands) {
+      printer << ", " << value;
+      printedOperands.push_back(value);
+    }
+  } else if (isFullForm) {
+    for (Value value : fullOperands) {
+      printer << ", " << value;
+      printedOperands.push_back(value);
+    }
+  } else {
+    for (auto [index, value] : llvm::enumerate(shapeOperands)) {
+      if (!value)
+        continue;
+      printer << ", " << shapeNames[index] << "(" << value << ")";
+      printedOperands.push_back(value);
+    }
+    for (auto [index, value] : llvm::enumerate(fullOperands)) {
+      if (!value)
+        continue;
+      printer << ", " << fullNames[index] << "(" << value << ")";
+      printedOperands.push_back(value);
+    }
+  }
+
+  printer.printOptionalAttrDict(operation->getAttrs(),
+                                /*elidedAttrs=*/{"operandSegmentSizes"});
+  printer << " : " << source.getType() << ", " << destination.getType();
+  for (Value value : printedOperands)
+    printer << ", " << value.getType();
+}
+
+static LogicalResult verifyMxLoadOperands(Operation *op,
+                                          ArrayRef<Value> shapeOperands,
+                                          ArrayRef<StringRef> shapeNames,
+                                          ArrayRef<Value> fullOperands) {
+  auto checkNonNegativeConst = [&](Value value,
+                                   StringRef name) -> LogicalResult {
+    APInt intValue;
+    if (matchPattern(value, m_ConstantInt(&intValue)) && intValue.isNegative())
+      return op->emitOpError() << name << " must be non-negative";
+    return success();
+  };
+
+  const bool hasShape = llvm::any_of(shapeOperands, [](Value value) {
+    return static_cast<bool>(value);
+  });
+  const bool hasFull = llvm::any_of(fullOperands, [](Value value) {
+    return static_cast<bool>(value);
+  });
+  if (hasShape && hasFull)
+    return op->emitOpError()
+           << "cannot mix shape-derived MX operands with full MX operands";
+  if (!hasShape && !hasFull)
+    return op->emitOpError()
+           << "requires either all shape-derived MX operands or all full MX operands";
+
+  if (hasShape) {
+    for (auto [value, name] : llvm::zip(shapeOperands, shapeNames))
+      if (!value)
+        return op->emitOpError()
+               << "shape-derived MX form requires " << name;
+    return verifyCubeBridgeLoadStart(op, shapeOperands[2], shapeNames[2],
+                                     shapeOperands[3], shapeNames[3]);
+  }
+
+  static constexpr StringRef kFullNames[] = {
+      "x_start", "y_start", "x_step", "y_step", "src_stride", "dst_stride"};
+  for (auto [value, name] : llvm::zip(fullOperands, kFullNames))
+    if (!value)
+      return op->emitOpError() << "full MX form requires " << name;
+  if (failed(verifyCubeBridgeLoadStart(op, fullOperands[0], "x_start",
+                                       fullOperands[1], "y_start")))
+    return failure();
+  if (failed(checkNonNegativeConst(fullOperands[2], "x_step")) ||
+      failed(checkNonNegativeConst(fullOperands[3], "y_step")) ||
+      failed(checkNonNegativeConst(fullOperands[4], "src_stride")) ||
+      failed(checkNonNegativeConst(fullOperands[5], "dst_stride")))
+    return failure();
+  return success();
+}
+
+static LogicalResult verifyMxPointerAlignment(Operation *op, Value pointer,
+                                              StringRef pointerName,
+                                              int64_t alignmentBytes) {
+  auto pointerCast = pointer.getDefiningOp<CastPtrOp>();
+  if (!pointerCast || !isa<IntegerType>(pointerCast.getInput().getType()))
+    return success();
+
+  std::optional<int64_t> address =
+      mlir::getConstantIntValue(pointerCast.getInput());
+  if (!address || (*address % alignmentBytes) == 0)
+    return success();
+
+  return op->emitOpError()
+         << "statically known LOAD.MX " << pointerName
+         << " address must be aligned to " << alignmentBytes << " bytes, got "
+         << *address;
+}
+
+static LogicalResult verifyMxLoadAlignment(Operation *op, Value source,
+                                           Value destination) {
+  constexpr int64_t kMxSourceAlignmentBytes = 32;
+  constexpr int64_t kMxDestinationAddressUnitBytes = 16;
+  if (failed(verifyMxPointerAlignment(op, source, "source",
+                                      kMxSourceAlignmentBytes)))
+    return failure();
+  return verifyMxPointerAlignment(op, destination, "destination",
+                                  kMxDestinationAddressUnitBytes);
 }
 
 LogicalResult MteL0cL1Op::verify() {
@@ -7781,16 +8106,74 @@ LogicalResult MteL1L0bOp::verify() {
   return verifyCubeBridgeLoadStart(*this);
 }
 
+ParseResult MteL1L0aMxOp::parse(OpAsmParser &parser, OperationState &result) {
+  static constexpr StringRef kShapeNames[] = {
+      "m", "k", "start_row", "start_col"};
+  return parseMteL1L0MxOp<MteL1L0aMxOp>(parser, result, kShapeNames);
+}
+
+void MteL1L0aMxOp::print(OpAsmPrinter &printer) {
+  static constexpr StringRef kShapeNames[] = {
+      "m", "k", "start_row", "start_col"};
+  printMteL1L0MxOp(printer, getOperation(), getSource(), getDestination(),
+                    {getM(), getK(), getStartRow(), getStartCol()}, kShapeNames,
+                    {getXStart(), getYStart(), getXStep(), getYStep(),
+                     getSrcStride(), getDstStride()});
+}
+
 LogicalResult MteL1L0aMxOp::verify() {
   if (failed(verifyCubeBridgeLoadLikeOp(*this, AddressSpace::LEFT, "LEFT")))
     return failure();
-  return verifyCubeBridgeLoadStart(*this);
+  if (failed(verifyMxLoadOperands(
+          getOperation(), {getM(), getK(), getStartRow(), getStartCol()},
+          {"m", "k", "start_row", "start_col"},
+          {getXStart(), getYStart(), getXStep(), getYStep(), getSrcStride(),
+           getDstStride()})))
+    return failure();
+  return verifyMxLoadAlignment(getOperation(), getSource(), getDestination());
+}
+
+ParseResult MteL1L0bMxOp::parse(OpAsmParser &parser, OperationState &result) {
+  static constexpr StringRef kShapeNames[] = {
+      "k", "n", "start_row", "start_col"};
+  return parseMteL1L0MxOp<MteL1L0bMxOp>(parser, result, kShapeNames);
+}
+
+void MteL1L0bMxOp::print(OpAsmPrinter &printer) {
+  static constexpr StringRef kShapeNames[] = {
+      "k", "n", "start_row", "start_col"};
+  printMteL1L0MxOp(printer, getOperation(), getSource(), getDestination(),
+                    {getK(), getN(), getStartRow(), getStartCol()}, kShapeNames,
+                    {getXStart(), getYStart(), getXStep(), getYStep(),
+                     getSrcStride(), getDstStride()});
 }
 
 LogicalResult MteL1L0bMxOp::verify() {
   if (failed(verifyCubeBridgeLoadLikeOp(*this, AddressSpace::RIGHT, "RIGHT")))
     return failure();
-  return verifyCubeBridgeLoadStart(*this);
+  if (failed(verifyMxLoadOperands(
+          getOperation(), {getK(), getN(), getStartRow(), getStartCol()},
+          {"k", "n", "start_row", "start_col"},
+          {getXStart(), getYStart(), getXStep(), getYStep(), getSrcStride(),
+           getDstStride()})))
+    return failure();
+  return verifyMxLoadAlignment(getOperation(), getSource(), getDestination());
+}
+
+LogicalResult LoadCbufToCaMxOp::verify() {
+  if (failed(verifyCubeBridgeLoadLikeOp(*this, AddressSpace::LEFT, "LEFT")))
+    return failure();
+  return verifyCubeBridgeLoadStart(getOperation(), getXStartPosition(),
+                                   "x_start_position", getYStartPosition(),
+                                   "y_start_position");
+}
+
+LogicalResult LoadCbufToCbMxOp::verify() {
+  if (failed(verifyCubeBridgeLoadLikeOp(*this, AddressSpace::RIGHT, "RIGHT")))
+    return failure();
+  return verifyCubeBridgeLoadStart(getOperation(), getXStartPosition(),
+                                   "x_start_position", getYStartPosition(),
+                                   "y_start_position");
 }
 
 void MteL1L0aOp::getEffects(

@@ -595,6 +595,93 @@ static int64_t getDenseLogicalLanesInPart(int64_t elementCount, int64_t factor,
 
 } // namespace
 
+// ---------------------------------------------------------------------------
+// FpToSi hardware contract (mirrors VPTO lookupVcvtContract fp→int rows)
+// ---------------------------------------------------------------------------
+
+namespace mlir::pto {
+
+std::optional<VMIFpToSiContract>
+lookupVMIFpToSiContract(Type srcElem, Type dstElem) {
+  // Must be float → signed/signless integer.
+  if (!isVMIFloatLikeType(srcElem))
+    return std::nullopt;
+  auto dstInt = dyn_cast<IntegerType>(dstElem);
+  if (!dstInt || dstInt.isUnsigned())
+    return std::nullopt;
+
+  bool srcF32 = srcElem.isF32();
+  bool srcF16 = srcElem.isF16();
+  bool srcBF16 = srcElem.isBF16();
+  unsigned dstBits = dstInt.getWidth();
+
+  // f32 → s32: same width, rnd, sat, no part
+  if (srcF32 && dstBits == 32)
+    return VMIFpToSiContract{/*requiresSat=*/true, /*requiresPart=*/false};
+  // f32 → s16: narrow 2×, rnd, sat, part (EvenOdd)
+  if (srcF32 && dstBits == 16)
+    return VMIFpToSiContract{/*requiresSat=*/true, /*requiresPart=*/true};
+  // f16 → s32: widen 2×, rnd, NO sat, part (EvenOdd)
+  if (srcF16 && dstBits == 32)
+    return VMIFpToSiContract{/*requiresSat=*/false, /*requiresPart=*/true};
+  // f16 → s16: same width, rnd, sat, no part
+  if (srcF16 && dstBits == 16)
+    return VMIFpToSiContract{/*requiresSat=*/true, /*requiresPart=*/false};
+  // f16 → s8: narrow 2×, rnd, sat, part (EvenOdd)
+  if (srcF16 && dstBits == 8)
+    return VMIFpToSiContract{/*requiresSat=*/true, /*requiresPart=*/true};
+  // bf16 → s32: widen 2×, rnd, sat, part (EvenOdd)
+  if (srcBF16 && dstBits == 32)
+    return VMIFpToSiContract{/*requiresSat=*/true, /*requiresPart=*/true};
+
+  return std::nullopt;
+}
+
+// ---------------------------------------------------------------------------
+// FpToUi hardware contract (mirrors VPTO lookupVcvtContract fp→uint rows)
+// ---------------------------------------------------------------------------
+
+std::optional<VMIFpToUiContract>
+lookupVMIFpToUIContract(Type srcElem, Type dstElem) {
+  // Must be float → unsigned integer.
+  if (!isVMIFloatLikeType(srcElem))
+    return std::nullopt;
+  auto dstInt = dyn_cast<IntegerType>(dstElem);
+  if (!dstInt || !dstInt.isUnsigned())
+    return std::nullopt;
+
+  bool srcF16 = srcElem.isF16();
+  unsigned dstBits = dstInt.getWidth();
+
+  // f16 → u8: narrow 2×, rnd, sat, part (EvenOdd)
+  if (srcF16 && dstBits == 8)
+    return VMIFpToUiContract{/*requiresSat=*/true, /*requiresPart=*/true};
+
+  return std::nullopt;
+}
+
+// ---------------------------------------------------------------------------
+// FpToFp hardware contract (VMI-owned; may diverge from VPTO).
+// Only same-width fp->fp is enumerated here.
+// ---------------------------------------------------------------------------
+
+std::optional<VMIFpToFpContract>
+lookupVMIFpToFpContract(Type srcElem, Type dstElem) {
+  if (!isVMIFloatLikeType(srcElem) || !isVMIFloatLikeType(dstElem))
+    return std::nullopt;
+  unsigned srcBits = pto::getPTOStorageElemBitWidth(srcElem);
+  unsigned dstBits = pto::getPTOStorageElemBitWidth(dstElem);
+  if (srcBits != dstBits)
+    return std::nullopt;
+  // bf16 -> f16: same-width, rnd, sat, no part.
+  if (srcElem.isBF16() && dstElem.isF16())
+    return VMIFpToFpContract{/*requiresRnd=*/true, /*requiresSat=*/true,
+                            /*requiresPart=*/false};
+  return std::nullopt;
+}
+
+} // namespace mlir::pto
+
 VMILayoutAttr VMILayoutAttr::getContiguous(MLIRContext *context,
                                            int64_t laneStride) {
   return VMILayoutAttr::get(context, "contiguous", 1, 1, 0, laneStride);
@@ -955,6 +1042,38 @@ LogicalResult VMIIotaOp::verify() {
     if (*order != "ASC" && *order != "DESC")
       return emitOpError("requires order to be ASC or DESC");
   }
+  return success();
+}
+
+LogicalResult VMIGroupIotaOp::verify() {
+  auto resultType = cast<VMIVRegType>(getResult().getType());
+  Type elementType = resultType.getElementType();
+  if (!isVMIIotaElementType(elementType))
+    return emitOpError("requires result element type to be integer 8/16/32 "
+                       "or f16/f32");
+  if (!isCompatibleScalarForSemanticType(elementType, getBase().getType()))
+    return emitOpError("requires base type to match result element type");
+  if (std::optional<StringRef> order = getOrder()) {
+    if (*order != "ASC" && *order != "DESC")
+      return emitOpError("requires order to be ASC or DESC");
+  }
+
+  int64_t numGroups = getGroupAttr().getInt();
+  if (numGroups <= 1)
+    return emitOpError("requires group greater than one");
+  if (resultType.getElementCount() % numGroups != 0)
+    return emitOpError("requires group to evenly divide result logical lane "
+                       "count");
+  int64_t groupSize = resultType.getElementCount() / numGroups;
+  FailureOr<int64_t> lanesPerPart = getDataLanesPerPart(elementType);
+  if (succeeded(lanesPerPart) && groupSize % *lanesPerPart != 0 &&
+      *lanesPerPart % groupSize != 0)
+    return emitOpError("requires group_size to divide or be a multiple of "
+                       "physical lanes per part (")
+           << *lanesPerPart << ")";
+  if (VMILayoutAttr layout = resultType.getLayoutAttr();
+      layout && !layout.isContiguous())
+    return emitOpError("requires contiguous result layout");
   return success();
 }
 
@@ -1709,10 +1828,20 @@ LogicalResult VMITruncFOp::verify() {
       !isVMIFloatLikeType(resultType.getElementType()))
     return emitOpError(
         "requires floating-point-like source and result element types");
-  if (getVMIElementBitWidth(sourceType.getElementType()) <=
-      getVMIElementBitWidth(resultType.getElementType()))
+  unsigned srcBits = getVMIElementBitWidth(sourceType.getElementType());
+  unsigned dstBits = getVMIElementBitWidth(resultType.getElementType());
+  if (srcBits < dstBits)
     return emitOpError(
-        "requires result element type to be narrower than source element type");
+        "requires result element type to be narrower than or same-width "
+        "as source element type");
+  if (srcBits == dstBits) {
+    // Same-width fp→fp (e.g. bf16→f16): only allowed for supported VMI
+    // fp-to-fp contract pairs.
+    if (!lookupVMIFpToFpContract(sourceType.getElementType(),
+                                 resultType.getElementType()))
+      return emitOpError("same-width fp-to-fp conversion is not supported "
+                         "for this type pair; see lookupVMIFpToFpContract");
+  }
   if (auto roundingAttr = (*this)->getAttrOfType<StringAttr>("rounding")) {
     StringRef rounding = roundingAttr.getValue();
     if (rounding != "R" && rounding != "A" && rounding != "H" &&
@@ -1739,14 +1868,55 @@ LogicalResult VMIFPToSIOp::verify() {
   if (!isVMISignedOrSignlessIntegerType(resultType.getElementType()))
     return emitOpError("requires signed or signless integer result element "
                        "type");
-  if (getVMIElementBitWidth(resultType.getElementType()) != 32)
-    return emitOpError("requires 32-bit integer result element type");
-  auto satAttr = (*this)->getAttrOfType<StringAttr>("saturate");
-  if (!satAttr)
-    return emitOpError("'saturate' attribute is required (SAT or NOSAT)");
-  StringRef satVal = satAttr.getValue();
-  if (satVal != "SAT" && satVal != "NOSAT")
-    return emitOpError("saturate attr must be 'SAT' or 'NOSAT'");
+  auto contract =
+      lookupVMIFpToSiContract(sourceType.getElementType(),
+                              resultType.getElementType());
+  if (!contract)
+    return emitOpError("unsupported fp-to-si conversion element type pair");
+  if (contract->requiresSat) {
+    auto satAttr = (*this)->getAttrOfType<StringAttr>("saturate");
+    if (!satAttr)
+      return emitOpError("'saturate' attribute is required for this fp-to-si "
+                         "conversion (SAT or NOSAT)");
+    StringRef satVal = satAttr.getValue();
+    if (satVal != "SAT" && satVal != "NOSAT")
+      return emitOpError("saturate attr must be 'SAT' or 'NOSAT'");
+  } else {
+    if ((*this)->getAttrOfType<StringAttr>("saturate"))
+      return emitOpError("'saturate' attribute is not valid for this fp-to-si "
+                         "conversion (no overflow possible)");
+  }
+  return success();
+}
+
+LogicalResult VMIFPToUIOp::verify() {
+  auto sourceType = cast<VMIVRegType>(getSource().getType());
+  auto resultType = cast<VMIVRegType>(getResult().getType());
+  if (sourceType.getElementCount() != resultType.getElementCount())
+    return emitOpError(
+        "requires source and result logical lane counts to match");
+  if (!isVMIFloatLikeType(sourceType.getElementType()))
+    return emitOpError("requires floating-point-like source element type");
+  if (!isVMIUnsignedIntegerType(resultType.getElementType()))
+    return emitOpError("requires unsigned integer result element type");
+  auto contract =
+      lookupVMIFpToUIContract(sourceType.getElementType(),
+                              resultType.getElementType());
+  if (!contract)
+    return emitOpError("unsupported fp-to-ui conversion element type pair");
+  if (contract->requiresSat) {
+    auto satAttr = (*this)->getAttrOfType<StringAttr>("saturate");
+    if (!satAttr)
+      return emitOpError("'saturate' attribute is required for this fp-to-ui "
+                         "conversion (SAT or NOSAT)");
+    StringRef satVal = satAttr.getValue();
+    if (satVal != "SAT" && satVal != "NOSAT")
+      return emitOpError("saturate attr must be 'SAT' or 'NOSAT'");
+  } else {
+    if ((*this)->getAttrOfType<StringAttr>("saturate"))
+      return emitOpError("'saturate' attribute is not valid for this fp-to-ui "
+                         "conversion (no overflow possible)");
+  }
   return success();
 }
 
@@ -2374,7 +2544,7 @@ LogicalResult VMIPackOp::verify() {
 }
 
 
-enum class CvtDirection { FpWiden, FpNarrow, FpToSi, SiToFp, IntWiden, IntNarrow };
+enum class CvtDirection { FpWiden, FpNarrow, FpToSi, FpToUi, SiToFp, IntWiden, IntNarrow };
 
 // Shared helper: validates mask-data alignment and pmode value.
 // Applicable to all VMI elementwise ops that carry mask + pmode.
@@ -2604,6 +2774,23 @@ LogicalResult VMIVciOp::verify() {
     if (*order != "ASC" && *order != "DESC")
       return emitOpError("requires order to be ASC or DESC");
   }
+  if (auto groupAttr = getGroupAttr()) {
+    int64_t numGroups = groupAttr.getInt();
+    if (numGroups <= 0)
+      return emitOpError("requires group to be positive");
+    if (resultType.getElementCount() % numGroups != 0)
+      return emitOpError("requires group to evenly divide result logical lane "
+                         "count");
+    if (numGroups > 1) {
+      int64_t groupSize = resultType.getElementCount() / numGroups;
+      FailureOr<int64_t> lanesPerPart = getDataLanesPerPart(elementType);
+      if (succeeded(lanesPerPart) && groupSize % *lanesPerPart != 0 &&
+          *lanesPerPart % groupSize != 0)
+        return emitOpError("requires group_size to divide or be a multiple of "
+                           "physical lanes per part (")
+               << *lanesPerPart << ")";
+    }
+  }
   return success();
 }
 
@@ -2702,12 +2889,15 @@ LogicalResult VMIVminOp::verify() {
   auto lhsType = cast<VMIVRegType>(getLhs().getType());
   auto rhsType = cast<VMIVRegType>(getRhs().getType());
   auto resultType = cast<VMIVRegType>(getResult().getType());
-  if (!isVMIFloatLikeType(lhsType.getElementType()))
-    return emitOpError("requires floating-point-like VMI element type");
-  if (failed(verifyElementwiseVRegOp(getOperation(), lhsType, rhsType, resultType)))
+  Type elementType = lhsType.getElementType();
+  if (!isVMIFloatLikeType(elementType) && !isVMIAnyI8I16I32Type(elementType))
+    return emitOpError(
+        "requires floating-point-like or i8, i16, or i32 VMI element type");
+  if (failed(verifyElementwiseVRegOp(getOperation(), lhsType, rhsType,
+                                     resultType)))
     return failure();
-  if (failed(verifyVMIVariadicPmodeMask(getOperation(), getMask(),
-                                      resultType, getPmode())))
+  if (failed(verifyVMIVariadicPmodeMask(getOperation(), getMask(), resultType,
+                                        getPmode())))
     return failure();
   return success();
 }
@@ -2716,12 +2906,15 @@ LogicalResult VMIVmaxOp::verify() {
   auto lhsType = cast<VMIVRegType>(getLhs().getType());
   auto rhsType = cast<VMIVRegType>(getRhs().getType());
   auto resultType = cast<VMIVRegType>(getResult().getType());
-  if (!isVMIFloatLikeType(lhsType.getElementType()))
-    return emitOpError("requires floating-point-like VMI element type");
-  if (failed(verifyElementwiseVRegOp(getOperation(), lhsType, rhsType, resultType)))
+  Type elementType = lhsType.getElementType();
+  if (!isVMIFloatLikeType(elementType) && !isVMIAnyI8I16I32Type(elementType))
+    return emitOpError(
+        "requires floating-point-like or i8, i16, or i32 VMI element type");
+  if (failed(verifyElementwiseVRegOp(getOperation(), lhsType, rhsType,
+                                     resultType)))
     return failure();
-  if (failed(verifyVMIVariadicPmodeMask(getOperation(), getMask(),
-                                      resultType, getPmode())))
+  if (failed(verifyVMIVariadicPmodeMask(getOperation(), getMask(), resultType,
+                                        getPmode())))
     return failure();
   return success();
 }
@@ -3435,15 +3628,20 @@ LogicalResult VMICvtOp::verify() {
       dir = CvtDirection::FpWiden;
     else if (dstBits < srcBits)
       dir = CvtDirection::FpNarrow;
-    else
-      return emitOpError(
-          "fp-to-fp conversion must change element bit-width");
+    else {
+      // Same-width fp→fp (e.g. bf16 → f16): only allowed for VMI fp-to-fp
+      // contract pairs, routed through FpNarrow (1:1 TruncF).
+      if (!lookupVMIFpToFpContract(srcElem, dstElem))
+        return emitOpError(
+            "same-width fp-to-fp conversion is not supported for this type "
+            "pair; see lookupVMIFpToFpContract");
+      dir = CvtDirection::FpNarrow;
+    }
   } else if (srcFp && dstInt) {
-    if (!isVMISignedOrSignlessIntegerType(dstElem))
-      return emitOpError(
-          "fp-to-int conversion requires signed or signless integer result "
-          "element type");
-    dir = CvtDirection::FpToSi;
+    if (isVMIUnsignedIntegerType(dstElem))
+      dir = CvtDirection::FpToUi;
+    else
+      dir = CvtDirection::FpToSi;
   } else if (srcInt && dstFp) {
     if (!isVMISignedOrSignlessIntegerType(srcElem))
       return emitOpError(
@@ -3479,33 +3677,66 @@ LogicalResult VMICvtOp::verify() {
 
   // --- saturate ---
   auto satAttr = (*this)->getAttrOfType<StringAttr>("saturate");
-  bool needSat = (dir == CvtDirection::FpNarrow ||
-                  dir == CvtDirection::IntNarrow ||
-                  dir == CvtDirection::FpToSi);
-  if (needSat) {
-    if (!satAttr)
-      return emitOpError("'saturate' attribute is required for fp-narrow / "
-                         "int-narrow / fp-to-si conversions; write 'SAT' or "
-                         "'NOSAT'");
-    StringRef satVal = satAttr.getValue();
-    if (satVal != "SAT" && satVal != "NOSAT")
-      return emitOpError("saturate must be 'SAT' or 'NOSAT'");
-    // si32 -> si8 IntNarrow has no native hardware form.  Lowering aliases
-    // it through ui32 -> ui8 (bit-pattern equal ONLY under NOSAT).  Reject
-    // SAT here because ui32 -> ui8 SAT clamps to [0, 255], which does NOT
-    // match the expected si32 -> si8 SAT clamp to [-128, 127].
-    if (dir == CvtDirection::IntNarrow && satVal == "SAT" &&
-        srcBits == 32 && dstBits == 8 &&
-        isa<IntegerType>(srcElem) &&
-        cast<IntegerType>(srcElem).isSigned() &&
-        isa<IntegerType>(dstElem) &&
-        cast<IntegerType>(dstElem).isSigned())
-      return emitOpError("si32 -> si8 int-narrow does not support "
-                         "saturate=\"SAT\" (no native hardware form; "
-                         "only saturate=\"NOSAT\" is allowed)");
-  } else if (satAttr) {
-    return emitOpError("'saturate' attribute is only valid for fp-narrow / "
-                       "int-narrow / fp-to-si conversions");
+  if (dir == CvtDirection::FpToSi) {
+    auto contract = lookupVMIFpToSiContract(srcElem, dstElem);
+    if (!contract)
+      return emitOpError("unsupported fp-to-si conversion element type pair");
+    if (contract->requiresSat) {
+      if (!satAttr)
+        return emitOpError("'saturate' attribute is required for this "
+                           "fp-to-si conversion; write 'SAT' or 'NOSAT'");
+      StringRef satVal = satAttr.getValue();
+      if (satVal != "SAT" && satVal != "NOSAT")
+        return emitOpError("saturate must be 'SAT' or 'NOSAT'");
+    } else {
+      if (satAttr)
+        return emitOpError("'saturate' attribute is not valid for this "
+                           "fp-to-si conversion (no overflow possible)");
+    }
+  } else if (dir == CvtDirection::FpToUi) {
+    auto contract = lookupVMIFpToUIContract(srcElem, dstElem);
+    if (!contract)
+      return emitOpError("unsupported fp-to-ui conversion element type pair");
+    if (contract->requiresSat) {
+      if (!satAttr)
+        return emitOpError("'saturate' attribute is required for this "
+                           "fp-to-ui conversion; write 'SAT' or 'NOSAT'");
+      StringRef satVal = satAttr.getValue();
+      if (satVal != "SAT" && satVal != "NOSAT")
+        return emitOpError("saturate must be 'SAT' or 'NOSAT'");
+    } else {
+      if (satAttr)
+        return emitOpError("'saturate' attribute is not valid for this "
+                           "fp-to-ui conversion (no overflow possible)");
+    }
+  } else {
+    bool needSat = (dir == CvtDirection::FpNarrow ||
+                    dir == CvtDirection::IntNarrow);
+    if (needSat) {
+      if (!satAttr)
+        return emitOpError("'saturate' attribute is required for fp-narrow / "
+                           "int-narrow conversions; write 'SAT' or "
+                           "'NOSAT'");
+      StringRef satVal = satAttr.getValue();
+      if (satVal != "SAT" && satVal != "NOSAT")
+        return emitOpError("saturate must be 'SAT' or 'NOSAT'");
+      // si32 -> si8 IntNarrow has no native hardware form.  Lowering aliases
+      // it through ui32 -> ui8 (bit-pattern equal ONLY under NOSAT).  Reject
+      // SAT here because ui32 -> ui8 SAT clamps to [0, 255], which does NOT
+      // match the expected si32 -> si8 SAT clamp to [-128, 127].
+      if (dir == CvtDirection::IntNarrow && satVal == "SAT" &&
+          srcBits == 32 && dstBits == 8 &&
+          isa<IntegerType>(srcElem) &&
+          cast<IntegerType>(srcElem).isSigned() &&
+          isa<IntegerType>(dstElem) &&
+          cast<IntegerType>(dstElem).isSigned())
+        return emitOpError("si32 -> si8 int-narrow does not support "
+                           "saturate=\"SAT\" (no native hardware form; "
+                           "only saturate=\"NOSAT\" is allowed)");
+    } else if (satAttr) {
+      return emitOpError("'saturate' attribute is only valid for fp-narrow / "
+                         "int-narrow conversions");
+    }
   }
 
   // --- sign ---
@@ -3875,6 +4106,17 @@ LogicalResult VMIVselrOp::verify() {
 
   if (!isa<IntegerType>(indexType.getElementType()))
     return emitOpError("requires index element type to be integer");
+
+  unsigned sourceBits =
+      pto::getPTOStorageElemBitWidth(sourceType.getElementType());
+  unsigned indexBits =
+      pto::getPTOStorageElemBitWidth(indexType.getElementType());
+  if (sourceBits != 8 && sourceBits != 16 && sourceBits != 32)
+    return emitOpError(
+        "requires source/result element storage width to be 8, 16, or 32 bits");
+  if (indexBits != sourceBits)
+    return emitOpError(
+        "requires index element storage width to match source element storage width");
 
   bool sourceHasLayout = isLayoutAssigned(sourceType);
   bool indexHasLayout = isLayoutAssigned(indexType);

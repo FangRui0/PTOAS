@@ -230,8 +230,8 @@ static unsigned getVMIElementBitWidth(Type type) {
 
 /// Inspect the source and result element types of a vcvt and classify the
 /// conversion direction.  Returns one of:
-///   "widen_fp", "narrow_fp", "fptosi", "sitofp",
-///   "widen_int", "narrow_int"
+///   "widen_fp", "narrow_fp", "fptosi", "fptoui",
+///   "sitofp", "widen_int", "narrow_int"
 static StringRef classifyCvtDirection(Type srcElem, Type dstElem) {
   bool srcFp = isFloatType(srcElem);
   bool dstFp = isFloatType(dstElem);
@@ -240,8 +240,11 @@ static StringRef classifyCvtDirection(Type srcElem, Type dstElem) {
 
   if (srcFp && dstFp)
     return dstBits > srcBits ? "widen_fp" : "narrow_fp";
-  if (srcFp && !dstFp)
+  if (srcFp && !dstFp) {
+    if (auto intTy = dyn_cast<IntegerType>(dstElem))
+      return intTy.isUnsigned() ? "fptoui" : "fptosi";
     return "fptosi";
+  }
   if (!srcFp && dstFp)
     return "sitofp";
   // int → int
@@ -436,6 +439,10 @@ static LogicalResult lowerVCvt(VMICvtOp op, OpBuilder &builder) {
   } else if (direction == "fptosi") {
     result =
         builder.create<VMIFPToSIOp>(loc, resultType, source, saturateAttr)
+            .getResult();
+  } else if (direction == "fptoui") {
+    result =
+        builder.create<VMIFPToUIOp>(loc, resultType, source, saturateAttr)
             .getResult();
   } else if (direction == "sitofp") {
     result =
@@ -1189,17 +1196,53 @@ void VMILowerUnifiedToLegacyPass::runOnOperation() {
     // ---- Category A: pure syntactic renames ----
 
     if (auto vop = dyn_cast<VMIVciOp>(op)) {
-      // vci -> iota
+      // Public vci without grouping (or group=1) is ordinary continuous iota.
+      // group>1 lowers to the internal contiguous-only group_iota producer.
       builder.setInsertionPoint(op);
       StringAttr orderAttr;
       if (auto order = vop.getOrder())
         orderAttr = builder.getStringAttr(*order);
-      Value result =
+
+      Type resultType = vop.getResult().getType();
+      IntegerAttr groupAttr = vop.getGroupAttr();
+      if (groupAttr && groupAttr.getInt() > 1) {
+        if (auto vmiTy = dyn_cast<VMIVRegType>(resultType)) {
+          VMILayoutAttr layout = vmiTy.getLayoutAttr();
+          if (layout && !layout.isContiguous()) {
+            Type contigType = VMIVRegType::get(
+                op->getContext(), vmiTy.getElementCount(),
+                vmiTy.getElementType(),
+                VMILayoutAttr::getContiguous(op->getContext()));
+            Value contig =
+                builder
+                    .create<VMIGroupIotaOp>(op->getLoc(), contigType,
+                                            vop.getBase(), orderAttr, groupAttr)
+                    .getResult();
+            Value converted =
+                builder
+                    .create<VMIEnsureLayoutOp>(op->getLoc(), vmiTy, contig)
+                    .getResult();
+            vop.getResult().replaceAllUsesWith(converted);
+            op->erase();
+            continue;
+          }
+        }
+        Value grouped =
+            builder
+                .create<VMIGroupIotaOp>(op->getLoc(), resultType, vop.getBase(),
+                                        orderAttr, groupAttr)
+                .getResult();
+        vop.getResult().replaceAllUsesWith(grouped);
+        op->erase();
+        continue;
+      }
+
+      Value iota =
           builder
-              .create<VMIIotaOp>(op->getLoc(), vop.getResult().getType(),
-                                 vop.getBase(), orderAttr)
+              .create<VMIIotaOp>(op->getLoc(), resultType, vop.getBase(),
+                                 orderAttr)
               .getResult();
-      vop.getResult().replaceAllUsesWith(result);
+      vop.getResult().replaceAllUsesWith(iota);
       op->erase();
       continue;
     }
@@ -1415,18 +1458,24 @@ void VMILowerUnifiedToLegacyPass::runOnOperation() {
     }
 
     if (auto vop = dyn_cast<VMIVminOp>(op)) {
+      Type elemType = getVMIElementType(vop.getResult());
       auto createLegacy = [&](Location loc, Type ty, Value lhs,
                               Value rhs) -> Value {
-        return builder.create<VMIMinFOp>(loc, ty, lhs, rhs).getResult();
+        if (isFloatType(elemType))
+          return builder.create<VMIMinFOp>(loc, ty, lhs, rhs).getResult();
+        return builder.create<VMIMinIOp>(loc, ty, lhs, rhs).getResult();
       };
       (void)lowerBinaryIgnoringMask(vop, createLegacy);
       continue;
     }
 
     if (auto vop = dyn_cast<VMIVmaxOp>(op)) {
+      Type elemType = getVMIElementType(vop.getResult());
       auto createLegacy = [&](Location loc, Type ty, Value lhs,
                               Value rhs) -> Value {
-        return builder.create<VMIMaxFOp>(loc, ty, lhs, rhs).getResult();
+        if (isFloatType(elemType))
+          return builder.create<VMIMaxFOp>(loc, ty, lhs, rhs).getResult();
+        return builder.create<VMIMaxIOp>(loc, ty, lhs, rhs).getResult();
       };
       (void)lowerBinaryIgnoringMask(vop, createLegacy);
       continue;
@@ -1524,6 +1573,22 @@ void VMILowerUnifiedToLegacyPass::runOnOperation() {
     if (auto vop = dyn_cast<VMIVabsOp>(op)) {
       Type elemType = getVMIElementType(vop.getResult());
       auto createLegacy = [&](Location loc, Type ty, Value src) -> Value {
+        // bf16 has no vector absf; clear the sign bit (ASC: vand with 0x7FFF).
+        if (elemType.isBF16()) {
+          auto srcTy = cast<VMIVRegType>(src.getType());
+          Type i16 = builder.getIntegerType(16);
+          auto iTy = VMIVRegType::get(builder.getContext(),
+                                      srcTy.getElementCount(), i16,
+                                      srcTy.getLayout());
+          Value asI = builder.create<VMIBitcastOp>(loc, iTy, src);
+          Value c = builder.create<arith::ConstantOp>(
+              loc, i16, builder.getIntegerAttr(i16, 0x7FFF));
+          Value maskVec =
+              builder.create<VMIBroadcastOp>(loc, iTy, c).getResult();
+          Value cleared =
+              builder.create<VMIAndIOp>(loc, iTy, asI, maskVec).getResult();
+          return builder.create<VMIBitcastOp>(loc, ty, cleared).getResult();
+        }
         if (isFloatType(elemType))
           return builder.create<VMIAbsFOp>(loc, ty, src).getResult();
         return builder.create<VMIAbsIOp>(loc, ty, src).getResult();
@@ -1582,6 +1647,7 @@ void VMILowerUnifiedToLegacyPass::runOnOperation() {
       continue;
     }
   }
+
 }
 
 std::unique_ptr<Pass> mlir::pto::createVMILowerUnifiedToLegacyPass() {

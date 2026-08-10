@@ -1570,19 +1570,31 @@ struct ExpandLeftLoadMxPattern : public OpRewritePattern<pto::MteL1L0aMxOp> {
       return rewriter.notifyMatchFailure(
           op, "failed to derive MX scale destination pointer");
 
-    FailureOr<LoadCbufToMxControl> control =
-        deriveLoadCbufToCaMxControl(loc, op.getM(), op.getK(),
-                                    sourceType.getElementType(),
-                                    op.getStartRow(), op.getStartCol(),
-                                    rewriter);
-    if (failed(control))
-      return rewriter.notifyMatchFailure(op,
-                                         "failed to derive load_cbuf_to_ca_mx control");
+    LoadCbufToMxControl control;
+    if (op.getXStart()) {
+      if (!op.getYStart() || !op.getXStep() || !op.getYStep() ||
+          !op.getSrcStride() || !op.getDstStride())
+        return rewriter.notifyMatchFailure(op,
+                                           "expected complete full MX operands");
+      control = {op.getXStart(), op.getYStart(), op.getXStep(), op.getYStep(),
+                 op.getSrcStride(), op.getDstStride()};
+    } else {
+      if (!op.getM() || !op.getK() || !op.getStartRow() || !op.getStartCol())
+        return rewriter.notifyMatchFailure(
+            op, "expected complete shape-derived MX operands");
+      FailureOr<LoadCbufToMxControl> derived = deriveLoadCbufToCaMxControl(
+          loc, op.getM(), op.getK(), sourceType.getElementType(),
+          op.getStartRow(), op.getStartCol(), rewriter);
+      if (failed(derived))
+        return rewriter.notifyMatchFailure(
+            op, "failed to derive load_cbuf_to_ca_mx control");
+      control = *derived;
+    }
 
     rewriter.create<pto::LoadCbufToCaMxOp>(
-        loc, source, destination, control->xStartPosition,
-        control->yStartPosition, control->xStep, control->yStep,
-        control->srcStride, control->dstStride);
+        loc, source, destination, control.xStartPosition,
+        control.yStartPosition, control.xStep, control.yStep,
+        control.srcStride, control.dstStride);
     rewriter.eraseOp(op);
     return success();
   }
@@ -1606,19 +1618,32 @@ struct ExpandRightLoadMxPattern : public OpRewritePattern<pto::MteL1L0bMxOp> {
     if (!destination)
       return rewriter.notifyMatchFailure(
           op, "failed to derive MX scale destination pointer");
-    FailureOr<LoadCbufToMxControl> control =
-        deriveLoadCbufToCbMxControl(loc, op.getK(), op.getN(),
-                                    sourceType.getElementType(),
-                                    op.getStartRow(), op.getStartCol(),
-                                    rewriter);
-    if (failed(control))
-      return rewriter.notifyMatchFailure(op,
-                                         "failed to derive load_cbuf_to_cb_mx control");
+
+    LoadCbufToMxControl control;
+    if (op.getXStart()) {
+      if (!op.getYStart() || !op.getXStep() || !op.getYStep() ||
+          !op.getSrcStride() || !op.getDstStride())
+        return rewriter.notifyMatchFailure(op,
+                                           "expected complete full MX operands");
+      control = {op.getXStart(), op.getYStart(), op.getXStep(), op.getYStep(),
+                 op.getSrcStride(), op.getDstStride()};
+    } else {
+      if (!op.getK() || !op.getN() || !op.getStartRow() || !op.getStartCol())
+        return rewriter.notifyMatchFailure(
+            op, "expected complete shape-derived MX operands");
+      FailureOr<LoadCbufToMxControl> derived = deriveLoadCbufToCbMxControl(
+          loc, op.getK(), op.getN(), sourceType.getElementType(),
+          op.getStartRow(), op.getStartCol(), rewriter);
+      if (failed(derived))
+        return rewriter.notifyMatchFailure(
+            op, "failed to derive load_cbuf_to_cb_mx control");
+      control = *derived;
+    }
 
     rewriter.create<pto::LoadCbufToCbMxOp>(
-        loc, source, destination, control->xStartPosition,
-        control->yStartPosition, control->xStep, control->yStep,
-        control->srcStride, control->dstStride);
+        loc, source, destination, control.xStartPosition,
+        control.yStartPosition, control.xStep, control.yStep,
+        control.srcStride, control.dstStride);
     rewriter.eraseOp(op);
     return success();
   }

@@ -35,7 +35,7 @@ if((NOT DEFINED MLIR_DIR OR MLIR_DIR STREQUAL "")
       "MLIR package directory derived from LLVM_BUILD_DIR")
 endif()
 
-project(ptoas VERSION 0.56)
+project(ptoas VERSION 0.57)
 
 # Wheel builds carry the same Linux hardening policy as release CMake builds.
 # Including the cache settings here keeps the policy backend-independent.
@@ -234,6 +234,15 @@ if(BUILD_TESTING)
               "${CMAKE_CURRENT_SOURCE_DIR}/test/python/low_precision_types.py"
     )
     set_tests_properties(pto_low_precision_types PROPERTIES
+      LABELS "PTO"
+      ENVIRONMENT "${_pto_python_test_env}"
+    )
+    add_test(
+      NAME pto_install_nightly_wheel
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/test/python/test_install_nightly_wheel.py"
+    )
+    set_tests_properties(pto_install_nightly_wheel PROPERTIES
       LABELS "PTO"
       ENVIRONMENT "${_pto_python_test_env}"
     )

@@ -63,7 +63,6 @@ from ._types import (
     _materialize_integer_literal,
     _normalize_address_space,
     _resolve,
-    _strip_integer_signedness,
     mask_type,
     part_tensor_view_type,
     part_tensor_view_type_from_dims,
@@ -497,6 +496,7 @@ def vldus(source, align):
     op = _pto.VldusOp(
         result_type,
         _pto.AlignType.get(),
+        None,
         unwrap_surface_value(source),
         unwrap_surface_value(align),
     )
@@ -538,6 +538,7 @@ def vldsx2(source, offset_or_dist, dist=None, *, result_vreg_type=None):
         op = _pto.Vldsx2Op(
             result_type,
             result_type,
+            None,
             unwrap_surface_value(source),
             source_offset,
             _normalize_dist_token(
@@ -557,6 +558,7 @@ def vldsx2(source, offset_or_dist, dist=None, *, result_vreg_type=None):
     op = _pto.Vldsx2Op(
         result_type,
         result_type,
+        None,
         unwrap_surface_value(source),
         _coerce_index(offset_or_dist, context="vldsx2(ptr, offset, dist)"),
         _normalize_dist_token(
@@ -1159,6 +1161,7 @@ def vsldb(source, block_stride, repeat_stride, mask):
     return wrap_surface_value(
         _pto.VsldbOp(
             result_type,
+            None,
             unwrap_surface_value(source),
             _coerce_i16(block_stride, context="vsldb(..., block_stride, repeat_stride, mask)"),
             _coerce_i16(repeat_stride, context="vsldb(..., block_stride, repeat_stride, mask)"),
@@ -1697,6 +1700,7 @@ def plds(buf, offset, *, dist="NORM"):
     return wrap_surface_value(
         _pto.PldsOp(
             result_type,
+            None,
             unwrap_surface_value(buf),
             _coerce_index(offset, context="plds(buf, offset)"),
             _normalize_predicate_dist(
@@ -1712,6 +1716,7 @@ def psts(mask_value, buf, offset, *, dist="NORM"):
     """``pto.psts`` – store a predicate mask to UB memory."""
     _infer_mask_metadata(mask_value, context="psts(mask, buf, offset)")
     _pto.PstsOp(
+        None,
         unwrap_surface_value(mask_value),
         unwrap_surface_value(buf),
         _coerce_index(offset, context="psts(mask, buf, offset)"),
@@ -1759,6 +1764,7 @@ def vstar(align, destination):
 def vstas(align, destination, offset):
     """``pto.vstas`` – flush alignment-buffered tail bytes with an explicit offset."""
     _pto.VstasOp(
+        None,
         unwrap_surface_value(align),
         unwrap_surface_value(destination),
         _coerce_i32(offset, context="vstas(align, destination, offset)"),
@@ -1783,6 +1789,7 @@ def vstus(align_in, offset, value, base):
     return wrap_surface_value(
         _pto.VstusOp(
             _pto.AlignType.get(),
+            None,
             unwrap_surface_value(align_in),
             _coerce_i32(offset, context="vstus(align, offset, value, base)"),
             unwrap_surface_value(value),
@@ -2032,13 +2039,12 @@ def _infer_vdup_scalar_result_type(input_value, mask_value, *, context: str):
     scalar_type = scalar_raw.type
     mask_bits = _mask_granularity_bits(mask_value, context=context)
     if IntegerType.isinstance(scalar_type):
-        scalar_type = _strip_integer_signedness(scalar_raw)
-        scalar_width = IntegerType(scalar_type.type).width
+        scalar_width = IntegerType(scalar_type).width
         if scalar_width != mask_bits:
             raise TypeError(
                 f"{context} expects scalar input width {scalar_width} to match mask granularity b{mask_bits}"
             )
-        element_type = scalar_type.type
+        element_type = scalar_type
     elif F16Type.isinstance(scalar_type) or BF16Type.isinstance(scalar_type):
         if mask_bits != 16:
             raise TypeError(f"{context} expects f16/bf16 scalar input to pair with mask_b16, got mask_b{mask_bits}")
@@ -2090,6 +2096,12 @@ def vdup(input_value, mask, position=None):
             raise TypeError("vdup(scalar, mask, position=...) does not support position; position is only valid for vector input")
         raw_input = _coerce_vdup_scalar_input(input_value, mask, context="vdup(scalar, mask)")
         result_type = _infer_vdup_scalar_result_type(raw_input, mask, context="vdup(scalar, mask)")
+        result_element_type = _pto.VRegType(result_type).element_type
+        raw_input = coerce_scalar_to_type(
+            raw_input,
+            result_element_type,
+            context="vdup(scalar, mask)",
+        )
         normalized_position = None
     return wrap_surface_value(
         _pto.VdupOp(
@@ -2328,10 +2340,54 @@ def vmrgsort4(destination, source0, source1, source2, source3, count, config):
     )
 
 
-def load_scalar(ptr_value, offset=0, result_type=None):
-    """``pto.load_scalar`` – load one scalar from a pointer-like value."""
-    if result_type is None:
-        result_type = _pointer_element_type(ptr_value, context="load_scalar(ptr)")
+def _resolve_l1_bypass_scalar_pointer(ptr_value, *, context: str):
+    """Validate the GM integer pointer contract used by ``ld_dev``."""
+    raw_ptr = unwrap_surface_value(ptr_value)
+    try:
+        ptr_type = _pto.PtrType(raw_ptr.type)
+    except Exception as exc:
+        raise TypeError(f"{context} requires a typed PTO pointer") from exc
+
+    gm_space = _pto.AddressSpaceAttr.get(_pto.AddressSpace.GM)
+    if ptr_type.memory_space != gm_space:
+        raise TypeError(f"{context} requires a GM pointer, got {raw_ptr.type}")
+
+    elem_type = ptr_type.element_type
+    if not IntegerType.isinstance(elem_type) or IntegerType(elem_type).width not in (8, 16, 32, 64):
+        raise TypeError(
+            f"{context} supports only i8, i16, i32 or i64 pointer elements, "
+            f"got {elem_type}"
+        )
+    return raw_ptr, elem_type
+
+
+def _validate_scalar_l1_bypass(value, *, context: str) -> bool:
+    if not isinstance(value, bool):
+        raise TypeError(f"{context} expects bypass_l1 to be a bool")
+    return value
+
+
+def load_scalar(ptr_value, offset=0, *, bypass_l1=False):
+    """Load one scalar through the scalar pipeline.
+
+    ``bypass_l1=True`` selects the AICore GM device-memory form and emits
+    ``pto.ld_dev``.  The bypass form requires a GM pointer with an i8, i16,
+    i32, or i64 element type and is valid only in an ordinary AICore entry.
+    """
+    bypass_l1 = _validate_scalar_l1_bypass(bypass_l1, context="load_scalar(...)")
+    if bypass_l1:
+        raw_ptr, elem_type = _resolve_l1_bypass_scalar_pointer(
+            ptr_value, context="load_scalar(..., bypass_l1=True)"
+        )
+        return wrap_surface_value(
+            _pto.PTOLdDevOp(
+                elem_type,
+                raw_ptr,
+                _coerce_index(offset, context="load_scalar(offset)"),
+            ).value
+        )
+
+    result_type = _pointer_element_type(ptr_value, context="load_scalar(ptr)")
     return wrap_surface_value(
         _pto.LoadScalarOp(
             _resolve(result_type),
@@ -2341,8 +2397,30 @@ def load_scalar(ptr_value, offset=0, result_type=None):
     )
 
 
-def store_scalar(ptr_value, offset, value):
-    """``pto.store_scalar`` – store one scalar to a pointer-like value."""
+def store_scalar(ptr_value, offset, value, *, bypass_l1=False):
+    """Store one scalar through the scalar pipeline.
+
+    ``bypass_l1=True`` selects the AICore GM device-memory form and emits
+    ``pto.st_dev``.  The bypass form requires a GM pointer with an i8, i16,
+    i32, or i64 element type and is valid only in an ordinary AICore entry.
+    """
+    bypass_l1 = _validate_scalar_l1_bypass(bypass_l1, context="store_scalar(...)")
+    if bypass_l1:
+        raw_ptr, elem_type = _resolve_l1_bypass_scalar_pointer(
+            ptr_value, context="store_scalar(..., bypass_l1=True)"
+        )
+        raw_value = coerce_scalar_to_type(
+            value,
+            elem_type,
+            context="store_scalar(..., bypass_l1=True)",
+        )
+        _pto.PTOStDevOp(
+            raw_value,
+            raw_ptr,
+            _coerce_index(offset, context="store_scalar(offset)"),
+        )
+        return
+
     _pto.StoreScalarOp(
         unwrap_surface_value(ptr_value),
         _coerce_index(offset, context="store_scalar(offset)"),
@@ -5333,20 +5411,66 @@ def mte_l1_l0b(
 def mte_l1_l0a_mx(
     source,
     destination,
-    m,
-    k,
+    m=None,
+    k=None,
     *,
-    start_row=0,
-    start_col=0,
+    start_row=None,
+    start_col=None,
+    x_start=None,
+    y_start=None,
+    x_step=None,
+    y_step=None,
+    src_stride=None,
+    dst_stride=None,
 ):
-    """``pto.mte_l1_l0a_mx`` – MX cube-side LEFT staging."""
+    """``pto.mte_l1_l0a_mx`` – MX cube-side LEFT staging.
+
+    Use either the existing shape-derived ``m``/``k`` form or provide all six
+    full MX operands. Both forms trace through the L1-to-L0A MX wrapper.
+    """
+    full_operands = (x_start, y_start, x_step, y_step, src_stride, dst_stride)
+    has_full_operands = any(operand is not None for operand in full_operands)
+    if has_full_operands:
+        if m is not None or k is not None:
+            raise TypeError(
+                "mte_l1_l0a_mx accepts either m/k or full MX operands, not both"
+            )
+        # The legacy API defaulted these shape-only fields to zero. Continue
+        # accepting explicit zero so existing full-MX callers remain valid.
+        if ((start_row is not None and start_row != 0) or
+                (start_col is not None and start_col != 0)):
+            raise TypeError(
+                "mte_l1_l0a_mx start_row/start_col are unavailable with full MX operands"
+            )
+        if any(operand is None for operand in full_operands):
+            raise TypeError(
+                "mte_l1_l0a_mx full MX operands require x_start, y_start, "
+                "x_step, y_step, src_stride, and dst_stride"
+            )
+        _pto.MteL1L0aMxOp(
+            unwrap_surface_value(source),
+            unwrap_surface_value(destination),
+            x_start=_coerce_i64(x_start, context="mte_l1_l0a_mx x_start"),
+            y_start=_coerce_i64(y_start, context="mte_l1_l0a_mx y_start"),
+            x_step=_coerce_i64(x_step, context="mte_l1_l0a_mx x_step"),
+            y_step=_coerce_i64(y_step, context="mte_l1_l0a_mx y_step"),
+            src_stride=_coerce_i64(src_stride, context="mte_l1_l0a_mx src_stride"),
+            dst_stride=_coerce_i64(dst_stride, context="mte_l1_l0a_mx dst_stride"),
+        )
+        return
+    if m is None or k is None:
+        raise TypeError("mte_l1_l0a_mx requires m and k without full MX operands")
+    if start_row is None:
+        start_row = 0
+    if start_col is None:
+        start_col = 0
     _pto.MteL1L0aMxOp(
         unwrap_surface_value(source),
         unwrap_surface_value(destination),
-        _coerce_i64(m, context="mte_l1_l0a_mx m"),
-        _coerce_i64(k, context="mte_l1_l0a_mx k"),
-        _coerce_i64(start_row, context="mte_l1_l0a_mx start_row"),
-        _coerce_i64(start_col, context="mte_l1_l0a_mx start_col"),
+        m=_coerce_i64(m, context="mte_l1_l0a_mx m"),
+        k=_coerce_i64(k, context="mte_l1_l0a_mx k"),
+        start_row=_coerce_i64(start_row, context="mte_l1_l0a_mx start_row"),
+        start_col=_coerce_i64(start_col, context="mte_l1_l0a_mx start_col"),
     )
 
 
@@ -5354,20 +5478,66 @@ def mte_l1_l0a_mx(
 def mte_l1_l0b_mx(
     source,
     destination,
-    k,
-    n,
+    k=None,
+    n=None,
     *,
-    start_row=0,
-    start_col=0,
+    start_row=None,
+    start_col=None,
+    x_start=None,
+    y_start=None,
+    x_step=None,
+    y_step=None,
+    src_stride=None,
+    dst_stride=None,
 ):
-    """``pto.mte_l1_l0b_mx`` – MX cube-side RIGHT staging."""
+    """``pto.mte_l1_l0b_mx`` – MX cube-side RIGHT staging.
+
+    Use either the existing shape-derived ``k``/``n`` form or provide all six
+    full MX operands. Both forms trace through the L1-to-L0B MX wrapper.
+    """
+    full_operands = (x_start, y_start, x_step, y_step, src_stride, dst_stride)
+    has_full_operands = any(operand is not None for operand in full_operands)
+    if has_full_operands:
+        if k is not None or n is not None:
+            raise TypeError(
+                "mte_l1_l0b_mx accepts either k/n or full MX operands, not both"
+            )
+        # The legacy API defaulted these shape-only fields to zero. Continue
+        # accepting explicit zero so existing full-MX callers remain valid.
+        if ((start_row is not None and start_row != 0) or
+                (start_col is not None and start_col != 0)):
+            raise TypeError(
+                "mte_l1_l0b_mx start_row/start_col are unavailable with full MX operands"
+            )
+        if any(operand is None for operand in full_operands):
+            raise TypeError(
+                "mte_l1_l0b_mx full MX operands require x_start, y_start, "
+                "x_step, y_step, src_stride, and dst_stride"
+            )
+        _pto.MteL1L0bMxOp(
+            unwrap_surface_value(source),
+            unwrap_surface_value(destination),
+            x_start=_coerce_i64(x_start, context="mte_l1_l0b_mx x_start"),
+            y_start=_coerce_i64(y_start, context="mte_l1_l0b_mx y_start"),
+            x_step=_coerce_i64(x_step, context="mte_l1_l0b_mx x_step"),
+            y_step=_coerce_i64(y_step, context="mte_l1_l0b_mx y_step"),
+            src_stride=_coerce_i64(src_stride, context="mte_l1_l0b_mx src_stride"),
+            dst_stride=_coerce_i64(dst_stride, context="mte_l1_l0b_mx dst_stride"),
+        )
+        return
+    if k is None or n is None:
+        raise TypeError("mte_l1_l0b_mx requires k and n without full MX operands")
+    if start_row is None:
+        start_row = 0
+    if start_col is None:
+        start_col = 0
     _pto.MteL1L0bMxOp(
         unwrap_surface_value(source),
         unwrap_surface_value(destination),
-        _coerce_i64(k, context="mte_l1_l0b_mx k"),
-        _coerce_i64(n, context="mte_l1_l0b_mx n"),
-        _coerce_i64(start_row, context="mte_l1_l0b_mx start_row"),
-        _coerce_i64(start_col, context="mte_l1_l0b_mx start_col"),
+        k=_coerce_i64(k, context="mte_l1_l0b_mx k"),
+        n=_coerce_i64(n, context="mte_l1_l0b_mx n"),
+        start_row=_coerce_i64(start_row, context="mte_l1_l0b_mx start_row"),
+        start_col=_coerce_i64(start_col, context="mte_l1_l0b_mx start_col"),
     )
 
 
@@ -6225,6 +6395,11 @@ def threadfence_block():
     _pto.ThreadfenceBlockOp()
 
 
+def trap():
+    """``pto.trap`` – unconditionally terminate device-side execution."""
+    _pto.TrapOp()
+
+
 def _slot_attr_value(slot, *, context: str):
     if not isinstance(slot, int) or isinstance(slot, bool):
         raise TypeError(f"{context} expects a non-negative Python int slot")
@@ -6507,7 +6682,7 @@ __all__ = [
     "prmt", "mulhi", "mul_i32toi64",
     "absf", "sqrt", "exp", "log", "pow", "ceil", "floor", "rint", "round",
     "fmin", "fmax", "fma", "convert",
-    "syncthreads", "threadfence", "threadfence_block", "keep", "resume",
+    "syncthreads", "threadfence", "threadfence_block", "trap", "keep", "resume",
     "pipe_barrier", "get_buf", "rls_buf",
     "set_cross_flag", "wait_cross_flag", "set_intra_flag", "wait_intra_flag",
     "set_flag", "wait_flag",

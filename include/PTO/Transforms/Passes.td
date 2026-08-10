@@ -356,6 +356,28 @@ def PTONormalizeUncoveredTileSections
   ];
 }
 
+def PTOValidatePhysicalSectionBoundaries
+    : Pass<"pto-validate-physical-section-boundaries", "ModuleOp"> {
+  let summary = "Verify SSA isolation at physical section boundaries";
+  let description = [{
+    Verifies that values defined inside a `pto.section.cube` or
+    `pto.section.vector` remain inside that lexical physical section. Values
+    defined outside a section may be captured by it, but values cannot be
+    passed implicitly between sibling sections or from a section to its
+    enclosing function. This validation is run after inferred sections are
+    materialized, so explicit and automatically inferred sections obey the
+    same boundary rules.
+  }];
+
+  let constructor =
+      "mlir::pto::createPTOValidatePhysicalSectionBoundariesPass()";
+
+  let dependentDialects = [
+    "mlir::pto::PTODialect",
+    "mlir::func::FuncDialect"
+  ];
+}
+
 def PTOMaterializeTileOpSections
     : Pass<"pto-materialize-tileop-sections", "ModuleOp"> {
   let summary = "Verify PTODSL tileop helpers and materialize their single compute section";
@@ -511,40 +533,26 @@ def InsertTemplateAttributes
     : Pass<"pto-insert-template-attributes", "ModuleOp"> {
   let summary = "Attach legal PTODSL template candidates to tile operations";
   let description = [{
-    Queries the PTODSL TileLib daemon for legal template candidates and stores
-    the compact candidate list on each tile operation as the `candidates`
-    attribute. Each candidate contains only id, name, loop_depth, postupdate,
-    and tail metadata.
+    Queries the process-wide PTODSL TileLib runtime for legal template
+    candidates and stores the compact candidate list on each tile operation as
+    the `candidates` attribute. Each candidate contains only id, name,
+    loop_depth, postupdate, and tail metadata.
   }];
   let constructor = "mlir::pto::createInsertTemplateAttributesPass()";
   let dependentDialects = [
     "mlir::pto::PTODialect",
     "mlir::func::FuncDialect"
   ];
-  let options = [
-    Option<"pythonExe", "python-exe", "std::string",
-           /*default=*/"\"python3\"",
-           "Python executable for TileLib metadata invocation">,
-    Option<"daemonSocketPath", "daemon-socket-path", "std::string",
-           /*default=*/"\"\"",
-           "Path to the PTODSL TileLib daemon Unix socket">,
-    Option<"tileLibPkgPath", "tile-lib-pkg-path", "std::string",
-           /*default=*/"\"\"",
-           "PYTHONPATH root for PTODSL">,
-    Option<"daemonHelperModule", "daemon-helper-module", "std::string",
-           /*default=*/"\"ptodsl.tilelib.serving.helper\"",
-           "Python module used for daemon metadata RPC calls">
-  ];
 }
 
 def ExpandTileOp : Pass<"pto-expand-tile-op", "ModuleOp"> {
   let summary = "Expand tile ops into calls to TileLib template functions";
   let description = [{
-    Expands tile-level operations (pto.tadd, pto.tsub, etc.) by invoking the
-    selected Python TileLib backend to instantiate template libraries. The
-    generated template functions use tile_buf parameters and contain
-    vector-level implementations (pto.vecscope, pto.vlds, pto.vadd,
-    pto.vsts, etc.).
+    Expands tile-level operations (pto.tadd, pto.tsub, etc.) by asking the
+    process-wide PTODSL TileLib runtime to instantiate template libraries in
+    the current operation's MLIRContext. The generated template functions use
+    tile_buf parameters and contain vector-level implementations (pto.vecscope,
+    pto.vlds, pto.vadd, pto.vsts, etc.).
 
     Each tile op is replaced by a func.call to the generated template function,
     with tile_buf operands passed directly (no type bridging).
@@ -562,29 +570,12 @@ def ExpandTileOp : Pass<"pto-expand-tile-op", "ModuleOp"> {
     "mlir::scf::SCFDialect",
     "mlir::vector::VectorDialect"
   ];
-  let options = [
-    Option<"pythonExe", "python-exe", "std::string",
-           /*default=*/"\"python3\"",
-           "Python executable for TileLib invocation">,
-    Option<"daemonSocketPath", "daemon-socket-path", "std::string",
-           /*default=*/"\"\"",
-           "Path to Unix domain socket for daemon RPC">,
-    Option<"tileLibBackend", "tile-lib-backend", "std::string",
-           /*default=*/"\"ptodsl\"",
-           "TileLib backend: ptodsl">,
-    Option<"tileLibPkgPath", "tile-lib-pkg-path", "std::string",
-           /*default=*/"\"\"",
-           "PYTHONPATH root for the selected TileLib backend">,
-    Option<"daemonHelperModule", "daemon-helper-module", "std::string",
-           /*default=*/"\"ptodsl.tilelib.serving.helper\"",
-           "Python module used for daemon helper RPC calls">
-  ];
 }
 
 def FoldTileBufIntrinsics : Pass<"pto-fold-tile-buf-intrinsics", "mlir::func::FuncOp"> {
   let summary = "Fold structured-view intrinsics after template inlining";
   let description = [{
-    After TileLang DSL template functions are inlined, the IR contains
+    After PTODSL template functions are inlined, the IR contains
     structured-view intrinsics whose operands are now bound to concrete values.
 
     This pass resolves them:

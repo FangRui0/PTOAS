@@ -490,6 +490,9 @@ static constexpr HighPriorityCastLayoutPattern
 };
 
 static constexpr LegalCastLayoutPattern kLegalCastLayoutPatterns[] = {
+    // Same-width fp-to-fp (bf16 -> f16): dense contiguous 1:1.
+    {bits<16>(), bits<16>(), c(), c()},
+
     // 2x widening.
     {bits<8>(), bits<16>(), c(), d(2)},
     {bits<8>(), bits<16>(), ls(2), c()},
@@ -533,6 +536,9 @@ static constexpr LegalCastLayoutPattern kLegalCastLayoutPatterns[] = {
 
 static constexpr LegalMaskGranularityCastLayoutPattern
     kLegalMaskGranularityCastLayoutPatterns[] = {
+        // Same-width fp-to-fp (bf16 -> f16): dense contiguous 1:1.
+        {mb16(), mb16(), c(), c()},
+
         // 2x widening.
         {mb8(), mb16(), c(), d(2)},
         {mb8(), mb16(), ls(2), c()},
@@ -776,6 +782,8 @@ static constexpr GroupBroadcastLayoutPattern kGroupBroadcastLayoutPatterns[] = {
     {gb(2), gs(8), c()},
     {gb(2), gs(8), d(2)},
     {gb(2), gs(8), bd(2)},
+    // bf16 G=4 on L=128: groupSize=32 = two 32B blocks; slots=1 source.
+    {gb(2), gs(1), c()},
     {gb(4), gs(8), c()},
     {gb(4), gs(8), d(4)},
     {gb(4), gs(8), bd(4)},
@@ -784,6 +792,34 @@ static constexpr GroupBroadcastLayoutPattern kGroupBroadcastLayoutPatterns[] = {
     {gbFull(), gs(1), c()},
     {gbFull(2), gs(1), d(2)},
     {gbFull(4), gs(1), d(4)},
+};
+
+struct VselrLayoutPattern {
+  ElementBitsPattern elementBits;
+  ElementCountPattern sourceElements;
+  ElementCountPattern indexElements;
+  ElementCountPattern resultElements;
+  PhysicalChunkCountPattern sourceChunks;
+  PhysicalChunkCountPattern indexChunks;
+  PhysicalChunkCountPattern resultChunks;
+  LayoutPattern sourceLayout;
+  LayoutPattern indexLayout;
+  LayoutPattern resultLayout;
+};
+
+static constexpr VselrLayoutPattern kVselrLayoutPatterns[] = {
+    {bits<8>(), N<64>(), N<64>(), N<64>(), chunk<1>(), chunk<1>(),
+     chunk<1>(), c(), c(), c()},
+    {bits<8>(), N<128>(), N<128>(), N<128>(), chunk<1>(), chunk<1>(),
+     chunk<1>(), c(), c(), c()},
+    {bits<8>(), N<256>(), N<256>(), N<256>(), chunk<1>(), chunk<1>(),
+     chunk<1>(), c(), c(), c()},
+    {bits<16>(), N<64>(), N<64>(), N<64>(), chunk<1>(), chunk<1>(),
+     chunk<1>(), c(), c(), c()},
+    {bits<16>(), N<128>(), N<128>(), N<128>(), chunk<1>(), chunk<1>(),
+     chunk<1>(), c(), c(), c()},
+    {bits<32>(), N<64>(), N<64>(), N<64>(), chunk<1>(), chunk<1>(),
+     chunk<1>(), c(), c(), c()},
 };
 
 struct HistogramLayoutPattern {
@@ -1086,11 +1122,123 @@ static VMIInterleaveLayoutFact materializeInterleaveLayoutFact(
   return fact;
 }
 
+static VMIVselrLayoutFact
+materializeVselrLayoutFact(MLIRContext *ctx,
+                           const VselrLayoutPattern &pattern) {
+  return VMIVselrLayoutFact{
+      materializeLayoutPattern(ctx, pattern.sourceLayout),
+      materializeLayoutPattern(ctx, pattern.indexLayout),
+      materializeLayoutPattern(ctx, pattern.resultLayout)};
+}
+
+static FailureOr<int64_t> getPhysicalArityForLayout(VMIVRegType type,
+                                                     VMILayoutAttr layout) {
+  auto assignedType = VMIVRegType::get(
+      type.getContext(), type.getElementCount(), type.getElementType(), layout);
+  return getVMIPhysicalArity(assignedType);
+}
+
+static bool matchesVselrLayoutPattern(const VselrLayoutPattern &pattern,
+                                      VMIVselrOp op,
+                                      const VMIVselrLayoutFact &fact) {
+  auto sourceType = cast<VMIVRegType>(op.getSource().getType());
+  auto indexType = cast<VMIVRegType>(op.getIndex().getType());
+  auto resultType = cast<VMIVRegType>(op.getResult().getType());
+  unsigned sourceBits =
+      pto::getPTOStorageElemBitWidth(sourceType.getElementType());
+  unsigned indexBits =
+      pto::getPTOStorageElemBitWidth(indexType.getElementType());
+  if (sourceType.getElementType() != resultType.getElementType() ||
+      indexType.getElementCount() != resultType.getElementCount() ||
+      sourceBits != indexBits ||
+      !matchesElementBitsPattern(pattern.elementBits, sourceBits) ||
+      !matchesElementCountPattern(pattern.sourceElements,
+                                  sourceType.getElementCount()) ||
+      !matchesElementCountPattern(pattern.indexElements,
+                                  indexType.getElementCount()) ||
+      !matchesElementCountPattern(pattern.resultElements,
+                                  resultType.getElementCount()))
+    return false;
+
+  FailureOr<int64_t> sourceArity =
+      getPhysicalArityForLayout(sourceType, fact.sourceLayout);
+  FailureOr<int64_t> indexArity =
+      getPhysicalArityForLayout(indexType, fact.indexLayout);
+  FailureOr<int64_t> resultArity =
+      getPhysicalArityForLayout(resultType, fact.resultLayout);
+  return succeeded(sourceArity) && succeeded(indexArity) &&
+         succeeded(resultArity) &&
+         matchesPhysicalChunkCountPattern(pattern.sourceChunks,
+                                          *sourceArity) &&
+         matchesPhysicalChunkCountPattern(pattern.indexChunks, *indexArity) &&
+         matchesPhysicalChunkCountPattern(pattern.resultChunks, *resultArity);
+}
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
 // Query implementations
 //===----------------------------------------------------------------------===//
+
+FailureOr<VMIVselrLayoutFact>
+VMILayoutSupport::getPreferredVselrLayoutFact(
+    VMIVselrOp op, std::string *reason) const {
+  auto fail = [&](const Twine &message) -> FailureOr<VMIVselrLayoutFact> {
+    if (reason)
+      *reason = message.str();
+    return failure();
+  };
+
+  for (const VselrLayoutPattern &pattern : kVselrLayoutPatterns) {
+    VMIVselrLayoutFact fact =
+        materializeVselrLayoutFact(op.getContext(), pattern);
+    if (matchesVselrLayoutPattern(pattern, op, fact))
+      return fact;
+  }
+  return fail("vselr requires contiguous layouts and supports N=64, 128, or "
+              "256 for 8-bit, N=64 or 128 for 16-bit, and N=64 for 32-bit "
+              "elements");
+}
+
+FailureOr<VMIVselrLayoutFact>
+VMILayoutSupport::getVselrLayoutFact(VMIVselrOp op,
+                                     std::string *reason) const {
+  auto fail = [&](const Twine &message) -> FailureOr<VMIVselrLayoutFact> {
+    if (reason)
+      *reason = message.str();
+    return failure();
+  };
+
+  auto sourceType = cast<VMIVRegType>(op.getSource().getType());
+  auto indexType = cast<VMIVRegType>(op.getIndex().getType());
+  auto resultType = cast<VMIVRegType>(op.getResult().getType());
+  VMIVselrLayoutFact assignedFact{sourceType.getLayoutAttr(),
+                                  indexType.getLayoutAttr(),
+                                  resultType.getLayoutAttr()};
+  if (!assignedFact.sourceLayout || !assignedFact.indexLayout ||
+      !assignedFact.resultLayout)
+    return fail("vselr requires assigned source/index/result layouts");
+
+  for (const VselrLayoutPattern &pattern : kVselrLayoutPatterns) {
+    VMIVselrLayoutFact tableFact =
+        materializeVselrLayoutFact(op.getContext(), pattern);
+    if (assignedFact.sourceLayout != tableFact.sourceLayout ||
+        assignedFact.indexLayout != tableFact.indexLayout ||
+        assignedFact.resultLayout != tableFact.resultLayout ||
+        !matchesVselrLayoutPattern(pattern, op, assignedFact))
+      continue;
+    return assignedFact;
+  }
+  return fail("vselr requires contiguous layouts and supports N=64, 128, or "
+              "256 for 8-bit, N=64 or 128 for 16-bit, and N=64 for 32-bit "
+              "elements");
+}
+
+LogicalResult
+VMILayoutSupport::getVselrSupport(VMIVselrOp op,
+                                  std::string *reason) const {
+  return getVselrLayoutFact(op, reason);
+}
 
 FailureOr<VMIGroupReduceLayoutFact>
 VMILayoutSupport::getPreferredGroupReduceLayoutFact(VMIVRegType sourceType,

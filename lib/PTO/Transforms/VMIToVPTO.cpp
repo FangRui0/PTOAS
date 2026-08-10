@@ -31,6 +31,7 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <cassert>
@@ -3337,6 +3338,13 @@ std::optional<std::string> getPointStoreDistToken(Type elementType) {
   return (Twine("1PT_B") + Twine(elementBits)).str();
 }
 
+std::optional<std::string> getScalarBroadcastLoadDistToken(Type elementType) {
+  unsigned elementBits = pto::getPTOStorageElemBitWidth(elementType);
+  if (elementBits != 8 && elementBits != 16 && elementBits != 32)
+    return std::nullopt;
+  return (Twine("BRC_B") + Twine(elementBits)).str();
+}
+
 struct VPTOCmpMode {
   StringRef mode;
   std::optional<IntegerType::SignednessSemantics> signedness;
@@ -5207,6 +5215,9 @@ FailureOr<Value> createIotaContiguousChunk(Location loc, Type resultType,
                                            Value base, int64_t laneOffset,
                                            StringAttr orderAttr,
                                            PatternRewriter &rewriter) {
+  // Contiguous iota is a direct VCI of the absolute chunk base (ASC
+  // `vci(offset_sreg)`). Group-periodic VL128 {group=2} shares one such VL64
+  // result across both physical parts (see sharedChunks below).
   StringRef order = orderAttr ? orderAttr.getValue() : StringRef("ASC");
   FailureOr<Value> chunkBase =
       createIotaChunkBase(loc, base, laneOffset, order, rewriter);
@@ -5214,6 +5225,141 @@ FailureOr<Value> createIotaContiguousChunk(Location loc, Type resultType,
     return failure();
   return rewriter.create<VciOp>(loc, resultType, *chunkBase, orderAttr)
       .getResult();
+}
+
+/// Pack group-periodic ramps inside one physical VL when S < physVL and
+/// physVL % S == 0 (e.g. i32 L=64,group=2 → [base..base+31 | base..base+31]).
+///
+/// Preferred recipes (O(1), independent of G = physVL/S):
+///   * S == 1 → vdup(base)
+///   * S power-of-2 integer (all legal sub-VL S on this ISA) →
+///       ASC:  vadds(vand(vci(0), S-1), base)
+///       DESC: vsub(vdup(base), vand(vci(0), S-1))
+///
+/// Residual fallback (non-integer base): per-group vci(base) ∓ g*S +
+/// lane-range vsel. Index iota is integer-only in practice.
+///
+/// When S == physVL this is just `vci(base)` (single group fills the VL).
+FailureOr<Value> createSubVLGroupPeriodicChunk(Location loc, Type resultType,
+                                               Value base, int64_t groupSize,
+                                               StringAttr orderAttr,
+                                               PatternRewriter &rewriter) {
+  auto vregType = dyn_cast<VRegType>(resultType);
+  if (!vregType)
+    return failure();
+
+  int64_t lanesPerPart = vregType.getElementCount();
+  if (groupSize <= 0 || lanesPerPart % groupSize != 0)
+    return failure();
+
+  FailureOr<Value> allMask =
+      createAllTrueMaskForVReg(loc, vregType, rewriter);
+  if (failed(allMask))
+    return failure();
+
+  // group_size==1: dst[i] = base for every lane — broadcast, not a ramp pack.
+  if (groupSize == 1) {
+    return rewriter
+        .create<VdupOp>(loc, resultType, base, *allMask,
+                        /*position=*/nullptr)
+        .getResult();
+  }
+
+  StringRef order = orderAttr ? orderAttr.getValue() : StringRef("ASC");
+  int64_t groupsPerChunk = lanesPerPart / groupSize;
+  if (groupsPerChunk == 1)
+    return createIotaContiguousChunk(loc, resultType, base, /*laneOffset=*/0,
+                                     orderAttr, rewriter);
+
+  // Power-of-2 S: dst[i] = base ± (i % S) via AND-mask (beats O(G) vsel pack
+  // and VL/2 VOR/mask duplication). Lane ids are always an ascending vci(0).
+  if (llvm::isPowerOf2_64(static_cast<uint64_t>(groupSize)) &&
+      isa<IntegerType>(base.getType())) {
+    FailureOr<Value> zeroScalar =
+        createScalarOffsetConstant(loc, base.getType(), 0, rewriter);
+    FailureOr<Value> maskScalar = createScalarOffsetConstant(
+        loc, base.getType(), groupSize - 1, rewriter);
+    if (failed(zeroScalar) || failed(maskScalar))
+      return failure();
+
+    Value laneIds =
+        rewriter.create<VciOp>(loc, resultType, *zeroScalar, StringAttr{})
+            .getResult();
+    Value maskVec =
+        rewriter
+            .create<VdupOp>(loc, resultType, *maskScalar, *allMask,
+                            /*position=*/nullptr)
+            .getResult();
+    Value rem = rewriter
+                    .create<VandOp>(loc, resultType, laneIds, maskVec, *allMask)
+                    .getResult();
+    if (order == "DESC") {
+      Value baseVec =
+          rewriter
+              .create<VdupOp>(loc, resultType, base, *allMask,
+                              /*position=*/nullptr)
+              .getResult();
+      return rewriter.create<VsubOp>(loc, resultType, baseVec, rem, *allMask)
+          .getResult();
+    }
+    return rewriter.create<VaddsOp>(loc, resultType, rem, base, *allMask)
+        .getResult();
+  }
+
+  FailureOr<Value> full =
+      createIotaContiguousChunk(loc, resultType, base, /*laneOffset=*/0,
+                                orderAttr, rewriter);
+  FailureOr<MaskType> maskType =
+      getMaskTypeForVReg(vregType, rewriter.getContext());
+  FailureOr<Value> zeroScalar =
+      createScalarOffsetConstant(loc, base.getType(), 0, rewriter);
+  if (failed(full) || failed(maskType) || failed(zeroScalar))
+    return failure();
+
+  Value result = rewriter
+                     .create<VdupOp>(loc, resultType, *zeroScalar, *allMask,
+                                     /*position=*/nullptr)
+                     .getResult();
+  for (int64_t localGroup = 0; localGroup < groupsPerChunk; ++localGroup) {
+    Value adjusted = *full;
+    if (localGroup != 0) {
+      int64_t delta = localGroup * groupSize;
+      FailureOr<Value> offsetScalar =
+          createScalarOffsetConstant(loc, base.getType(), delta, rewriter);
+      if (failed(offsetScalar))
+        return failure();
+      // ASC continuous is base+i; lane (g*S+j) holds base+g*S+j, want base+j
+      // → subtract g*S. DESC continuous is base-i; want base-j → add g*S.
+      if (order == "DESC") {
+        adjusted = rewriter
+                       .create<VaddsOp>(loc, resultType, *full, *offsetScalar,
+                                        *allMask)
+                       .getResult();
+      } else {
+        Value negOffset =
+            isa<FloatType>(base.getType())
+                ? rewriter
+                      .create<arith::NegFOp>(loc, *offsetScalar)
+                      .getResult()
+                : rewriter
+                      .create<arith::SubIOp>(loc, *zeroScalar, *offsetScalar)
+                      .getResult();
+        adjusted = rewriter
+                       .create<VaddsOp>(loc, resultType, *full, negOffset,
+                                        *allMask)
+                       .getResult();
+      }
+    }
+    FailureOr<Value> laneMask =
+        createLaneRangeMask(loc, *maskType, localGroup * groupSize,
+                            (localGroup + 1) * groupSize, rewriter);
+    if (failed(laneMask))
+      return failure();
+    result = rewriter
+                 .create<VselOp>(loc, resultType, adjusted, result, *laneMask)
+                 .getResult();
+  }
+  return result;
 }
 
 FailureOr<Value> createIotaDeinterleavedChunk(Location loc, Type resultType,
@@ -5260,11 +5406,14 @@ FailureOr<Value> createIotaDeinterleavedChunk(Location loc, Type resultType,
       .getResult();
 }
 
-struct OneToNVMIIotaOpPattern : OpConversionPattern<VMIIotaOp> {
-  using OpConversionPattern<VMIIotaOp>::OpConversionPattern;
+template <typename IotaOp>
+struct OneToNVMIIotaOpPattern : OpConversionPattern<IotaOp> {
+  using OpConversionPattern<IotaOp>::OpConversionPattern;
+  using OneToNOpAdaptor =
+      typename OpConversionPattern<IotaOp>::OneToNOpAdaptor;
 
   LogicalResult
-  matchAndRewrite(VMIIotaOp op, OneToNOpAdaptor adaptor,
+  matchAndRewrite(IotaOp op, OneToNOpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto resultVMIType = cast<VMIVRegType>(op.getResult().getType());
     VMILayoutAttr layout = resultVMIType.getLayoutAttr();
@@ -5293,6 +5442,83 @@ struct OneToNVMIIotaOpPattern : OpConversionPattern<VMIIotaOp> {
     SmallVector<Type> resultTypes = std::move(*maybe_resultTypes);
     SmallVector<Value> results;
     results.reserve(resultTypes.size());
+
+    // Optional {group = C}: *group-periodic* ramp (not a continuous 0..L-1
+    // ramp). Each of C groups of size S = L / C independently gets
+    // dst[g*S + j] = base + j. Example L=128,C=2 → [base..base+63 |
+    // base..base+63]. Only contiguous layout is lowered here; non-contiguous
+    // results are rewritten earlier to contiguous + ensure_layout.
+    //
+    // Contiguous materialization:
+    //   * S % physVL == 0 → VCI chunk per distinct laneOffset (share parts).
+    //   * physVL % S == 0 → sub-VL: vdup (S=1) or vand(vci(0),S-1)+vadds(base).
+    if constexpr (std::is_same_v<IotaOp, VMIGroupIotaOp>) {
+      int64_t numGroups = op.getGroupAttr().getInt();
+      int64_t logicalLanes = resultVMIType.getElementCount();
+      if (numGroups <= 0 || logicalLanes % numGroups != 0)
+        return rewriter.notifyMatchFailure(
+            op, "grouped iota requires group to divide logical lane count");
+      int64_t groupSize = logicalLanes / numGroups;
+      bool groupSizeMultipleOfPhys = groupSize % *lanesPerPart == 0;
+      bool physMultipleOfGroupSize = *lanesPerPart % groupSize == 0;
+      if (!groupSizeMultipleOfPhys && !physMultipleOfGroupSize)
+        return rewriter.notifyMatchFailure(
+            op, "grouped iota requires group_size to divide or be a multiple "
+                "of physical lanes per part");
+
+      if (!layout.isContiguous())
+        return rewriter.notifyMatchFailure(
+            op, "grouped iota currently supports contiguous layout only; "
+                "ensure_layout to contiguous before lowering");
+
+      // Allow grouped logical tails: physical arity is ceil(L / physVL), so
+      // capacity may exceed L (e.g. L=32,group=2 → 1×VL64 with lanes 32..63
+      // inactive; L=96,group=3 → 2×VL64 with last chunk partial). Padding
+      // lanes keep the same periodic pattern; consumers/stores apply the
+      // ordinary contiguous tail mask.
+      int64_t expectedArity =
+          (logicalLanes + *lanesPerPart - 1) / *lanesPerPart;
+      if (static_cast<int64_t>(resultTypes.size()) != expectedArity)
+        return rewriter.notifyMatchFailure(
+            op, "grouped contiguous iota physical result count mismatch");
+
+      // Under physVL % S == 0 every part holds the same in-VL pattern
+      // (lane j → base + j%S). Under S % physVL == 0 parts differ by
+      // laneOffset = (p * physVL) % S and are shared by that key.
+      llvm::DenseMap<std::pair<Type, int64_t>, Value> sharedChunks;
+      for (auto [index, resultType] : llvm::enumerate(resultTypes)) {
+        if (!isa<VRegType>(resultType))
+          return rewriter.notifyMatchFailure(op, "iota result must be vreg");
+
+        int64_t laneOffset = 0;
+        if (groupSizeMultipleOfPhys)
+          laneOffset =
+              (static_cast<int64_t>(index) * *lanesPerPart) % groupSize;
+
+        auto key = std::make_pair(resultType, laneOffset);
+        auto it = sharedChunks.find(key);
+        if (it == sharedChunks.end()) {
+          FailureOr<Value> result;
+          if (physMultipleOfGroupSize && groupSize < *lanesPerPart) {
+            result = createSubVLGroupPeriodicChunk(
+                op.getLoc(), resultType, *base, groupSize, op.getOrderAttr(),
+                rewriter);
+          } else {
+            result = createIotaContiguousChunk(op.getLoc(), resultType, *base,
+                                               laneOffset, op.getOrderAttr(),
+                                               rewriter);
+          }
+          if (failed(result))
+            return rewriter.notifyMatchFailure(
+                op, "failed to materialize grouped iota chunk");
+          it = sharedChunks.try_emplace(key, *result).first;
+        }
+        results.push_back(it->second);
+      }
+      replaceOpWithFlatConvertedValues(rewriter, op, results,
+                                       *this->getTypeConverter());
+      return success();
+    }
 
     if (layout.isContiguous()) {
       for (auto [index, resultType] : llvm::enumerate(resultTypes)) {
@@ -5840,6 +6066,7 @@ struct OneToNVMILoadOpPattern : OpConversionPattern<VMILoadOp> {
           Value chunkOffset = createChunkOffset(
               op.getLoc(), *offset, group * 2 * *lanesPerPart, rewriter);
           auto load = rewriter.create<Vldsx2Op>(op.getLoc(), lowType, highType,
+                                                /*updated_base=*/Type{},
                                                 *source, chunkOffset,
                                                 rewriter.getStringAttr(*dist));
           lows.push_back(load.getLow());
@@ -5885,10 +6112,12 @@ struct OneToNVMILoadOpPattern : OpConversionPattern<VMILoadOp> {
           Value secondOffset = createChunkOffset(
               op.getLoc(), *offset, (group * 4 + 2) * *lanesPerPart, rewriter);
           auto first = rewriter.create<Vldsx2Op>(
-              op.getLoc(), part0Type, part1Type, *source, firstOffset,
+              op.getLoc(), part0Type, part1Type, /*updated_base=*/Type{},
+              *source, firstOffset,
               rewriter.getStringAttr(*dist));
           auto second = rewriter.create<Vldsx2Op>(
-              op.getLoc(), part2Type, part3Type, *source, secondOffset,
+              op.getLoc(), part2Type, part3Type, /*updated_base=*/Type{},
+              *source, secondOffset,
               rewriter.getStringAttr(*dist));
 
           auto even =
@@ -6004,8 +6233,9 @@ struct OneToNVMIDeinterleaveLoadOpPattern
           op.getLoc(), *offset, static_cast<int64_t>(index) * 2 * *lanesPerPart,
           rewriter);
       auto load =
-          rewriter.create<Vldsx2Op>(op.getLoc(), lowType, highType, *source,
-                                    chunkOffset, rewriter.getStringAttr(*dist));
+          rewriter.create<Vldsx2Op>(
+              op.getLoc(), lowType, highType, /*updated_base=*/Type{}, *source,
+              chunkOffset, rewriter.getStringAttr(*dist));
       lows.push_back(load.getLow());
       highs.push_back(load.getHigh());
     }
@@ -6131,6 +6361,7 @@ struct OneToNVMIGroupLoadOpPattern : OpConversionPattern<VMIGroupLoadOp> {
           Value chunkBase = makePtr(chunkOffset);
           results.push_back(rewriter
                                 .create<VsldbOp>(op.getLoc(), vregType,
+                                                 /*updated_base=*/Type{},
                                                  chunkBase, blockStride,
                                                  zeroI16, *allMask)
                                 .getResult());
@@ -6268,6 +6499,35 @@ static LogicalResult lowerGroupSlotLoadParts(
     if (!stride || *stride != 1)
       return rewriter.notifyMatchFailure(
           op, "slots=8 group_slot_load requires constant unit stride");
+
+    // A single logical group only needs one scalar source element.  VSLDB is
+    // a 32B block load and requires its base operand to be 32B aligned, which
+    // is too strong for a valid element-aligned pointer such as base + k.
+    // VLD BRC loads that scalar from the effective element address and
+    // broadcasts it; only lane 0 is semantically live in this layout.
+    if (numGroups == 1) {
+      std::optional<std::string> dist =
+          getScalarBroadcastLoadDistToken(resultVMIType.getElementType());
+      if (!dist)
+        return rewriter.notifyMatchFailure(
+            op, "single-slot group_slot_load requires supported BRC load "
+                "element width");
+      if (resultTypes.size() != 1)
+        return rewriter.notifyMatchFailure(
+            op, "single-slot group_slot_load arity mismatch");
+      auto vregType = dyn_cast<VRegType>(resultTypes.front());
+      if (!vregType)
+        return rewriter.notifyMatchFailure(
+            op, "single-slot group_slot_load result must be vreg");
+      results.push_back(rewriter
+                            .create<VldsOp>(op->getLoc(), vregType,
+                                            /*updated_base=*/Type{}, source,
+                                            offset,
+                                            rewriter.getStringAttr(*dist))
+                            .getResult());
+      return success();
+    }
+
     for (auto [chunk, resultType] : llvm::enumerate(resultTypes)) {
       auto vregType = dyn_cast<VRegType>(resultType);
       if (!vregType)
@@ -6293,7 +6553,8 @@ static LogicalResult lowerGroupSlotLoadParts(
           createChunkOffset(op->getLoc(), offset, groupBegin, rewriter);
       Value slotBase = makePtr(groupOffset);
       results.push_back(rewriter
-                            .create<VsldbOp>(op->getLoc(), vregType, slotBase,
+                            .create<VsldbOp>(op->getLoc(), vregType,
+                                             /*updated_base=*/Type{}, slotBase,
                                              zeroI16, zeroI16, *slotMask)
                             .getResult());
     }
@@ -6348,7 +6609,8 @@ static LogicalResult lowerGroupSlotLoadParts(
     }
     Value slotBase = makePtr(groupOffset);
     results.push_back(rewriter
-                          .create<VsldbOp>(op->getLoc(), vregType, slotBase,
+                          .create<VsldbOp>(op->getLoc(), vregType,
+                                           /*updated_base=*/Type{}, slotBase,
                                            zeroI16, zeroI16, *oneBlockMask)
                           .getResult());
   }
@@ -8166,7 +8428,8 @@ struct OneToNVMIStrideLoadOpPattern
                      .getResult();
     Value loaded =
         rewriter
-            .create<VsldbOp>(op.getLoc(), resultType, base, *blockStride,
+            .create<VsldbOp>(op.getLoc(), resultType,
+                             /*updated_base=*/Type{}, base, *blockStride,
                              *repeatStride, maskParts.front())
             .getResult();
     replaceOpWithFlatConvertedValues(rewriter, op, SmallVector<Value>{loaded},
@@ -8950,6 +9213,47 @@ struct OneToNVMISelectOpPattern : OpConversionPattern<VMISelectOp> {
     }
 
     replaceOpWithFlatConvertedValues(rewriter, op, results, *this->getTypeConverter());
+    return success();
+  }
+};
+
+struct OneToNVMIVselrOpPattern : OpConversionPattern<VMIVselrOp> {
+  using OpConversionPattern<VMIVselrOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(VMIVselrOp op, OneToNOpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    ValueRange sourceParts = adaptor.getSource();
+    ValueRange indexParts = adaptor.getIndex();
+    FailureOr<SmallVector<Type>> maybeResultTypes =
+        getConvertedResultTypes(op, 0, *this->getTypeConverter());
+    if (failed(maybeResultTypes))
+      return failure();
+    SmallVector<Type> resultTypes = std::move(*maybeResultTypes);
+
+    if (sourceParts.size() != 1 || indexParts.size() != 1 ||
+        resultTypes.size() != 1)
+      return rewriter.notifyMatchFailure(
+          op, "vselr supports only one physical source/index/result part");
+
+    Value source = sourceParts.front();
+    Value index = indexParts.front();
+    auto sourceType = dyn_cast<VRegType>(source.getType());
+    auto indexType = dyn_cast<VRegType>(index.getType());
+    auto resultType = dyn_cast<VRegType>(resultTypes.front());
+    if (!sourceType || !indexType || !resultType ||
+        sourceType != resultType ||
+        sourceType.getElementCount() != indexType.getElementCount() ||
+        pto::getPTOStorageElemBitWidth(sourceType.getElementType()) !=
+            pto::getPTOStorageElemBitWidth(indexType.getElementType()))
+      return rewriter.notifyMatchFailure(
+          op, "vselr physical source/index/result type mismatch");
+
+    Value result =
+        rewriter.create<VselrOp>(op.getLoc(), resultType, source, index)
+            .getResult();
+    replaceOpWithFlatConvertedValues(rewriter, op, result,
+                                     *this->getTypeConverter());
     return success();
   }
 };
@@ -10262,6 +10566,33 @@ struct OneToNVMITruncFOpPattern : OpConversionPattern<VMITruncFOp> {
 
     unsigned resultBits = pto::getPTOStorageElemBitWidth(
         resultVRegTypes.front().getElementType());
+    // Same-width fp->fp (bf16 -> f16): dense contiguous 1:1, no part, rnd+sat.
+    if (sourceBits == resultBits && sourceLayout && resultLayout &&
+        sourceLayout.isContiguous() && sourceLayout.getLaneStride() == 1 &&
+        resultLayout.isContiguous() && resultLayout.getLaneStride() == 1 &&
+        sourceParts.size() == resultTypes.size()) {
+      FailureOr<Value> sourceMask =
+          createAllTrueMaskForVReg(op.getLoc(), sourceType0, rewriter);
+      if (failed(sourceMask))
+        return rewriter.notifyMatchFailure(op, "failed to build truncf masks");
+      StringAttr rnd = rewriter.getStringAttr(
+          getTruncFRoundMode(op, resultVRegTypes.front().getElementType()));
+      StringAttr sat = op->getAttrOfType<StringAttr>("saturate");
+      SmallVector<Value> results;
+      results.reserve(resultTypes.size());
+      for (auto [sourcePart, resultType] :
+           llvm::zip_equal(sourceParts, resultVRegTypes)) {
+        results.push_back(rewriter
+                              .create<VcvtOp>(op.getLoc(), resultType,
+                                              sourcePart, *sourceMask, rnd, sat,
+                                              /*part=*/nullptr)
+                              .getResult());
+      }
+      replaceOpWithFlatConvertedValues(rewriter, op, results,
+                                       *this->getTypeConverter());
+      return success();
+    }
+
     if (sourceLayout && resultLayout && sourceLayout.isContiguous() &&
         sourceLayout.getLaneStride() == 1 && resultLayout.isContiguous() &&
         resultLayout.getLaneStride() != 1 &&
@@ -10914,45 +11245,394 @@ struct OneToNVMIFPToSIOpPattern : OpConversionPattern<VMIFPToSIOp> {
   LogicalResult
   matchAndRewrite(VMIFPToSIOp op, OneToNOpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    auto sourceVMIType = cast<VMIVRegType>(op.getSource().getType());
+    auto resultVMIType = cast<VMIVRegType>(op.getResult().getType());
     ValueRange sourceParts = adaptor.getSource();
     FailureOr<SmallVector<Type>> maybe_resultTypes =
         getConvertedResultTypes(op, 0, *this->getTypeConverter());
     if (failed(maybe_resultTypes))
       return failure();
     SmallVector<Type> resultTypes = std::move(*maybe_resultTypes);
-    if (sourceParts.size() != resultTypes.size())
+
+    Type srcElem = sourceVMIType.getElementType();
+    Type dstElem = resultVMIType.getElementType();
+    auto contract = lookupVMIFpToSiContract(srcElem, dstElem);
+    if (!contract)
       return rewriter.notifyMatchFailure(
-          op, "fptosi physical source/result arity mismatch");
+          op, "unsupported fp-to-si conversion element type pair");
 
-    SmallVector<Value> results;
-    results.reserve(resultTypes.size());
-    StringAttr rnd = rewriter.getStringAttr("R");
-    StringAttr sat = op->getAttrOfType<StringAttr>("saturate");
-    for (auto [sourcePart, resultType] :
-         llvm::zip_equal(sourceParts, resultTypes)) {
-      auto sourceType = dyn_cast<VRegType>(sourcePart.getType());
-      auto resultVRegType = dyn_cast<VRegType>(resultType);
-      if (!sourceType || !sourceType.getElementType().isF32() ||
-          !resultVRegType ||
-          !isa<IntegerType>(resultVRegType.getElementType()) ||
-          pto::getPTOStorageElemBitWidth(resultVRegType.getElementType()) != 32)
+    // Validate source physical part types.
+    if (sourceParts.empty())
+      return rewriter.notifyMatchFailure(
+          op, "fptosi requires at least one physical source chunk");
+    auto sourceType0 = dyn_cast<VRegType>(sourceParts.front().getType());
+    if (!sourceType0)
+      return rewriter.notifyMatchFailure(
+          op, "expected physical fptosi source type");
+    for (Value sourcePart : sourceParts) {
+      auto currentSourceType = dyn_cast<VRegType>(sourcePart.getType());
+      if (!currentSourceType || currentSourceType != sourceType0)
         return rewriter.notifyMatchFailure(
-            op, "fptosi requires physical f32 source and 32-bit integer "
-                "result chunks");
-
-      FailureOr<Value> mask =
-          createAllTrueMaskForVReg(op.getLoc(), sourceType, rewriter);
-      if (failed(mask))
-        return rewriter.notifyMatchFailure(op, "failed to build fptosi mask");
-      results.push_back(rewriter
-                            .create<VcvtOp>(op.getLoc(), resultVRegType,
-                                            sourcePart, *mask, rnd, sat,
-                                            /*part=*/nullptr)
-                            .getResult());
+            op, "fptosi source physical parts must have matching type");
     }
 
-    replaceOpWithFlatConvertedValues(rewriter, op, results, *this->getTypeConverter());
+    // Validate result physical part types.
+    if (resultTypes.empty())
+      return rewriter.notifyMatchFailure(
+          op, "fptosi requires at least one physical result chunk");
+    SmallVector<VRegType> resultVRegTypes;
+    resultVRegTypes.reserve(resultTypes.size());
+    for (Type physicalResultType : resultTypes) {
+      auto resultType = dyn_cast<VRegType>(physicalResultType);
+      if (!resultType)
+        return rewriter.notifyMatchFailure(
+            op, "unsupported physical fptosi result type");
+      resultVRegTypes.push_back(resultType);
+    }
+
+    StringAttr rnd = rewriter.getStringAttr("R");
+    StringAttr sat =
+        contract->requiresSat
+            ? op->getAttrOfType<StringAttr>("saturate")
+            : nullptr;
+
+    if (!contract->requiresPart) {
+      // Same-width (f32→s32, f16→s16): 1:1 mapping, no part.
+      if (sourceParts.size() != resultTypes.size())
+        return rewriter.notifyMatchFailure(
+            op, "same-width fptosi requires matching physical arity");
+
+      SmallVector<Value> results;
+      results.reserve(resultTypes.size());
+      for (auto [sourcePart, resultType] :
+           llvm::zip_equal(sourceParts, resultVRegTypes)) {
+        FailureOr<Value> mask =
+            createAllTrueMaskForVReg(op.getLoc(),
+                                     cast<VRegType>(sourcePart.getType()),
+                                     rewriter);
+        if (failed(mask))
+          return rewriter.notifyMatchFailure(
+              op, "failed to build fptosi mask");
+        results.push_back(
+            rewriter
+                .create<VcvtOp>(op.getLoc(), resultType, sourcePart, *mask,
+                                rnd, sat, /*part=*/nullptr)
+                .getResult());
+      }
+      replaceOpWithFlatConvertedValues(rewriter, op, results,
+                                       *this->getTypeConverter());
+      return success();
+    }
+
+    // requiresPart: widen (f16→s32, bf16→s32) or narrow (f32→s16, f16→s8).
+    unsigned srcBits = pto::getPTOStorageElemBitWidth(srcElem);
+    unsigned dstBits = pto::getPTOStorageElemBitWidth(dstElem);
+
+    if (dstBits > srcBits) {
+      // Widen: dense 1:1 (single part) or 2× EvenOdd.
+      VMILayoutAttr srcLayout = sourceVMIType.getLayoutAttr();
+      VMILayoutAttr dstLayout = resultVMIType.getLayoutAttr();
+      if (srcLayout && dstLayout && srcLayout.isContiguous() &&
+          dstLayout.isContiguous() && dstLayout.getLaneStride() == 1 &&
+          ((srcBits == 16 && srcLayout.getLaneStride() == 2) ||
+           (srcBits == 8 && srcLayout.getLaneStride() == 4)) &&
+          resultTypes.size() == sourceParts.size()) {
+        // Dense 1:1: each source chunk → 1 result chunk (single part).
+        StringRef part = srcBits == 16 ? StringRef("EVEN") : StringRef("P0");
+        FailureOr<Value> mask =
+            createAllTrueMaskForVReg(op.getLoc(), sourceType0, rewriter);
+        if (failed(mask))
+          return rewriter.notifyMatchFailure(
+              op, "failed to build fptosi widen 1:1 mask");
+        SmallVector<Value> results;
+        results.reserve(resultTypes.size());
+        for (auto [sourcePart, resultType] :
+             llvm::zip_equal(sourceParts, resultVRegTypes)) {
+          results.push_back(
+              rewriter
+                  .create<VcvtOp>(op.getLoc(), resultType, sourcePart, *mask,
+                                  rnd, sat,
+                                  rewriter.getStringAttr(part))
+                  .getResult());
+        }
+        replaceOpWithFlatConvertedValues(rewriter, op, results,
+                                         *this->getTypeConverter());
+        return success();
+      }
+
+      // Standard 2× EvenOdd: 1 source chunk → 2 result chunks.
+      if (resultTypes.size() != 2 * sourceParts.size())
+        return rewriter.notifyMatchFailure(
+            op, "widen fptosi requires result arity = 2 × source arity");
+
+      static constexpr StringRef kEvenOddParts[] = {"EVEN", "ODD"};
+      SmallVector<Value> results;
+      results.reserve(resultTypes.size());
+      for (int64_t partIndex = 0; partIndex < 2; ++partIndex) {
+        for (auto [chunkIndex, sourcePart] : llvm::enumerate(sourceParts)) {
+          VRegType resultType =
+              resultVRegTypes[partIndex * sourceParts.size() + chunkIndex];
+          FailureOr<Value> mask =
+              createAllTrueMaskForVReg(op.getLoc(),
+                                       cast<VRegType>(sourcePart.getType()),
+                                       rewriter);
+          if (failed(mask))
+            return rewriter.notifyMatchFailure(
+                op, "failed to build fptosi mask");
+          results.push_back(
+              rewriter
+                  .create<VcvtOp>(op.getLoc(), resultType, sourcePart, *mask,
+                                  rnd, sat,
+                                  rewriter.getStringAttr(
+                                      kEvenOddParts[partIndex]))
+                  .getResult());
+        }
+      }
+      replaceOpWithFlatConvertedValues(rewriter, op, results,
+                                       *this->getTypeConverter());
+      return success();
+    }
+
+    // Narrow: sourceFactor source chunks merge into 1 result chunk.
+    int64_t factor = srcBits / dstBits; // 2 for 32→16 or 16→8
+    VMILayoutAttr resultLayout = resultVMIType.getLayoutAttr();
+    int64_t resultLaneStride = resultLayout && resultLayout.isContiguous()
+                                   ? resultLayout.getLaneStride()
+                                   : 1;
+    if (resultLaneStride <= 0 || factor % resultLaneStride != 0)
+      return rewriter.notifyMatchFailure(
+          op, "narrow fptosi: unsupported result lane stride");
+    int64_t sourceFactor = factor / resultLaneStride;
+    if (sourceParts.size() != sourceFactor * resultTypes.size())
+      return rewriter.notifyMatchFailure(
+          op, "narrow fptosi: source arity != sourceFactor × result arity");
+
+    FailureOr<Value> sourceMask =
+        createAllTrueMaskForVReg(op.getLoc(), sourceType0, rewriter);
+    if (failed(sourceMask))
+      return rewriter.notifyMatchFailure(
+          op, "failed to build truncf source mask");
+
+    static constexpr StringRef kEvenOddParts[] = {"EVEN", "ODD"};
+    SmallVector<Value> results;
+    results.reserve(resultTypes.size());
+    for (auto [chunkIndex, resultType] : llvm::enumerate(resultVRegTypes)) {
+      FailureOr<Value> resultMask =
+          createAllTrueMaskForVReg(op.getLoc(), resultType, rewriter);
+      if (failed(resultMask))
+        return rewriter.notifyMatchFailure(
+            op, "failed to build narrow fptosi result mask");
+
+      SmallVector<Value> partials;
+      partials.reserve(sourceFactor);
+      for (int64_t partIndex = 0; partIndex < sourceFactor; ++partIndex) {
+        Value sourcePart =
+            sourceParts[partIndex * resultTypes.size() + chunkIndex];
+        partials.push_back(
+            rewriter
+                .create<VcvtOp>(
+                    op.getLoc(), resultType, sourcePart, *sourceMask, rnd, sat,
+                    rewriter.getStringAttr(kEvenOddParts[partIndex]))
+                .getResult());
+      }
+
+      Value merged = partials.front();
+      for (Value partial : llvm::drop_begin(partials))
+        merged = rewriter
+                     .create<VorOp>(op.getLoc(), resultType, merged, partial,
+                                    *resultMask)
+                     .getResult();
+      results.push_back(merged);
+    }
+
+    replaceOpWithFlatConvertedValues(rewriter, op, results,
+                                     *this->getTypeConverter());
     return success();
+  }
+};
+
+struct OneToNVMIFPToUIOpPattern : OpConversionPattern<VMIFPToUIOp> {
+  using OpConversionPattern<VMIFPToUIOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(VMIFPToUIOp op, OneToNOpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto sourceVMIType = cast<VMIVRegType>(op.getSource().getType());
+    auto resultVMIType = cast<VMIVRegType>(op.getResult().getType());
+    ValueRange sourceParts = adaptor.getSource();
+    FailureOr<SmallVector<Type>> maybe_resultTypes =
+        getConvertedResultTypes(op, 0, *this->getTypeConverter());
+    if (failed(maybe_resultTypes))
+      return failure();
+    SmallVector<Type> resultTypes = std::move(*maybe_resultTypes);
+
+    Type srcElem = sourceVMIType.getElementType();
+    Type dstElem = resultVMIType.getElementType();
+    auto contract = lookupVMIFpToUIContract(srcElem, dstElem);
+    if (!contract)
+      return rewriter.notifyMatchFailure(
+          op, "unsupported fp-to-ui conversion element type pair");
+
+    // Validate source physical part types.
+    if (sourceParts.empty())
+      return rewriter.notifyMatchFailure(
+          op, "fptoui requires at least one physical source chunk");
+    auto sourceType0 = dyn_cast<VRegType>(sourceParts.front().getType());
+    if (!sourceType0)
+      return rewriter.notifyMatchFailure(
+          op, "expected physical fptoui source type");
+    for (Value sourcePart : sourceParts) {
+      auto currentSourceType = dyn_cast<VRegType>(sourcePart.getType());
+      if (!currentSourceType || currentSourceType != sourceType0)
+        return rewriter.notifyMatchFailure(
+            op, "fptoui source physical parts must have matching type");
+    }
+
+    // Validate result physical part types.
+    if (resultTypes.empty())
+      return rewriter.notifyMatchFailure(
+          op, "fptoui requires at least one physical result chunk");
+    SmallVector<VRegType> resultVRegTypes;
+    resultVRegTypes.reserve(resultTypes.size());
+    for (Type physicalResultType : resultTypes) {
+      auto resultType = dyn_cast<VRegType>(physicalResultType);
+      if (!resultType)
+        return rewriter.notifyMatchFailure(
+            op, "unsupported physical fptoui result type");
+      resultVRegTypes.push_back(resultType);
+    }
+
+    StringAttr rnd = rewriter.getStringAttr("R");
+    StringAttr sat = contract->requiresSat
+                         ? op->getAttrOfType<StringAttr>("saturate")
+                         : nullptr;
+
+    if (!contract->requiresPart) {
+      // Same-width: 1:1 mapping, no part.
+      if (sourceParts.size() != resultTypes.size())
+        return rewriter.notifyMatchFailure(
+            op, "same-width fptoui requires matching physical arity");
+
+      SmallVector<Value> results;
+      results.reserve(resultTypes.size());
+      for (auto [sourcePart, resultType] :
+           llvm::zip_equal(sourceParts, resultVRegTypes)) {
+        FailureOr<Value> mask =
+            createAllTrueMaskForVReg(op.getLoc(),
+                                     cast<VRegType>(sourcePart.getType()),
+                                     rewriter);
+        if (failed(mask))
+          return rewriter.notifyMatchFailure(
+              op, "failed to build fptoui mask");
+        results.push_back(
+            rewriter
+                .create<VcvtOp>(op.getLoc(), resultType, sourcePart, *mask,
+                                rnd, sat, /*part=*/nullptr)
+                .getResult());
+      }
+      replaceOpWithFlatConvertedValues(rewriter, op, results,
+                                       *this->getTypeConverter());
+      return success();
+    }
+
+    // requiresPart: narrow (f16→u8).
+    unsigned srcBits = pto::getPTOStorageElemBitWidth(srcElem);
+    unsigned dstBits = pto::getPTOStorageElemBitWidth(dstElem);
+
+    if (dstBits > srcBits) {
+      // Widen: 2× EvenOdd (currently no fp→ui widen paths, but handle
+      // generically).
+      if (resultTypes.size() != 2 * sourceParts.size())
+        return rewriter.notifyMatchFailure(
+            op, "widen fptoui requires result arity = 2 × source arity");
+
+      static constexpr StringRef kEvenOddParts[] = {"EVEN", "ODD"};
+      SmallVector<Value> results;
+      results.reserve(resultTypes.size());
+      for (int64_t partIndex = 0; partIndex < 2; ++partIndex) {
+        for (auto [chunkIndex, sourcePart] : llvm::enumerate(sourceParts)) {
+          VRegType resultType =
+              resultVRegTypes[partIndex * sourceParts.size() + chunkIndex];
+          FailureOr<Value> mask =
+              createAllTrueMaskForVReg(op.getLoc(),
+                                       cast<VRegType>(sourcePart.getType()),
+                                       rewriter);
+          if (failed(mask))
+            return rewriter.notifyMatchFailure(
+                op, "failed to build fptoui widen mask");
+          results.push_back(
+              rewriter
+                  .create<VcvtOp>(op.getLoc(), resultType, sourcePart, *mask,
+                                  rnd, sat,
+                                  rewriter.getStringAttr(kEvenOddParts[partIndex]))
+                  .getResult());
+        }
+      }
+      replaceOpWithFlatConvertedValues(rewriter, op, results,
+                                       *this->getTypeConverter());
+      return success();
+    }
+
+    // Narrow (f16→u8): EvenOdd — source parts are grouped by EvenOdd factor,
+    // each result chunk merges 2 source parts via vcvt EVEN/ODD + vor.
+    if (dstBits < srcBits) {
+      int64_t factor = srcBits / dstBits; // 2 for 16→8
+      VMILayoutAttr resultLayout = resultVMIType.getLayoutAttr();
+      int64_t resultLaneStride = resultLayout && resultLayout.isContiguous()
+                                     ? resultLayout.getLaneStride()
+                                     : 1;
+      if (resultLaneStride <= 0 || factor % resultLaneStride != 0)
+        return rewriter.notifyMatchFailure(
+            op, "narrow fptoui: unsupported result lane stride");
+      int64_t sourceFactor = factor / resultLaneStride;
+      if (sourceParts.size() != sourceFactor * resultTypes.size())
+        return rewriter.notifyMatchFailure(
+            op, "narrow fptoui: source arity != sourceFactor × result arity");
+
+      FailureOr<Value> sourceMask =
+          createAllTrueMaskForVReg(op.getLoc(), sourceType0, rewriter);
+      if (failed(sourceMask))
+        return rewriter.notifyMatchFailure(
+            op, "failed to build fptoui source mask");
+
+      static constexpr StringRef kEvenOddParts[] = {"EVEN", "ODD"};
+      SmallVector<Value> results;
+      results.reserve(resultTypes.size());
+      for (auto [chunkIndex, resultType] : llvm::enumerate(resultVRegTypes)) {
+        FailureOr<Value> resultMask =
+            createAllTrueMaskForVReg(op.getLoc(), resultType, rewriter);
+        if (failed(resultMask))
+          return rewriter.notifyMatchFailure(
+              op, "failed to build narrow fptoui result mask");
+
+        SmallVector<Value> partials;
+        partials.reserve(sourceFactor);
+        for (int64_t partIndex = 0; partIndex < sourceFactor; ++partIndex) {
+          Value sourcePart =
+              sourceParts[partIndex * resultTypes.size() + chunkIndex];
+          partials.push_back(
+              rewriter
+                  .create<VcvtOp>(op.getLoc(), resultType, sourcePart, *sourceMask,
+                                  rnd, sat,
+                                  rewriter.getStringAttr(kEvenOddParts[partIndex]))
+                  .getResult());
+        }
+
+        Value merged = partials.front();
+        for (Value partial : llvm::drop_begin(partials))
+          merged = rewriter
+                       .create<VorOp>(op.getLoc(), resultType, merged, partial,
+                                      *resultMask)
+                       .getResult();
+        results.push_back(merged);
+      }
+
+      replaceOpWithFlatConvertedValues(rewriter, op, results,
+                                       *this->getTypeConverter());
+      return success();
+    }
+
+    return failure();
   }
 };
 
@@ -11468,7 +12148,8 @@ void populateVMIConversionPatterns(
       typeConverter, patterns.getContext());
   patterns.add<
       OneToNVMIEnsureLayoutOpPattern, OneToNVMIEnsureMaskLayoutOpPattern,
-      OneToNVMIBroadcastOpPattern, OneToNVMIIotaOpPattern,
+      OneToNVMIBroadcastOpPattern, OneToNVMIIotaOpPattern<VMIIotaOp>,
+      OneToNVMIIotaOpPattern<VMIGroupIotaOp>,
       OneToNVMIConstantOpPattern, OneToNVMIConstantMaskOpPattern,
       OneToNVMICreateMaskOpPattern, OneToNVMICreateGroupMaskOpPattern,
       OneToNVMIMaskBinaryOpPattern<VMIMaskAndOp, PandOp>,
@@ -11514,7 +12195,8 @@ void populateVMIConversionPatterns(
       OneToNVMIBinaryOpPattern<VMIShRSIOp, VshrOp>,
       OneToNVMIUnaryOpPattern<VMINotOp, VnotOp>,
       OneToNVMICmpOpPattern<VMICmpFOp>, OneToNVMICmpOpPattern<VMICmpIOp>,
-      OneToNVMISelectOpPattern, OneToNVMIActivePrefixIndexOpPattern,
+      OneToNVMISelectOpPattern, OneToNVMIVselrOpPattern,
+      OneToNVMIActivePrefixIndexOpPattern,
       OneToNVMICompressOpPattern, OneToNVMICompressStoreOpPattern,
       OneToNVMIReduceAddIOpPattern, OneToNVMIReduceAddFOpPattern,
       OneToNVMIGroupBroadcastOpPattern, OneToNVMIVdhistOpPattern,
@@ -11526,6 +12208,7 @@ void populateVMIConversionPatterns(
       OneToNVMIExtFOpPattern, OneToNVMITruncFOpPattern,
       OneToNVMIExtIOpPattern<VMIExtSIOp>, OneToNVMIExtIOpPattern<VMIExtUIOp>,
       OneToNVMITruncIOpPattern, OneToNVMIFPToSIOpPattern,
+      OneToNVMIFPToUIOpPattern,
       OneToNVMISIToFPOpPattern, OneToNVMIBitcastOpPattern,
       OneToNVMIInterleaveOpPattern<VMIVintlvOp, VintlvOp>,
       OneToNVMIInterleaveOpPattern<VMIVdintlvOp, VdintlvOp>,
@@ -11636,18 +12319,81 @@ LogicalResult checkSupportedFPToSIShape(VMIFPToSIOp op,
   VMILayoutAttr resultLayout = resultType.getLayoutAttr();
   if (!sourceLayout || !resultLayout)
     return fail("requires assigned source/result layouts");
-  if (sourceLayout != resultLayout)
-    return fail("requires source/result layouts to match");
-  if (!sourceType.getElementType().isF32())
-    return fail("requires f32 source element type");
-  if (!isa<IntegerType>(resultType.getElementType()) ||
-      pto::getPTOStorageElemBitWidth(resultType.getElementType()) != 32)
-    return fail("requires 32-bit integer result element type");
-  FailureOr<int64_t> sourceArity = getVMIPhysicalArity(sourceType);
-  FailureOr<int64_t> resultArity = getVMIPhysicalArity(resultType);
-  if (failed(sourceArity) || failed(resultArity) ||
-      *sourceArity != *resultArity)
-    return fail("requires matching computable physical arity");
+
+  Type srcElem = sourceType.getElementType();
+  Type dstElem = resultType.getElementType();
+  auto contract = lookupVMIFpToSiContract(srcElem, dstElem);
+  if (!contract)
+    return fail("unsupported fp-to-si conversion element type pair");
+
+  unsigned srcBits = pto::getPTOStorageElemBitWidth(srcElem);
+  unsigned dstBits = pto::getPTOStorageElemBitWidth(dstElem);
+
+  if (srcBits == dstBits) {
+    // Same-width (f32→s32, f16→s16): layout equality + arity equality.
+    if (sourceLayout != resultLayout)
+      return fail("same-width fp-to-si requires matching layouts");
+    FailureOr<int64_t> sourceArity = getVMIPhysicalArity(sourceType);
+    FailureOr<int64_t> resultArity = getVMIPhysicalArity(resultType);
+    if (failed(sourceArity) || failed(resultArity) ||
+        *sourceArity != *resultArity)
+      return fail("same-width fp-to-si requires matching physical arity");
+  } else {
+    // Widen or narrow: use the cast-layout framework (same as extf/truncf).
+    VMILayoutSupport layoutSupport;
+    FailureOr<VMICastLayoutFact> fact =
+        layoutSupport.getCastLayoutFactForLayouts(
+            sourceType, resultType, sourceLayout, resultLayout, reason);
+    if (failed(fact))
+      return failure();
+  }
+
+  return success();
+}
+
+LogicalResult checkSupportedFPToUIShape(VMIFPToUIOp op,
+                                        std::string *reason = nullptr) {
+  auto fail = [&](const Twine &message) {
+    if (reason)
+      *reason = message.str();
+    return failure();
+  };
+
+  auto sourceType = cast<VMIVRegType>(op.getSource().getType());
+  auto resultType = cast<VMIVRegType>(op.getResult().getType());
+  VMILayoutAttr sourceLayout = sourceType.getLayoutAttr();
+  VMILayoutAttr resultLayout = resultType.getLayoutAttr();
+  if (!sourceLayout || !resultLayout)
+    return fail("requires assigned source/result layouts");
+
+  Type srcElem = sourceType.getElementType();
+  Type dstElem = resultType.getElementType();
+  auto contract = lookupVMIFpToUIContract(srcElem, dstElem);
+  if (!contract)
+    return fail("unsupported fp-to-ui conversion element type pair");
+
+  unsigned srcBits = pto::getPTOStorageElemBitWidth(srcElem);
+  unsigned dstBits = pto::getPTOStorageElemBitWidth(dstElem);
+
+  if (srcBits == dstBits) {
+    // Same-width: layout equality + arity equality.
+    if (sourceLayout != resultLayout)
+      return fail("same-width fp-to-ui requires matching layouts");
+    FailureOr<int64_t> sourceArity = getVMIPhysicalArity(sourceType);
+    FailureOr<int64_t> resultArity = getVMIPhysicalArity(resultType);
+    if (failed(sourceArity) || failed(resultArity) ||
+        *sourceArity != *resultArity)
+      return fail("same-width fp-to-ui requires matching physical arity");
+  } else {
+    // Widen or narrow: use the cast-layout framework.
+    VMILayoutSupport layoutSupport;
+    FailureOr<VMICastLayoutFact> fact =
+        layoutSupport.getCastLayoutFactForLayouts(
+            sourceType, resultType, sourceLayout, resultLayout, reason);
+    if (failed(fact))
+      return failure();
+  }
+
   return success();
 }
 
@@ -12169,6 +12915,12 @@ checkSupportedReluShape(VMIReluOp op, std::string *reason = nullptr) {
   return success();
 }
 
+LogicalResult
+checkSupportedVselrShape(VMIVselrOp op, std::string *reason = nullptr) {
+  VMILayoutSupport supports;
+  return supports.getVselrSupport(op, reason);
+}
+
 void emitEnsureLayoutMaterializationError(VMIEnsureLayoutOp ensure,
                                           VMIVRegType sourceType,
                                           VMIVRegType resultType,
@@ -12659,6 +13411,18 @@ verifySupportedVMIToVPTOOps(ModuleOp module,
       return emitMaskableUnsupported(
           op, "pto.vmi.select",
           cast<VMIVRegType>(select.getResult().getType()));
+    if (auto vselr = dyn_cast<VMIVselrOp>(op)) {
+      std::string reason;
+      if (succeeded(checkSupportedVselrShape(vselr, &reason)))
+        return WalkResult::advance();
+      vselr.emitError()
+          << kVMIDiagUnsupportedPrefix
+          << "pto.vmi.vselr supports only contiguous lane_stride=1 layouts "
+             "with N=64, 128, or 256 for 8-bit, N=64 or 128 for 16-bit, "
+             "or N=64 for 32-bit elements ("
+          << reason << ")";
+      return WalkResult::interrupt();
+    }
 
     if (auto cmpf = dyn_cast<VMICmpFOp>(op)) {
       WalkResult physical = emitMaskableUnsupported(
@@ -12940,8 +13704,22 @@ verifySupportedVMIToVPTOOps(ModuleOp module,
 
       fptosi.emitError()
           << kVMIDiagUnsupportedPrefix
-          << "pto.vmi.fptosi supports f32 source chunks to matching 32-bit "
-             "integer result chunks with identical assigned layouts ("
+          << "pto.vmi.fptosi supports fp-to-signed-int conversion pairs "
+             "listed in the VPTO vcvt contract; check lookupVMIFpToSiContract ("
+          << reason << ")";
+      return WalkResult::interrupt();
+    }
+
+    if (auto fptoui = dyn_cast<VMIFPToUIOp>(op)) {
+      std::string reason;
+      if (succeeded(checkSupportedFPToUIShape(fptoui, &reason)))
+        return WalkResult::advance();
+
+      fptoui.emitError()
+          << kVMIDiagUnsupportedPrefix
+          << "pto.vmi.fptoui supports fp-to-unsigned-int conversion pairs "
+             "listed in the VPTO vcvt contract (e.g. f16 → u8); "
+             "check lookupVMIFpToUIContract ("
           << reason << ")";
       return WalkResult::interrupt();
     }

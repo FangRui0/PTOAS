@@ -240,10 +240,22 @@ static std::optional<Value> rematerializeDataProducer(Value value,
     return builder.create<VMIBroadcastOp>(loc, resultType, broadcast.getValue())
         .getResult();
 
-  if (auto iota = value.getDefiningOp<VMIIotaOp>())
+  if (auto iota = value.getDefiningOp<VMIIotaOp>()) {
     return builder
         .create<VMIIotaOp>(loc, resultType, iota.getBase(), iota.getOrderAttr())
         .getResult();
+  }
+
+  if (auto groupIota = value.getDefiningOp<VMIGroupIotaOp>()) {
+    VMILayoutAttr resultLayout = resultType.getLayoutAttr();
+    if (!resultLayout || !resultLayout.isContiguous())
+      return std::nullopt;
+    return builder
+        .create<VMIGroupIotaOp>(loc, resultType, groupIota.getBase(),
+                                groupIota.getOrderAttr(),
+                                groupIota.getGroupAttr())
+        .getResult();
+  }
 
   return std::nullopt;
 }

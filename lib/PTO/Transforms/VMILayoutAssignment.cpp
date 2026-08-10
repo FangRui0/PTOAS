@@ -538,6 +538,12 @@ struct LayoutSolver {
 
   LogicalResult addConstraints() {
     WalkResult result = module.walk([&](Operation *op) -> WalkResult {
+      if (auto groupIota = dyn_cast<VMIGroupIotaOp>(op)) {
+        if (failed(setNaturalLayout(groupIota.getResult(),
+                                    getContiguousLayout(), op)))
+          return WalkResult::interrupt();
+        return WalkResult::advance();
+      }
       if (auto maskAnd = dyn_cast<VMIMaskAndOp>(op)) {
         if (failed(uniteMask(maskAnd.getLhs(), maskAnd.getRhs(), op)) ||
             failed(uniteMask(maskAnd.getLhs(), maskAnd.getResult(), op)))
@@ -727,12 +733,44 @@ struct LayoutSolver {
         return WalkResult::advance();
       }
       if (auto fptosi = dyn_cast<VMIFPToSIOp>(op)) {
-        if (failed(unite(fptosi.getSource(), fptosi.getResult(), op)))
+        auto sourceType = cast<VMIVRegType>(fptosi.getSource().getType());
+        auto resultType = cast<VMIVRegType>(fptosi.getResult().getType());
+        VMILayoutSupport supports;
+        FailureOr<VMICastLayoutFact> fact =
+            supports.getPreferredCastLayoutFact(sourceType, resultType);
+        VMILayoutAttr resultLayout = getContiguousLayout();
+        if (succeeded(fact))
+          resultLayout = fact->resultLayout;
+        if (failed(setPreferredLayout(fptosi.getResult(), resultLayout,
+                                      op, DataLayoutSeedPhase::Cast)))
+          return WalkResult::interrupt();
+        return WalkResult::advance();
+      }
+      if (auto fptoui = dyn_cast<VMIFPToUIOp>(op)) {
+        auto sourceType = cast<VMIVRegType>(fptoui.getSource().getType());
+        auto resultType = cast<VMIVRegType>(fptoui.getResult().getType());
+        VMILayoutSupport supports;
+        FailureOr<VMICastLayoutFact> fact =
+            supports.getPreferredCastLayoutFact(sourceType, resultType);
+        VMILayoutAttr resultLayout = getContiguousLayout();
+        if (succeeded(fact))
+          resultLayout = fact->resultLayout;
+        if (failed(setPreferredLayout(fptoui.getResult(), resultLayout,
+                                      op, DataLayoutSeedPhase::Cast)))
           return WalkResult::interrupt();
         return WalkResult::advance();
       }
       if (auto sitofp = dyn_cast<VMISIToFPOp>(op)) {
-        if (failed(unite(sitofp.getSource(), sitofp.getResult(), op)))
+        auto sourceType = cast<VMIVRegType>(sitofp.getSource().getType());
+        auto resultType = cast<VMIVRegType>(sitofp.getResult().getType());
+        VMILayoutSupport supports;
+        FailureOr<VMICastLayoutFact> fact =
+            supports.getPreferredCastLayoutFact(sourceType, resultType);
+        VMILayoutAttr resultLayout = getContiguousLayout();
+        if (succeeded(fact))
+          resultLayout = fact->resultLayout;
+        if (failed(setPreferredLayout(sitofp.getResult(), resultLayout,
+                                      op, DataLayoutSeedPhase::Cast)))
           return WalkResult::interrupt();
         return WalkResult::advance();
       }
@@ -795,6 +833,18 @@ struct LayoutSolver {
       if (auto select = dyn_cast<VMISelectOp>(op)) {
         if (failed(unite(select.getTrueValue(), select.getFalseValue(), op)) ||
             failed(unite(select.getTrueValue(), select.getResult(), op)))
+          return WalkResult::interrupt();
+        return WalkResult::advance();
+      }
+      if (auto vselr = dyn_cast<VMIVselrOp>(op)) {
+        VMILayoutSupport supports;
+        FailureOr<VMIVselrLayoutFact> fact =
+            supports.getPreferredVselrLayoutFact(vselr);
+        if (failed(fact))
+          return WalkResult::advance();
+        requestDataUse(vselr.getSourceMutable(), fact->sourceLayout);
+        requestDataUse(vselr.getIndexMutable(), fact->indexLayout);
+        if (failed(setNaturalLayout(vselr.getResult(), fact->resultLayout, op)))
           return WalkResult::interrupt();
         return WalkResult::advance();
       }

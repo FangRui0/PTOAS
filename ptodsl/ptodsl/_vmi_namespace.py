@@ -12,9 +12,20 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from ptoas.mlir.dialects import pto as _pto
-from ptoas.mlir.ir import BF16Type, F16Type, F32Type, Float8E4M3FNType, Float8E5M2Type, IntegerType, MemRefType, UnitAttr
+from ptoas.mlir.ir import (
+    BF16Type,
+    F16Type,
+    F32Type,
+    Float8E4M3FNType,
+    Float8E5M2Type,
+    IndexType,
+    IntegerType,
+    MemRefType,
+    UnitAttr,
+)
 
 from ._scalar_coercion import coerce_scalar_to_type
+from ._diagnostics import deprecated
 from ._surface_values import _coerce_index_value, _try_get_constant_index, unwrap_surface_value, wrap_surface_value
 from ._types import (
     VMI_LANE_COUNTS,
@@ -269,7 +280,51 @@ def _derive_vci_result_type(base, size, *, context: str):
             f"{context} requires a typed scalar such as pto.i32(0) or "
             "pto.f32(0.0); plain Python scalars are ambiguous"
         )
-    return _pto.VMIVRegType.get(size, raw_base.type)
+    elem_type = raw_base.type
+    # Dynamic loop indices (TileLang T.serial / scf.for IVs) are MLIR index.
+    # VCI requires an integer/float sreg element type; Ascend uses i32.
+    # Coerce index → signless i32 so pto.vmi.vci(dynamic_base) lowers to
+    # ``VCI Vd, Sn`` instead of failing ODS (index) or verify (i64).
+    if IndexType.isinstance(elem_type):
+        elem_type = IntegerType.get_signless(32)
+    return _pto.VMIVRegType.get(size, elem_type)
+
+
+def _physical_lanes_per_part(elem_type, *, context: str) -> int | None:
+    """A5 256B physical VL lane count for VCI element types, else None."""
+    if IntegerType.isinstance(elem_type):
+        width = IntegerType(elem_type).width
+        if width == 8:
+            return 256
+        if width == 16:
+            return 128
+        if width == 32:
+            return 64
+        return None
+    # Float: f16→128, f32→64 (match getDataLanesPerPart).
+    name = str(elem_type)
+    if "f16" in name or "bf16" in name:
+        return 128
+    if "f32" in name:
+        return 64
+    return None
+
+
+def _check_vci_group_tiles_phys_vl(elem_type, size, group, *, context: str) -> None:
+    # One group is exactly the ordinary continuous iota, including tails that
+    # do not tile physical VL (for example i32 size=100).
+    if group == 1:
+        return
+    group_size = size // group
+    phys = _physical_lanes_per_part(elem_type, context=context)
+    if phys is None:
+        return
+    if group_size % phys != 0 and phys % group_size != 0:
+        raise ValueError(
+            f"{context} requires group_size ({group_size}) to divide or be a "
+            f"multiple of physical lanes per part ({phys}) for element type "
+            f"{elem_type}"
+        )
 
 
 def _derive_vmull_result_types(a, b, *, context: str):
@@ -511,6 +566,26 @@ def _emit_vec_scalar(op_name: str, source, scalar, mask, *, pmode=None, loc=None
     )
 
 
+def _emit_binary_or_vec_scalar(
+    binary_op_name: str,
+    vec_scalar_op_name: str,
+    lhs,
+    rhs,
+    mask=None,
+    *,
+    commutative=False,
+    **kw,
+):
+    """Dispatch a VMI binary family from the operand kinds."""
+    lhs_type = getattr(_raw(lhs), "type", None)
+    rhs_type = getattr(_raw(rhs), "type", None)
+    if rhs_type is not None and _is_vmi_vreg_type(rhs_type):
+        if commutative and (lhs_type is None or not _is_vmi_vreg_type(lhs_type)):
+            return _emit_vec_scalar(vec_scalar_op_name, rhs, lhs, mask, **kw)
+        return _emit_binary(binary_op_name, lhs, rhs, mask, **kw)
+    return _emit_vec_scalar(vec_scalar_op_name, lhs, rhs, mask, **kw)
+
+
 def _emit_reduce(
     op_name: str,
     source,
@@ -656,26 +731,68 @@ class _VMINamespace:
         )
 
     @staticmethod
-    def vci(base, *, size, order=None, loc=None, ip=None):
-        result_type = _derive_vci_result_type(base, size, context="pto.vmi.vci(...)")
+    def vci(base, *, size, order=None, group=None, loc=None, ip=None):
+        context = "pto.vmi.vci(...)"
+        if group is not None:
+            if isinstance(group, bool) or not isinstance(group, int):
+                raise TypeError(f"{context} requires group to be a positive Python integer")
+            if group <= 0:
+                raise ValueError(f"{context} requires group to be positive, got {group!r}")
+            if size % group != 0:
+                raise ValueError(
+                    f"{context} requires size divisible by group; got size={size!r}, group={group!r}"
+                )
+        result_type = _derive_vci_result_type(base, size, context=context)
+        if group is not None:
+            _check_vci_group_tiles_phys_vl(
+                result_type.element_type, size, group, context=context
+            )
         base = coerce_scalar_to_type(
             base,
-            _vmi_element_type(result_type, context="pto.vmi.vci(...)"),
+            _vmi_element_type(result_type, context=context),
             context="pto.vmi.vci(base)",
         )
-        return _call_value("vci", result_type, base, order=order, loc=loc, ip=ip)
+        return _call_value(
+            "vci", result_type, base, order=order, group=group, loc=loc, ip=ip
+        )
 
-    vadd = staticmethod(lambda lhs, rhs, mask=None, **kw: _emit_binary("vadd", lhs, rhs, mask, **kw))
+    @staticmethod
+    def vadd(lhs, rhs, mask=None, **kw):
+        """Emit VMI vector addition, selecting vector or scalar form by type."""
+        return _emit_binary_or_vec_scalar("vadd", "vadds", lhs, rhs, mask, commutative=True, **kw)
+
     vsub = staticmethod(lambda lhs, rhs, mask=None, **kw: _emit_binary("vsub", lhs, rhs, mask, **kw))
-    vmul = staticmethod(lambda lhs, rhs, mask=None, **kw: _emit_binary("vmul", lhs, rhs, mask, **kw))
+
+    @staticmethod
+    def vmul(lhs, rhs, mask=None, **kw):
+        """Emit VMI vector multiplication, selecting vector or scalar form by type."""
+        return _emit_binary_or_vec_scalar("vmul", "vmuls", lhs, rhs, mask, commutative=True, **kw)
+
     vdiv = staticmethod(lambda lhs, rhs, mask=None, **kw: _emit_binary("vdiv", lhs, rhs, mask, **kw))
-    vmax = staticmethod(lambda lhs, rhs, mask=None, **kw: _emit_binary("vmax", lhs, rhs, mask, **kw))
-    vmin = staticmethod(lambda lhs, rhs, mask=None, **kw: _emit_binary("vmin", lhs, rhs, mask, **kw))
+
+    @staticmethod
+    def vmax(lhs, rhs, mask=None, **kw):
+        """Emit VMI maximum, selecting vector or scalar form by type."""
+        return _emit_binary_or_vec_scalar("vmax", "vmaxs", lhs, rhs, mask, commutative=True, **kw)
+
+    @staticmethod
+    def vmin(lhs, rhs, mask=None, **kw):
+        """Emit VMI minimum, selecting vector or scalar form by type."""
+        return _emit_binary_or_vec_scalar("vmin", "vmins", lhs, rhs, mask, commutative=True, **kw)
+
     vand = staticmethod(lambda lhs, rhs, mask=None, **kw: _emit_binary("vand", lhs, rhs, mask, **kw))
     vor = staticmethod(lambda lhs, rhs, mask=None, **kw: _emit_binary("vor", lhs, rhs, mask, **kw))
     vxor = staticmethod(lambda lhs, rhs, mask=None, **kw: _emit_binary("vxor", lhs, rhs, mask, **kw))
-    vshl = staticmethod(lambda lhs, rhs, mask=None, **kw: _emit_binary("vshl", lhs, rhs, mask, **kw))
-    vshr = staticmethod(lambda lhs, rhs, mask=None, **kw: _emit_binary("vshr", lhs, rhs, mask, **kw))
+
+    @staticmethod
+    def vshl(lhs, rhs, mask=None, **kw):
+        """Emit VMI shift-left, selecting vector or scalar form by type."""
+        return _emit_binary_or_vec_scalar("vshl", "vshls", lhs, rhs, mask, **kw)
+
+    @staticmethod
+    def vshr(lhs, rhs, mask=None, **kw):
+        """Emit VMI shift-right, selecting vector or scalar form by type."""
+        return _emit_binary_or_vec_scalar("vshr", "vshrs", lhs, rhs, mask, **kw)
 
     vabs = staticmethod(lambda source, mask=None, **kw: _emit_unary("vabs", source, mask, **kw))
     vneg = staticmethod(lambda source, mask=None, **kw: _emit_unary("vneg", source, mask, **kw))
@@ -685,12 +802,36 @@ class _VMINamespace:
     vsqrt = staticmethod(lambda source, mask=None, **kw: _emit_unary("vsqrt", source, mask, **kw))
     vnot = staticmethod(lambda source, mask=None, **kw: _emit_unary("vnot", source, mask, **kw))
 
-    vadds = staticmethod(lambda source, scalar, mask, **kw: _emit_vec_scalar("vadds", source, scalar, mask, **kw))
-    vmuls = staticmethod(lambda source, scalar, mask, **kw: _emit_vec_scalar("vmuls", source, scalar, mask, **kw))
-    vmaxs = staticmethod(lambda source, scalar, mask, **kw: _emit_vec_scalar("vmaxs", source, scalar, mask, **kw))
-    vmins = staticmethod(lambda source, scalar, mask, **kw: _emit_vec_scalar("vmins", source, scalar, mask, **kw))
-    vshls = staticmethod(lambda source, scalar, mask, **kw: _emit_vec_scalar("vshls", source, scalar, mask, **kw))
-    vshrs = staticmethod(lambda source, scalar, mask, **kw: _emit_vec_scalar("vshrs", source, scalar, mask, **kw))
+    @staticmethod
+    @deprecated("use pto.vmi.vadd(vector, scalar, mask) instead")
+    def vadds(source, scalar, mask, **kw):
+        """Deprecated VMI vector-scalar add compatibility entry point."""
+        return _emit_vec_scalar("vadds", source, scalar, mask, **kw)
+
+    @staticmethod
+    @deprecated("use pto.vmi.vmul(vector, scalar, mask) instead")
+    def vmuls(source, scalar, mask, **kw):
+        return _emit_vec_scalar("vmuls", source, scalar, mask, **kw)
+
+    @staticmethod
+    @deprecated("use pto.vmi.vmax(vector, scalar, mask) instead")
+    def vmaxs(source, scalar, mask, **kw):
+        return _emit_vec_scalar("vmaxs", source, scalar, mask, **kw)
+
+    @staticmethod
+    @deprecated("use pto.vmi.vmin(vector, scalar, mask) instead")
+    def vmins(source, scalar, mask, **kw):
+        return _emit_vec_scalar("vmins", source, scalar, mask, **kw)
+
+    @staticmethod
+    @deprecated("use pto.vmi.vshl(vector, scalar, mask) instead")
+    def vshls(source, scalar, mask, **kw):
+        return _emit_vec_scalar("vshls", source, scalar, mask, **kw)
+
+    @staticmethod
+    @deprecated("use pto.vmi.vshr(vector, scalar, mask) instead")
+    def vshrs(source, scalar, mask, **kw):
+        return _emit_vec_scalar("vshrs", source, scalar, mask, **kw)
 
     @staticmethod
     def vcmp(lhs, rhs, seed, cmp, *, pmode=None, loc=None, ip=None):

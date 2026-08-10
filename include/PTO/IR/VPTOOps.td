@@ -261,6 +261,7 @@ def PTOStgOp : PTO_SimtOp<"stg", [
 }
 
 def PTOLdDevOp : PTO_MicroOp<"ld_dev", [
+    OpPipeInterface,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let summary = "Load one scalar GM element while bypassing the local L1 data cache.";
@@ -283,9 +284,14 @@ def PTOLdDevOp : PTO_MicroOp<"ld_dev", [
   let assemblyFormat = [{
     $ptr `[` $offset `]` attr-dict `:` type($ptr) `->` type($value)
   }];
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_S; }
+  }];
 }
 
 def PTOStDevOp : PTO_MicroOp<"st_dev", [
+    OpPipeInterface,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let summary = "Store one scalar GM element while bypassing the local L1 data cache.";
@@ -308,6 +314,10 @@ def PTOStDevOp : PTO_MicroOp<"st_dev", [
 
   let assemblyFormat = [{
     $value `,` $ptr `[` $offset `]` attr-dict `:` type($ptr) `,` type($value)
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_S; }
   }];
 }
 
@@ -1447,6 +1457,8 @@ def PTO_LoadCbufToCaMxOp : PTO_MteOp<"load_cbuf_to_ca_mx"> {
 
   let results = (outs);
 
+  let hasVerifier = 1;
+
   let assemblyFormat = [{
     $source `,` $destination `,` $x_start_position `,` $y_start_position `,`
     $x_step `,` $y_step `,` $src_stride `,` $dst_stride attr-dict `:`
@@ -1469,6 +1481,8 @@ def PTO_LoadCbufToCbMxOp : PTO_MteOp<"load_cbuf_to_cb_mx"> {
   );
 
   let results = (outs);
+
+  let hasVerifier = 1;
 
   let assemblyFormat = [{
     $source `,` $destination `,` $x_start_position `,` $y_start_position `,`
@@ -1554,12 +1568,15 @@ def PTO_Vldsx2Op : PTO_VectorMicroOp<"vldsx2", [
     Index:$offset,
     StrAttr:$dist
   );
-  let results = (outs PTO_VectorType:$low, PTO_VectorType:$high);
+  let results = (outs PTO_VectorType:$low,
+                      PTO_VectorType:$high,
+                      Optional<PTO_BufferLikeType>:$updated_base);
 
   let hasVerifier = 1;
 
   let assemblyFormat = [{
     $source `[` $offset `]` `,` $dist attr-dict `:` type($source) `,` type($offset) `->` type($low) `,` type($high)
+    (`,` type($updated_base)^)?
   }];
 }
 
@@ -1612,12 +1629,13 @@ def PTO_SprstiOp : PTO_VectorMicroOp<"sprsti", [
     I32:$offset
   );
 
-  let results = (outs);
+  let results = (outs Optional<PTO_BufferType>:$updated_base);
 
   let hasVerifier = 1;
 
   let assemblyFormat = [{
     $spr `,` $destination `[` $offset `]` attr-dict `:` type($destination) `,` type($offset)
+    (`->` type($updated_base)^)?
   }];
 }
 
@@ -1630,12 +1648,13 @@ def PTO_SprstsOp : PTO_VectorMicroOp<"sprsts", [
     I32:$offset
   );
 
-  let results = (outs);
+  let results = (outs Optional<PTO_BufferType>:$updated_base);
 
   let hasVerifier = 1;
 
   let assemblyFormat = [{
     $spr `,` $destination `[` $offset `]` attr-dict `:` type($destination) `,` type($offset)
+    (`->` type($updated_base)^)?
   }];
 }
 
@@ -1644,18 +1663,22 @@ def PTO_VldusOp : PTO_VectorMicroOp<"vldus", [
   ]> {
   let arguments = (ins
     PTO_BufferType:$source,
-    PTO_AlignTypeConstraint:$align
+    PTO_AlignTypeConstraint:$align,
+    Optional<Index>:$increment
   );
 
   let results = (outs
     PTO_VectorType:$result,
-    PTO_AlignTypeConstraint:$updated_align
+    PTO_AlignTypeConstraint:$updated_align,
+    Optional<PTO_BufferType>:$updated_base
   );
 
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    $source `,` $align attr-dict `:` type($source) `,` type($align) `->` type($result) `,` type($updated_align)
+    $source `,` $align (`,` $increment^)? attr-dict `:` type($source) `,` type($align)
+    (`,` type($increment)^)? `->` type($result) `,` type($updated_align)
+    (`,` type($updated_base)^)?
   }];
 }
 
@@ -1947,12 +1970,14 @@ def PTO_PldsOp : PTO_VectorMicroOp<"plds", [
     Index:$offset,
     StrAttr:$dist
   );
-  let results = (outs PTO_MaskTypeConstraint:$result);
+  let results = (outs PTO_MaskTypeConstraint:$result,
+                      Optional<PTO_BufferLikeType>:$updated_base);
 
   let hasVerifier = 1;
 
   let assemblyFormat = [{
     $source `[` $offset `]` `,` $dist attr-dict `:` type($source) `,` type($offset) `->` type($result)
+    (`,` type($updated_base)^)?
   }];
 }
 
@@ -1964,12 +1989,14 @@ def PTO_PldiOp : PTO_VectorMicroOp<"pldi", [
     Index:$offset,
     StrAttr:$dist
   );
-  let results = (outs PTO_MaskTypeConstraint:$result);
+  let results = (outs PTO_MaskTypeConstraint:$result,
+                      Optional<PTO_BufferLikeType>:$updated_base);
 
   let hasVerifier = 1;
 
   let assemblyFormat = [{
     $source `[` $offset `]` `,` $dist attr-dict `:` type($source) `,` type($offset) `->` type($result)
+    (`,` type($updated_base)^)?
   }];
 }
 
@@ -1982,12 +2009,13 @@ def PTO_PstiOp : PTO_VectorMicroOp<"psti", [
     Index:$offset,
     StrAttr:$dist
   );
-  let results = (outs);
+  let results = (outs Optional<PTO_BufferLikeType>:$updated_base);
 
   let hasVerifier = 1;
 
   let assemblyFormat = [{
     $value `,` $destination `[` $offset `]` `,` $dist attr-dict `:` type($value) `,` type($destination) `,` type($offset)
+    (`->` type($updated_base)^)?
   }];
 }
 
@@ -2768,12 +2796,13 @@ def PTO_PstsOp : PTO_VectorMicroOp<"psts", [
     StrAttr:$dist
   );
 
-  let results = (outs);
+  let results = (outs Optional<PTO_BufferLikeType>:$updated_base);
 
   let hasVerifier = 1;
 
   let assemblyFormat = [{
     $value `,` $destination `[` $offset `]` `,` $dist attr-dict `:` type($value) `,` type($destination) `,` type($offset)
+    (`->` type($updated_base)^)?
   }];
 }
 
@@ -3070,49 +3099,53 @@ def PTO_MteL1L0bOp : PTO_MteOp<"mte_l1_l0b", [
 }
 
 def PTO_MteL1L0aMxOp : PTO_MteOp<"mte_l1_l0a_mx", [
+    AttrSizedOperandSegments,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
     PTO_BufferLikeType:$source,
     PTO_BufferLikeType:$destination,
-    I64:$m,
-    I64:$k,
-    I64:$start_row,
-    I64:$start_col
+    Optional<I64>:$m,
+    Optional<I64>:$k,
+    Optional<I64>:$start_row,
+    Optional<I64>:$start_col,
+    Optional<I64>:$x_start,
+    Optional<I64>:$y_start,
+    Optional<I64>:$x_step,
+    Optional<I64>:$y_step,
+    Optional<I64>:$src_stride,
+    Optional<I64>:$dst_stride
   );
 
   let results = (outs);
 
   let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    $source `,` $destination `,` $m `,` $k `,` $start_row `,` $start_col
-    attr-dict `:` type($source) `,` type($destination) `,` type($m) `,`
-    type($k) `,` type($start_row) `,` type($start_col)
-  }];
+  let hasCustomAssemblyFormat = 1;
 }
 
 def PTO_MteL1L0bMxOp : PTO_MteOp<"mte_l1_l0b_mx", [
+    AttrSizedOperandSegments,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
     PTO_BufferLikeType:$source,
     PTO_BufferLikeType:$destination,
-    I64:$k,
-    I64:$n,
-    I64:$start_row,
-    I64:$start_col
+    Optional<I64>:$k,
+    Optional<I64>:$n,
+    Optional<I64>:$start_row,
+    Optional<I64>:$start_col,
+    Optional<I64>:$x_start,
+    Optional<I64>:$y_start,
+    Optional<I64>:$x_step,
+    Optional<I64>:$y_step,
+    Optional<I64>:$src_stride,
+    Optional<I64>:$dst_stride
   );
 
   let results = (outs);
 
   let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    $source `,` $destination `,` $k `,` $n `,` $start_row `,` $start_col
-    attr-dict `:` type($source) `,` type($destination) `,` type($k) `,`
-    type($n) `,` type($start_row) `,` type($start_col)
-  }];
+  let hasCustomAssemblyFormat = 1;
 }
 
 def PTO_MteL0cL1Op : PTO_MteOp<"mte_l0c_l1", [
@@ -3517,12 +3550,14 @@ def PTO_VsldbOp : PTO_VectorMicroOp<"vsldb", [
     I16:$repeat_stride,
     PTO_MaskTypeConstraint:$mask
   );
-  let results = (outs PTO_VectorType:$result);
+  let results = (outs PTO_VectorType:$result,
+                      Optional<PTO_BufferLikeType>:$updated_base);
 
   let hasVerifier = 1;
 
   let assemblyFormat = [{
     $source `,` $block_stride `,` $repeat_stride `,` $mask attr-dict `:` type($source) `,` type($block_stride) `,` type($repeat_stride) `,` type($mask) `->` type($result)
+    (`,` type($updated_base)^)?
   }];
 }
 
@@ -3554,12 +3589,13 @@ def PTO_VstasOp : PTO_VectorMicroOp<"vstas", [
     PTO_BufferLikeType:$destination,
     I32:$offset
   );
-  let results = (outs);
+  let results = (outs Optional<PTO_BufferLikeType>:$updated_base);
 
   let hasVerifier = 1;
 
   let assemblyFormat = [{
     $value `,` $destination `,` $offset attr-dict `:` type($value) `,` type($destination) `,` type($offset)
+    (`->` type($updated_base)^)?
   }];
 }
 
@@ -3610,12 +3646,14 @@ def PTO_VstusOp : PTO_VectorMicroOp<"vstus", [
     PTO_VectorType:$value,
     PTO_BufferType:$base
   );
-  let results = (outs PTO_AlignTypeConstraint:$align_out);
+  let results = (outs PTO_AlignTypeConstraint:$align_out,
+                      Optional<PTO_BufferType>:$base_out);
 
   let hasVerifier = 1;
 
   let assemblyFormat = [{
     $align_in `,` $offset `,` $value `,` $base attr-dict `:` type($align_in) `,` type($offset) `,` type($value) `,` type($base) `->` type($align_out)
+    (`,` type($base_out)^)?
   }];
 }
 

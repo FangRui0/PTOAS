@@ -173,7 +173,8 @@ static bool isSameLayoutOp(Operation *op) {
              VMIAddSOp, VMIMulSOp, VMIMaxSOp, VMIMinSOp, VMIShlSOp, VMIShrSOp,
              VMIVmullOp, VMIFmaOp, VMIDivFOp, VMIMinFOp, VMIMinIOp, VMIMaxFOp,
              VMIMaxIOp, VMINegFOp, VMIAbsFOp, VMIAbsIOp, VMISqrtOp, VMIExpOp,
-             VMILnOp, VMIReluOp, VMIFPToSIOp, VMISIToFPOp, VMIAndIOp, VMIOrIOp,
+             VMILnOp, VMIReluOp, VMIVexpdifOp, VMIFPToSIOp, VMISIToFPOp,
+             VMIAndIOp, VMIOrIOp,
              VMIXOrIOp, VMIShLIOp, VMIShRUIOp, VMIShRSIOp, VMINotOp, VMICmpFOp,
              VMICmpIOp, VMISelectOp, VMIMaskAndOp, VMIMaskOrOp,
              VMIMaskXOrOp, VMIMaskNotOp, VMIActivePrefixIndexOp, VMICompressOp,
@@ -181,7 +182,8 @@ static bool isSameLayoutOp(Operation *op) {
 }
 
 static bool isCastOp(Operation *op) {
-  return isa<VMIExtFOp, VMIExtSIOp, VMIExtUIOp, VMITruncFOp, VMITruncIOp>(op);
+  return isa<VMIExtFOp, VMIExtSIOp, VMIExtUIOp, VMITruncFOp, VMITruncIOp,
+               VMIFPToSIOp, VMIFPToUIOp, VMISIToFPOp>(op);
 }
 
 class VMISameLayoutTransfer final : public VMILayoutTransfer {
@@ -348,6 +350,20 @@ public:
       return makeSingleRelation(SmallVector<VMILayoutFact, 4>{
           valueFact(changedValue, changedLayout)});
     return failure();
+  }
+};
+
+class VMIContiguousResultLayoutTransfer final : public VMILayoutTransfer {
+public:
+  FailureOr<SmallVector<VMILayoutRelation, 4>>
+  query(Operation *op, Value changedValue, VMILayoutAttr changedLayout,
+        const VMILayoutPropagator &propagator,
+        OpOperand *changedOperand) const override {
+    if (!isa<OpResult>(changedValue) || changedValue.getDefiningOp() != op ||
+        !changedLayout.isContiguous())
+      return failure();
+    return makeSingleRelation(SmallVector<VMILayoutFact, 4>{
+        valueFact(changedValue, changedLayout)});
   }
 };
 
@@ -809,6 +825,7 @@ const VMILayoutTransfer *getTransfer(Operation *op) {
   static VMIBitcastTransfer bitcastTransfer;
   static VMIMaskGranularityCastTransfer maskGranularityCastTransfer;
   static VMIFreeResultLayoutTransfer freeResultLayoutTransfer;
+  static VMIContiguousResultLayoutTransfer contiguousResultLayoutTransfer;
   static VMILoadTransfer loadTransfer;
   static VMIDeinterleaveLoadTransfer deinterleaveLoadTransfer;
   static VMIGroupLoadTransfer groupLoadTransfer;
@@ -826,6 +843,8 @@ const VMILayoutTransfer *getTransfer(Operation *op) {
   if (isa<VMIConstantOp, VMIBroadcastOp, VMIIotaOp, VMICreateMaskOp,
           VMICreateGroupMaskOp, VMIConstantMaskOp>(op))
     return &freeResultLayoutTransfer;
+  if (isa<VMIGroupIotaOp>(op))
+    return &contiguousResultLayoutTransfer;
   if (isa<VMILoadOp>(op))
     return &loadTransfer;
   if (isa<VMIDeinterleaveLoadOp>(op))
@@ -848,6 +867,28 @@ const VMILayoutTransfer *getTransfer(Operation *op) {
     return &gatherTransfer;
   if (isa<VMIBitcastOp>(op))
     return &bitcastTransfer;
+  if (isa<VMIFPToSIOp, VMIFPToUIOp, VMISIToFPOp>(op)) {
+    // Same-width fp<->int: same-layout.  Widen/narrow: cast.
+    auto srcType = dyn_cast<VMIVRegType>(op->getOperand(0).getType());
+    auto dstType = dyn_cast<VMIVRegType>(op->getResult(0).getType());
+    if (srcType && dstType) {
+      auto srcElem = srcType.getElementType();
+      auto dstElem = dstType.getElementType();
+      unsigned srcBits = 0;
+      unsigned dstBits = 0;
+      if (auto ft = dyn_cast<FloatType>(srcElem))
+        srcBits = ft.getWidth();
+      else if (auto it = dyn_cast<IntegerType>(srcElem))
+        srcBits = it.getWidth();
+      if (auto ft = dyn_cast<FloatType>(dstElem))
+        dstBits = ft.getWidth();
+      else if (auto it = dyn_cast<IntegerType>(dstElem))
+        dstBits = it.getWidth();
+      if (srcBits > 0 && srcBits == dstBits)
+        return &sameLayoutTransfer;
+    }
+    return &castTransfer;
+  }
   if (isSameLayoutOp(op))
     return &sameLayoutTransfer;
   if (isa<VMIEnsureMaskGranularityOp>(op))

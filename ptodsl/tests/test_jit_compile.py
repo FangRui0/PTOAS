@@ -133,6 +133,30 @@ def host_vec_copy(
     pto.tile.store(o_tile, out)
 
 
+@pto.jit(target="a5", backend="vpto", mode="explicit")
+def scalar_pipeline_access_modes_probe(
+    src: pto.ptr(pto.i32, "gm"),
+    dst: pto.ptr(pto.i32, "gm"),
+):
+    normal = pto.load_scalar(src, 1)
+    pto.store_scalar(dst, 2, normal)
+    bypass = pto.load_scalar(src, 3, bypass_l1=True)
+    pto.store_scalar(dst, 4, bypass, bypass_l1=True)
+
+
+@pto.jit(target="a5", backend="vpto", mode="explicit")
+def scalar_pipeline_bypass_ub_invalid_probe():
+    src = pto.castptr(pto.const(0, dtype=pto.i64), pto.ptr(pto.i32, "ub"))
+    pto.load_scalar(src, 0, bypass_l1=True)
+
+
+@pto.jit(target="a5", backend="vpto", mode="explicit")
+def scalar_pipeline_bypass_float_invalid_probe(
+    src: pto.ptr(pto.f32, "gm"),
+):
+    pto.load_scalar(src, 0, bypass_l1=True)
+
+
 @pto.jit(target="a5", mode="explicit")
 def host_vec_copy_explicit(
     A_ptr: pto.ptr(pto.f32, "gm"),
@@ -2650,12 +2674,12 @@ def vmi_wrapper_dispatch_probe():
     int_not = pto.vmi.vnot(int_lhs, mask)
     int_shl = pto.vmi.vshl(int_lhs, int_rhs, mask)
     int_shr = pto.vmi.vshr(int_lhs, int_rhs, mask)
-    scalar_added = pto.vmi.vadds(relu, 1.0, mask)
-    scalar_multiplied = pto.vmi.vmuls(relu, 2.0, mask)
-    scalar_maximum = pto.vmi.vmaxs(relu, 1.0, mask)
-    scalar_minimum = pto.vmi.vmins(relu, 1.0, mask)
-    scalar_shl = pto.vmi.vshls(int_lhs, pto.i32(1), mask)
-    scalar_shr = pto.vmi.vshrs(int_lhs, pto.i32(1), mask)
+    scalar_added = pto.vmi.vadd(relu, 1.0, mask)
+    scalar_multiplied = pto.vmi.vmul(relu, 2.0, mask)
+    scalar_maximum = pto.vmi.vmax(relu, 1.0, mask)
+    scalar_minimum = pto.vmi.vmin(relu, 1.0, mask)
+    scalar_shl = pto.vmi.vshl(int_lhs, pto.i32(1), mask)
+    scalar_shr = pto.vmi.vshr(int_lhs, pto.i32(1), mask)
     scaled = pto.vmi.vadd(scalar_multiplied, bias, mask)
     pred = pto.vmi.vcmp(scaled, lhs, mask, "ogt")
     scalar_pred = pto.vmi.vcmps(scaled, 0.0, mask, "ogt")
@@ -3111,6 +3135,11 @@ def public_sync_surface_probe():
 
 
 @pto.jit(target="a5")
+def public_trap_surface_probe():
+    pto.trap()
+
+
+@pto.jit(target="a5")
 def public_dynamic_buf_sync_surface_probe():
     const_buf_id = pto.const(3)
     pto.get_buf(pto.Pipe.V, const_buf_id)
@@ -3227,6 +3256,25 @@ def public_data_movement_surface_probe():
     _ = gather1
     _ = gatherb
     _ = blocked
+
+
+@pto.jit(target="a5", mode="explicit")
+def explicit_mx_scale_staging_surface_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    stage1_u64 = pto.const(32768, dtype=pto.ui64)
+    a_scale_l1 = pto.castptr(zero_u64, pto.ptr(pto.f8e8m0, "mat"))
+    b_scale_l1 = pto.castptr(zero_u64, pto.ptr(pto.f8e8m0, "mat"))
+    a_stage1_l0 = pto.castptr(stage1_u64, pto.ptr(pto.f8e4m3, "left"))
+    b_stage1_l0 = pto.castptr(stage1_u64, pto.ptr(pto.f8e4m3, "right"))
+
+    pto.mte_l1_l0a_mx(
+        a_scale_l1, a_stage1_l0,
+        x_start=3, y_start=5, x_step=16, y_step=2, src_stride=8, dst_stride=2,
+    )
+    pto.mte_l1_l0b_mx(
+        b_scale_l1, b_stage1_l0,
+        x_start=3, y_start=5, x_step=16, y_step=2, src_stride=8, dst_stride=2,
+    )
 
 
 @pto.jit(target="a5", mode="explicit")
@@ -3903,6 +3951,7 @@ def main() -> None:
     public_mask_bitcast_probe.verify()
     public_mask_surface_probe.verify()
     public_sync_surface_probe.verify()
+    public_trap_surface_probe.verify()
     explicit_runtime_index_bitwise_event_probe.verify()
     explicit_runtime_index_integer_bitwise_event_probe.verify()
     ast_runtime_index_bitwise_event_probe.verify()
@@ -3983,6 +4032,10 @@ def main() -> None:
             "pto.f8e5m2x8 should resolve to vector<8xf8E5M2>",
         )
         expect(
+            str(pto.f8e8m0.resolve()) == "!pto.f8E8M0",
+            "pto.f8e8m0 should resolve to the public E8M0 scale type",
+        )
+        expect(
             "hif8" in str(pto.hif8.resolve()),
             "pto.hif8 should resolve to the public HiF8 type",
         )
@@ -4036,6 +4089,10 @@ def main() -> None:
             "low-precision pointer types should be valid for device storage",
         )
         expect(
+            "!pto.ptr<!pto.f8E8M0, l1>" == str(pto.ptr(pto.f8e8m0, "mat").resolve()),
+            "f8e8m0 pointers should be valid for L1 scale storage",
+        )
+        expect(
             str(pto.vreg_type(256, pto.f8e4m3).resolve()) == "!pto.vreg<256xf8E4M3FN>",
             "low-precision vreg types should be valid for vector micro-ops",
         )
@@ -4047,6 +4104,11 @@ def main() -> None:
         expect_raises(
             TypeError,
             lambda: pto.f8e4m3(1.0),
+            "unsupported eager constructor target type",
+        )
+        expect_raises(
+            TypeError,
+            lambda: pto.f8e8m0(1.0),
             "unsupported eager constructor target type",
         )
 
@@ -4072,6 +4134,32 @@ def main() -> None:
     default_compiled = host_vec_copy.compile()
     explicit_default = host_vec_copy.compile(BLOCK=128)
     block64 = host_vec_copy.compile(BLOCK=64)
+
+    scalar_pipeline_text = scalar_pipeline_access_modes_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        scalar_pipeline_text,
+        "scalar pipeline access mode specialization",
+    )
+    expect(
+        scalar_pipeline_text.count("pto.load_scalar") == 1
+        and scalar_pipeline_text.count("pto.store_scalar") == 1,
+        "default scalar pipeline accesses should remain load_scalar/store_scalar",
+    )
+    expect(
+        scalar_pipeline_text.count("pto.ld_dev") == 1
+        and scalar_pipeline_text.count("pto.st_dev") == 1,
+        "bypass_l1 scalar pipeline accesses should lower to ld_dev/st_dev",
+    )
+    expect_raises(
+        TypeError,
+        lambda: scalar_pipeline_bypass_ub_invalid_probe.compile().mlir_text(),
+        "requires a GM pointer",
+    )
+    expect_raises(
+        TypeError,
+        lambda: scalar_pipeline_bypass_float_invalid_probe.compile().mlir_text(),
+        "supports only i8, i16, i32 or i64",
+    )
 
     expect(default_compiled is explicit_default, "default constexpr compile should hit specialization cache")
     expect(default_compiled is not block64, "different constexpr values should materialize different specializations")
@@ -6287,6 +6375,11 @@ def main() -> None:
 
     public_surface_text = public_surface_exports_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(public_surface_text, "public surface export specialization")
+    explicit_mx_scale_staging_text = explicit_mx_scale_staging_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        explicit_mx_scale_staging_text,
+        "explicit MX scale staging specialization",
+    )
     acc_store_pre_quant_text = acc_store_pre_quant_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(acc_store_pre_quant_text, "acc-store pre_quant public mode specialization")
     expect(
@@ -6317,6 +6410,8 @@ def main() -> None:
     expect_parse_roundtrip_and_verify(mask_surface_text, "public mask surface specialization")
     sync_surface_text = public_sync_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(sync_surface_text, "public sync surface specialization")
+    trap_surface_text = public_trap_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(trap_surface_text, "public trap surface specialization")
     dynamic_buf_sync_text = public_dynamic_buf_sync_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(dynamic_buf_sync_text, "dynamic buf sync surface specialization")
     explicit_runtime_index_bitwise_event_text = explicit_runtime_index_bitwise_event_probe.compile().mlir_text()
@@ -6593,6 +6688,7 @@ def main() -> None:
     )
     expect(public_surface_text.count("pto.mem_bar") >= 1, "mem_bar(...) should still lower explicit memory barriers")
     expect("pto.barrier <PIPE_ALL>" in public_surface_text, "pipe_barrier(Pipe.ALL) should lower to pto.barrier")
+    expect("pto.trap" in trap_surface_text, "pto.trap() should lower to the public pto.trap operation")
     expect("pto.vexp" in public_surface_text, "vexp(...) should lower to pto.vexp")
     expect("pto.vcgmax" in public_surface_text, "vcgmax(...) should lower to pto.vcgmax")
     expect("pto.vcgadd" in public_surface_text, "vcgadd(...) should lower to pto.vcgadd")
@@ -6778,6 +6874,19 @@ def main() -> None:
     expect("pto.mte_l1_l0b" in public_surface_text, "mte_l1_l0b(...) should lower to pto.mte_l1_l0b")
     expect("pto.mte_l1_l0a_mx" in public_surface_text, "mte_l1_l0a_mx(...) should lower to pto.mte_l1_l0a_mx")
     expect("pto.mte_l1_l0b_mx" in public_surface_text, "mte_l1_l0b_mx(...) should lower to pto.mte_l1_l0b_mx")
+    expect(
+        explicit_mx_scale_staging_text.count("!pto.ptr<!pto.f8E8M0, l1>") >= 2,
+        "explicit MX staging should preserve E8M0 L1 source pointers",
+    )
+    for op_name in ("mte_l1_l0a_mx", "mte_l1_l0b_mx"):
+        expect(
+            re.search(
+                rf"pto\.{op_name} %\d+, %\d+, %c3_i64(?:_\d+)?, %c5_i64(?:_\d+)?, "
+                r"%c16_i64(?:_\d+)?, %c2_i64(?:_\d+)?, %c8_i64(?:_\d+)?, %c2_i64(?:_\d+)",
+                explicit_mx_scale_staging_text,
+            ) is not None,
+            f"{op_name}(...) should preserve every explicit MX control operand",
+        )
     expect("pto.tmatmul.mx" in public_surface_text, "pto.tile.matmul_mx should lower to pto.tmatmul.mx")
     expect("pto.tmatmul.mx.acc" in public_surface_text, "pto.tile.matmul_mx_acc should lower to pto.tmatmul.mx.acc")
     expect("pto.tmatmul.mx.bias" in public_surface_text, "pto.tile.matmul_mx_bias should lower to pto.tmatmul.mx.bias")

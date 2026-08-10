@@ -20,12 +20,12 @@ All user-facing symbols live here.  Low-level MLIR bindings are accessed
 internally as ``_pto`` (``from ptoas.mlir.dialects import pto as _pto``).
 """
 
-from ._diagnostics import unsupported_public_surface_error
+from ._diagnostics import deprecated, unsupported_public_surface_error
 
 # ── Types ─────────────────────────────────────────────────────────────────────
 from ._types import (           # noqa: F401
     float32, float16, bf16,
-    f8e4m3, f8e5m2, hif8, f4e1m2x2, f4e2m1x2,
+    f8e4m3, f8e5m2, f8e8m0, hif8, f4e1m2x2, f4e2m1x2,
     f16x2, bf16x2, f32x2,
     f8e4m3x2, f8e4m3x4, f8e4m3x8,
     f8e5m2x2, f8e5m2x4, f8e5m2x8, hif8x2,
@@ -148,7 +148,7 @@ from ._ops import (             # noqa: F401
     prmt, mulhi, mul_i32toi64,
     absf, sqrt, exp, log, pow, ceil, floor, rint, round,
     fmin, fmax, fma, convert,
-    syncthreads, threadfence, threadfence_block, keep, resume,
+    syncthreads, threadfence, threadfence_block, trap, keep, resume,
     pipe_barrier,
     get_buf, rls_buf,
     set_cross_flag, wait_cross_flag, set_intra_flag, wait_intra_flag,

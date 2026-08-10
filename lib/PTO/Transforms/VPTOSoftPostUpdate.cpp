@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 
 namespace mlir {
 namespace pto {
@@ -47,21 +48,35 @@ static constexpr unsigned kCanonicalAddressWidth = 16;
 // What one unit of an op's strideOperand means, in address terms.  This is a
 // property of the op's lowering, not of the pass: `Element` ops run their
 // offset through convertElementOffsetToBytes, `Block` ops pass a packed
-// control word straight to the intrinsic, and `Byte` ops pass a raw byte
-// offset.  See `strideUnitBytes` for the conversion.
+// control word straight to the intrinsic, `Alignment` ops use an op-specific
+// hardware alignment table, and `Byte` ops pass a raw byte offset. See
+// `strideUnitBytes` for the conversion.
 enum class StrideUnit {
-  Element, // vlds/vsts/vldsx2/vstas: offset in pointer elements
-  Block,   // vsstb/vsldb: repeat_stride in 32-byte blocks
-  Byte,    // sprsts/sprsti: raw byte offset
+  Element,   // vector load/store offsets and increments in pointer elements
+  Block,     // vsstb/vsldb: offset in 32-byte blocks
+  Alignment, // pldi/psti/sprsti: op-specific hardware alignment units
+  Byte,      // plds/psts/sprsts: scalar offset in bytes
+};
+
+enum class StrideConstraint {
+  Dynamic,
+  Constant,
+  SignedI8,
 };
 
 // Per-op-type descriptor: how to extract address operands and check
 // post-update. base/strideOperand indices are operand positions.
 struct PostUpdateOpInfo {
   int baseOperandIdx;
-  int strideOperandIdx;
+  // A missing stride operand models an op whose explicit address offset is
+  // zero. Its post-update increment then comes entirely from base evolution.
+  std::optional<unsigned> strideOperandIdx;
   StrideUnit strideUnit;
   unsigned minResultsForPost; // numResults > this means already post-update
+  StrideConstraint strideConstraint = StrideConstraint::Dynamic;
+  // Whether strideOperand contributes to the current access address. Stateful
+  // stream ops may use it only as the distance advanced after the access.
+  bool strideIsInitialOffset = true;
 };
 
 using PostUpdateTable = llvm::StringMap<PostUpdateOpInfo>;
@@ -71,7 +86,22 @@ static const PostUpdateTable &getPostUpdateTable() {
     PostUpdateTable t;
     //                       base  strideOp  strideUnit             minResults
     t["pto.vlds"] = {0, 1, StrideUnit::Element, 1};
+    t["pto.vldsx2"] = {0, 1, StrideUnit::Element, 2};
+    t["pto.vldus"] = {0, std::nullopt, StrideUnit::Element, 2};
+    t["pto.plds"] = {0, 1, StrideUnit::Byte, 1};
+    t["pto.pldi"] = {0, 1, StrideUnit::Alignment, 1,
+                     StrideConstraint::Constant};
     t["pto.vsts"] = {1, 2, StrideUnit::Element, 0};
+    t["pto.vstus"] = {3, 1, StrideUnit::Element, 1,
+                      StrideConstraint::Dynamic, false};
+    t["pto.psts"] = {1, 2, StrideUnit::Byte, 0};
+    t["pto.psti"] = {1, 2, StrideUnit::Alignment, 0,
+                     StrideConstraint::Constant};
+    t["pto.sprsts"] = {0, 1, StrideUnit::Byte, 0};
+    t["pto.sprsti"] = {0, 1, StrideUnit::Alignment, 0,
+                       StrideConstraint::SignedI8};
+    t["pto.vstas"] = {1, 2, StrideUnit::Element, 0};
+    t["pto.vsldb"] = {0, 2, StrideUnit::Block, 1};
     t["pto.vsstb"] = {1, 3, StrideUnit::Block, 0};
     return t;
   }();
@@ -101,13 +131,17 @@ static std::optional<int64_t> addPtrUnitBytes(Value base) {
   return static_cast<int64_t>(bits / 8);
 }
 
-// Bytes covered by one unit of the op's strideOperand.
-static int64_t strideUnitBytes(StrideUnit unit, int64_t elemBytes) {
+// Bytes covered by one unit of the op's strideOperand. Some units depend on
+// op attributes, so an unknown table entry conservatively rejects the op.
+static std::optional<int64_t> strideUnitBytes(Operation *op, StrideUnit unit,
+                                              int64_t elemBytes) {
   switch (unit) {
   case StrideUnit::Element:
     return elemBytes;
   case StrideUnit::Block:
     return kBlockSizeBytes;
+  case StrideUnit::Alignment:
+    return pto::getLoadStoreVecAlignmentSize(op);
   case StrideUnit::Byte:
     return 1;
   }
@@ -126,7 +160,9 @@ static void extractBaseAndStrideOperand(Operation *op,
                                         const PostUpdateOpInfo &info,
                                         Value &base, Value &strideOperand) {
   base = op->getOperand(info.baseOperandIdx);
-  strideOperand = op->getOperand(info.strideOperandIdx);
+  strideOperand = info.strideOperandIdx
+                      ? op->getOperand(*info.strideOperandIdx)
+                      : Value();
 }
 
 // Check if op already has an updated_base result.
@@ -996,6 +1032,20 @@ static Value truncateElementOffsetToI32(Value offset, Location loc,
                                             offsetI32);
 }
 
+// pto.addptr always consumes an index offset. Block offsets retain their
+// existing unsigned interpretation; every other supported address unit is
+// signed, including sprsti's signed 8-bit word offset.
+static Value normalizeAddPtrOffsetToIndex(Value offset, StrideUnit strideUnit,
+                                          Location loc, OpBuilder &builder) {
+  if (offset.getType().isIndex())
+    return offset;
+  if (strideUnit == StrideUnit::Block)
+    return builder.create<arith::IndexCastUIOp>(loc, builder.getIndexType(),
+                                                offset);
+  return builder.create<arith::IndexCastOp>(loc, builder.getIndexType(),
+                                            offset);
+}
+
 // Create the address reached by one memory op before post-update rewriting.
 // The builder must already point at the desired insertion location.
 static Value createInitialPtr(Value base, Value strideOperand,
@@ -1029,6 +1079,8 @@ static Value createInitialPtr(Value base, Value strideOperand,
           builder.create<arith::ConstantIndexOp>(loc, *constSo / divisor);
     }
   }
+  scaledOffset =
+      normalizeAddPtrOffsetToIndex(scaledOffset, strideUnit, loc, builder);
   return builder.create<pto::AddPtrOp>(loc, base, scaledOffset);
 }
 
@@ -1202,9 +1254,9 @@ static StrideExprRef makeAvailableAt(const StrideExprRef &e,
 
 // Constants are loop-invariant, so they are always emitted before the loop and
 // shared across every candidate in it.  Sharing matters beyond tidiness: the
-// rewrite groups ops by (base, stride) Value identity, so two candidates with
-// the same numeric stride must end up with the *same* Value to share an
-// iter_arg.
+// rewrite groups ops by base/offset/stride Value identity and effective byte
+// unit, so two compatible candidates with the same numeric stride must end up
+// with the *same* Value to share an iter_arg.
 using ConstCache = DenseMap<std::pair<int64_t, Type>, Value>;
 
 static Value materializeConst(int64_t c, Type ty, Location loc,
@@ -1252,6 +1304,17 @@ static bool constantsFitType(const StrideExprRef &e, Type wantType) {
            constantsFitType(e->rhs, wantType);
   }
   return false;
+}
+
+static bool satisfiesStrideConstraint(const StrideExprRef &stride,
+                                      StrideConstraint constraint) {
+  if (constraint == StrideConstraint::Dynamic)
+    return true;
+  std::optional<int64_t> constant = foldConst(stride);
+  if (!constant)
+    return false;
+  return constraint == StrideConstraint::Constant ||
+         (*constant >= -128 && *constant <= 127);
 }
 
 // Emit `e` at the builder's current insertion point.  Sub-expressions are
@@ -1425,6 +1488,7 @@ struct PostUpdateRewrite {
   Value strideOperand; // original offset / repeat_stride operand
   Value stride;        // stride value (stride_new for block-stride ops)
   Value initPtr;       // base + strideOperand_at_iter0, in addptr units
+  int64_t unitBytes;   // bytes advanced by one unit of stride
 };
 
 // A unique key for grouping rewrites that can share an iter_arg.
@@ -1439,12 +1503,14 @@ struct PostUpdateRewrite {
 // Keying on the original operands rather than on `initPtr` itself keeps the
 // comparison by Value identity meaningful: computeInitialPtr may materialize a
 // fresh pto.addptr per candidate, so equal start addresses do not necessarily
-// share a Value.  This is conservative — it can split groups that could have
-// been merged — but never merges groups that must stay apart.
-using IterArgGroupKey = std::tuple<Value, Value, Value>;
+// share a Value. The effective byte unit is also part of the address sequence:
+// equal numeric strides in element and byte ops need not advance equally.
+// This is conservative — it can split groups that could have been merged —
+// but never merges groups that must stay apart.
+using IterArgGroupKey = std::tuple<Value, Value, Value, int64_t>;
 
 static IterArgGroupKey getGroupKey(const PostUpdateRewrite &rw) {
-  return {rw.base, rw.strideOperand, rw.stride};
+  return {rw.base, rw.strideOperand, rw.stride, rw.unitBytes};
 }
 
 // Build the post-update form of an op while preserving every operand,
@@ -1456,11 +1522,13 @@ static Operation *createPostUpdateOp(Operation *op,
   for (auto [i, operand] : llvm::enumerate(op->getOperands())) {
     if (static_cast<int>(i) == info.baseOperandIdx)
       state.addOperands(base);
-    else if (static_cast<int>(i) == info.strideOperandIdx)
+    else if (info.strideOperandIdx && i == *info.strideOperandIdx)
       state.addOperands(stride);
     else
       state.addOperands(operand);
   }
+  if (!info.strideOperandIdx)
+    state.addOperands(stride);
   state.addTypes(op->getResultTypes());
   state.addTypes(base.getType());
   state.addAttributes(op->getAttrs());
@@ -1476,7 +1544,7 @@ static Operation *createNormalOp(Operation *op, const PostUpdateOpInfo &info,
   for (auto [i, operand] : llvm::enumerate(op->getOperands())) {
     if (static_cast<int>(i) == info.baseOperandIdx)
       state.addOperands(base);
-    else if (static_cast<int>(i) == info.strideOperandIdx)
+    else if (info.strideOperandIdx && i == *info.strideOperandIdx)
       state.addOperands(zeroStride);
     else
       state.addOperands(operand);
@@ -1621,10 +1689,11 @@ static scf::ForOp applyPostUpdateRewrites(scf::ForOp forOp,
   if (rewrites.empty())
     return nullptr;
 
-  // Group rewrites by (base, stride). Ops in the same group share one iter_arg
-  // and all use the pre-update pointer. Only one updated_base per group is
-  // yielded. This avoids redundant iter_args for same-address ops (e.g. vlds
-  // + vsts both accessing %base[%iv]).
+  // Group rewrites by start-address operands, stride, and effective byte unit.
+  // Ops in the same group share one iter_arg and all use the pre-update
+  // pointer. Only one updated_base per group is yielded. This avoids redundant
+  // iter_args for same-address ops (e.g. vlds + vsts both accessing
+  // %base[%iv]) without merging byte- and element-scaled recurrences.
   DenseMap<IterArgGroupKey, unsigned> groupToIdx; // group key -> iter_arg index
   SmallVector<unsigned> rwGroupIdx(rewrites.size()); // rewrite -> group index
   SmallVector<Value>
@@ -1738,6 +1807,8 @@ using SequentialExprCache = DenseMap<Value, StrideExprRef>;
 // SSA value is reused without guessing at its semantics.
 static StrideExprRef buildSequentialExpr(Value value,
                                          SequentialExprCache &cache) {
+  if (!value)
+    return makeConst(0);
   if (auto constant = getConstantIntValue(value))
     return makeConst(*constant);
   if (auto it = cache.find(value); it != cache.end())
@@ -1847,16 +1918,28 @@ static bool validateSequentialRun(SequentialRun &run,
     return false;
 
   SequentialCandidate *first = run.candidates.front();
-  run.strideType = first->strideOperand.getType();
+  run.strideType = first->strideOperand
+                       ? first->strideOperand.getType()
+                       : IndexType::get(first->op->getContext());
+  Value initialOffsetOperand = first->info->strideIsInitialOffset
+                                   ? first->strideOperand
+                                   : Value();
   if (!canMaterializeAs(run.step, run.strideType) ||
       !constantsFitType(run.step, run.strideType) ||
-      !canScaleInitialOffset(first->strideOperand, first->elemBytes,
+      !satisfiesStrideConstraint(run.step,
+                                 first->info->strideConstraint) ||
+      !canScaleInitialOffset(initialOffsetOperand, first->elemBytes,
                              first->unitBytes))
     return false;
 
-  for (SequentialCandidate *candidate : run.candidates)
-    if (candidate->strideOperand.getType() != run.strideType)
+  for (SequentialCandidate *candidate : run.candidates) {
+    Type candidateStrideType =
+        candidate->strideOperand
+            ? candidate->strideOperand.getType()
+            : IndexType::get(candidate->op->getContext());
+    if (candidateStrideType != run.strideType)
       return false;
+  }
 
   SmallVector<Value> leaves;
   collectLeaves(run.step, leaves);
@@ -1898,16 +1981,19 @@ static unsigned countDeadDynamicAddPtrs(const SequentialRun &run) {
 }
 
 static unsigned initialPointerCost(const SequentialRun &run) {
-  auto initialOffset =
-      getConstantIntValue(run.candidates.front()->strideOperand);
+  SequentialCandidate *first = run.candidates.front();
+  if (!first->info->strideIsInitialOffset || !first->strideOperand)
+    return 0;
+  auto initialOffset = getConstantIntValue(first->strideOperand);
   return initialOffset && *initialOffset == 0 ? 0 : 1;
 }
 
 static bool isRunStrideUse(OpOperand &use, const SequentialRun &run) {
   return llvm::any_of(run.candidates, [&](SequentialCandidate *candidate) {
-    return use.getOwner() == candidate->op &&
+    return candidate->info->strideOperandIdx &&
+           use.getOwner() == candidate->op &&
            use.getOperandNumber() ==
-               static_cast<unsigned>(candidate->info->strideOperandIdx);
+               *candidate->info->strideOperandIdx;
   });
 }
 
@@ -1937,8 +2023,10 @@ static bool allUsesDisappearAfterRewrite(Operation *op,
 static bool cumulativeOffsetChainDefinitelyDies(
     const SequentialRun &run, DenseSet<Operation *> &deadOps) {
   for (SequentialCandidate *candidate :
-       llvm::drop_begin(run.candidates, 2))
-    collectCumulativeOffsetOps(candidate->strideOperand, deadOps);
+       llvm::drop_begin(run.candidates, 2)) {
+    if (candidate->strideOperand)
+      collectCumulativeOffsetOps(candidate->strideOperand, deadOps);
+  }
   return !deadOps.empty() &&
          llvm::all_of(deadOps, [&](Operation *op) {
            return allUsesDisappearAfterRewrite(op, deadOps, run);
@@ -2011,8 +2099,10 @@ static bool isProfitableDirectSymbolicLeafRun(
         return candidate->base == candidate->rootBase;
       }))
     return false;
-  auto firstOffset =
-      getConstantIntValue(run.candidates.front()->strideOperand);
+  Value firstStrideOperand = run.candidates.front()->strideOperand;
+  auto firstOffset = firstStrideOperand
+                         ? getConstantIntValue(firstStrideOperand)
+                         : std::optional<int64_t>(0);
   if (!firstOffset || *firstOffset != 0)
     return false;
 
@@ -2064,7 +2154,9 @@ static void processSequentialBlock(Block *block, DominanceInfo &dominance,
     auto elemBytes = addPtrUnitBytes(base);
     if (!elemBytes)
       continue;
-    int64_t unitBytes = strideUnitBytes(info->strideUnit, *elemBytes);
+    auto unitBytes = strideUnitBytes(&op, info->strideUnit, *elemBytes);
+    if (!unitBytes)
+      continue;
     NormalizedBase normalized =
         normalizeSequentialBase(base, *elemBytes, exprCache);
 
@@ -2078,7 +2170,8 @@ static void processSequentialBlock(Block *block, DominanceInfo &dominance,
     }
     bucketIt->candidates.push_back(
         {&op, info, base, strideOperand, normalized.root, normalized.offset,
-         buildSequentialExpr(strideOperand, exprCache), *elemBytes, unitBytes});
+         buildSequentialExpr(strideOperand, exprCache), *elemBytes,
+         *unitBytes});
   }
 
   SmallVector<SequentialRun> runs;
@@ -2136,8 +2229,11 @@ static void processSequentialBlock(Block *block, DominanceInfo &dominance,
     run.zeroStride = materializeSequential(makeConst(0), run.strideType,
                                            first->op->getLoc(), builder);
     builder.setInsertionPoint(first->op);
+    Value initialOffsetOperand = first->info->strideIsInitialOffset
+                                     ? first->strideOperand
+                                     : Value();
     run.currentPtr = createInitialPtr(
-        first->base, first->strideOperand, first->info->strideUnit,
+        first->base, initialOffsetOperand, first->info->strideUnit,
         first->elemBytes, first->unitBytes, first->op->getLoc(), builder);
   }
 
@@ -2236,20 +2332,24 @@ private:
       std::optional<int64_t> elemBytes = addPtrUnitBytes(base);
       if (!elemBytes)
         continue;
-      int64_t unitBytes = strideUnitBytes(info->strideUnit, *elemBytes);
+      auto unitBytes = strideUnitBytes(&op, info->strideUnit, *elemBytes);
+      if (!unitBytes)
+        continue;
 
       // Analyze each operand independently: accumulator (iter_arg) first,
       // delta (IV/affine) fallback. Both return a symbolic per-iteration
       // stride; no IR is created until the candidate is known to be viable.
       DeltaCache deltaCache;
       StrideExprRef deltaBase = getStride(base, forOp, deltaCache);
-      StrideExprRef deltaOffset = getStride(strideOperand, forOp, deltaCache);
+      StrideExprRef deltaOffset =
+          strideOperand ? getStride(strideOperand, forOp, deltaCache)
+                        : makeConst(0);
 
       if (!deltaBase || !deltaOffset)
         continue;
 
       StrideExprRef total =
-          combineStride(deltaBase, deltaOffset, *elemBytes, unitBytes);
+          combineStride(deltaBase, deltaOffset, *elemBytes, *unitBytes);
       if (!total)
         continue;
 
@@ -2259,12 +2359,15 @@ private:
       Type exprResultType;
       if (!exprType(total, exprResultType))
         continue;
-      Type strideType = strideOperand.getType();
+      Type strideType =
+          strideOperand ? strideOperand.getType() : builder.getIndexType();
       if (exprResultType && exprResultType != strideType)
         continue;
 
       // Reject strides whose constants do not fit the target operand type.
       if (!constantsFitType(total, strideType))
+        continue;
+      if (!satisfiesStrideConstraint(total, info->strideConstraint))
         continue;
 
       // A stride built only from loop-invariant leaves is materialized before
@@ -2291,12 +2394,16 @@ private:
       Value strideNew = materialize(finalExpr, strideType, op.getLoc(), forOp,
                                     constCache, builder);
 
-      Value initPtr = computeInitialPtr(base, strideOperand, info->strideUnit,
-                                        *elemBytes, unitBytes, forOp, builder);
+      Value initialOffsetOperand =
+          info->strideIsInitialOffset ? strideOperand : Value();
+      Value initPtr = computeInitialPtr(
+          base, initialOffsetOperand, info->strideUnit, *elemBytes, *unitBytes,
+          forOp, builder);
       if (!initPtr)
         continue;
 
-      rewrites.push_back({&op, base, strideOperand, strideNew, initPtr});
+      rewrites.push_back(
+          {&op, base, strideOperand, strideNew, initPtr, *unitBytes});
     }
 
     if (!rewrites.empty())

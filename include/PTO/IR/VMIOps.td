@@ -62,9 +62,32 @@ def VMIBroadcastOp : VMI_Op<"broadcast", [Pure]> {
 
 def VMIIotaOp : VMI_Op<"iota", [Pure]> {
   let summary = "Create a VMI logical index vector from a scalar base";
+  let description = [{
+    Produces a continuous ramp over the full logical length L:
+    `dst[i] = base + i` (ASC). For L=128 that is `base..base+127`
+    (physical parts `base+0..63` then `base+64..127`).
+  }];
   let arguments = (ins
     AnyTypeOf<[AnyInteger, AnyFloat], "integer/float scalar">:$base,
     OptionalAttr<StrAttr>:$order
+  );
+  let results = (outs VMI_VRegTypeConstraint:$result);
+  let hasVerifier = 1;
+  let assemblyFormat = "$base attr-dict `:` type($base) `->` type($result)";
+}
+
+def VMIGroupIotaOp : VMI_Op<"group_iota", [Pure]> {
+  let summary = "Create a contiguous group-periodic VMI index vector";
+  let description = [{
+    Internal legacy form for public `vci(..., group=C)` with C > 1. For logical
+    length L and group size S=L/C, produces
+    `dst[g*S + j] = base +/- j`. This producer is contiguous-only; consumers
+    requesting another layout receive an explicit `ensure_layout`.
+  }];
+  let arguments = (ins
+    AnyTypeOf<[AnyInteger, AnyFloat], "integer/float scalar">:$base,
+    OptionalAttr<StrAttr>:$order,
+    I64Attr:$group
   );
   let results = (outs VMI_VRegTypeConstraint:$result);
   let hasVerifier = 1;
@@ -568,6 +591,15 @@ def VMIFPToSIOp : VMI_Op<"fptosi", [Pure]> {
   let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";
 }
 
+def VMIFPToUIOp : VMI_Op<"fptoui", [Pure]> {
+  let summary = "VMI floating-point to unsigned integer elementwise conversion";
+  let arguments = (ins VMI_VRegTypeConstraint:$source,
+                   OptionalAttr<StrAttr>:$saturate);
+  let results = (outs VMI_VRegTypeConstraint:$result);
+  let hasVerifier = 1;
+  let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";
+}
+
 def VMISIToFPOp : VMI_Op<"sitofp", [Pure]> {
   let summary = "VMI signed integer to floating-point elementwise conversion";
   let arguments = (ins VMI_VRegTypeConstraint:$source);
@@ -821,9 +853,17 @@ def VMIVbrcOp : VMI_Op<"vbrc", [Pure]> {
 
 def VMIVciOp : VMI_Op<"vci", [Pure]> {
   let summary = "Create a VMI logical index vector from a scalar base";
+  let description = [{
+    Unified form of `iota`. Without `{group}`, continuous ramp over L lanes.
+    With `{group = C}`, group-periodic restart at `base` per group (see
+    `iota`); identical group runs share one physical index register after
+    lowering. Non-contiguous result layouts rewrite to contiguous iota +
+    `ensure_layout` in unified→legacy. Lowers to `iota` preserving `{group}`.
+  }];
   let arguments = (ins
     AnyTypeOf<[AnyInteger, AnyFloat], "integer/float scalar">:$base,
-    OptionalAttr<StrAttr>:$order
+    OptionalAttr<StrAttr>:$order,
+    OptionalAttr<I64Attr>:$group
   );
   let results = (outs VMI_VRegTypeConstraint:$result);
   let hasVerifier = 1;
@@ -1437,11 +1477,15 @@ def VMIVselrOp : VMI_Op<"vselr", [Pure]> {
   let description = [{
     Dynamic lane permutation: for each lane i, result[i] = source[index[i]].
     Replaces the static-index `shuffle` op with a dynamic index vector operand.
-    Lowers 1:1 to `pto.vselr` at the VPTO level.
+    Lowers 1:1 to `pto.vselr` for contiguous vectors with 64, 128, or 256 lanes
+    for 8-bit elements; 64 or 128 lanes for 16-bit elements; or 64 lanes for
+    32-bit elements.  Source, index, and result use the same lane count, and
+    the index element storage width must match the source element storage
+    width.  Other lane counts are not supported by this operation.
 
     Example:
     ```
-    %r = pto.vmi.vselr %src, %idx : !pto.vmi.vreg<64xf16>, !pto.vmi.vreg<4xi16> -> !pto.vmi.vreg<4xf16>
+    %r = pto.vmi.vselr %src, %idx : !pto.vmi.vreg<128xf16>, !pto.vmi.vreg<128xi16> -> !pto.vmi.vreg<128xf16>
     ```
   }];
   let arguments = (ins
