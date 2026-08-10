@@ -3412,9 +3412,14 @@ struct PTOMGatherToMGATHER : public OpConversionPattern<pto::MGatherOp> {
   LogicalResult matchAndRewrite(pto::MGatherOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     auto *ctx = rewriter.getContext();
-    Value mem = adaptor.getMem();
-    Value idx = adaptor.getIdx();
-    Value dst = adaptor.getDst();
+    // MGATHER is a template intrinsic that accepts the concrete descriptor
+    // directly, so peel any type-converter materialization bridge and feed the
+    // producing value. This keeps the compile-time static-stride GlobalTensor
+    // from the partition_view pattern instead of the dynamic-stride bridge,
+    // whose GlobalTensor<...> C-style cast would not compile (issue #1165).
+    Value mem = peelUnrealized(adaptor.getMem());
+    Value idx = peelUnrealized(adaptor.getIdx());
+    Value dst = peelUnrealized(adaptor.getDst());
 
     Value memArg = mem;
     auto coalescePropAttr =
@@ -6169,9 +6174,12 @@ struct PTOMScatterToMSCATTER : public OpConversionPattern<pto::MScatterOp> {
   LogicalResult matchAndRewrite(pto::MScatterOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     auto *ctx = rewriter.getContext();
-    Value src = adaptor.getSrc();
-    Value idx = adaptor.getIdx();
-    Value mem = adaptor.getMem();
+    // MSCATTER is a template intrinsic that accepts the concrete descriptor
+    // directly, so peel any type-converter materialization bridge and feed the
+    // producing value (static-stride GlobalTensor). See MGATHER above / #1165.
+    Value src = peelUnrealized(adaptor.getSrc());
+    Value idx = peelUnrealized(adaptor.getIdx());
+    Value mem = peelUnrealized(adaptor.getMem());
     auto coalesceAttr =
         dyn_cast_or_null<pto::CoalesceAttr>(op.getProperties().coalesce);
     auto scatterAtomicAttr =
