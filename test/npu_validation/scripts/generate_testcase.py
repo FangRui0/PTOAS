@@ -267,6 +267,19 @@ CASE_POINTER_COUNT_MINIMUMS = {
 # source revision.  Scope by sample so older DeepSeek variants with the same
 # testcase names retain their already validated layouts.
 SAMPLE_CASE_POINTER_COUNT_MINIMUMS = {
+    "deepseekv4decodea3": {
+        # `rope_cs` fills two 8x32 output partitions at column offsets 0 and
+        # 32, and loads two 8x16 input partitions at offsets 0 and 16.  The
+        # best-effort footprint scan only sees the first loop iteration and
+        # used to allocate 480/464 elements for these 8x64 tensor views.  Keep
+        # the complete backing views so the second partition stays in bounds.
+        "rope_cs": {
+            "v2": 8 * 64,
+            "v3": 8 * 64,
+            "v4": 8 * 64,
+            "v5": 8 * 64,
+        },
+    },
     "qwen3_14bdecodea3": {
         # The generic EmitC footprint analysis follows individual partition
         # views and can miss later tiles in these large strided tensors.  Size
