@@ -69,12 +69,12 @@ module {
 // LOWER: pto.vmul
 // LOWER: pto.vadd
 // LOWER: pto.vcadd
-// LOWER: pto.vdup
-// LOWER: pto.vsts
+// LOWER: pto.pset_b32 "PAT_VL1"
+// LOWER: pto.vsts {{.*}} {dist = "1PT_B32"}
 // LOWER: pto.vadd
 // LOWER: pto.vcadd
-// LOWER: pto.vdup
-// LOWER: pto.vsts
+// LOWER: pto.pset_b32 "PAT_VL1"
+// LOWER: pto.vsts {{.*}} {dist = "1PT_B32"}
 // LOWER-NOT: pto.vmi.
 // LOWER-NOT: !pto.vmi.
 // LOWER-NOT: unrealized_conversion_cast
