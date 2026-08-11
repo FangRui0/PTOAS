@@ -17,15 +17,51 @@ See LICENSE in the root of the software repository for the full text of the Lice
 - 设计复核基线：
   - PTOAS `988d50e24`
   - pto-isa 本地快照 `7af803bc4056af8b39a55751ac2f4b75cdb47fbd`（下称"快照"）
-- 目标接口：`pto.tquant.mx`、exponent 布局转换 op
+  - pto-isa 目标候选 `f03c2454e4211bdfc5fe9d3e859bc9239443514c`（GitHub 上已验证）
+- 目标接口：`pto.tquant.mx`、`pto.tmov` 的 exponent 布局转换形态
 
 ### 1.1 修订记录
 
-**rev3（本次）**：按第二轮评审修正 2 个 P1 + 2 个 P2。
+**rev7（本次）**：关闭 rev6 评审提出的 3 个 P1，并保留 `TMovOp` 的现有公开 API。
 
-| 编号 | rev2 的错误 | rev3 的结论 | 位置 |
+| 事项 | rev7 结论 | 位置 |
+|---|---|---|
+| `TQuantMxOp` physical 契约 | 按 axis0/axis1 和 exp flat/2D 分支约束 stride、compact prefix 与 capacity；参与证明的 valid/physical shape 动态时拒绝 | §7.1、§11.1/11.3 |
+| `TQuantMxOp` source effects | f16/bf16 且 `validCols < physicalCols` 时 `src` 为 `Read + Write`，其余为 `Read`；补 padding 后再次读取 source 的内存规划/同步回归 | §9、§11.2 |
+| `TMovOp` API 兼容 | ODS operand 名继续为 `$fp`，保留 Python `fp=`、C++ `getFp()` 与 builder；helper 只在内部把该值分类为 FP 或 X-to-ZZ tmp | §5.3、§6.2、§10 |
+| PTO-BC 分派 | scaling `$fp` 保持 #1122 的 legacy FP wire 编码；非-scaling `$fp` 走 generic v0 兼容记录，不能仅因 `getFp()` 非空而选择 FP wire opcode | §10、§11.7 |
+
+**rev6**：不再新增独立 X-to-ZZ op，改为复用并扩展现有 `pto.tmov`。
+
+| 事项 | rev6 结论 | 位置 |
+|---|---|---|
+| X-to-ZZ 的 PTO IR 表达 | 复用 `pto.tmov` 现有第三个 tile operand 槽位；`loc=scaling` 表示既有 `fp`，非 scaling 表示 X-to-ZZ `tmp` | §1.2、§5.3、§6.2 |
+| 分派依据 | 地址空间只负责区分 overload 家族；非-scaling operand 还必须通过 X-to-ZZ 的 dtype/layout/shape/stride/capacity verifier | §7.2 |
+| 兼容与编码 | 不新增 op、opcode 或独立 binding；旧二参数/FP/preQuantScalar 形态不变，`grpAxis` 通过现有 `pto.tmov` 的属性字典编码。rev6 当时提出的 `$fp`→`$aux` ODS 改名已由 rev7 撤销 | §8.2、§10、§11.7 |
+
+**rev5**：将 3 项原待决事项固化为确定决策。当时选择独立 X-to-ZZ op，
+该 op 拆分结论已由 rev6 替换，其余三项继续有效。
+
+| 事项 | rev5 结论 | 位置 |
+|---|---|---|
+| ND 存量扁平 shape | axis1 永久同时接受 canonical `[M, N/32]` 和 legacy flat `[1, M*N/32]`，不迁移现有 IR | §1.2、§7.1、§13-3 |
+| `pto.tquant.mx` EmitC 文本 | 所有不带 `exp_zz` 的 grouped 形态统一生成 `<grp_axis, MxQuantAlg[, interleave]>`；不为默认 ND 保留旧类型列表文本 | §1.2、§8.1 |
+| pin 三元组 ownership | PR #1122 已合入且仍是单 repo/SHA updater；本 PR 负责落地 repo-aware 三元组与本特性 pin bump，不再声明依赖 #1122 | §1.2、§12 提交 0、§13-2 |
+
+**rev4**：按第三轮评审关闭 4 个 P1。
+
+| 编号 | rev3 的问题 | rev4 的结论 | 位置 |
 |---|---|---|---|
-| P1-A | 说 updater "漏更" `ci_sim.yml` / `Dockerfile.dev`，应扩展覆盖 | **照做会搞坏 CI**：`ci_sim.yml` 指向 **GitHub** `hw-native-sys/pto-isa`，updater 对着 **GitCode** `cann/pto-isa`，SHA 空间不通，写进去必然 ref not found。且它有意携带 CPU-Sim duplicate-stub 修复；`Dockerfile.dev` 是 CANN 9.0 独立环境。改为按 (repo, revision, 兼容性) 三元组建模 | §10、§12 提交 0、§13-2 |
+| P1-A | 断言 GitCode/GitHub "SHA 空间不通"，并要求先搜索复杂的三元组共同后继 | `f03c2454` 在 GitHub 上确实存在，且相对 `a8168c6` ahead 8 / behind 0，已包含 CPU-Sim duplicate-stub 修复。每个目标仍须按自己的 remote 验证 SHA；`ci` / `ci_sim` 先分别直接验证 `f03c2454`，`Dockerfile.dev` 继续独立处理 | §10、§12 提交 0、§13-2 |
+| P1-B | axis1 从"只比较总元素数"一步收紧为唯一的自然二维 shape，会拒绝已存在的 `[1, M*N/32]` IR | axis1 同时接受 canonical `[M, N/32]` 与 legacy flat `[1, M*N/32]`；axis0 仍只接受自然二维 `[M/32, N]` | §7.1、§11.1/11.3、§13-3、§14 |
+| P1-C | `pto.tmov` 的 X-to-ZZ 形态只查 valid shape/元素数/tmp，没有约束 ISA 实际假定的紧密 source、physical stride 和 padded capacity | 增加 compact-prefix、ND `align16(rows) * cols` 容量、DN source stride 及静态 physical shape 契约；无法静态证明时拒绝 | §3.2、§7.2、§11.4 |
+| P1-D | ND X-to-ZZ 的 `src` 只声明 `Read`，但 `ZeroSourcePaddingB16` 会写 source padding | axis1/ND 的 `src` 改为 `Read + Write`；axis0/DN 仍为 `Read` | §9、§11.2 |
+
+**rev3（历史记录，pin 结论已被 rev4 覆盖）**：按第二轮评审修正 2 个 P1 + 2 个 P2。
+
+| 编号 | rev2 的错误 | rev3 当时结论 | 位置 |
+|---|---|---|---|
+| P1-A | 说 updater "漏更" `ci_sim.yml` / `Dockerfile.dev`，应扩展覆盖 | 正确识别了 repo-aware 建模和 CANN 9.0 独立兼容目标，但进一步错误断言两个 remote 必然不共享 SHA；该断言已由 rev4 的 `f03c2454` / ancestry 验证替换 | §10、§12 提交 0、§13-2 |
 | P1-B | 四条 interleave 约束只有一条笼统负向用例 | 按 valid/physical × rows/cols 拆成 4 条，另加顺序哨兵与 max 形状哨兵 | §11.3 |
 | P2-A | physical 检查只判 exp 侧动态，未判 src 侧 → `srcRowsPhys` 动态时对合法 IR 误报 | interleave 下**显式拒绝动态 physical shape**，之后全在静态值间比较；valid 仍可动态（跳过） | §7.1 |
 | P2-B | 先按 interleave 分派 exp 形状、后查 `!isDn`，导致 axis1+interleave 先报误导性 shape 错 | `interleave && !isDn` 提到所有 shape 推导之前，作为步骤 (0) | §7.1 |
@@ -35,25 +71,46 @@ See LICENSE in the root of the software repository for the full text of the Lice
 
 | 编号 | rev1 的错误 | rev2 的结论 | 位置 |
 |---|---|---|---|
-| P1-1 | ND `tmp` 下界写成 `32 + …` | 常数项是 `2 * BLOCK_SIZE = 64`，两端各一个 32B block；少 32B 会被尾部 `vstus` 越界写 | §3.2、§7.2 规则 11 |
+| P1-1 | ND `tmp` 下界写成 `32 + …` | 常数项是 `2 * BLOCK_SIZE = 64`，两端各一个 32B block；少 32B 会被尾部 `vstus` 越界写 | §3.2、§7.2 规则 12 |
 | P1-2 | `interleave` 校验自相矛盾：exp/max/scaling 先按普通分组形状统查，随后又要求 exp 是 `[M/64, 2N]` | max/scaling 恒为分组形状，**只有 exp 随 interleave 二选一**；另补 64 对齐与 physical `align32(2N)` | §7.1 |
-| P1-3 | ND 规则用错坐标系：对 exponent 列数写 `% 64 == 0` | exponent 列数已是 `N/32`，真实约束是**列数为偶数**；行对齐要求撤销（ISA 用 ceil + 零填充显式支持非 16 对齐） | §7.2 规则 8 |
-| P1-4 | 把 `srcRows == 1`（`M = 32`）当退化 identity 放行，还列了 ST 正向用例 | `numPairs = hatM / 2 = 0`，主循环零次迭代，**`dst` 根本不被写**；改为拒绝，用例转负向 | §7.2 规则 9、§11.6 |
-| P1-5 | 元素类型集合写成 `{ui8, i8, f8E8M0}` | ISA 接受 `uint8_t` / `hifloat8_t` / `float8_e8m0_t`；`i8` 降成 `int8_t` 会在 C++ 期炸 `static_assert`，`!pto.hif8` 被漏 | §7.2 规则 4 |
+| P1-3 | ND 规则用错坐标系：对 exponent 列数写 `% 64 == 0` | exponent 列数已是 `N/32`，真实约束是**列数为偶数**；行对齐要求撤销（ISA 用 ceil + 零填充显式支持非 16 对齐） | §7.2 规则 9 |
+| P1-4 | 把 `srcRows == 1`（`M = 32`）当退化 identity 放行，还列了 ST 正向用例 | `numPairs = hatM / 2 = 0`，主循环零次迭代，**`dst` 根本不被写**；改为拒绝，用例转负向 | §7.2 规则 10、§11.6 |
+| P1-5 | 元素类型集合写成 `{ui8, i8, f8E8M0}` | ISA 接受 `uint8_t` / `hifloat8_t` / `float8_e8m0_t`；`i8` 降成 `int8_t` 会在 C++ 期炸 `static_assert`，`!pto.hif8` 被漏 | §7.2 规则 5 |
 | P2-1 | 称 DN `tmp` 下界"未知"，并计划做大小 `tmp` 对照实验 | DN 实现是 `(void)tmp;`，**根本不用**；对照实验无意义，内存效应改为按轴区分 | §3.2、§9、§13-1 |
 | P2-2 | 称 pin 有"五处、由 updater 统一管理"，并把 pin 覆盖列为开放问题 | 树内有 **3 个不同 SHA**、updater 只覆盖 **3 处**（漏 `ci_sim.yml`、`Dockerfile.dev`）；`interleave` 必须 bump，已非开放问题 | §10、§12 提交 0、§13-2 |
 
-另新增开放问题 7（动态维度处理）与对应的 `dn_dynamic` lit 用例。
+另新增开放问题 7（动态维度处理）与对应的 `dn_dynamic` lit 用例；该 rev3 方案已被
+rev7 的“无法静态证明即拒绝”结论取代，见 §7.1、§11.3 与 §13-7。
 
-**核对状态**：P1-1/3/4/5 与 P2-1/2 均已在基线快照与本仓库源码上**逐条自证**（含
-`wc -l`、`grep` 与函数体阅读）。**P1-2 的 interleave 常量无法自证**——基线快照
-`TQuant.hpp` 共 3106 行、`grep "bool interleave"` 零命中，该 overload 在快照里不存在；
-评审引用的 L3394-L3406 来自更新的修订，撰写时受网络限制无法拉取核对，故采信评审并在
-§7.1 显式标注来源、在 §12 把 pin bump 前置为提交 0。
+**核对状态**：rev2 的 P1-1/3/4/5 与 P2-1/2 均已在基线快照与本仓库源码上
+逐条自证。rev4 又直接核对了 GitHub `f03c2454`：该 commit 存在，与
+`a8168c6...f03c2454` 的比较结果为 ahead 8 / behind 0；`TMov.hpp` 中 ND 路径确实以
+`validRow` / `validCol` 生成索引、零写 padding，而不读取 tile row stride。这些结论分别固化在
+§13-2 与 §3.2/§7.2。任意 pin 在写入具体目标前，仍必须对该目标自己的 remote 做存在性验证。
+
+### 1.2 已拍板事项
+
+- **ND shape 兼容**：axis1 的 canonical `[M, N/32]` 与 legacy flat
+  `[1, M*N/32]` 都是长期合法形态。axis0 只接受 `[M/32, N]`。
+- **EmitC 生成形态**：除 deprecated `exp_zz` fused 形态外，所有
+  `pto.tquant.mx` 统一生成 `TQUANT<grp_axis, MxQuantAlg[, interleave]>(...)`。
+  默认 ND 不保留另一套类型列表 EmitC 文本。
+- **pin 建模 ownership**：本 PR 落地 `(repo, revision, 兼容性约束)` 三元组、
+  updater 的 repo-aware 扩展和本特性 pin bump。[#1122](https://github.com/hw-native-sys/PTOAS/pull/1122)
+  已于 2026-08-10 合入，只作为已有 updater/PTO-BC 兼容处理的基线，不是本 PR 的未来依赖。
+- **X-to-ZZ 的 IR 形态**：复用现有 `pto.tmov`。第三个 tile 位于 scaling 地址空间时
+  保持既有 FP 语义；第三个 tile 位于非-scaling 地址空间时表示 X-to-ZZ `tmp`。
+  `grpAxis` 只允许用于后一形态，缺省为 axis1。
+- **`TMovOp` API 兼容**：ODS operand 名保留为 `$fp`，Python 的 `fp=`、C++ 的
+  `getFp()` 和既有 builder 均不改名；实现内部通过共享 helper 把 `getFp()` 返回值按
+  地址空间分类为 FP 或 X-to-ZZ tmp。
+- **`TQuantMxOp` 内存契约**：valid shape 合法只是第一层；还必须满足 §7.1 的
+  physical stride、compact-prefix、branch-selection 与 capacity 矩阵。f16/bf16 source
+  存在列 padding 时，source memory effect 为 `Read + Write`。
 
 本文只定义 A5 MX 量化的分组轴（`grp_axis`）表达，以及 E8M0 exponent 从 ND/DN
-到 ZZ 的布局转换在 PTO IR 与 EmitC 中的表达方式。不改变 INT8 量化、不改变
-`pto.tmov` 现有的 ND-to-NZ / acc-to-vec / FP 语义。
+到 ZZ 的布局转换在 PTO IR 与 EmitC 中的表达方式。不改变 INT8 量化；扩展
+`pto.tmov` 的第三个 tile operand 语义，但不改变其已有 ND-to-NZ / acc-to-vec / FP 形态。
 
 ## 2. 结论摘要
 
@@ -61,10 +118,23 @@ See LICENSE in the root of the software repository for the full text of the Lice
    pto-isa `MxQuantAlg` 是精确的一一映射，`MxQuantAlg` 由 EmitC 合成。
 2. **`pto.tquant.mx` 新增 `grp_axis` 与 `interleave` 属性**，默认
    `grp_axis = 1`、`interleave = false`，保持现有 IR 逐字兼容。
-3. **verifier 的分组 shape 校验按轴分派**，替换当前"只比较总元素数"的写法；
-   其中 `max`/`scaling` 恒为分组形状，只有 `exp` 随 `interleave` 改形（§7.1）。
-4. **exponent X-to-ZZ 新增独立 op `pto.tmov.x2zz`**，不扩展 `pto.tmov`。
-5. **现有 `exp_zz` + `storeMode` fused 路径标记为 deprecated**，理由见 §5.4：
+3. **verifier 的分组 shape 校验按轴分派**：axis0 只接受自然二维形状；
+   axis1 为保持旧 IR 语义，同时接受 canonical `[M, N/32]` 与 legacy flat
+   `[1, M*N/32]`。`max`/`scaling` 恒为分组形状，只有 `exp` 随 `interleave` 改形（§7.1）。
+4. **不带 `exp_zz` 的 `pto.tquant.mx` 统一生成 grouped EmitC 形态**，不根据
+   `grpAxis` 是否显式写出而保留双文本形态（§8.1）。
+5. **exponent X-to-ZZ 复用现有 `pto.tmov`**。三参数形态按第三个 tile 的地址空间
+   分派：scaling 继续生成既有 FP TMOV；非-scaling 进入 X-to-ZZ，生成
+   `TMOV(...)` / `TMOV<0>(...)`。后者还要按独立语义分支校验 compact source、
+   physical stride、padded capacity，并声明按轴不同的 memory effects（§5.3、§7.2、§9）。
+6. **ND X-to-ZZ 是 source-mutating op**：为支持非 16 对齐行，ISA 会将 source padding
+   清零，因此 `src` 的内存效应是 `Read + Write`（§9）。
+7. **`pto.tquant.mx` 同样可能修改 source**：f16/bf16 且 valid 列数小于 physical
+   列数时，ND/DN 都会原地清零 source 的行尾 padding；该形态的 `src` 必须建模为
+   `Read + Write`。同时按 §7.1 静态证明所有输出 stride/capacity（§9）。
+8. **pin 三元组与 bump 由本 PR 落地**；#1122 已合入，只是已有 updater
+   与 PTO-BC 兼容实现的基线（§1.2、§12）。
+9. **现有 `exp_zz` + `storeMode` fused 路径标记为 deprecated**，理由见 §5.4：
    该 overload 在快照里只有 CPU-sim 实现，A5 设备头文件没有对应实现。
 
 ## 3. PTO-ISA 侧现状（已对快照逐条核对）
@@ -111,13 +181,17 @@ PTO_INTERNAL void TMOV_IMPL(DstTileData& dst, SrcTileData& src, TmpTileData& tmp
 }
 ```
 
-三条必须写进设计的事实：
+四条必须写进设计的事实：
 
 1. **SFINAE 用 `Tmp::Loc != TileType::Scaling` 把 X-to-ZZ 与 FP 三参数 TMOV 区分开。**
    若 `tmp` 落在 scaling 地址空间，会静默命中 FP overload。
 2. **ND 用 `dst` 的 valid shape 驱动，DN 用 `src` 的 valid shape 驱动。** 这是不对称的，
    verifier 与文档都必须显式说明，否则用户会把 valid 写在错误的一侧。
 3. 默认模板参数 `grp_axis = 1`，所以不带模板参数的三参数 `TMOV` 即 ND-to-ZZ。
+4. **两条路径都不使用 tile 类型的 physical row stride。** ND 把 source 当成
+   `validRow * validCol` 个紧密连续元素，DN 直接用 `srcValidCols` 作为行步长。
+   因此 physical capacity 足够不等于布局就合法；带 row padding 的自然二维 source
+   会被错误解释。
 
 `CommonCheckZZ` 与两个实现的静态约束：
 
@@ -146,13 +220,41 @@ tmpBytes      = (BLOCK_SIZE / sizeof(uint16_t) + rowBlockCount * P
 `rowBlockCount * P` 个 `uint16_t` 即 `rowBlockCount * validCol` 字节（`P = validCol / 2`）。
 
 > 早期版本的本文档把常数项误写为 32。按那个下界放行的 `tmp` 会**少 32 字节**，
-> 尾部 `vstus` 直接越界写 UB，属未定义行为且极难定位。规则 11 必须用 64。
+> 尾部 `vstus` 直接越界写 UB，属未定义行为且极难定位。规则 12 必须用 64。
 
 其中 `validRow` / `validCol` 取自 **`dst`**（见上面第 2 条）。
+
+ND 还有两个容易被忽略的 observable memory 行为：
+
+```text
+paddedRows = alignTo(validRow, 16)
+paddedElems = paddedRows * validCol
+```
+
+- `ZeroSourcePaddingB16` 把 source 中 `[validRow * validCol, paddedElems)` 这段 padding
+  **原地写零**；因此 source 不是只读的，且 allocation 必须容纳 `paddedElems`。
+- gather/store 总共向 destination 的连续前缀写入 `paddedElems` 字节，不是只写
+  `validRow * validCol`。destination 也必须容纳该 padded 前缀。
+
+这里的"紧密 source"定义为：所有 valid 元素在 row-major allocation 起始处构成
+无空洞的连续前缀。对静态 rank-2 tile，可判定为
+`srcValidRows == 1 || srcPhysicalCols == srcValidCols`。第一个分支保留 axis1 的
+legacy flat `[1, M*N/32]` source；自然二维 source 则必须以 valid 列数为物理行步长。
+例如 `valid=20x4, physical=20x32` 虽然总容量足够，但 valid 行之间有 28 字节
+padding，ISA 却会按 stride 4 读取，必须由 verifier 拒绝。
+
+`valid=20x4, physical=20x4` 虽然紧密，但只有 80 字节；ND 需要
+`align16(20) * 4 = 128` 字节，因此 source 的 padding 零写与 destination 的 padded
+写出都会越界。这个例子要分别作为 source/destination capacity 负向用例。
 
 DN-to-ZZ **完全不使用 `tmp`**：`GenerateB8IndicesDN2ZZToUB` 函数体第一行就是 `(void)tmp;`，
 上方注释也写明 "tmp is unused (kept in the signature to match the ND->ZZ TMOV interface)"。
 它只做 `vlds` + `vintlv` + `vsstb`，不需要索引表。
+
+DN 的 source 步长同样不是从 `SrcTileData::Cols` / `RowStride` 取值：实现使用
+`row1Base = row0Base + srcValidCols`。由于 DN 已要求 `srcValidRows >= 2`，这里没有
+legacy 单行特例，必须直接要求 `srcPhysicalCols == srcValidCols`。destination 写出
+`srcValidRows * srcValidCols` 个元素，也需要不小于该值的 physical capacity。
 
 所以 DN 的 `tmp` 下界**不是"未知"，而是 0**；`tmp` 在 DN 形态下纯粹是为了对齐 ND 的三参数
 签名而保留的占位。本设计不对 DN 的 `tmp` 做容量校验，其内存效应按轴区分，见 §9。
@@ -167,7 +269,7 @@ DN-to-ZZ **完全不使用 `tmp`**：`GenerateB8IndicesDN2ZZToUB` 函数体第�
 - `include/pto/npu/a5/TQuant.hpp` 里 grep `VecStoreMode` / `store_mode` **无任何命中**。
 
 即：该形态在 `__CPU_SIM` 下可用，A5 设备路径没有对应实现。这是 §5.4 决策的直接依据。
-合入前需按仓库当前 pin 的 pto-isa 复核该结论（见 §13 开放问题 2）。
+合入前需按仓库当前 pin 的 pto-isa 复核该结论（见 §13-2）。
 
 ## 4. PTOAS 侧现状核查
 
@@ -229,13 +331,20 @@ TQUANT<QuantType, [VecStoreMode,] DstT, SrcT, ExpT, MaxT, ScalingT [, QuantScale
 由实参推导。两者不是"追加一个模板参数"的关系，是**两族不同的 overload**，EmitC 必须
 按形态分支，不能在现有参数列表上做增量。
 
-`pto.tmov` 同理：现在生成 `TMOV<DstT, SrcT, ...>(dst, src, ...)`，而 X-to-ZZ 需要
-`TMOV(dst, src, tmp)` 或 `TMOV<0>(dst, src, tmp)`。
+`pto.tmov` 的 lowering 也必须按第三个 tile 的地址空间分派：既有普通/FP 形态继续生成
+原调用；非-scaling 的第三个 tile 选择 X-to-ZZ，生成 `TMOV(dst, src, tmp)` 或
+`TMOV<0>(dst, src, tmp)`。
 
 ### 4.4 `pto.tmov` 现状
 
-`def TMovOp`：`src`、`dst`、`Optional fp`、`Optional preQuantScalar`、`accToVecMode`、
-`reluPreMode`。verifier 要求 `fp` 位于 scaling 地址空间。没有 `tmp`，没有 `grp_axis`。
+`def TMovOp` 当前包含 `src`、`dst`、`Optional fp`、`Optional preQuantScalar`、
+`accToVecMode`、`reluPreMode`。第三个 tile operand 在 ODS 中固定叫 `fp`，verifier
+强制它位于 scaling 地址空间，lowering 也据此进入 FP 分支；因此当前 PTO IR 尚不能
+写非-scaling `tmp`。
+
+pto-isa 已经提供了无歧义的编译期分派：`FpTileData::Loc == TileType::Scaling` 命中
+FP overload，`TmpTileData::Loc != TileType::Scaling` 命中 X-to-ZZ overload。PTO IR
+可以复用同一规则，无需为底层同一 `TMOV` overload 家族再增加独立 op。
 
 ### 4.5 与 `Layout::MX_A_ZZ` / `MX_B_NN` 无关
 
@@ -269,28 +378,75 @@ TQUANT<QuantType, [VecStoreMode,] DstT, SrcT, ExpT, MaxT, ScalingT [, QuantScale
 `grp_axis` 是编译期模板参数，不是运行期值，用属性而非 operand。默认 `1` 使现有 IR
 逐字不变（不写属性 = ND）。
 
-### 5.3 决策三：X-to-ZZ 用独立 op `pto.tmov.x2zz`
+### 5.3 决策三：X-to-ZZ 复用并扩展现有 `pto.tmov`
 
-**不扩展 `pto.tmov`**，理由三条：
+`pto.tmov` 的可选第三个 tile operand **继续使用 ODS 名 `$fp`**，从而保留生成的
+Python `fp=` keyword、C++ `getFp()` accessor 和 builder 签名。只有它的运行语义由
+静态地址空间分类；helper 内可使用局部变量名 `aux`，但不能改 ODS/public API 名：
 
-1. **verifier 强度**：`pto.tmov` 的核心约束之一是 src/dst 同 shape；X-to-ZZ 恰恰是
-   shape 变换（`[M, N/32]` → ZZ box）。塞进同一个 op 会迫使把这条规则改成按属性分派，
-   削弱既有路径的检查强度。
-2. **EmitC 形态不同**（§4.3）：一个发 `TMOV<DstT, SrcT, ...>`，一个发 `TMOV<0>`。
-3. **前车之鉴**：#1122 把三个 op 合并成 `pto.tfillpad` + `mode` 属性后，`ExpandTileOp`
-   漏读了该属性，导致 in-place 被静默当成 normal 展开，靠后续提交才补上。`pto.tmov`
-   的消费者比 `tfillpad` 多得多（EmitC、ExpandTileOp、PlanMemory、InsertSync、ptobc），
-   每一个都要正确分派新形态的风险不划算。
+```text
+getFp() 不存在              -> 既有二参数 TMOV
+getFp().loc == scaling      -> 既有 FP TMOV，第三个 tile 解释为 fp
+getFp().loc != scaling      -> X-to-ZZ TMOV，第三个 tile 解释为 tmp
+```
 
-**代价**：新增一个 op 需要同步 ODS / verifier / EmitC / PTO-BC opcode / Python binding /
-手册。§12 已按此排期。
+这个分派与 pto-isa 的 SFINAE 条件逐字同构：FP overload 要求
+`FpTileData::Loc == TileType::Scaling`，X-to-ZZ overload 要求
+`TmpTileData::Loc != TileType::Scaling`。因此 PTO IR 不需要额外 `mode=x2zz` 属性；
+`grpAxis` 只在第三个 tile 为非-scaling 时合法，缺省表示 axis1。
+
+以 DN exponent `2x16` 为例，普通二参数 `TMOV(dst, src)` 只复制连续数据：
+
+```text
+src row 0: a0 a1 a2 ... a15
+src row 1: b0 b1 b2 ... b15
+plain dst: a0 a1 a2 ... a15 b0 b1 b2 ... b15
+```
+
+非-scaling `tmp` + `grpAxis=axis0` 选择三参数 `TMOV<0>(dst, src, tmp)`，结果是
+Cube 所需的 ZZ box 交织顺序：
+
+```text
+ZZ dst: a0 b0 a1 b1 a2 b2 ... a15 b15
+```
+
+因此复用的是同一个 `pto.tmov` IR op 和 pto-isa `TMOV` overload 家族，不是把 X-to-ZZ
+误降成普通二参数 copy。
+
+| `pto.tmov` 形态 | 第三个 tile | 合法属性 | verifier / effects | EmitC |
+|---|---|---|---|---|
+| 普通 move | 无 | 既有 `accToVecMode` / `reluPreMode` 组合 | 完全保持现状 | 既有二参数或 scalar 形态 |
+| FP move | `loc=scaling`，角色为 `fp` | 既有 FP / pre-quant 约束；不允许 `grpAxis` | 完全保持现状 | 既有 `TMOV_FP` / FP 参数化 `TMOV` |
+| X-to-ZZ | 非-scaling，角色为 `tmp` | 可选 `grpAxis`；禁止 `preQuantScalar`、`accToVecMode` 与非默认 `reluPreMode` | 走 §7.2 与 §9 的 X-to-ZZ 分支 | axis1: `TMOV(dst, src, tmp)`；axis0: `TMOV<0>(dst, src, tmp)` |
+
+**地址空间只完成 overload 分类，不等于完成合法性证明。** “非-scaling”只能说明第三个
+tile 不是 `fp`；它还必须满足 X-to-ZZ 的 vec 地址空间、E8M0-compatible dtype、layout、
+shape、stride、capacity 和按轴效应契约。所有消费者通过一个共享的
+`classifyTMovForm(getFp())` helper 得到 `NoTileAux` / `Fp` / `XToZz`，禁止各自复制一套判断。
+
+复用现有 op 的兼容性依据：
+
+1. 旧 verifier 从未接受非-scaling 的第三个 tile，因此没有既有合法 IR 会被重新解释成
+   X-to-ZZ；旧二参数、scaling `fp` 和 `preQuantScalar` 形态行为不变。
+2. ODS 名、operand 顺序、segment size、文本位置以及 Python/C++ builder/accessor
+   全部保持不变；`grpAxis` 走属性字典。仓库已有 `pto.TMovOp(..., fp=fp_scaling)`
+   调用无需迁移。
+3. `PTORemoveIdentityTMov` 必须继续把任何带第三个 tile 的形态视为非 plain；
+   `PTOA5NormalizeTMov` 必须显式跳过 `XToZz`，不能把布局重排改写成普通 copy。
+4. `TMovOp::verify()`、`getEffects()` 与 EmitC lowering 都按同一个分类结果分支，避免
+   verifier 认为是 tmp、lowering 却认为是 fp 的跨层分歧。
+
+**代价**：`pto.tmov` 不再只有一套 shape/effect 契约，所有读取第三个 tile 或假设普通
+move 语义的消费者都必须完成审计。相比新增 op，该方案不增加 IR surface、opcode 和
+binding，并与 pto-isa 的现有 overload 选择保持一致。
 
 ### 5.4 决策四：`exp_zz` + `storeMode` 标记 deprecated
 
 **做法**：本次不删除，行为不变，但：
 
 - verifier 增加一条：`exp_zz` 形态与 `grp_axis = 0` **互斥**（该 fused 路径只有 ND 语义）；
-- ODS `description` 与用户手册标注 deprecated，推荐改用 `pto.tquant.mx` + `pto.tmov.x2zz`；
+- ODS `description` 与用户手册标注 deprecated，推荐改用 `pto.tquant.mx` +
+  `pto.tmov` 的非-scaling `tmp` 形态；
 - ReleaseNotes 记录该状态。
 
 **理由**：§3.3 已确认该 overload 在快照里只有 CPU-sim 实现。把 `grp_axis` 也接进这个
@@ -342,47 +498,53 @@ pto.tquant.mx ins(%src : ...) outs(...)
 `TQuantMxOp` 使用 `hasCustomAssemblyFormat`，新属性走 `attr-dict` 打印路径，
 parser/printer 需同步（§12 步骤 1）。
 
-### 6.2 新 op `pto.tmov.x2zz`
+### 6.2 `pto.tmov` 保留 `$fp` 槽位并扩展其合法语义
+
+不新增 op，也不重命名 operand。`TMovOp` 只追加 optional `grpAxis`：
 
 ```tablegen
-def TMovX2ZzOp : PTO_TOp<"tmov.x2zz", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "Convert an E8M0 exponent tile from ND/DN grouping to ZZ box layout.";
-
-  let arguments = (ins
-    PTODpsType:$src,          // ND: [M, N/32]；DN: [M/32, N]
-    PTODpsType:$dst,          // ZZ box 布局的目标 tile
-    PTODpsType:$tmp,          // vec scratch，禁止 loc=scaling
-    DefaultValuedAttr<PTO_MxGroupAxisAttr, "::mlir::pto::MxGroupAxis::Axis1">:$grpAxis
-  );
-  let results = (outs);
-  let hasVerifier = 1;
-  let assemblyFormat = [{
-    `ins` `(` $src `,` $tmp `:` qualified(type($src)) `,` qualified(type($tmp)) `)`
-    `outs` `(` $dst `:` qualified(type($dst)) `)` attr-dict
-  }];
-  let extraClassDeclaration = [{
-    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
-    ::mlir::MutableOperandRange getDpsInitsMutable() {
-      return ::mlir::MutableOperandRange(getOperation(), 1, 1);
-    }
-  }];
-}
+// include/PTO/IR/PTOOps.td, def TMovOp
+let arguments = (ins
+  PTODpsType:$src,
+  PTODpsType:$dst,
+  Optional<PTODpsType>:$fp,   // API 名保持；loc=scaling: fp，其他 loc: X-to-ZZ tmp
+  Optional<I64>:$preQuantScalar,
+  OptionalAttr<PTO_AccToVecModeAttr>:$accToVecMode,
+  DefaultValuedAttr<PTO_ReluPreModeAttr,
+                    "::mlir::pto::ReluPreMode::NoRelu">:$reluPreMode,
+  OptionalAttr<PTO_MxGroupAxisAttr>:$grpAxis
+);
 ```
+
+assembly format、`$fp` operand 的位置、分隔符和 segment size 均保持不变。
+`grpAxis` 是 optional attribute：
+
+- `$fp` operand 非-scaling 时，未写 `grpAxis` 表示 axis1；显式 `axis0` / `axis1` 都合法；
+- `$fp` operand 不存在或位于 scaling 时，`grpAxis` 必须不存在；
+- `preQuantScalar` 与 `$fp` tile operand 继续互斥。
 
 IR 形态：
 
 ```mlir
-pto.tmov.x2zz ins(%exp, %tmp : !pto.tile_buf<...>, !pto.tile_buf<...>)
-              outs(%exp_zz : !pto.tile_buf<...>)
-              {grpAxis = #pto<mx_group_axis axis0>}
+// 既有 FP 形态：$fp.loc = scaling，语义不变
+pto.tmov ins(%src : !pto.tile_buf<...>,
+             %fp  : !pto.tile_buf<loc=scaling, ...>)
+         outs(%dst : !pto.tile_buf<...>)
+
+// ND-to-ZZ：第三个 tile（ODS 名仍为 $fp）的 loc != scaling，grpAxis 缺省为 axis1
+pto.tmov ins(%exp : !pto.tile_buf<loc=vec, ...>,
+             %tmp : !pto.tile_buf<loc=vec, ...>)
+         outs(%exp_zz : !pto.tile_buf<loc=vec, ...>)
+
+// DN-to-ZZ
+pto.tmov ins(%exp : !pto.tile_buf<loc=vec, ...>,
+             %tmp : !pto.tile_buf<loc=vec, ...>)
+         outs(%exp_zz : !pto.tile_buf<loc=vec, ...>)
+         {grpAxis = #pto<mx_group_axis axis0>}
 ```
 
-`tmp` 放在 `ins` 而不是 `outs`：它是被覆写的 scratch，但不承载结果语义。DPS init 只
-包含 `dst`；`tmp` 的写效应由 §9 的 memory effects 表达。
+`tmp` 仍在 `ins`：它会被覆写，但不承载结果语义。`TMovOp` 既有 DPS init 仍只有 `dst`；
+`tmp` 与 ND source 的写行为由 §9 的分支 memory effects 表达。
 
 ## 7. Verifier 设计
 
@@ -402,159 +564,229 @@ const bool isDn = getGrpAxis() == MxGroupAxis::Axis0;
 if (getInterleave() && !isDn)
   return emitOpError("expects interleave to be used only with grpAxis=axis0");
 
+// MX TQUANT 的 stride/capacity 都由编译期 tile shape 驱动。
+// 任一相关 valid/physical 维动态时无法证明实际寻址安全，直接拒绝。
+for (auto [name, ty] : {std::pair{"src", srcTy}, std::pair{"dst", dstTy},
+                         std::pair{"exp", expTy}, std::pair{"max", maxTy},
+                         std::pair{"scaling", scalingTy}}) {
+  if (hasDynamicValidOrPhysicalShape(ty))
+    return emitOpError() << "expects static valid and physical shapes for " << name
+                         << " in MX quantization";
+}
+if (getExpZz() && hasDynamicValidOrPhysicalShape(expZzTy))
+  return emitOpError("expects static valid and physical shapes for exp_zz "
+                     "in the deprecated fused MX quantization form");
+
 // (1) 分组轴上的整除约束
 if (isDn) {
-  if (srcRows != kDynamic && srcRows % 32 != 0)
+  if (srcRows % 32 != 0)
     return emitOpError("expects src valid_shape[0] to be a multiple of 32 when grpAxis is axis0");
 } else {
-  if (srcCols != kDynamic && srcCols % 32 != 0)
+  if (srcCols % 32 != 0)
     return emitOpError("expects src valid_shape[1] to be a multiple of 32 when grpAxis is axis1");
 }
 
-// (2) 分组 tile 的逐维 shape，而不再是总元素数
+// (2) 分组 tile 的按轴 shape 契约
 //
 // 关键：max/scaling 永远是"每组一个标量"的普通分组形状；只有 exp 会被 interleave 改形。
 // 因此不能把三者塞进同一个循环用同一份期望值（早期版本的本文档就是这么写的，
 // 导致合法的 interleave 输入先在通用检查里被拒 —— 见下方注记）。
 //
-// 期望值本身可能因 src 动态而无法计算，必须先判 src 维是否 dynamic，
-// 再判被检查维是否 dynamic；两侧任一为 dynamic 都跳过该维。
-const int64_t grpRows = isDn ? divIfStatic(srcRows, 32) : srcRows;   // dynamic 传染
-const int64_t grpCols = isDn ? srcCols                  : divIfStatic(srcCols, 32);
+// axis0 只接受 canonical [M/32, N]。axis1 同时接受：
+//   canonical   [M, N/32]
+//   legacy flat [1, M*N/32]
+// 后者是已存 IR 实际使用的形态，不是待摸底的假设。
+const int64_t grpRows = isDn ? srcRows / 32 : srcRows;
+const int64_t grpCols = isDn ? srcCols      : srcCols / 32;
 
-auto checkDim = [&](StringRef name, Type ty, unsigned d, int64_t expected) -> LogicalResult {
-  if (expected == kDynamic) return success();          // 期望值不可知
-  int64_t got = getValidShapeVec(ty)[d];
-  if (got == kDynamic) return success();               // 实际值不可知
-  if (got != expected)
-    return emitOpError() << "expects " << name << " valid_shape[" << d << "] to be "
-                         << expected << " for grpAxis="
-                         << stringifyMxGroupAxis(getGrpAxis())
-                         << (name == "exp" && getInterleave() ? " with interleave=true" : "");
-  return success();
+auto checkGroupedShape = [&](StringRef name, Type ty) -> LogicalResult {
+  SmallVector<int64_t, 2> actual = getValidShapeVec(ty);
+  SmallVector<int64_t, 2> canonical = {grpRows, grpCols};
+  if (actual == canonical)
+    return success();
+
+  if (!isDn) {
+    // 乘法使用 checked arithmetic，溢出直接拒绝。
+    SmallVector<int64_t, 2> legacyFlat = {1, checkedMul(srcRows, grpCols)};
+    if (actual == legacyFlat)
+      return success();
+    return emitOpError() << "expects " << name
+                         << " valid_shape to match canonical [M, N/32] or "
+                            "legacy flat [1, M*N/32] for grpAxis=axis1";
+  }
+
+  return emitOpError() << "expects " << name
+                       << " valid_shape to match canonical [M/32, N] for grpAxis=axis0";
 };
 
-// max / scaling：与 interleave 无关，始终是分组形状
+// max / scaling：与 interleave 无关，始终走普通分组 shape 契约。
 for (auto [name, ty] : {std::pair{"max", maxTy}, std::pair{"scaling", scalingTy}}) {
-  if (failed(checkDim(name, ty, 0, grpRows))) return failure();
-  if (failed(checkDim(name, ty, 1, grpCols))) return failure();
+  if (failed(checkGroupedShape(name, ty))) return failure();
 }
 
 // exp：随 interleave 二选一
 if (!getInterleave()) {
-  if (failed(checkDim("exp", expTy, 0, grpRows))) return failure();
-  if (failed(checkDim("exp", expTy, 1, grpCols))) return failure();
+  if (failed(checkGroupedShape("exp", expTy))) return failure();
 } else {
-  // 走到这里必然是 DN（(0) 已拦掉 axis1 + interleave），形状为 [M/64, 2N]
-  if (failed(checkDim("exp", expTy, 0, divIfStatic(srcRows, 64)))) return failure();
-  if (failed(checkDim("exp", expTy, 1, mulIfStatic(srcCols, 2)))) return failure();
+  // 走到这里必然是 DN（(0) 已拦掉 axis1 + interleave），仅接受 [M/64, 2N]。
+  SmallVector<int64_t, 2> actual = getValidShapeVec(expTy);
+  SmallVector<int64_t, 2> expected = {srcRows / 64, checkedMul(srcCols, 2)};
+  if (actual != expected)
+    return emitOpError("expects exp valid_shape to match [M/64, 2N] "
+                       "for grpAxis=axis0 with interleave=true");
 }
 ```
 
-**注意**：这是对现有 ND IR 的**收紧**——原来只要总元素数对就通过，现在要求逐维匹配。
-需要评估存量 IR 影响，处理方式见 §11.1 的 `ND-SHAPE-STRICT` 用例与 §13 开放问题 3。
+**兼容性结论已定**：[`test/lit/pto/tquant_mx_a5_emitc.pto`](../../test/lit/pto/tquant_mx_a5_emitc.pto)
+与 [`test/lit/pto/quant_mx_tile_native.pto`](../../test/lit/pto/quant_mx_tile_native.pto)
+都已使用 `src=16x32`、
+`exp/max/scaling valid=1x16`，这正是 legacy flat，而 canonical 是 `16x1`。
+因此不再把兼容性留作"实现前摸底"；axis1 双形态是 verifier 的正式契约，
+axis0 则始终使用自然二维形状。rev7 进一步固定：这些候选只在所有参与寻址的
+valid/physical 维均为静态时比较；无法静态证明 stride/capacity 时拒绝。
 
-`interleave` 相关：
+#### 7.1.1 physical stride / capacity 矩阵
 
-exp 的 **valid shape** 已在上面 (2) 里按 `interleave` 二选一检查完，这里只补充 interleave
-**额外**要求的对齐与 physical shape：
+下表中的 capacity 单位均为**元素数**，所有乘法与 `alignTo` 使用 checked arithmetic。
+`physicalRows >= validRows`、`physicalCols >= validCols` 以及 src/dst 自身的二维 footprint
+是所有分支的共同前置条件。
+
+| 分支 | tile | physical 契约 | 原因 |
+|---|---|---|---|
+| axis0，任意 interleave | `max` / `scaling` | `physicalCols == srcPhysicalCols`；capacity ≥ `(srcValidRows/32) * srcPhysicalCols` | DN 实现以 `TileDataSrc::Cols` 作为每个 group row 的行步长 |
+| axis0，`interleave=false` | `exp` | `physicalCols == srcPhysicalCols`；capacity ≥ `(srcValidRows/32) * srcPhysicalCols` | linear exp 与 max/scaling 使用同一 source-derived stride |
+| axis0，`interleave=true` | `exp` | physical 必须精确为 `[srcPhysicalRows/64, align32(2*srcPhysicalCols)]`；valid 为 `[srcValidRows/64, 2*srcValidCols]` | interleaved exp 使用独立、32 列对齐的 physical box |
+| axis1，任意 | `max` / `scaling` | valid 区域必须是 allocation 的 compact prefix：`validRows == 1 || physicalCols == validCols`；capacity ≥ `M*(N/32)` | PTO-ISA 无条件把两者 reshape 为 1D，并连续写入前缀 |
+| axis1，exp flat branch | `exp` | `physicalRows == 1`，valid 必须是 legacy flat `[1, M*N/32]`，capacity ≥ `M*(N/32)` | `TileDataExp::Rows == 1` 在编译期选择 flat path |
+| axis1，exp 2D branch | `exp` | `physicalRows > 1`，valid 必须是 canonical `[M, N/32]`；`physicalRows >= M`、`physicalCols >= N/32` | `TileDataExp::Rows > 1` 选择 2D path，并使用 `TileDataExp::Cols` 作为真实行步长 |
+
+当 `M == 1` 时 canonical 与 legacy flat 数值上相同，`physicalRows == 1` 归入 flat branch；
+除此之外，legacy-flat valid shape 配上 `physicalRows > 1` 必须拒绝，不能只因元素总数一致
+而进入实际的 2D 分支。
+
+对应 verifier 骨架：
 
 ```cpp
-if (getInterleave()) {
-  // !isDn 已在 (0) 拦掉，这里不再重复。
+auto requireCompactPrefix = [&](StringRef name, Type ty) {
+  auto valid = getValidShapeVec(ty);
+  auto physical = getPhysicalShapeVec(ty);
+  if (valid[0] != 1 && physical[1] != valid[1])
+    return emitOpError() << "expects " << name
+                         << " valid elements to form a compact physical prefix";
+  return success();
+};
 
-  // physical shape 必须编译期静态。
-  //
-  // 原因：下面三条约束（rows % 64、exp physical rows/cols）都需要拿 src 的 physical
-  // 维去算期望值。若 src physical 维是 kDynamic，期望值就是 kDynamic，此时既不能与
-  // 静态的 exp 维比较（必然不等，误报），也不能"跳过"——跳过等于这条约束在动态形状下
-  // 完全失效，而 interleave 的 ZZ box 布局对 physical stride 是敏感的，静默放行会写错位。
-  // 所以选择显式拒绝，而不是 valid shape 那样的"两侧任一 dynamic 就跳过"。
-  for (auto [name, ty] : {std::pair{"src", srcTy}, std::pair{"exp", expTy}}) {
-    if (llvm::any_of(getPhysicalShapeVec(ty), ShapedType::isDynamic))
-      return emitOpError() << "expects a static physical shape for " << name
-                           << " when interleave is true";
+if (isDn) {
+  requirePhysicalCols("max", maxTy, srcPhysicalCols);
+  requirePhysicalCols("scaling", scalingTy, srcPhysicalCols);
+  requireCapacity(maxTy, (srcRows / 32) * srcPhysicalCols);
+  requireCapacity(scalingTy, (srcRows / 32) * srcPhysicalCols);
+
+  if (!getInterleave()) {
+    requirePhysicalCols("exp", expTy, srcPhysicalCols);
+    requireCapacity(expTy, (srcRows / 32) * srcPhysicalCols);
+  } else {
+    require(srcRows % 64 == 0 && srcPhysicalRows % 64 == 0);
+    requirePhysicalShape(expTy,
+                         {srcPhysicalRows / 64, alignTo(2 * srcPhysicalCols, 32)});
   }
-  // 走到这里，srcRowsPhys / srcColsPhys / expPhys[*] 全部是静态值。
+} else {
+  requireCompactPrefix("max", maxTy);
+  requireCompactPrefix("scaling", scalingTy);
+  requireCapacity(maxTy, srcRows * (srcCols / 32));
+  requireCapacity(scalingTy, srcRows * (srcCols / 32));
 
-  // 行数必须 64 对齐（不是 ceil 向上取整）：interleave 把相邻两个 32 行组拼进一行，
-  // 落单的半组没有定义。valid 侧可以是 dynamic，dynamic 时跳过。
-  if (srcRowsValid != kDynamic && srcRowsValid % 64 != 0)
-    return emitOpError() << "expects src valid rows to be a multiple of 64 "
-                         << "when interleave is true (got " << srcRowsValid << ")";
-  if (srcRowsPhys % 64 != 0)
-    return emitOpError() << "expects src physical rows to be a multiple of 64 "
-                         << "when interleave is true (got " << srcRowsPhys << ")";
-
-  // physical exp shape：列方向按 32 字节对齐
-  if (expPhys[0] != srcRowsPhys / 64)
-    return emitOpError("expects interleaved exp physical rows to be src physical rows / 64");
-  if (expPhys[1] != alignTo(srcColsPhys * 2, 32))
-    return emitOpError("expects interleaved exp physical cols to be align32(2 * src physical cols)");
+  if (expPhysicalRows == 1) {
+    requireValidShape(expTy, {1, srcRows * (srcCols / 32)});
+    requireCapacity(expTy, srcRows * (srcCols / 32));
+  } else {
+    requireValidShape(expTy, {srcRows, srcCols / 32});
+    require(expPhysicalRows >= srcRows && expPhysicalCols >= srcCols / 32);
+    requireCapacity(expTy, (srcRows - 1) * expPhysicalCols + srcCols / 32);
+  }
 }
 ```
 
-> **rev2 的缺陷**：上面这段原来写成
-> `if (expPhys[0] != kDynamic && expPhys[0] != divIfStatic(srcRowsPhys, 64))`，
-> 只判了 exp 侧动态、没判 src 侧。`srcRowsPhys == kDynamic` 而 `expPhys[0]` 静态时，
-> `divIfStatic` 返回 `kDynamic`，比较必然不等 → **对合法 IR 误报**。
-> rev3 改为先统一拒绝动态 physical shape，之后所有比较都在静态值之间进行，
-> 既消除了误报，也避免"跳过检查"带来的静默写错位。对应负向用例
-> `interleave_dynamic_physical`（§11.3）。
->
-> 注意 valid shape 与 physical shape 在这里策略**不同**：valid 可动态（跳过），
-> physical 必须静态（拒绝）。这是有意的——valid 只影响算多少，physical 决定地址步长。
+例如 axis0 的 `src valid=64x16, physical=64x32` 会让辅助输出使用 32 元素行步长；
+`exp/max/scaling valid=2x16, physical=2x16` 虽然 valid shape 正确，但第二行从 `+32`
+开始，已越过 32 元素 allocation，必须由 `physicalCols == srcPhysicalCols` 拒绝。
 
 > **来源标注**：上面这组 interleave 约束（64 对齐、`align32(2N)` physical shape）来自评审
 > 指出的 PTO-ISA `include/pto/npu/a5/TQuant.hpp` L3394-L3406。**本文档基线快照
 > `7af803bc`（`TQuant.hpp` 共 3106 行）里根本没有 `bool interleave` 这个 overload**，
 > `grep "bool interleave"` 零命中，故本节无法在该快照上自证。实现前必须在**目标 pin**
-> 上重新核对，核对命令见 §13 开放问题 2。这也直接决定了 interleave 必须先 bump pin。
+> 上重新核对，按 §13-2 对每个实际 remote 分别验证。这也直接决定了
+> interleave 必须先 bump pin。
 
 `exp_zz` 互斥（§5.4）：
 
 ```cpp
 if (getExpZz() && isDn)
   return emitOpError("expects the deprecated exp_zz form to use grpAxis=axis1; "
-                     "use pto.tmov.x2zz for axis0 exponents");
+                     "use pto.tmov with a non-scaling tmp for axis0 exponents");
 ```
 
-### 7.2 `TMovX2ZzOp::verify()`
+### 7.2 `TMovOp::verify()` 的 X-to-ZZ 分支
 
-按 §3.2 的 pto-isa 约束逐条落地。A5-only，通过 `dispatchVerifierByArch` 在 A2/A3 上直接拒绝。
+先以第三个 tile 的地址空间执行唯一一次形态分类，再分派到既有 verifier 或 X-to-ZZ
+verifier。分类结果必须由 verifier、memory effects、EmitC 和相关 pass 共享：
+
+```cpp
+TMovForm form = classifyTMovForm(getFp());
+// getFp() absent        -> NoTileAux（既有普通/preQuantScalar 形态）
+// getFp().loc=scaling  -> Fp
+// getFp().loc!=scaling -> XToZz
+
+if (form != TMovForm::XToZz) {
+  if (getGrpAxisAttr())
+    return emitOpError("expects grpAxis only on the X-to-ZZ form with a non-scaling third tile");
+  return verifyExistingTMovForm(form);
+}
+```
+
+地址空间缺失时不能猜测，直接拒绝。进入 `XToZz` 后，按 §3.2 的 pto-isa 约束逐条
+落地；该形态 A5-only，通过 `dispatchVerifierByArch` 在 A2/A3 上直接拒绝。
 
 | # | 规则 | 诊断文案（草案） |
 |---|---|---|
-| 1 | `src`/`dst`/`tmp` 均为 vec tile | `expects src/dst/tmp to be vec tiles` |
-| 2 | `tmp` 不得位于 scaling 地址空间 | `expects tmp not to be in the scaling address space; a scaling tmp selects the FP TMOV overload in PTO-ISA` |
-| 3 | 三者元素类型相同 | `expects src, dst, and tmp to share one element type` |
-| 4 | 元素类型 ∈ {`ui8`, `!pto.hif8`, `!pto.f8E8M0`}；**`i8` 必须拒绝** | `expects element type to be one of ui8, !pto.hif8, !pto.f8E8M0 (i8 lowers to int8_t, which PTO-ISA CommonCheckZZ rejects)` |
-| 5 | `src` 为 `row_major` + `none_box` | `expects src to use blayout=row_major, slayout=none_box` |
-| 6 | `dst` 为 `row_major` + `slayout=row_major` | `expects dst to use blayout=row_major, slayout=row_major (ZZ box)` |
-| 7 | rank-2 valid shape | `expects rank-2 valid_shape for src/dst/tmp` |
-| 8 | ND：`dstCols % 2 == 0`。**不检查行对齐** | `expects ND-to-ZZ dst valid_shape[1] (the grouped exponent column count) to be even` |
-| 9 | DN：`srcRows % 2 == 0 && srcRows >= 2`。**`srcRows == 1` 必须拒绝** | `expects DN-to-ZZ src valid_shape[0] to be an even count >= 2; a single row-group produces no output in PTO-ISA` |
-| 10 | DN：`srcCols % 16 == 0` | `expects DN-to-ZZ src valid_shape[1] to be a multiple of 16` |
-| 11 | ND：`tmp` 物理容量 ≥ `64 + ceil(dstRows / 16) * dstCols` 字节（§3.2） | `expects tmp to provide at least <N> bytes for ND-to-ZZ (64 + ceil(dst rows / 16) * dst cols)` |
-| 12 | src/dst 元素总数相等 | `expects src and dst to hold the same exponent count` |
+| 1 | 第三个 tile 必须带显式地址空间；scaling 归类为 FP，非-scaling 归类为 X-to-ZZ | `expects the third tile to have an explicit address space` |
+| 2 | X-to-ZZ 禁止 `preQuantScalar`、`accToVecMode` 与非默认 `reluPreMode`；`grpAxis` 只允许用于 X-to-ZZ | `expects the X-to-ZZ tmov form not to use preQuantScalar, accToVecMode, or reluPreMode` |
+| 3 | X-to-ZZ 的 `src`/`dst`/`tmp` 均为 vec tile | `expects X-to-ZZ src/dst/tmp to be vec tiles` |
+| 4 | 三者元素类型相同 | `expects src, dst, and tmp to share one element type` |
+| 5 | 元素类型 ∈ {`ui8`, `!pto.hif8`, `!pto.f8E8M0`}；**`i8` 必须拒绝** | `expects element type to be one of ui8, !pto.hif8, !pto.f8E8M0 (i8 lowers to int8_t, which PTO-ISA CommonCheckZZ rejects)` |
+| 6 | `src` 为 `row_major` + `none_box` | `expects src to use blayout=row_major, slayout=none_box` |
+| 7 | `dst` 为 `row_major` + `slayout=row_major` | `expects dst to use blayout=row_major, slayout=row_major (ZZ box)` |
+| 8 | rank-2 valid shape | `expects rank-2 valid_shape for src/dst/tmp` |
+| 9 | ND：`dstCols % 2 == 0`。**不检查行对齐** | `expects ND-to-ZZ dst valid_shape[1] (the grouped exponent column count) to be even` |
+| 10 | DN：`srcRows % 2 == 0 && srcRows >= 2`。**`srcRows == 1` 必须拒绝** | `expects DN-to-ZZ src valid_shape[0] to be an even count >= 2; a single row-group produces no output in PTO-ISA` |
+| 11 | DN：`srcCols % 16 == 0` | `expects DN-to-ZZ src valid_shape[1] to be a multiple of 16` |
+| 12 | ND：`tmp` 物理容量 ≥ `64 + ceil(dstRows / 16) * dstCols` 字节（§3.2） | `expects tmp to provide at least <N> bytes for ND-to-ZZ (64 + ceil(dst rows / 16) * dst cols)` |
+| 13 | src/dst 元素总数相等 | `expects src and dst to hold the same exponent count` |
+| 14 | 用于 stride/capacity 证明的 shape 必须静态：ND 要求 `src`/`dst` valid 与 physical、`tmp` physical 静态；DN 要求 `src`/`dst` valid 与 physical 静态。DN `tmp` 因为不使用可保留动态 | `expects static valid and physical shapes for src/dst and a static tmp physical shape when grpAxis=axis1` / `expects static valid and physical shapes for src/dst when grpAxis=axis0` |
+| 15 | ND：source valid 元素必须是 allocation 的 compact prefix：`srcValidRows == 1 || srcPhysicalCols == srcValidCols` | `expects ND-to-ZZ src valid elements to form a compact prefix (single-row legacy flat or physical row stride equal to valid cols)` |
+| 16 | ND：`src` physical capacity ≥ `align16(dstRows) * dstCols` 字节 | `expects ND-to-ZZ src physical capacity to cover align16(dst rows) * dst cols because source padding is zeroed in place` |
+| 17 | ND：`dst` physical capacity ≥ `align16(dstRows) * dstCols` 字节 | `expects ND-to-ZZ dst physical capacity to cover align16(dst rows) * dst cols` |
+| 18 | DN：source physical row stride 必须等于传入 ISA 的 `srcValidCols`，即 `srcPhysicalCols == srcValidCols` | `expects DN-to-ZZ src physical row stride to equal src valid_shape[1]` |
+| 19 | DN：`src` / `dst` physical capacity 均 ≥ `srcRows * srcCols` 字节 | `expects DN-to-ZZ src/dst physical capacity to cover src valid rows * src valid cols` |
 
-规则 8/9/10 的驱动侧不同（ND 看 `dst`，DN 看 `src`），实现时**必须按轴选择被检查的 tile**，
-这一点在 §3.2 已单独标注。
+规则 9–19 里用来驱动转换的 shape 按轴不同（ND 看 `dst`，DN 看 `src`），
+实现时**必须按轴选择被检查的 tile**，这一点在 §3.2 已单独标注。
+所有容量乘法和 `align16` 都要使用 checked arithmetic，不得让 `int64_t` 溢出后绕过校验。
 
-**规则 8 的坐标系**（早期版本写错，必须注意）：`src`/`dst` 在这个 op 里已经是 **exponent
+**规则 9 的坐标系**（早期版本写错，必须注意）：`src`/`dst` 在这个 op 里已经是 **exponent
 tile**，它的列数是原矩阵的 `N / 32`。ISA 侧的真实约束来自 `GenerateB8IndicesZZToUB` 里
 `P = groupedCols / 2` 这个整除——要求 **exponent 列数为偶数**，换算回原矩阵才是 `N % 64 == 0`。
 早期版本直接对 exponent 列数写 `% 64 == 0`，等于把约束放大了 32 倍，**会拒掉本文档自己
 列出的每一个 ND 用例**：§11.1 的 `nd_fp8_ocp`（src `16x64` → exp `16x2`，`2 % 64 != 0`）、
 §11.6 的 `nd_fp8_ocp_16x128`（exp `16x4`，`4 % 64 != 0`）无一幸免。
 
-**规则 8 不检查行对齐**：`rowBlockCount = (rows + 15) / 16` 是显式的 ceil-divide，注释写着
+**规则 9 不要求 valid 行对齐**：`rowBlockCount = (rows + 15) / 16` 是显式的 ceil-divide，注释写着
 "to support non-16-aligned row counts"，并且 `ZeroSourcePaddingB16` 会把 `validRow` 之外、
 补到 16 对齐为止的那段源数据清零，避免 `vgather2` 读到 UB 里的残留。所以非 16 对齐行数是
-**ISA 支持的**。若 PTOAS 仍想收紧，那是 PTOAS 自己的策略选择，必须单独给理由，
-不能声称是 ISA 约束。注意规则 11 的容量公式里仍然用 `ceil`——padding 占的空间要算进去。
+**ISA 支持的**。但"支持非对齐 valid 行"不等于可以不分配 padding：
+规则 12/16/17 必须同时按 `ceil` / `align16` 计入 tmp、source 和 destination 的额外空间。
 
-**规则 9 为什么必须拒绝 `srcRows == 1`**：`GenerateB8IndicesDN2ZZToUB` 里
+**规则 10 为什么必须拒绝 `srcRows == 1`**：`GenerateB8IndicesDN2ZZToUB` 里
 `numPairs = hatM / 2`，主循环是 `for (p = 0; p < numPairs; ++p)`。`hatM == 1` 时
 `numPairs == 0`，循环一次都不执行，**`dst` 完全不被写入**。早期版本把 `M = 32`（即
 `hatM = 1`）当作"退化 identity"放行，只有在 `src`/`dst` 地址别名时才碰巧成立；
@@ -562,8 +794,15 @@ tile**，它的列数是原矩阵的 `N / 32`。ISA 侧的真实约束来自 `Ge
 显式降成一次 copy（或证明别名），而不是生成 `TMOV<0>`。§11.3 原计划的 `m=32` ST 用例
 相应改为**负向 lit 用例**。
 
-规则 11 只对 ND 施加。DN 侧不做 `tmp` 容量校验，理由见 §9 与 §13 开放问题 1：
+规则 12 只对 ND 施加。DN 侧不做 `tmp` 容量校验，理由见 §9 与 §13-1：
 当前 ISA 实现里 DN 的 `tmp` 是 `(void)tmp;`，**根本不使用**。
+
+**dynamic shape 策略**：本设计选择"无法静态证明就拒绝"。不仅 physical shape
+必须静态，驱动转换和元素数的 `src`/`dst` valid shape 也必须静态；否则对齐、
+奇偶性、compact stride 与 capacity 中至少一项无法证明。本次不在 lowering 中
+隐式插入 compact copy/padded scratch。后者会引入新 allocation、copy 和同步语义，也会
+改变本 op 直接对应一次 ISA TMOV 的成本模型。未来如需支持动态 shape，应单独
+设计显式 compact/pad op 或可证明的 lowering，不得在本 verifier 中静默放行。
 
 ## 8. EmitC 设计
 
@@ -597,15 +836,20 @@ TQUANT<0, MxQuantAlg::OcpMxFp8E4M3>(v_dst, v_src, &v_exp, &v_max, &v_scaling);
 TQUANT<0, MxQuantAlg::OcpMxFp8E4M3, true>(v_dst, v_src, &v_exp, &v_max, &v_scaling);
 ```
 
-**兼容性取舍**：现有 ND IR（不写 `grpAxis`）会从形态 A/旧列表切到形态 B，生成的 C++
-文本因此改变（模板参数从"类型列表"变成 `<1, MxQuantAlg::...>`）。语义等价，但会改动
-既有 lit 期望值，见 §11.1 与 §12 步骤 5。若评审希望零文本变更，可改为"仅当显式写了
-`grpAxis`/`interleave` 时才走形态 B"，代价是同一语义存在两种输出形态；本设计**倾向
-统一到形态 B**，理由是长期只维护一条 grouped 路径。
+**已拍板：统一到形态 B。** 所有不带 `exp_zz` 的 `pto.tquant.mx`，包括不写
+`grpAxis` 的现有 ND IR，都生成 `<grp_axis, MxQuantAlg[, interleave]>`。不根据
+`grpAxis` / `interleave` 是否在文本中显式写出而保留另一条旧类型列表路径。
 
-### 8.2 `pto.tmov.x2zz`
+现有 ND IR 的 C++ 文本会从类型列表模板参数变为
+`<1, MxQuantAlg::...>`，但 PTO IR 语义不变。受影响的 lit golden 在 §11.1 与
+§12 提交 3 统一更新。这个决策避免为同一 grouped ND 语义长期维护两种 EmitC
+文本。deprecated `exp_zz` fused 形态仍暂时走形态 A，因为它的 operand 与 pto-isa
+overload 本来就与 grouped 形态不同；这不是为同一语义保留双形态。
 
-新增 `PTOTMovX2ZzToEmitC`：
+### 8.2 `pto.tmov` 的 X-to-ZZ 分支
+
+`PTOMovToEmitC` 复用 §7.2 的形态分类。无第三个 tile 与 scaling `fp` 继续走现有
+lowering；只有第三个 tile 为非-scaling 时进入以下 X-to-ZZ lowering：
 
 ```cpp
 // grpAxis = axis1（默认）
@@ -617,15 +861,32 @@ TMOV<0>(dst, src, tmp);
 `axis1` **不写模板参数**（依赖 pto-isa 的 `grp_axis = 1` 默认值），与 issue 期望一致；
 `axis0` 写 `<0>`。tile 类型全部由实参推导，不进模板参数列表。
 
+lowering 不得仅以“存在第三个 tile”判断 FP，也不得仅以 `grpAxis` 是否显式出现判断
+X-to-ZZ；唯一依据是 `classifyTMovForm(getFp())`。这样默认 axis1 的 X-to-ZZ 即使不打印
+`grpAxis`，仍会稳定生成三参数 `TMOV(dst, src, tmp)`。
+
 ## 9. 内存效应、内存规划与 liveness
 
-`TMovX2ZzOp` 的 `MemoryEffectsOpInterface` 实现：
+`TMovOp::getEffects()` 先调用 `classifyTMovForm(getFp())`。`NoTileAux` 与 `Fp` 完全保持既有效应；
+`XToZz` 再按 `grpAxis` 分派：
 
 | operand | `grpAxis = axis1`（ND） | `grpAxis = axis0`（DN） |
 |---|---|---|
-| `src` | `Read` | `Read` |
+| `src` | `Read` + `Write` | `Read` |
 | `dst` | `Write` | `Write` |
 | `tmp` | `Read` + `Write` | **无效应** |
+
+**ND 的 `src` 必须声明读写**。`GenerateB8IndicesZZToUB` 会调用
+`ZeroSourcePaddingB16`，把 `[validRows, align16(validRows))` 对应的 compact source
+padding 原地清零。`m = 20` 这类非 16 对齐用例一定发生写操作，不能把它当成
+只是 ISA 内部不可观察的细节。若只标 `Read`：
+
+- PlanMemory / alias 分析会在 source 的后续使用和 buffer 复用判定中漏掉这次修改；
+- InsertSync 和依赖分析会丢掉对 source 的 write-after-read / read-after-write 边；
+- 后续再读取同一 source allocation 的 op 可能被错误重排。
+
+`src` 语法上仍放在 `ins`，因为它不承载结果语义；是否写内存由
+`MemoryEffectsOpInterface` 表达，不能从 DPS `ins`/`outs` 位置推断。
 
 **ND 的 `tmp` 必须同时声明读写**，否则：
 
@@ -642,12 +903,37 @@ buffer 的 liveness、阻止 PlanMemory 复用它，在 UB 吃紧的 kernel 里�
 > **代价与缓解**：这条建模绑定了"当前 pin 的 DN 实现不使用 `tmp`"这个事实。若未来某个
 > pto-isa 版本让 DN 也用上 `tmp`，效应声明就会漏报，症状是 PlanMemory 复用后的静默数据
 > 损坏。缓解：在 §12 的提交里附一条注释指向 `GenerateB8IndicesDN2ZZToUB` 的 `(void)tmp;`，
-> 并把"复核 DN 是否仍不使用 tmp"写进 pin bump 的检查清单（§13 开放问题 1）。
+> 并把"复核 DN 是否仍不使用 tmp"写进 pin bump 的检查清单（§13-1）。
 > 保守起见也可以只声明 `Write` 不声明 `Read`——但既然一个字节都不碰，那同样是虚构的效应。
 
-`pto.tquant.mx` 的效应不变（新增的是属性，不是 operand）。
+scaling `fp` 形态仍是 `src: Read`、`fp: Read`、`dst: Write`；普通二参数和
+`preQuantScalar` 形态的效应也不变。
 
-`getPipe()` 返回 `PIPE_V`，与其他 vec 侧 tile op 一致，InsertSync 沿用现有 vec 路径。
+### 9.1 `TQuantMxOp` 的 source mutation
+
+`TQuantMxOp` 不能继续无条件把 `src` 声明为只读。目标 PTO-ISA 的 ND 和 DN 路径都会调用
+`ZeroPadSourceTile<T, TileDataSrc::Cols>`；当 source 是 f16/bf16 且
+`srcValidCols < srcPhysicalCols` 时，它把每个 valid row 的
+`[validCols, physicalCols)` padding **原地写零**。f32 通过 `if constexpr` 跳过该写入。
+
+因此 `TQuantMxOp::getEffects()` 按静态 tile type/shape 建模：
+
+| source 条件 | `src` effect |
+|---|---|
+| f16/bf16 且 `validCols < physicalCols` | `Read + Write` |
+| f32，或 f16/bf16 且 `validCols == physicalCols` | `Read` |
+
+§7.1 已拒绝相关动态 valid/physical shape，所以 `getEffects()` 不需要在“不知道是否有
+padding”的情况下猜测。`dst`、`exp`、`max`、`scaling`（以及存在时的 `exp_zz`）继续为
+`Write`。
+
+该写效应与 X-to-ZZ source mutation 同等可观察：PlanMemory、InsertSync、alias/liveness
+必须在 TQuant 后再次读取同一 source allocation 时保留 RAW 依赖，不能跨越 TQuant 复用
+或重排 buffer。§11.2 增加 f16/bf16 padding source 的“量化后再次读取”回归；另保留
+f32 与无 padding f16 的对照，防止把所有 source 无条件扩大为 `Read + Write`。
+
+X-to-ZZ 的 src/dst 都是 vec tile，现有 `TMovOp::getPipe()` 会返回 `PIPE_V`；无需新增
+pipe 实现，但 InsertSync 必须使用上面的分支 effects。
 
 ## 10. 需要同步的层
 
@@ -655,21 +941,26 @@ buffer 的 liveness、阻止 PlanMemory 复用它，在 UB 吃紧的 kernel 里�
 
 | 层 | 改动 |
 |---|---|
-| ODS | `PTOAttrs.td` 新增 `MxGroupAxis`；`PTOOps.td` 给 `TQuantMxOp` 加两个属性、新增 `TMovX2ZzOp` |
-| IR / verifier | `PTO.cpp`：`TQuantMxOp::verify()` 按轴分派；新增 `TMovX2ZzOp::verify()`；`TQuantMxOp` 自定义 parser/printer 同步新属性 |
-| EmitC | `PTOToEmitC.cpp`：`PTOQuantMxToEmitC` 二分；新增 `PTOTMovX2ZzToEmitC` 并注册进 `populatePTOToEmitCPatterns` |
+| ODS | `PTOAttrs.td` 新增 `MxGroupAxis`；`PTOOps.td` 给 `TQuantMxOp` 加两个属性，给 `TMovOp` 增加 optional `grpAxis`；保留 `$fp` operand 名和生成 API |
+| IR / verifier | `PTO.cpp`：`TQuantMxOp::verify()` 按轴及 physical 契约分派；`TMovOp::verify()` 以 `classifyTMovForm(getFp())` 区分 `NoTileAux` / `Fp` / `XToZz`，后者进入 §7.2；`TQuantMxOp` 自定义 parser/printer 同步新属性 |
+| EmitC | `PTOToEmitC.cpp`：`PTOQuantMxToEmitC` 二分；扩展既有 `PTOMovToEmitC`，`getFp()` 为非-scaling tile 时生成三参数 X-to-ZZ `TMOV` |
 | CAPI | `include/pto-c/Dialect/PTO.h` + `lib/CAPI/Dialect/PTO.cpp`：新枚举的 C 入口（参照 `QuantScaleAlg` 现有写法） |
-| Python binding | `lib/Bindings/Python/PTOModule.cpp` 暴露 `MxGroupAxis`；`python/pto/dialects/pto.py` 同步 |
-| PTO-BC | `tools/ptobc/generated/ptobc_opcodes_v0.h` 给 `pto.tmov.x2zz` 分配**新 opcode**（取当前未使用值，不复用空洞）；新属性走属性字典，不改 `pto.tquant.mx` 的既有 payload schema |
+| Python binding | `lib/Bindings/Python/PTOModule.cpp` 暴露 `MxGroupAxis`；生成的 `TMovOp(..., fp=...)` keyword 保持不变，只追加 optional `grpAxis=`；不新增 op binding |
+| PTO-BC | 不新增 opcode。scaling `getFp()` 保持 #1122 的 legacy FP wire opcode；非-scaling `getFp()` 必须走 generic v0 兼容记录并保留 `grpAxis`，不能复用 legacy FP payload。`pto.tquant.mx` 的既有 payload schema 不改 |
+| TMov 消费者 | 审计 `PTORemoveIdentityTMov`、`PTOA5NormalizeTMov`、PlanMemory、InsertSync、InferMemScope 和所有 `getFp()` 使用点；保留 `getFp()` API，语义相关消费者统一调用 `classifyTMovForm(getFp())` |
+| Memory effects | `TQuantMxOp::getEffects()` 按 f16/bf16 source padding 分支为 `Read + Write`；`TMovOp::getEffects()` 按 FP/X-to-ZZ 与 axis 分支；PlanMemory/InsertSync 增加 source mutation 回归 |
 | 文档 | `docs/PTO_IR_manual.md`（两个 op 章节）、`docs/release/PTO-tile-Instruction-SPEC-v0.4.md`、本设计文档 |
 | 测试 | 见 §11 |
-| **pto-isa pin** | `interleave` 需要含该 overload 的修订（§13 开放问题 2）。pin **不是一个 SHA**：`ci_sim.yml` 指向 **GitHub** `hw-native-sys/pto-isa`，其余三处指向 **GitCode** `cann/pto-isa`，`Dockerfile.dev` 还是另一套 CANN 9.0 环境。**不得**用现有单 SHA updater 广播覆盖——那会让 `ci_sim` 的 `actions/checkout` 直接 ref not found |
-| ReleaseNotes | 新增 `pto.tmov.x2zz`、`grpAxis`/`interleave`；标注 `exp_zz`/`storeMode` deprecated；说明 §8.1 的生成文本变化 |
+| **pto-isa pin** | `interleave` 需要含该 overload 的修订（§13-2）。每个 pin 目标建模为 `(repo, revision, 兼容性约束)`，并在该 repo 中独立验证 revision 存在。GitHub 上 `f03c2454` 已验证存在且包含 `a8168c6` 的 CPU-Sim 修复；`ci` / `ci_sim` 先各自直接验证它，可用时允许共享同一 SHA。`Dockerfile.dev` 作为 CANN 9.0 兼容 pin 独立决策。updater 不得假设所有 remote 永远共享 SHA，也不得断言它们必然不共享。该建模、updater 扩展和 pin bump 由本 PR 落地；#1122 已合入，只作为基线 |
+| ReleaseNotes | 记录 `pto.tmov` 新增非-scaling `tmp` 的 X-to-ZZ 形态，以及 `grpAxis`/`interleave`；标注 `exp_zz`/`storeMode` deprecated；说明 axis1 canonical / legacy flat 都受支持、无需迁移旧 IR，以及 §8.1 的生成文本变化 |
 
-**PTO-BC 注意事项**：`pto.tquant.mx` 的 opcode payload schema **不得改动**（参考 #1122 的
-教训：同一 opcode 下改 payload 会造成旧字节码静默错位）。新属性通过属性字典编码，
-`operand_mode` / `num_operands` 保持原值；新增 op 用新 opcode。
-`tools/ptobc/tests/v0_fp_schema_compatibility_check.py` 的期望表需要相应扩展。
+**PTO-BC 注意事项**：`pto.tquant.mx` 与 `pto.tmov` 的 opcode payload schema **都不得改动**
+（参考 #1122 的教训：同一 opcode 下改 payload 会造成旧字节码静默错位）。新属性通过
+属性字典编码；`pto.tmov` 原 `$fp` operand 的位置和公开 accessor 保持不变。
+编码分支必须从“`getFp()` 是否存在”收紧为 `classifyTMovForm(getFp())`：只有 `Fp`
+可选择 `kTMovFpWireOpcode`，`XToZz` 必须经 generic v0 记录编码完整 operand/attribute。
+`tools/ptobc/tests/v0_fp_schema_compatibility_check.py` 的期望表需要钉住旧 FP wire schema，
+并证明 X-to-ZZ roundtrip 不被降成 FP wire record。
 
 ## 11. 测试方案
 
@@ -682,14 +973,15 @@ buffer 的 liveness、阻止 PlanMemory 复用它，在 UB 吃紧的 kernel 里�
 
 用例矩阵（同一文件多个 `func.func`）：
 
-| 函数 | `grpAxis` | `quant_type` × `quantScaleAlg` | src valid | exp/max/scaling valid | 期望模板参数 |
+| 函数 | `grpAxis` | alg | valid shape | physical 关键契约 | 期望模板参数 |
 |---|---|---|---|---|---|
-| `nd_fp8_ocp` | 默认（不写） | MXFP8 × OCP | `16x64` | `16x2` | `TQUANT<1, MxQuantAlg::OcpMxFp8E4M3>` |
-| `nd_fp8_nv` | axis1 | MXFP8 × NV | `16x64` | `16x2` | `TQUANT<1, MxQuantAlg::NvMxFp8E4M3>` |
-| `dn_fp8_ocp` | axis0 | MXFP8 × OCP | `64x16` | `2x16` | `TQUANT<0, MxQuantAlg::OcpMxFp8E4M3>` |
-| `dn_fp4_ocp` | axis0 | MXFP4_E2M1 × OCP | `64x16` (f16) | `2x16` | `TQUANT<0, MxQuantAlg::OcpMxFp4E2M1>` |
-| `dn_fp8_interleave` | axis0 | MXFP8 × OCP | `128x16` | exp `2x32`（`128/64 x 2*16`）；max/scaling `4x16`（`128/32 x 16`） | `TQUANT<0, MxQuantAlg::OcpMxFp8E4M3, true>` |
-| `dn_dynamic` | axis0 | MXFP8 × OCP | `?x?` | `?x?` | `TQUANT<0, MxQuantAlg::OcpMxFp8E4M3>` |
+| `nd_fp8_ocp` | 默认 | MXFP8 × OCP | src `16x64`；exp/max/scaling `16x2` | 四者 physical cols 分别为 `64/2/2/2`，max/scaling compact | `TQUANT<1, MxQuantAlg::OcpMxFp8E4M3>` |
+| `nd_exp_2d_strided` | axis1 | MXFP8 × OCP | src `16x64`；exp/max/scaling `16x2` | exp physical `16x32`，证明 2D exp 可保留独立 stride；max/scaling 仍为 `16x2` compact | `TQUANT<1, MxQuantAlg::OcpMxFp8E4M3>` |
+| `nd_fp8_nv` | axis1 | MXFP8 × NV | src `16x64`；exp/max/scaling `16x2` | 同 `nd_fp8_ocp` | `TQUANT<1, MxQuantAlg::NvMxFp8E4M3>` |
+| `nd_fp8_legacy_flat` | 默认 | MXFP8 × OCP | src `16x32`；exp/max/scaling `1x16` | exp physical rows 必须为 `1`；三个辅助输出都是 compact prefix | `TQUANT<1, MxQuantAlg::OcpMxFp8E4M3>` |
+| `dn_fp8_ocp` | axis0 | MXFP8 × OCP | src `64x16`；exp/max/scaling `2x16` | src physical `64x32`；exp/max/scaling 均为 `2x32` | `TQUANT<0, MxQuantAlg::OcpMxFp8E4M3>` |
+| `dn_fp4_ocp` | axis0 | MXFP4_E2M1 × OCP | src f16 `64x16`；exp/max/scaling `2x16` | src physical `64x32`；三个辅助输出均为 `2x32`；同时触发 source padding 写 | `TQUANT<0, MxQuantAlg::OcpMxFp4E2M1>` |
+| `dn_fp8_interleave` | axis0 | MXFP8 × OCP | src `128x16`；exp `2x32`；max/scaling `4x16` | src physical `128x32`；exp `2x64`；max/scaling `4x32` | `TQUANT<0, MxQuantAlg::OcpMxFp8E4M3, true>` |
 
 CHECK 要点：
 - 断言**完整的模板参数串**，而不只是 `TQUANT(`，否则 axis/alg 写错测不出来；
@@ -698,21 +990,52 @@ CHECK 要点：
 - `dn_fp8_interleave` 这一行同时钉住了 §7.1 的分派：**exp 走 interleave 形状、
   max/scaling 走普通分组形状**。早期版本的 verifier 把三者一起按 `4x16` 检查，
   这个合法用例会先在通用检查里被拒——它是那个 bug 的回归哨兵；
-- `dn_dynamic` 覆盖 §13 开放问题 7：`src` 维为 `?` 时期望值无法计算，verifier 必须跳过
-  而不是拿 `kDynamic / 32` 去比。
-
-负向侧对应地补一条 `nd_shape_flat`：ND 下 exp 写成 `1x(M*N/32)`，用来固定"逐维检查"
-相对旧的"总元素数相等"确实收紧了（配合 §13 开放问题 3 的摸底结论决定保留还是放宽）。
+- `nd_fp8_legacy_flat` 必须保留精确的 `1x16` valid shape，它与现有
+  `tquant_mx_a5_emitc.pto` / `quant_mx_tile_native.pto` 共同固定 axis1 legacy flat
+  兼容契约；同时 physical rows 必须为 `1`，确保实际命中 PTO-ISA flat branch。
 
 ### 11.2 lit 正向：`test/lit/pto/tmov_x2zz_emitc.pto`
 
-| 函数 | `grpAxis` | 期望生成 |
-|---|---|---|
-| `nd_to_zz` | 默认 | `TMOV({{.*}}, {{.*}}, {{.*}});` 且 `CHECK-NOT: TMOV<` |
-| `dn_to_zz` | axis0 | `TMOV<0>({{.*}}, {{.*}}, {{.*}});` |
+所有 X-to-ZZ case 都写成 `pto.tmov ins(%src, %tmp) outs(%dst)`，其中 `%tmp` 为
+非-scaling vec tile；不出现独立 op 名。
 
-同文件追加一条 `--mlir-print-ir-after=pto-plan-memory` 的 RUN，断言 `tmp` 参与内存规划
-（不与其他活跃 buffer 复用），把 §9 的效应声明钉住。
+| 函数 | 第三个 tile / `grpAxis` | shape / physical 要点 | 期望生成 |
+|---|---|---|---|
+| `nd_to_zz` | 非-scaling tmp / 默认 | canonical source，`valid=16x4, physical=16x4` | `TMOV({{.*}}, {{.*}}, {{.*}});` 且 `CHECK-NOT: TMOV<` |
+| `nd_to_zz_explicit_axis1` | 非-scaling tmp / axis1 | 与 `nd_to_zz` 相同 | 与默认 axis1 生成文本完全相同 |
+| `nd_to_zz_tail` | 非-scaling tmp / 默认 | `src/dst valid=20x4`，source 紧密，两者 capacity 至少 `32x4` | 同上，覆盖 padded rows |
+| `nd_to_zz_legacy_flat` | 非-scaling tmp / 默认 | `src valid=1x80, physical=1x128`，`dst valid=20x4, physical=32x4` | 同上，覆盖 compact-prefix 单行特例 |
+| `dn_to_zz` | 非-scaling tmp / axis0 | source physical cols 等于 valid cols | `TMOV<0>({{.*}}, {{.*}}, {{.*}});` |
+| `nd_to_zz_hif8` | 非-scaling tmp / 默认 | `!pto.hif8`，满足同样的 compact/capacity 契约 | 无模板参数 `TMOV(...)` |
+| `scaling_fp_stays_fp` | scaling fp / 无 `grpAxis` | 沿用既有合法 FP tile 组合 | 与修改前完全相同的 `TMOV_FP` / FP `TMOV` 文本 |
+| `plain_tmov_unchanged` | 无第三个 tile | 沿用既有 vec-to-vec copy | `TMOV(dst, src)`，不进入 X-to-ZZ |
+
+内存效应另加可机读的 interface 回归用例，精确断言：
+
+- ND：`src = Read + Write`、`dst = Write`、`tmp = Read + Write`；
+- DN：`src = Read`、`dst = Write`、`tmp = none`。
+- FP：`src = Read`、`dst = Write`、`fp = Read`，证明 scaling 分类没有被 X-to-ZZ 改写。
+
+同文件再追加 `--mlir-print-ir-after=pto-plan-memory` 和 InsertSync 的 RUN，构造 ND
+X-to-ZZ 前后都访问 source 的序列，断言内存规划不做跨越该 source mutation 的
+非法复用，且 source write 与后续 read 之间的依赖/同步不会丢失。只检查 `tmp` 不足以覆盖本次的
+source-mutating 修正。
+
+另建 `test/lit/pto/tquant_mx_source_effects.pto`，覆盖 §9.1：
+
+- `dn_f16_padded_src`：src valid `64x16`、physical `64x32`，TQuant 后再次读取同一
+  source，断言 `src = Read + Write` 且 PlanMemory/InsertSync 保留依赖；
+- `nd_bf16_padded_src`：axis1 同样覆盖 `validCols < physicalCols`；
+- `dn_f32_padded_src_control`：同 shape 的 f32 source 只声明 `Read`；
+- `dn_f16_tight_src_control`：f16 但 `validCols == physicalCols` 时只声明 `Read`。
+
+这组测试必须检查可机读的 `MemoryEffectsOpInterface`，并构造“padding 后再次读取 source”
+的实际 pass 序列；只检查生成 C++ 文本不能证明依赖边正确。
+
+另加 Python binding/API 兼容 smoke test：现有
+`pto.TMovOp(..., fp=fp_scaling)` 调用原样构造 FP 形态，C++ 编译用例继续调用 `getFp()`；
+新增 X-to-ZZ 也仍通过 `fp=tmp` 传入第三个 tile。测试中禁止出现 `aux=` / `getAux()`，
+从生成 API 层钉住“只扩展 `$fp` 的语义，不改公开 operand 名”。
 
 ### 11.3 lit 负向：`test/lit/pto/tquant_mx_grp_axis_invalid.pto`
 
@@ -721,42 +1044,72 @@ CHECK 要点：
 | 子用例 | 期望诊断 |
 |---|---|
 | `dn_rows_not_aligned` | `expects src valid_shape[0] to be a multiple of 32 when grpAxis is axis0` |
-| `dn_wrong_exp_shape`（给 `[M, N/32]`） | `expects exp valid_shape[0] to be ...` |
-| `nd_wrong_exp_shape`（给 `[M/32, N]`） | 同上 ND 版本 |
+| `dn_wrong_exp_shape`（给 `[M, N/32]`） | `expects exp valid_shape to match canonical [M/32, N] for grpAxis=axis0` |
+| `nd_shape_matches_neither`（既不是 `[M, N/32]` 也不是 `[1, M*N/32]`） | `expects exp valid_shape to match canonical ... or legacy flat ...` |
 | `interleave_on_nd`（axis1 + interleave） | `expects interleave to be used only with grpAxis=axis0`，**且不得先报成 shape 不匹配**（见 §7.1 的检查顺序） |
-| `interleave_exp_valid_rows_mismatch` | `expects exp valid_shape[0] to be ... with interleave=true` |
-| `interleave_exp_valid_cols_mismatch` | `expects exp valid_shape[1] to be ... with interleave=true` |
+| `interleave_exp_valid_rows_mismatch` | `expects exp valid_shape to match [M/64, 2N] for grpAxis=axis0 with interleave=true` |
+| `interleave_exp_valid_cols_mismatch` | 同上，用独立 case 证明列维错误也被拒绝 |
 | `interleave_valid_rows_not_multiple_of_64` | `expects src valid rows to be a multiple of 64 when interleave is true` |
 | `interleave_physical_rows_not_multiple_of_64` | `expects src physical rows to be a multiple of 64 when interleave is true` |
 | `interleave_exp_physical_rows_mismatch` | `expects interleaved exp physical rows to be src physical rows / 64` |
 | `interleave_exp_physical_cols_mismatch` | `expects interleaved exp physical cols to be align32(2 * src physical cols)` |
-| `interleave_max_shape_follows_grouping`（max 按 `[M/64, 2N]` 给，应被拒） | `expects max valid_shape[0] to be ...`——钉住 max/scaling **不**随 interleave 改形 |
-| `interleave_dynamic_physical` | `expects static physical shape when interleave is true`（见 §7.1 动态处理） |
+| `interleave_max_shape_follows_grouping`（max 按 `[M/64, 2N]` 给，应被拒） | `expects max valid_shape to match canonical [M/32, N] for grpAxis=axis0`——钉住 max/scaling **不**随 interleave 改形 |
+| `dn_exp_stride_mismatch`（非 interleave） | `expects exp physical cols to equal src physical cols for grpAxis=axis0` |
+| `dn_max_stride_mismatch` | `expects max physical cols to equal src physical cols for grpAxis=axis0` |
+| `dn_scaling_stride_mismatch` | `expects scaling physical cols to equal src physical cols for grpAxis=axis0` |
+| `interleave_max_stride_mismatch` | 同样拒绝 max；证明 interleave 只改变 exp，不改变 max 的 source-derived stride |
+| `interleave_scaling_stride_mismatch` | 同样拒绝 scaling |
+| `nd_max_not_compact` | `expects max valid elements to form a compact physical prefix` |
+| `nd_scaling_not_compact` | `expects scaling valid elements to form a compact physical prefix` |
+| `nd_legacy_exp_selects_2d`（valid 是 `[1, M*N/32]`，但 physical rows > 1） | `expects legacy flat exp to use physical rows == 1`；证明分支依据与 `TileDataExp::Rows` 一致 |
+| `tquant_dynamic_valid` | `expects static valid and physical shapes for <tile> in MX quantization` |
+| `tquant_dynamic_physical` | 同上；至少分别覆盖 axis0 source-derived stride 与 axis1 compact-prefix 两条路径 |
 | `exp_zz_with_axis0` | `expects the deprecated exp_zz form to use grpAxis=axis1` |
 
 rev2 这里只有一条笼统的 `interleave_wrong_exp_shape`，证明不了 §7.1 的四条 interleave
 约束各自生效，与 §14"每条 verifier 规则都有负向用例"的验收标准不符。上表按分支拆开，
-`valid` / `physical`、`rows` / `cols` 四个组合各一条，外加顺序哨兵与 max 形状哨兵。
+`valid` / `physical`、`rows` / `cols` 四个组合各一条，外加顺序哨兵与 max 形状哨兵；
+rev7 再加入 axis0 三个辅助输出的 source-derived stride、axis1 compact-prefix/实际 exp
+分支选择及全局 dynamic-reject 用例。实现不能只验证 valid shape 或元素总数。
 
 ### 11.4 lit 负向：`test/lit/pto/tmov_x2zz_invalid.pto`
 
-逐条覆盖 §7.2 的 12 条规则，重点包含：
+逐条覆盖 §7.2 的 19 条规则，重点包含：
 
-- `tmp_in_scaling_space`（规则 2）——这条最容易被忽略且后果最隐蔽；
-- `mismatched_elem_type`（规则 3）；
-- `elem_type_i8`（规则 4）——**必须有**：`i8` 会被 EmitC 降成 `int8_t`
+- `third_tile_without_address_space`（规则 1）——禁止 verifier/lowering 对第三个 tile 的角色做猜测；
+- `grp_axis_on_scaling_fp`（规则 2）——scaling operand 明确属于 FP 分支，不能携带
+  X-to-ZZ 的 `grpAxis`；
+- `x2zz_with_fp_attributes`（规则 2）——非-scaling tmp 与 `accToVecMode` / `reluPreMode`
+  等 FP/ACC 属性互斥；
+- `mismatched_elem_type`（规则 4）；
+- `elem_type_i8`（规则 5）——**必须有**：`i8` 会被 EmitC 降成 `int8_t`
   （`PTOToEmitC.cpp:445`），而 `CommonCheckZZ` 只接受 `uint8_t` / `hifloat8_t` /
   `float8_e8m0_t`。少了这条就是"verifier 放行、C++ 编译期 `static_assert` 才炸"，
   报错点离 IR 十万八千里；
-- `src_wrong_layout` / `dst_wrong_layout`（规则 5/6）；
-- `nd_dst_cols_odd`（规则 8）——注意是**奇数列**，不是"非 64 倍数"；
-- `dn_src_rows_odd`（规则 9）；
-- `dn_src_rows_is_one`（规则 9）——即原 `m = 32` 用例，见 §11.6；
-- `tmp_too_small`（规则 11）——`tmp` 取 `63 + ceil(rows/16)*cols`，
+- `src_wrong_layout` / `dst_wrong_layout`（规则 6/7）；
+- `nd_dst_cols_odd`（规则 9）——注意是**奇数列**，不是"非 64 倍数"；
+- `dn_src_rows_odd`（规则 10）；
+- `dn_src_rows_is_one`（规则 10）——即原 `m = 32` 用例，见 §11.6；
+- `tmp_too_small`（规则 12）——`tmp` 取 `63 + ceil(rows/16)*cols`，
   即**只差 1 字节**，用来钉住常数项是 64 而不是 32；
+- `nd_src_padded_stride`（规则 15）——`src valid=20x4, physical=32x32`，
+  总容量足够但 physical row stride 错，必须拒绝；
+- `nd_src_tight_capacity`（规则 16）——`src valid=20x4, physical=20x4`，
+  compact 但容纳不了 `32x4` source padding；
+- `nd_dst_tight_capacity`（规则 17）——`dst valid=20x4, physical=20x4`，
+  只容纳 valid 元素，但 ISA 会写 `32x4`；
+- `dn_src_padded_stride`（规则 18）——`src valid=2x16, physical=2x32`，
+  实现会按 stride 16 而不是 32 读下一行；
+- `nd_dynamic_physical` / `dn_dynamic_physical` / `nd_dynamic_valid` / `dn_dynamic_valid`
+  （规则 14）——固定"无法静态证明就拒绝"；
 - `on_a3`（arch 拒绝）。
 
-另需一条 `!pto.hif8` 的**正向**用例（放 §11.2），确保规则 4 没有把合法类型一并拒掉。
+另对已有 `pto.tmov` 回归文件增加 `CHECK-NOT: TMOV<0>` 或等价断言，证明 scaling `fp`
+不会被重分类为 X-to-ZZ；`PTORemoveIdentityTMov` 与 `PTOA5NormalizeTMov` 各增加一条
+非-scaling 第三个 tile 用例，固定它既不能被删除，也不能被重写成普通 copy。
+
+正向侧的 `nd_to_zz_tail` 与这里的 padded-stride/tight-capacity 负向组合在一起，
+才能证明 verifier 拒绝的是错误 physical 契约，而不是简单禁掉非 16 对齐 valid 行。
 
 ### 11.5 精度用例：`test/samples/TquantMxDn/`
 
@@ -764,7 +1117,7 @@ rev2 这里只有一条笼统的 `interleave_wrong_exp_shape`，证明不了 §7
 
 ```
 test/samples/TquantMxDn/
-├── tquant_mx_dn.pto             # DN 量化 + pto.tmov.x2zz 完整链路
+├── tquant_mx_dn.pto             # DN 量化 + pto.tmov 非-scaling tmp 完整链路
 ├── tquant_mx_dn_golden.py       # numpy 参考实现
 ├── tquant_mx_dn_compare.py      # 逐输出 dtype + 容差比较
 └── npu_validation/golden.py     # 板测独立路径
@@ -798,7 +1151,8 @@ golden 需要实现两段：
 
 exponent 与量化结果都是**位精确**的，不允许容差；只有 `max`/`scaling` 走浮点容差。
 
-同时给 `test/samples/TquantMx/` 追加一条 ND + `pto.tmov.x2zz` 的用例，覆盖 ND-to-ZZ。
+同时给 `test/samples/TquantMx/` 追加一条 ND + `pto.tmov` 非-scaling tmp 的用例，
+覆盖 ND-to-ZZ。
 
 `runop.sh` 的 `PTO_PTO_DIRS` 需要把 `TquantMxDn` 加入默认列表。
 
@@ -823,12 +1177,14 @@ CASES = [
 
 **`m = 32` 不再作为 ST 正向用例**（早期版本把它列为"退化 identity"）。`m = 32` 时
 `hatM = 1`、`numPairs = 0`，ISA 主循环零次迭代、`dst` 不被写入——它是**非法输入**，
-按 §7.2 规则 9 应被 verifier 拒绝。相应地它移入 §11.4 的负向 lit
+按 §7.2 规则 10 应被 verifier 拒绝。相应地它移入 §11.4 的负向 lit
 （`dn_src_rows_is_one`），而不是在板上跑一个读未初始化内存的 case。
 
 `m = 64`（`hatM = 2`，`numPairs = 1`）才是真正的最小合法边界，必须单独成 case。
 `m = 20` 的 ND 用例用来钉住"非 16 对齐行数由 ISA 的 ceil + `ZeroSourcePaddingB16` 处理"
-这条结论（§7.2 规则 8 注记）——它同时验证 `tmp` 容量公式里的 `ceil` 没有算少。
+这条结论（§7.2 规则 9 注记）。该 case 的 source/destination 必须显式分配至少
+`align16(20) * (128/32) = 128` 字节，source 必须是 compact prefix；它同时验证
+source padding 零写、destination padded 写出与 `tmp` 容量公式里的 `ceil` 都没有算少。
 
 ### 11.7 PTO-BC roundtrip
 
@@ -836,10 +1192,18 @@ CASES = [
 `tools/ptobc/tests/mx_grp_axis_v0_encode.sh` + testdata：
 
 1. `ptobc encode` → `ptobc decode`；
-2. grep 断言 `grpAxis = #pto<mx_group_axis axis0>`、`interleave = true`、`pto.tmov.x2zz` 都还在；
+2. testdata 同时放入 `pto.tquant.mx`、既有 scaling-FP `pto.tmov` 和非-scaling-tmp
+   `pto.tmov`；grep 断言 `grpAxis = #pto<mx_group_axis axis0>`、`interleave = true`、
+   两种 `pto.tmov` 的第三个 tile 地址空间都保持不变；
 3. **把 roundtrip 结果重新喂给 `ptoas --emit-pto-ir` 验证**（光 grep 文本证明不了属性字典还自洽）；
-4. 扩展 `v0_fp_schema_compatibility_check.py`，把 `pto.tquant.mx` 现有 opcode 的
-   `(operand_mode, num_operands)` 钉进期望表，防止后续误改 payload。
+4. 对旧 scaling-FP case 检查编码仍选择 `kTMovFpWireOpcode`，并用既有 v0 fixture 做
+   byte-for-byte/schema 回归；`fp=`、optional operand index 与旧 FP payload 均不变；
+5. 对非-scaling X-to-ZZ case 检查编码选择已有 `kOpcodeGeneric` v0 compatibility record，
+   完整携带第三个 operand 与 `grpAxis`，并明确 `CHECK-NOT` / 二进制解析断言它没有选择
+   `kTMovFpWireOpcode`；
+6. 扩展 `v0_fp_schema_compatibility_check.py`，钉住 `pto.tquant.mx` 既有 known-op schema、
+   普通 `pto.tmov` known-op schema 与 scaling-FP legacy wire schema。X-to-ZZ 在 IR 中复用
+   `pto.tmov`，在 wire 中复用已有 generic v0 opcode；两层都不分配新的专用 opcode。
 
 ### 11.8 运行方式
 
@@ -884,27 +1248,29 @@ PTOAS_BIN=build/tools/ptoas/ptoas ./test/samples/runop.sh -t TquantMx
 
 | # | 内容 | 验证 |
 |---|---|---|
-| 0 | **pin 建模与 bump**（§13 开放问题 2）：把 pin 建成 (repo, revision, 兼容性约束) 三元组，为 GitCode 组 / GitHub `ci_sim` / `Dockerfile.dev` 各自定 revision；找到同时含 MX 支持与 CPU-Sim duplicate-stub 修复的共同后继。**不得**用现有单 SHA updater 广播 | `ci` + `ci_sim` + `Dockerfile.dev` 构建**三条线都要实跑**；bump 后按 §13-1 复核 DN 仍是 `(void)tmp;` |
+| 0 | **本 PR 落地 pin 三元组、存在性验证与 bump**（§13-2）：把每个目标建成 `(repo, revision, 兼容性约束)`；`ci` 与 `ci_sim` 先对各自 remote 直接验证 `f03c2454`，成功则直接用，失败才查找该 remote 上的对应修订。`Dockerfile.dev` 继续独立维持 CANN 9.0 兼容 pin。updater 改为每目标带 repo，不广播一个未验证 SHA。#1122 已合入，本提交不依赖其后续工作 | 对发生 bump 的每条 CI/容器线分别实跑；按 §13-1 复核 DN 仍是 `(void)tmp;`，按 §3.2 复核 ND padding/stride 实现 |
 | 1 | `MxGroupAxis` 枚举 + `TQuantMxOp` 两个属性（ODS/parser/printer/CAPI/Python） | 现有 lit 全绿（默认值保证零行为变化） |
-| 2 | `TQuantMxOp::verify()` 按轴分派 + §11.3 负向用例 | 定向 lit |
+| 2 | `TQuantMxOp::verify()` 按轴分派，axis1 同时保留 canonical / legacy flat；落实 §7.1.1 全 physical 矩阵、dynamic reject 与 f16/bf16 padded-source `Read + Write` effects + §11.1/11.3 回归 | 现有 legacy IR + physical/动态负向 lit + MemoryEffects/PlanMemory/InsertSync 回归 |
 | 3 | `PTOQuantMxToEmitC` 形态 B + §11.1 正向用例 + 更新受影响的既有 lit 期望 | 定向 lit + `check-pto` |
-| 4 | 新增 `TMovX2ZzOp`（ODS + verifier + memory effects）+ §11.4 负向用例 | 定向 lit |
-| 5 | `PTOTMovX2ZzToEmitC` + §11.2 正向用例 | 定向 lit + `check-pto` |
-| 6 | PTO-BC opcode + roundtrip 用例 + schema 守卫扩展 | `check-ctest` |
+| 4 | 保留 `TMovOp::$fp` API，增加 optional `grpAxis` 与共享 `classifyTMovForm(getFp())`；扩展 verifier / memory effects，包含 compact/stride/capacity/dynamic-physical 契约与 ND `src` 读写效应 + §11.2/11.4 用例 | Python `fp=` / C++ `getFp()` 兼容回归 + 既有 plain/FP TMOV 回归 + 定向 lit + PlanMemory / InsertSync 回归 |
+| 5 | 扩展既有 `PTOMovToEmitC` 的 X-to-ZZ 分支，审计 RemoveIdentity/Normalize/InferMemScope 等 TMov 消费者 + §11.2 正向用例 | 定向 lit + `check-pto`，证明 scaling FP 文本不变且非-scaling tmp 不被误删/误改写 |
+| 6 | PTO-BC roundtrip + schema 守卫：scaling FP 保持 `kTMovFpWireOpcode`，X-to-ZZ 走已有 generic v0 compatibility record 并保留 `grpAxis`；不分配新专用 opcode | `check-ctest`，并检查两种 wire 分支不能互换 |
 | 7 | 精度样例 + ST 用例 + 手册 / SPEC / ReleaseNotes | `runop.sh` + 全量 lit |
 
 提交 3 会改动既有 lit 的期望文本（§8.1），单独成一个提交便于 review 和回滚。
 
-提交 0 必须**排在最前**：`interleave` 的 verifier 常量（64 对齐、`align32(2N)`）来自评审
-提供的较新修订，本文档基线快照无法自证（§7.1 来源标注）。先 bump 再实现，才能在写
-verifier 之前用真实头文件核对这些常量，而不是照抄文档。
+提交 0 必须**排在最前**：`interleave` 的 verifier 常量（64 对齐、`align32(2N)`）
+与 X-to-ZZ 的 compact/padding 契约都绑定目标 pin 的真实头文件。`f03c2454` 在 GitHub 上已
+可直接核对，所以这一步的核心是"对每个 remote 验证候选并跑对应环境"，不是先设计
+一个三路共同后继搜索系统。
 
-**若提交 0 一次拉不齐三条线，则拆分交付**：`grpAxis` 不依赖 bump（`ce3262e3` 已含
-grouped 接口），提交 1-5 可先走；`interleave` 相关的 ODS 属性、§7.1 interleave 分支、
-§11.1 `dn_fp8_interleave`、§11.3 的四条 interleave 负向用例整体后移到 bump 之后。
-这样避免"为了一个可选特性卡住整个 issue"。
+**合入门槛已经固定**：本 PR 在实现阶段必须完成每个相关 remote 的候选验证，并为不能
+使用 `f03c2454` 的目标选择满足同一内容契约的 revision；在这些 pin 与 CI 验证完成前，
+`interleave` 相关实现不合入。`Dockerfile.dev` 按 CANN 9.0 兼容性独立选择 revision，
+允许与 `ci` / `ci_sim` 不同，但必须记录兼容性依据。本 PR 不把三元组建模、updater
+扩展或本特性 pin bump 转交给后续 PR，也不依赖 #1122 的未来工作。
 
-## 13. 风险与开放问题
+## 13. 风险、结论与行动
 
 1. **~~DN-to-ZZ 的 `tmp` 容量下界未知~~ —— 已关闭，结论是"不使用"。**
    `GenerateB8IndicesDN2ZZToUB` 第一行 `(void)tmp;`，DN 路径不碰 `tmp`。因此不存在"推导
@@ -916,38 +1282,37 @@ grouped 接口），提交 1-5 可先走；`interleave` 相关的 ODS 属性、�
    评审确认：`ce3262e3` 有 grouped `TQUANT` / `TMOV`，但**没有 `bool interleave` 这个
    overload**，`f03c2454` 才有。因此只要实现 `interleave`，pin bump 就是前置依赖，
    不再是开放问题。
-   （本文档基线快照 `7af803bc` 同样没有 interleave overload，见 §7.1 的来源标注；
-   受限于网络，撰写时无法直接拉取 `ce3262e3` / `f03c2454` 自证，此结论采信评审。
-   核对命令：`git clone https://gitcode.com/cann/pto-isa.git && git checkout <sha> &&`
-   `grep -rn "bool interleave" include/pto/npu/a5/TQuant.hpp`。）
-   → **行动 A**：确认与 #1122 的先后关系——若该 PR 已在推进 pin bump，本 PR 声明依赖它；
-   否则本 PR 自带 bump。
-   → **行动 B（rev2 又写错了一次，rev3 更正）**：rev1 说"五处由 updater 统一管理"，
-   rev2 改口说"updater 漏了 `ci_sim.yml` 和 `Dockerfile.dev`，应扩展覆盖"——**这个说法同样
-   是错的，而且照做会直接搞坏 CI**。实测：
+   rev4 已直接验证 GitHub `hw-native-sys/pto-isa` 上的
+   [`f03c2454e4211bdfc5fe9d3e859bc9239443514c`](https://github.com/hw-native-sys/pto-isa/commit/f03c2454e4211bdfc5fe9d3e859bc9239443514c)：
+   commit 存在，且 [`a8168c6...f03c2454`](https://github.com/hw-native-sys/pto-isa/compare/a8168c6ca8ae22b06e4ea440506f0a87e446e9a2...f03c2454e4211bdfc5fe9d3e859bc9239443514c)
+   为 ahead 8 / behind 0。因此 `f03c2454` 已包含
+   `a8168c6` 携带的 CPU-Sim duplicate-stub 修复，`ci_sim` 不需为保留该修复而
+   停在旧 pin，也不需先搜索一个抽象的"共同后继"。
+
+   → **ownership 已定**：[#1122](https://github.com/hw-native-sys/PTOAS/pull/1122) 已于
+   2026-08-10 合入。它合入后的 updater 仍以单一 `DEFAULT_REPO_URL` 解析一个 SHA，
+   再同步到 GitCode 组目标；它没有完成本设计所需的每目标 repo-aware 三元组。
+   因此**本 PR 自带 updater 扩展与 pin bump**，#1122 只作为已合入的实现基线和
+   PTO-BC 兼容经验，不再声明对它的未来依赖。
+
+   → **实施边界**：下列目标确实使用不同 remote / 环境，
+   但这只意味着"必须分别验证"，不意味着"必然使用不同 SHA"：
 
    | 位置 | 远端 | 当前 SHA | 能否由现 updater 管理 |
    |---|---|---|---|
    | `.github/workflows/ci.yml:430` | GitCode `cann/pto-isa` | `ce3262e3` | 是 |
    | `docker/Dockerfile:122,123` | GitCode `cann/pto-isa` | `ce3262e3` | 是 |
    | `test/npu_validation/scripts/run_remote_npu_validation.sh:17` | GitCode `cann/pto-isa` | `ce3262e3` | 是 |
-   | `.github/workflows/ci_sim.yml:122` | **GitHub `hw-native-sys/pto-isa`** | `a8168c6c` | **不能——是另一个仓库** |
-   | `docker/Dockerfile.dev:17` | GitCode `cann/pto-isa` | `662d7f2a` | 能，但**不应该**——环境不同 |
+   | `.github/workflows/ci_sim.yml:122` | **GitHub `hw-native-sys/pto-isa`** | `a8168c6c` | 需为该目标增加 repo-aware 验证 |
+   | `docker/Dockerfile.dev:17` | GitCode `cann/pto-isa` | `662d7f2a` | 作为 CANN 9.0 兼容目标独立管理 |
 
-   **`ci_sim.yml` 根本不是"漏更"，它指向另一个仓库。** `ci_sim.yml:348-353` 用
+   `ci_sim.yml:348-353` 用
    `actions/checkout` 拉 `repository: hw-native-sys/pto-isa`（GitHub），而
    `update_pto_isa_pin.py:17` 的 `DEFAULT_REPO_URL` 是
    `https://gitcode.com/cann/pto-isa.git`，`resolve_head_commit()` 也是对着 GitCode 做
-   `git ls-remote`。**两个仓库的 SHA 空间不通**——把一个 GitCode SHA 写进 `ci_sim.yml`，
-   `actions/checkout` 会直接以 "ref not found" 失败。`ci_sim.yml:119-121` 的注释还明说了
-   这条 pin 的用途：
-
-   > GitHub pin containing the two-argument Soft SYNCALL ABI from f24f7b7 and the
-   > follow-up CPU-Sim duplicate-stub fix. The GitCode mirror carries the ABI as
-   > d56d42d within the separate ce3262e3 remote-validation pin.
-
-   即它是**有意独立**的，携带 CPU-Sim duplicate-stub 修复，且与 GitCode 侧存在
-   `f24f7b7 ↔ d56d42d` 这样的**跨仓库映射**。机械同步会丢掉那个修复。
+   `git ls-remote`。现有 updater 的缺陷是把 repo 隐含为全局常量，而不是它使用了
+   "注定不可共享的 SHA 空间"。同一 commit ID 可能因同步而在两个 remote 都存在，
+   也可能只在其中一个存在；唯一可信判定是对实际 remote 执行 fetch/checkout 或等价 API 查询。
 
    **`Dockerfile.dev` 也不是"漏更"**：它的基础镜像是
    `quay.io/ascend/cann:9.0.0-910b-ubuntu22.04-py3.12`（CANN **9.0.0** + py3.12），
@@ -955,23 +1320,30 @@ grouped 接口），提交 1-5 可先走；`interleave` 相关的 ODS 属性、�
    两个环境的工具链不同，`662d7f2a` 这个更老的 revision 很可能是为 CANN 9.0 兼容性
    有意保留的。在没有确认之前，不能把它当成滞后。
 
-   → **修正后的行动**（替换 rev2 的"扩展 updater 覆盖两处"）：
+   → **修正后的行动**：
 
-   1. **不要把 `ci_sim.yml` 塞进现有 updater。** 正确做法是把 pin 建模成
-      **(repo, revision, 兼容性约束) 三元组**：GitCode 组一个、GitHub `ci_sim` 一个、
-      `Dockerfile.dev` 一个。updater 若要扩展，应支持"每个目标各自的 repo + SHA"，
-      而不是把一个 SHA 广播到所有目标。
-   2. **优先方案**：找到**同时包含 MX 支持与 CPU-Sim duplicate-stub 修复**的共同后继
-      revision（GitCode 侧一个、GitHub 侧对应的一个），实测跑通 `ci` + `ci_sim`
-      + `Dockerfile.dev` 构建三条线，再落 pin。
-   3. **若 `Dockerfile.dev` 必须停在旧 pin**（CANN 9.0 不兼容新 revision），
-      在文件里写明兼容性理由并在本设计留档，**明确记录为有意保留，不是漏更**。
-   4. 本 PR 若无法一次拉齐三条线，则 `interleave` 的实现应与 pin bump **解耦**：
-      先落 `grpAxis`（`ce3262e3` 已含 grouped 接口），`interleave` 单独排期。
-3. **ND 分组 shape 校验收紧的影响面。** §7.1 把"总元素数相等"改成"逐维相等"。
-   存量 IR 里若有 `[1, M*N/32]` 这类扁平写法会被新 verifier 拒绝。
-   → **行动**：实现前先跑一遍 `check-pto` + `runop.sh all` 摸底；若确有存量，考虑对
-   `grpAxis = axis1` 保留"总元素数"宽松路径一个版本，并在 ReleaseNotes 中给出迁移说明。
+   1. 将 updater 的输入改为每目标显式携带
+      **(repo, revision, 兼容性约束)**；它可以更新 `ci_sim.yml`，但必须用
+      GitHub repo 验证该目标，不得把在 GitCode 上解析的 SHA 未验证广播过去。
+   2. `ci` 与 `ci_sim` 的第一候选都是 `f03c2454`，但要对 GitCode/GitHub
+      两个 remote **分别** fetch/checkout。GitHub 侧已验证；另一侧若不存在，
+      才选择该 remote 上含等价 MX/interleave 与 TMOV 修复的 revision。
+   3. 对每个最终 revision 核对内容契约：`bool interleave` overload、
+      ND `ZeroSourcePaddingB16`、DN `(void)tmp;`，以及该 CI 线需要的 CPU-Sim 修复；
+      不只检查 commit 名或注释。
+   4. `Dockerfile.dev` 按 CANN 9.0 兼容性独立选 pin；保留旧 revision 时，在文件和本设计中
+      写明兼容性依据，**明确记录为有意保留，不是漏更**。
+   5. 所有相关 CI 目标的 revision 与内容契约验证是 `interleave` 的合入门槛。本 PR 完成
+      该验证、updater 扩展和必要 pin bump，不把 `interleave` 或 pin 工作单独排到 #1122
+      或另一个后续 PR。
+3. **~~ND 分组 shape 兼容策略~~ —— 已关闭，axis1 采用双形态契约。**
+   兼容性破坏已由现有 IR 直接证明：`tquant_mx_a5_emitc.pto` 和
+   `quant_mx_tile_native.pto` 都对 `src=16x32` 使用 `exp/max/scaling valid=1x16`。
+   新 canonical 形状是 `16x1`，如果只做逐维 canonical 校验，会违反"不写新属性的
+   现有 IR 语义不变"。
+   → **结论**：axis1 同时接受 canonical `[M, N/32]` 和 legacy flat
+   `[1, M*N/32]`；axis0 只接受 `[M/32, N]`。不采用"先拒绝再摸底"，
+   也不将现有 producer/consumer 整体迁移夹带到本特性中。
 4. **§8.1 的生成文本变化。** 现有 ND IR 的输出会从"类型列表模板参数"变成
    `<1, MxQuantAlg::...>`。语义等价但文本变化，属于对下游 golden/期望文件的影响面。
    → **行动**：提交 3 单独处理，并在 ReleaseNotes 说明。
@@ -980,20 +1352,57 @@ grouped 接口），提交 1-5 可先走；`interleave` 相关的 ODS 属性、�
 6. **`interleave` 的 exponent 形状。** 早期版本取自 issue 的 `[ceil(M/64), 2N]`，
    评审据较新 pto-isa 修正为：valid `[M/64, 2N]`（**行数 64 严格对齐，不是 ceil**）、
    physical `[M/64, align32(2N)]`。已按此改写 §7.1。
-   → **行动**：仍需在目标 pin 上以代码为准复核一次（同开放问题 2 的命令），
-   因为基线快照无此 overload。
-7. **动态维度的处理。** §7.1 的逐维校验里，期望值本身可能因 `src` 维为 `kDynamic` 而
-   无法计算（`srcRows / 32` 对 dynamic 无意义）。必须**两侧都判**：期望侧不可知就跳过，
-   实际侧不可知也跳过。
-   → **行动**：§11.1 增加一个全动态 shape 的正向 lit 用例，确保 verifier 不误报。
+   → **行动**：仍需在每个最终目标 pin 上以代码为准复核一次（同已关闭问题 2）。
+7. **~~TQuantMx dynamic shape 如何处理~~ —— 已关闭，无法静态证明即拒绝。**
+   PTO-ISA 的 axis0 辅助输出行步长来自 `TileDataSrc::Cols`，axis1 又用
+   `TileDataExp::Rows` 选择 flat/2D exp 分支并把 max/scaling 当 compact prefix。
+   只比较已知 valid 维会放行无法证明 stride/capacity 的 IR。
+   → **结论**：§7.1 涉及的 `src/dst/exp/max/scaling`（以及存在时的 deprecated
+   `exp_zz`）valid/physical shape 全部要求静态；任一动态即拒绝。§11.3 用 axis0
+   source-derived stride 与 axis1 compact-prefix 两个分支的负向用例固定该策略，
+   不再保留 `dn_dynamic` / 全动态正向用例。
+8. **~~X-to-ZZ dynamic shape 如何处理~~ —— 已关闭，静态证明不了就拒绝。**
+   ND 需要同时证明 compact source、source/destination padded capacity 和 tmp 容量；
+   DN 需要证明 source physical row stride 与 destination capacity。`src`/`dst` 的 valid 或
+   physical shape 任一动态时，这些都无法由当前 IR 静态证明。DN `tmp` 不参与实现，
+   因此它的 valid/physical shape 不受此限制；ND `tmp` 仅要求 physical capacity 可证明。
+   → **结论**：按 §7.2 拒绝相关动态 shape；本次不隐式创建 compact copy/scratch。
+9. **~~`TMovOp` 第三个 operand 是否改名~~ —— 已关闭，公开 API 保持 `$fp`。**
+   TableGen operand 名会生成 Python `fp=`、C++ `getFp()` 与 builder 参数；把 `$fp`
+   改成 `$aux` 不是内部重构，会直接破坏现有调用。
+   → **结论**：ODS 继续命名 `$fp`，仅由共享 `classifyTMovForm(getFp())` 按地址空间赋予
+   FP 或 X-to-ZZ tmp 语义。旧 scaling FP 保持 legacy FP wire；非-scaling 第三个 tile
+   走 generic v0 compatibility record，避免被 `getFp()` 的存在性误编码成 FP payload。
 
 ## 14. 验收标准
 
 - issue #1185 列出的四条契约（axis 0/1 TQUANT、RowMajor 量化数据 + raw ND/DN exponent、
   数据 ND-to-NZ、exponent ND/DN-to-ZZ）都能用 PTO IR 表达；
-- `grpAxis` / `interleave` / `pto.tmov.x2zz` 生成的 C++ 与 §8 的模板参数表逐字一致；
-- 不写新属性的现有 `pto.tquant.mx` IR **语义不变**，且 §11.1 有用例覆盖；
+- `grpAxis` / `interleave` 以及 `pto.tmov` 的 X-to-ZZ 分支生成的 C++ 与 §8 的模板参数表逐字一致；
+- 所有不带 `exp_zz` 的 `pto.tquant.mx` 都生成 §8.1 形态 B，既有默认 ND golden 统一更新，
+  不保留按属性是否显式出现而分叉的旧类型列表 EmitC 路径；
+- 不新增独立 X-to-ZZ op；`pto.tmov` 的 scaling 第三个 tile 继续走 FP lowering，
+  非-scaling 第三个 tile 走三参数 X-to-ZZ `TMOV`，无第三个 tile 的普通形态保持不变；
+- `TMovOp` 的 ODS operand 名仍为 `$fp`，现有 Python `fp=`、C++ `getFp()` 与 builder
+  源码兼容；实现中不存在公开 `aux=` / `getAux()` API；
+- 不写新属性的现有 `pto.tquant.mx` IR **语义不变**：axis1 canonical
+  `[M, N/32]` 与 legacy flat `[1, M*N/32]` 都通过，两个已存 legacy IR 回归文件不迁移 shape；
+- TQuantMx 的 physical 契约与 §7.1.1 逐项一致：axis0 的 max/scaling 及非-interleave exp
+  使用 source-derived physical row stride；axis1 max/scaling 是 compact prefix，exp 的
+  flat/2D 校验与 `TileDataExp::Rows` 实际选择一致；相关 valid/physical shape 动态时拒绝；
 - §7 的每一条 verifier 规则都有对应的负向 lit 用例；
+- ND X-to-ZZ 的 padded-stride、source 容量不足、destination 容量不足和动态
+  valid/physical shape 均被 verifier 拒绝，而紧密且容量足够的非 16 对齐行用例通过；
+- `TMovOp` 的分支效应精确匹配 §9：ND X-to-ZZ 的 `src/tmp` 为 `Read + Write`、
+  `dst` 为 `Write`；DN X-to-ZZ 的 `src` 为 `Read`、`dst` 为 `Write`、`tmp` 无效应；
+  既有 FP 形态仍是 `src/fp: Read`、`dst: Write`；
+- `TQuantMxOp` 对 f16/bf16 且 `srcValidCols < srcPhysicalCols` 的 source 声明
+  `Read + Write`，f32 或 tight f16/bf16 source 保持 `Read`；padding 后再次读取 source 的
+  PlanMemory/InsertSync 回归证明依赖边未丢失；
 - DN 量化 + DN-to-ZZ 的精度用例在 exponent 与量化结果上**位精确**通过；
-- PTO-BC roundtrip 保持 `pto.tquant.mx` 既有 payload schema 不变，新 op 使用新 opcode；
+- PTO-BC roundtrip 保持 `pto.tquant.mx`、普通 `pto.tmov` 与 scaling-FP legacy wire 的
+  既有 schema 不变；scaling FP 继续选择 `kTMovFpWireOpcode`，X-to-ZZ 使用已有
+  `kOpcodeGeneric` v0 compatibility record 并保留 `grpAxis`，不得误选 FP wire；
+- updater 能为每个目标显式处理 `(repo, revision, 兼容性约束)`，分别验证 GitCode/GitHub
+  候选；本 PR 完成本特性所需 pin bump，`Dockerfile.dev` 的独立 pin 有可审计依据；
 - `docs/PTO_IR_manual.md` 与 SPEC 中的 shape 表、约束表与 verifier 实现一致。
