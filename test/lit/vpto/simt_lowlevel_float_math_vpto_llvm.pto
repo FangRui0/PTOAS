@@ -34,11 +34,13 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     %f16_a = arith.constant 1.500000e+00 : f16
     %f16_b = arith.constant 2.000000e+00 : f16
     %f16_c = arith.constant 4.000000e+00 : f16
+    %f16_neg = arith.constant -1.500000e+00 : f16
     %bf16_a = arith.constant 1.500000e+00 : bf16
     %bf16_b = arith.constant 2.000000e+00 : bf16
     %bf16_c = arith.constant 4.000000e+00 : bf16
 
     %abs = pto.absf %f32_a : f32 -> f32
+    %abs16 = pto.absf %f16_neg : f16 -> f16
     %fmin = pto.fmin %f32_a, %f32_b : f32, f32 -> f32
     %fmax = pto.fmax %bf16_a, %bf16_b : bf16, bf16 -> bf16
     %fmin16 = pto.fmin %f16_a, %f16_b : f16, f16 -> f16
@@ -64,6 +66,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     pto.store %pow, %dst_f32[%c4] : !pto.ptr<f32, ub>, f32
     pto.store %floor, %dst_f32[%c5] : !pto.ptr<f32, ub>, f32
     pto.store %fma, %dst_f32[%c6] : !pto.ptr<f32, ub>, f32
+    pto.store %abs16, %dst_f16[%c7] : !pto.ptr<f16, ub>, f16
     pto.store %exp16, %dst_f16[%c0] : !pto.ptr<f16, ub>, f16
     pto.store %log16, %dst_f16[%c1] : !pto.ptr<f16, ub>, f16
     pto.store %pow16, %dst_f16[%c2] : !pto.ptr<f16, ub>, f16
@@ -83,6 +86,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 // CHECK-DAG: llvm.call @llvm.hivm.store.vfsimt.info
 // CHECK-LABEL: llvm.func @simt_float_math
 // CHECK-DAG: llvm.call @llvm.fabs.f32
+// CHECK-DAG: llvm.call @llvm.fabs.f16
 // CHECK-DAG: llvm.call @llvm.minnum.f32
 // CHECK-DAG: llvm.call @llvm.maxnum.bf16
 // CHECK-DAG: llvm.call @llvm.minnum.f16

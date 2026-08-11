@@ -898,10 +898,10 @@ class PTO_BinaryFloatScalarOp<string mnemonic>
 
 def PTO_AbsFOp
     : PTO_SimtOp<"absf", [Pure, AllTypesMatch<["value", "result"]>]> {
-  let arguments = (ins AnyTypeOf<[F32, PTO_V2F16Type, PTO_V2BF16Type],
-                                 "f32, vector<2xf16> or vector<2xbf16>">:$value);
-  let results = (outs AnyTypeOf<[F32, PTO_V2F16Type, PTO_V2BF16Type],
-                                "f32, vector<2xf16> or vector<2xbf16>">:$result);
+  let arguments = (ins AnyTypeOf<[F16, F32, PTO_V2F16Type, PTO_V2BF16Type],
+                                 "f16, f32, vector<2xf16> or vector<2xbf16>">:$value);
+  let results = (outs AnyTypeOf<[F16, F32, PTO_V2F16Type, PTO_V2BF16Type],
+                                "f16, f32, vector<2xf16> or vector<2xbf16>">:$result);
 
   let assemblyFormat = [{
     $value attr-dict `:` type($value) `->` type($result)

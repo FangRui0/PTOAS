@@ -2984,7 +2984,7 @@ template <>
 FailureOr<StringRef> buildUnaryScalarMathCallee<pto::AbsFOp>(MLIRContext *context,
                                                              Type valueType) {
   std::string elem = getLLVMFloatBuiltinFragment(valueType);
-  if (elem != "f32" && elem != "v2f16" && elem != "v2bf16")
+  if (elem != "f16" && elem != "f32" && elem != "v2f16" && elem != "v2bf16")
     return failure();
   return StringAttr::get(context, "llvm.fabs." + elem).getValue();
 }

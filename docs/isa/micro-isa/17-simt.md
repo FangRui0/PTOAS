@@ -791,10 +791,11 @@ else:
 - **syntax:** `%r = pto.absf %x : T -> T`
 - **semantics:** Return `abs(x)`. For `vector<2xT>`, absolute value is applied
   independently to each element.
-- **inputs:** `%x` is an `f32` scalar, `vector<2xf16>`, or `vector<2xbf16>`.
+- **inputs:** `%x` is an `f16` or `f32` scalar, `vector<2xf16>`, or
+  `vector<2xbf16>`.
 - **outputs:** One value with the same type as `%x`.
-- **constraints and limitations:** Scalar `f16` and scalar `bf16` are not
-  accepted by this op; use the packed form only for `vector<2xT>`.
+- **constraints and limitations:** Scalar `bf16` is not accepted by this op;
+  use the packed form for `vector<2xbf16>`.
 
 ### `pto.sqrt`
 
