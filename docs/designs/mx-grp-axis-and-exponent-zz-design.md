@@ -12,37 +12,53 @@ See LICENSE in the root of the software repository for the full text of the Lice
 
 ## 1. 状态与关联事项
 
-- 状态：设计提案，待评审。本 PR 当前只含设计文档；§13-10 的 pto-isa 修复 revision
-  出现并通过 pin 内容契约后，才在同一 PR 内进入实现阶段。
+- 状态：设计提案，待评审。本 PR 当前只含设计文档；实现基线直接对齐两个 pto-isa
+  远端当前已发布的最新分支头，不等待额外的 pto-isa 修复 revision。
 - 关联 issue：[#1185](https://github.com/hw-native-sys/PTOAS/issues/1185)
 - 设计复核基线：
   - PTOAS `988d50e24`
+  - PTOAS pin 盘点基线 `main@f8912bc781f57b66b9d41007ec730507a8c40096`（rev11）
   - pto-isa 本地快照 `7af803bc4056af8b39a55751ac2f4b75cdb47fbd`（下称"快照"）
-  - pto-isa 接口祖先候选 `f03c2454e4211bdfc5fe9d3e859bc9239443514c`（GitHub 上已验证；rev8 已判定不能直接作为最终 pin）
-  - pto-isa GitHub `main` `dfc2be6f31041ab5a4c4d7f320be1be9af4f716b`（rev10 复核；仍含 §3.1.1 的隐藏 scratch / padding-tail 问题）
+  - pto-isa 接口祖先 `f03c2454e4211bdfc5fe9d3e859bc9239443514c`（GitHub 上已验证）
+  - pto-isa GitCode `master` `69a81f3b2d145fe4f9925cfd65a083f78ad1f804`（rev11 pin）
+  - pto-isa GitHub `main` `40e741bf1cfce99da3b1caa514e08c2f72894922`（rev11 pin；merge PR #239，
+    commit message 明确同步 GitCode `master@69a81f3b2d14`）
 - 目标接口：`pto.tquant.mx`、`pto.tmov` 的 exponent 布局转换形态
 
 ### 1.1 修订记录
 
-**rev10（本次）**：把 pin 验证从会被 PTOAS 256B slot 对齐掩盖的普通 canary
+**rev11（本次）**：把 pin 策略收敛为“直接对齐最新 pto-isa”。不再要求先向 pto-isa
+合入本设计派生的隐藏 scratch / padding-tail 修复，也不再设计未来占位 revision。
+
+| 事项 | rev11 结论 | 位置 |
+|---|---|---|
+| 当前 pin | GitCode 三处是 `27386d9`，GitHub CPU-sim 是 `e948507`，`Dockerfile.dev` 是 `662d7f2`；rev4/5 记录的 `ce3262/a8168` 已过时 | §13-2 |
+| latest 目标 | GitCode 目标为 `master@69a81f3`；GitHub PR #239 已合并，GitHub 目标为 `main@40e741b`。二者是同一轮同步在不同 remote 的实际落点 | §10、§12 提交 0、§13-2 |
+| 实现边界 | latest 的 `TQuant.hpp` 仍有 §3.1.1 所列隐藏写；它们不再参与 pin 选 SHA，而是在 PTOAS verifier 中形成明确的不支持/拒绝边界，不能继续列作正向验收 case | §7.1.1、§11.3、§13-10 |
+| updater 现状 | `.github/scripts/update_pto_isa_pin.py` 已在 `e488f9e3d` 删除；本 PR 不是“扩展现有 updater”，而是重新引入 repo-aware pin manifest/updater，或以等价的可审计 target map 落地 | §1.2、§10、§12、§13-2 |
+
+rev8–rev10 中“必须先产出 pto-isa 安全 revision 才能 pin/实现”的结论由 rev11 替换；
+这些修订记录保留为评审历史，不再是当前实施门槛。
+
+**rev10**：把 pin 验证从会被 PTOAS 256B slot 对齐掩盖的普通 canary
 改为 PTO-ISA 原生精确 redzone harness，修正 PTO-BC generic 分派、DN `tmp` 静态契约、
 TQuant-only 用例边界与提交顺序。
 
 | 事项 | rev10 结论 | 位置 |
 |---|---|---|
-| pin redzone | 提交 0 不依赖 PlanMemory/新 PTOAS lowering；使用 PTO-ISA 原生 C++ harness，在每个声明 footprint 的下一字节放 suffix redzone。PTOAS sample/ST 只作实现后的 mirror regression，不再充当精确越界证明 | §11.5、§11.6、§11.6.1、§12、§13-10 |
+| pin redzone | 当时要求提交 0 以原生 C++ harness 准入候选 pin；rev11 保留精确 redzone 方法作为 latest 行为审计，但不再作为 pin gate | §11.6.1、§13-10 |
 | `pto.tquant.mx` PTO-BC | PTOAS `988d50e24` 的 v0 known-op 表只有 `pto.tquant`，没有 `pto.tquant.mx`；给 `TQuantMxOp` 增加显式 generic compatibility shim，无需 `PTOBC_ALLOW_GENERIC`，并解析二进制断言 opcode 为 `kOpcodeGeneric` | §10、§11.7、§12 |
 | DN `tmp` dynamic | ISA 不访问不等于 PTOAS 不分配/不类型化；DN `tmp` physical shape 同样必须静态，PlanMemory 才能计算 local slot，EmitC 才不会生成含 `-1` 的 physical template 维 | §7.2、§11.4、§13-8 |
-| `n=1` case 分层 | `m=32,n=1` 与 `m=64,n=1` 均只用于 TQUANT pin/mirror；其 exponent 分别为 `1x1` / `2x1`，不能进入要求 rows ≥ 2 且 cols % 16 == 0 的 DN-to-ZZ 完整链路 | §11.5、§11.6、§11.6.1 |
-| 提交 0 可执行性 | 候选 pin 先通过独立 PTO-ISA harness；提交 1–5 实现属性/verifier/lowering 后，提交 7 再增加 PTOAS mirror tests 作为最终合入门槛 | §11.6.1、§12 |
+| `n=1` case 分层 | 当时只用于 TQUANT pin/mirror；rev11 进一步降为原生行为诊断，不进入 latest 支持范围内的 PTOAS 正向 case。其 exponent `1x1` / `2x1` 均不能进入 DN-to-ZZ 完整链路 | §11.5、§11.6、§11.6.1 |
+| 提交 0 可执行性 | 原则仍是提交 0 不依赖 PTOAS 新属性/lowering；rev11 将动作改为 exact latest SHA 的 remote/接口/既有构建验证，不再等待 harness 全过 | §11.6.1、§12 |
 
 **rev9**：补齐 DN FP32 interleave 与 B16 VL-tail 两处 pin blocker，并修正
 canonical B16 测试 dtype 与既有 MXFP4 lit 迁移范围。
 
 | 事项 | rev9 结论 | 位置 |
 |---|---|---|
-| DN interleave FP32 `dst` scratch | 当前实现按 `align32(srcPhysicalCols)` 把线性 exponent 暂存到 `dst`；合法 IR 仍只需普通 MXFP8 destination footprint，最终 pin 必须取消该隐藏 scratch；rev10 将普通 dst canary 升级为精确 redzone | §3.1.1、§7.1.1、§11.6.1、§13-10 |
-| B16 source VL-tail | `ZeroPadColumns_VLAligned` 必须给最后一个 VL 增加 row-tail 限制，不能要求 IR 为实现越界伪造额外 source capacity；rev10 用 source 精确 redzone 验证 | §3.1.1、§7.1.1、§11.6.1、§13-10 |
+| DN interleave FP32 `dst` scratch | 当前实现按 `align32(srcPhysicalCols)` 把线性 exponent 暂存到 `dst`；rev9 要求最终 pin 修复，rev11 改为 latest 下由 verifier 拒绝该组合 | §3.1.1、§7.1.1、§11.3、§13-10 |
+| B16 source VL-tail | 不能要求 IR 为实现越界伪造额外 source capacity；rev9 要求上游修复，rev11 改为 latest 下拒绝不完整 VL 组合 | §3.1.1、§7.1.1、§11.3、§13-10 |
 | canonical B16 test dtype | max/scaling 的存储 dtype 跟随 source（f32/f16/bf16），读取后再提升到 f32 比较；MXFP4 dst 按 packed byte 位精确比较 | §11.5 |
 | 既有 MXFP4 lit 迁移 | `tquant_mx_a5_emitc.pto` 的 packed dst physical cols 从 32 收紧为 16；ReleaseNotes 明示。兼容承诺只覆盖两个 tight MXFP8 legacy-flat case | §11.1、§12、§13-11、§14 |
 
@@ -53,7 +69,7 @@ canonical B16 测试 dtype 与既有 MXFP4 lit 迁移范围。
 |---|---|---|
 | axis1 flat + padded source | flat exp 分支额外要求 `srcPhysicalCols == srcValidCols`；padded source 只能走 canonical 2D exp | §3.1.1、§7.1.1、§11.3 |
 | `dst` stride / capacity | MXFP8 axis1 的 destination stride 等于 source physical cols；MXFP4 的 packed destination stride 等于 source physical cols / 2；DN MXFP4 同样按 packed stride 约束 | §7.1.1、§11.1/11.3 |
-| 隐藏 scratch / `max` 语义 | 不把越界 scratch 或覆盖 `max` 定义成合法语义；最终 pin 必须修复 canonical B16 与 DN FP16 MXFP4 的隐藏 scratch，并保持 `max` 可观察输出 | §3.1.1、§10、§12、§13-10、§14 |
+| 隐藏 scratch / `max` 语义 | 不把越界 scratch 或覆盖 `max` 定义成合法语义；rev8 选择 pin-first 修复，rev11 改为 latest 下 verifier 拒绝对应组合 | §3.1.1、§7.1.1、§11.3、§13-10 |
 | PR 元数据 | PR body 与 rev8、ready-for-review 状态、复用 `pto.tmov`、动态/API/PTO-BC 结论同步 | PR #1197 |
 
 **rev7**：关闭 rev6 评审提出的 3 个 P1，并保留 `TMovOp` 的现有公开 API。
@@ -86,7 +102,7 @@ canonical B16 测试 dtype 与既有 MXFP4 lit 迁移范围。
 
 | 编号 | rev3 的问题 | rev4 的结论 | 位置 |
 |---|---|---|---|
-| P1-A | 断言 GitCode/GitHub "SHA 空间不通"，并要求先搜索复杂的三元组共同后继 | `f03c2454` 在 GitHub 上确实存在，且相对 `a8168c6` ahead 8 / behind 0，已包含 CPU-Sim duplicate-stub 修复。每个目标仍须按自己的 remote 验证 SHA；该存在性/ancestry 结论仍有效，但 rev8 已证明它只可作祖先基线、不能直接作为最终 pin | §10、§12 提交 0、§13-2 |
+| P1-A | 断言 GitCode/GitHub "SHA 空间不通"，并要求先搜索复杂的三元组共同后继 | `f03c2454` 在 GitHub 上确实存在，且相对 `a8168c6` ahead 8 / behind 0，已包含 CPU-Sim duplicate-stub 修复。每个目标仍须按自己的 remote 验证 SHA；rev11 直接选择各 remote 的 latest，`f03c2454` 仅保留为 ancestry 证据 | §10、§12 提交 0、§13-2 |
 | P1-B | axis1 从"只比较总元素数"一步收紧为唯一的自然二维 shape，会拒绝已存在的 `[1, M*N/32]` IR | axis1 同时接受 canonical `[M, N/32]` 与 legacy flat `[1, M*N/32]`；axis0 仍只接受自然二维 `[M/32, N]` | §7.1、§11.1/11.3、§13-3、§14 |
 | P1-C | `pto.tmov` 的 X-to-ZZ 形态只查 valid shape/元素数/tmp，没有约束 ISA 实际假定的紧密 source、physical stride 和 padded capacity | 增加 compact-prefix、ND `align16(rows) * cols` 容量、DN source stride 及静态 physical shape 契约；无法静态证明时拒绝 | §3.2、§7.2、§11.4 |
 | P1-D | ND X-to-ZZ 的 `src` 只声明 `Read`，但 `ZeroSourcePaddingB16` 会写 source padding | axis1/ND 的 `src` 改为 `Read + Write`；axis0/DN 仍为 `Read` | §9、§11.2 |
@@ -126,14 +142,20 @@ rev7 的“无法静态证明即拒绝”结论取代，见 §7.1、§11.3 与 �
 
 - **ND shape 兼容**：axis1 的 canonical `[M, N/32]` 与 legacy flat
   `[1, M*N/32]` 都是长期合法形态；legacy flat 要求 source tight，padded source 改用
-  canonical 2D。仓库内两个既有 MXFP8 legacy-flat case 都满足 tight 条件。
+  canonical 2D。`69a81f3/40e741b` 下 canonical 2D 的 B16 实现会破坏可观察输出，故本版
+  verifier 只放行 f32 canonical；B16 canonical 先明确拒绝。仓库内两个既有 MXFP8
+  legacy-flat case 都满足 tight 条件。
   axis0 只接受 `[M/32, N]`。
 - **EmitC 生成形态**：除 deprecated `exp_zz` fused 形态外，所有
   `pto.tquant.mx` 统一生成 `TQUANT<grp_axis, MxQuantAlg[, interleave]>(...)`。
   默认 ND 不保留另一套类型列表 EmitC 文本。
 - **pin 建模 ownership**：本 PR 落地 `(repo, revision, 兼容性约束)` 三元组、
-  updater 的 repo-aware 扩展和本特性 pin bump。[#1122](https://github.com/hw-native-sys/PTOAS/pull/1122)
-  已于 2026-08-10 合入，只作为已有 updater/PTO-BC 兼容处理的基线，不是本 PR 的未来依赖。
+  repo-aware target map/updater 和本特性 pin bump。[#1122](https://github.com/hw-native-sys/PTOAS/pull/1122)
+  已于 2026-08-10 合入，只作为 PTO-BC 兼容处理的基线；其后
+  `.github/scripts/update_pto_isa_pin.py` 已被删除，本 PR 需要重新引入 repo-aware 管理，
+  不是扩展一个仍存在的脚本。GitCode 的 CI/主 Dockerfile/remote-validation 对齐
+  `69a81f3`，GitHub `ci_sim` 对齐已合入同步 PR #239 的 `40e741b`；不等待新的
+  pto-isa commit。`Dockerfile.dev` 继续作为 CANN 9.0 独立兼容目标。
 - **X-to-ZZ 的 IR 形态**：复用现有 `pto.tmov`。第三个 tile 位于 scaling 地址空间时
   保持既有 FP 语义；第三个 tile 位于非-scaling 地址空间时表示 X-to-ZZ `tmp`。
   `grpAxis` 只允许用于后一形态，缺省为 axis1。
@@ -143,13 +165,12 @@ rev7 的“无法静态证明即拒绝”结论取代，见 §7.1、§11.3 与 �
 - **`TQuantMxOp` 内存契约**：valid shape 合法只是第一层；还必须满足 §7.1 的
   physical stride、compact-prefix、branch-selection 与 capacity 矩阵。f16/bf16 source
   存在列 padding 时，source memory effect 为 `Read + Write`。
-- **TQuantMx pin 硬门槛**：`max` 是可观察输出，`exp` / `dst` 只能在各自声明的
-  physical allocation 内写入。当前 `f03c2454` 以及 GitHub `main@dfc2be6f` 均未满足：
-  canonical B16 会借用 `exp` 或覆盖 `max`，DN FP16 MXFP4 还会在 `dst` footprint 之后
-  使用 scratch；DN FP32 interleave 会在量化前把线性 exponent 暂存在 `dst`；B16
-  VL-aligned source padding 的最后一个不完整 VL 还可能越过 source allocation。
-  最终 pin 必须先修复全部五类行为，并通过 §11.6.1 不经 PlanMemory、redzone 紧贴声明
-  footprint 的原生 harness；本设计不扩大输入/输出语义来迁就实现越界。
+- **latest-pin 支持边界**：`max` 是可观察输出，`exp` / `dst` 只能在各自声明的
+  physical allocation 内写入。`69a81f3/40e741b` 的 `TQuant.hpp` 仍有 canonical B16
+  借用 `exp/max`、DN FP16 MXFP4 借用 `dst`、DN FP32 interleave 借用 `dst` 以及 B16
+  VL-tail 越界写。rev11 不再要求 pto-isa 先合修复；§7.1.1 直接把无法在当前实现上安全
+  证明的组合标为 unsupported，并由 verifier 拒绝。以后 pto-isa 修复这些路径时，再单独
+  放宽 verifier 和增加正向精度用例，不能仅 bump SHA 就静默扩大合法 IR。
 
 本文只定义 A5 MX 量化的分组轴（`grp_axis`）表达，以及 E8M0 exponent 从 ND/DN
 到 ZZ 的布局转换在 PTO IR 与 EmitC 中的表达方式。不改变 INT8 量化；扩展
@@ -163,8 +184,9 @@ rev7 的“无法静态证明即拒绝”结论取代，见 §7.1、§11.3 与 �
    `grp_axis = 1`、`interleave = false`，保持两个 tight MXFP8 legacy-flat case 的文本/语义兼容；
    过去被放行的 flat+padded source 属于可证明越界的非法形态，rev8 明确拒绝。
 3. **verifier 的分组 shape 校验按轴分派**：axis0 只接受自然二维形状；
-   axis1 为保持旧 IR 语义，同时接受 canonical `[M, N/32]` 与 legacy flat
-   `[1, M*N/32]`。`max`/`scaling` 恒为分组形状，只有 `exp` 随 `interleave` 改形（§7.1）。
+   axis1 的 shape 分类同时识别 canonical `[M, N/32]` 与 legacy flat
+   `[1, M*N/32]`。随后应用 latest 支持边界，canonical B16 暂不放行。`max`/`scaling`
+   恒为分组形状，只有 `exp` 随 `interleave` 改形（§7.1）。
 4. **不带 `exp_zz` 的 `pto.tquant.mx` 统一生成 grouped EmitC 形态**，不根据
    `grpAxis` 是否显式写出而保留双文本形态（§8.1）。
 5. **exponent X-to-ZZ 复用现有 `pto.tmov`**。三参数形态按第三个 tile 的地址空间
@@ -176,21 +198,22 @@ rev7 的“无法静态证明即拒绝”结论取代，见 §7.1、§11.3 与 �
 7. **`pto.tquant.mx` 同样可能修改 source**：f16/bf16 且 valid 列数小于 physical
    列数时，ND/DN 都会原地清零 source 的行尾 padding；该形态的 `src` 必须建模为
    `Read + Write`。同时按 §7.1 静态证明所有输出 stride/capacity；axis1 flat 只允许
-   tight source，padded source 必须使用 canonical 2D exp（§7.1、§9）。
+   tight source，padded source 只有 f32 可使用 canonical 2D exp；B16 canonical 在 latest
+   pin 下拒绝（§7.1、§9）。
 8. **`dst` 不是只检查自身 footprint**：axis1 的 MXFP8/MXFP4 与 axis0 的 MXFP4
    使用 source-derived output stride，必须按 packed factor 校验 destination physical
    cols/capacity（§7.1.1）。
-9. **pin 三元组与 bump 由本 PR 落地**；#1122 已合入，只是已有 updater
-   与 PTO-BC 兼容实现的基线（§1.2、§12）。
-10. **最终 pin 必须修复 TQuantMx 的隐藏 scratch 与 padding tail**：不得越过
-    `src` / `exp` / `dst` physical allocation，也不得把已产出的 `max` 当临时区覆盖；
-    DN FP32 interleave 不得借用 destination，B16 VL-aligned padding 必须限制最后一个
-    VL 的有效行。修复前不进入 PTOAS 实现阶段
-    （§3.1.1、§11.6.1、§12、§13-10）。
+9. **pin 三元组与 bump 由本 PR 落地**；GitCode 目标统一到 `69a81f3`，GitHub
+   `ci_sim` 使用 `40e741b`；#1122 只作为 PTO-BC 兼容实现基线。原 updater 已删除，本 PR
+   重新落地 repo-aware target map/updater（§1.2、§12）。
+10. **pin 对齐 latest，不承担修复 TQuantMx 的职责**：`69a81f3/40e741b` 的隐藏
+    scratch 与 padding tail 被记录为当前实现限制。无法保证 `src/exp/max/dst` 语义的组合
+    在 verifier 中拒绝，相关 redzone case 只作 known-behavior 诊断；不等待额外 pto-isa
+    合入（§3.1.1、§7.1.1、§11.3、§13-10）。
 11. **现有 `exp_zz` + `storeMode` fused 路径标记为 deprecated**，理由见 §5.4：
    该 overload 在快照里只有 CPU-sim 实现，A5 设备头文件没有对应实现。
 
-## 3. PTO-ISA 侧现状（已对快照与 rev10 目标 main 逐条核对）
+## 3. PTO-ISA 侧现状（已对快照与 rev11 两个 latest pin 逐条核对）
 
 ### 3.1 grouped MX TQUANT
 
@@ -218,8 +241,12 @@ constexpr QuantScaleAlg scale_alg  = isNv  ? QuantScaleAlg::NV : QuantScaleAlg::
 
 ### 3.1.1 当前目标实现的额外 stride、隐藏 scratch 与 padding-tail 行为
 
-rev10 再次复核 GitHub `hw-native-sys/pto-isa` `main@dfc2be6f`；以下行为在最新 main
-仍存在，`f03c2454` 也不能仅凭“接口存在”被视为可用 pin。
+rev11 复核 GitCode `cann/pto-isa` `master@69a81f3`。随后
+[GitHub sync PR #239](https://github.com/hw-native-sys/pto-isa/pull/239) 已合并为 GitHub
+`hw-native-sys/pto-isa` `main@40e741b`；merge commit message 明确记录
+`sync: GitCode master @ 69a81f3b2d14`。PR #239 不修改 `TQuant.hpp`，所以以下行为在两个
+latest pin 中都存在。rev11 的 pin 决策仍是直接使用这两个已发布分支头；本节用于界定
+PTOAS 在该基线下可以安全放行的 IR，不再用于搜索另一个未来 SHA。
 
 **axis1 flat 分支按 source physical cols 计算 group 数。**
 `TQuant_MXFP8_Impl` / `TQuant_MXFP4_E2M1_Impl` 都先计算：
@@ -236,7 +263,8 @@ numGroups  = totalElems / 32
 写入 16 元素 allocation。结论不是扩大 legacy 输出到 physical group 数，而是：
 
 - flat exp 分支强制 source tight：`srcPhysicalCols == srcValidCols`；
-- padded source 必须使用 canonical 2D exp，让实现按每行 `validCols/32` 个 group 处理。
+- padded source 必须选择 canonical 2D exp，让实现按每行 `validCols/32` 个 group 处理；
+  若 source 是 B16，再由 §7.1.1 的 latest 支持规则拒绝。
 
 **destination 也使用 source-derived stride。** axis1 MXFP8 的 F32/B16 2D 实现都以
 `dstPtr + row * srcPhysicalCols` 定位输出行；axis1 MXFP4 以
@@ -266,22 +294,21 @@ rev10 再确认两类：
    `dst valid/physical=64x1`、`exp physical=1x256`、max/scaling physical `2x128`
    满足 rev8 的全部 IR shape 规则，但第二个 scratch row 从 `dst+128` 开始，而 dst
    allocation 只有 64 bytes。普通 destination footprint 是正确的 IR 契约；借用 dst
-   是必须从目标 pin 移除的实现细节。
+   是 latest 实现的限制，不能由 tight-dst IR 安全承诺覆盖。
 5. B16 source 使用 VL-aligned padding 分支时，周期 predicate 覆盖一个完整 VL 的
    `rowsPerVL = elemPerVL/srcPhysicalCols` 行；`vlCount = ceil(validRows*srcPhysicalCols/elemPerVL)`，
    但最后一次 `vsts` 没有按剩余 valid rows 收紧 predicate。反例 bf16
    `src valid=32x1, physical=32x2` 中一个 VL 可容纳 64 行，唯一一次 store 会同时写
-   后 32 个不存在行的 padding 列。最终 pin 必须给最后一个 VL 增加 row-tail predicate，
-   让 source 写入严格落在声明的 `validRows*srcPhysicalCols` footprint 内；本设计不要求
-   用户为越界 store 额外分配 64 行。
+   后 32 个不存在行的 padding 列。在 latest pin 上，凡进入 VL-aligned 分支且最后一个
+   VL 不完整的 padded B16 source 必须由 verifier 拒绝；本设计不要求用户为越界 store
+   额外分配虚假行。
 
-这些行为不能通过“再给 src/exp/max/dst 多分一点容量”简单合法化：`max` 在 PTO IR 和手册中是
-可观察输出，覆盖它会改变 op 语义；三个 dst/exp scratch 使用点又超出或复用了可观察输出；
-B16 tail 则是实现缺少 predicate，而不是 IR 需要额外 rows。本设计因此选择
-**pin-first 修复**：最终 pto-isa revision 必须让临时空间不再借用可观察输出或越过任何
-physical allocation，给 B16 最后一个 VL 正确收尾，并保持全部 per-group `max` 值。
-若没有满足该内容契约的 revision，本 PR 只保留设计，不实现 verifier/lowering；不把
-当前隐藏 scratch / padding 越界反向写成 PTO IR 的合法语义。
+这些行为不能通过“再给 src/exp/max/dst 多分一点容量”统一合法化：`max` 在 PTO IR 和手册中是
+可观察输出，覆盖它会改变 op 语义；B16 tail 也是实现缺少 predicate，而不是 IR 需要额外 rows。
+rev11 因此采用 **latest pin + 显式支持边界**：commit 0 只把 PTOAS 对齐到
+`69a81f3/40e741b`，不要求 pto-isa 再合任何提交；§7.1.1 对命中上述行为且无法静态证明安全的
+组合直接拒绝。将来上游实现变化时，放宽 verifier 必须与新的原生 redzone/max golden 和
+PTOAS 正向精度用例同提交完成，不能靠 pin bump 隐式改变合法集合。
 
 ### 3.2 exponent X-to-ZZ
 
@@ -781,16 +808,18 @@ destination stride 为 `Pd = Ps/pack`。MXFP4 还要求 `Ps % 2 == 0`。`physica
 |---|---|---|---|
 | axis1，MXFP8，任意 exp 分支 | `dst` | `dstPhysicalCols == Ps`；capacity ≥ `(M-1)*Ps + N` | F32/B16 2D 实现都按 `row * TileDataSrc::Cols` 写 destination |
 | axis1，MXFP4，任意 exp 分支 | `dst` | `Ps % 2 == 0`；`dstPhysicalCols == Ps/2`；capacity ≥ `(M-1)*(Ps/2) + ceilDiv(N,2)` | packed FP4 每字节存两个标量，实际行基址按 `row * (srcPhysicalCols/2)` 计算；axis1 的 N 为 32 倍数，ceil 在此等于 N/2 |
-| axis0，MXFP4，任意 interleave | `dst` | `Ps % 2 == 0`；`dstPhysicalCols == Ps/2`；capacity ≥ `(M-1)*(Ps/2) + ceilDiv(N,2)` | DN BF16/FP16 MXFP4 同样使用 source-derived packed byte stride；FP16 的隐藏 dst scratch 另由 pin 硬门槛处理 |
-| axis0，MXFP8，任意 interleave | `dst` | **语义契约仍是自身 `TileDataOut::Cols` + 普通二维 footprint** | 正常 quantized output 使用 destination static cols；当前 `interleave && f32` 借用 dst 暂存 exponent 的行为必须由 pin 修复，不能转化为额外 IR capacity 规则 |
+| axis0，MXFP4，任意 interleave | `dst` | `Ps % 2 == 0`；`dstPhysicalCols == Ps/2`；capacity ≥ `(M-1)*(Ps/2) + ceilDiv(N,2)` | DN BF16/FP16 MXFP4 同样使用 source-derived packed byte stride；latest 的 FP16 路径在 `(Ps/2) % 32 != 0` 时越过 dst 借 scratch，该组合另由 unsupported 规则拒绝 |
+| axis0，MXFP8，任意 interleave | `dst` | **语义契约仍是自身 `TileDataOut::Cols` + 普通二维 footprint** | 正常 quantized output 使用 destination static cols；latest 的 `interleave && f32` 会借用 dst 暂存 exponent，因此该组合整体拒绝，不把额外 scratch 伪装成 output capacity |
 | axis0，任意 interleave | `max` / `scaling` | `physicalCols == srcPhysicalCols`；capacity ≥ `(srcValidRows/32) * srcPhysicalCols` | DN 实现以 `TileDataSrc::Cols` 作为每个 group row 的行步长 |
 | axis0，`interleave=false` | `exp` | `physicalCols == srcPhysicalCols`；capacity ≥ `(srcValidRows/32) * srcPhysicalCols` | linear exp 与 max/scaling 使用同一 source-derived stride |
 | axis0，`interleave=true` | `exp` | physical 必须精确为 `[srcPhysicalRows/64, align32(2*srcPhysicalCols)]`；valid 为 `[srcValidRows/64, 2*srcValidCols]` | interleaved exp 使用独立、32 列对齐的 physical box |
 | axis1，任意 | `max` / `scaling` | valid 区域必须是 allocation 的 compact prefix：`validRows == 1 \|\| physicalCols == validCols`；capacity ≥ `M*(N/32)` | PTO-ISA 无条件把两者 reshape 为 1D，并连续写入前缀 |
 | axis1，exp flat branch | `src` + `exp` | **source tight：`Ps == N`**；exp `physicalRows == 1`，valid 必须是 legacy flat `[1, M*N/32]`，capacity ≥ `M*(N/32)` | flat path 用 `M*Ps/32` 决定 exp/max/scaling 的连续写入数；只有 `Ps == N` 才等于语义 group 数 |
-| axis1，exp 2D branch | `exp` | `physicalRows > 1`，valid 必须是 canonical `[M, N/32]`；`physicalRows >= M`、`physicalCols >= N/32`；capacity ≥ `(M-1)*physicalCols + N/32` | `TileDataExp::Rows > 1` 选择 2D path，并使用 `TileDataExp::Cols` 作为真实行步长；padded source 必须走此分支 |
-| 任意 f16/bf16 且 `srcValidCols < srcPhysicalCols` | `src` | 普通 source footprint 即合法上界；最终 pin 的 VL-aligned padding store 必须按最后一个 VL 的剩余行收紧 predicate | 不能要求 IR 额外容纳 `alignTo(M*Ps, elemPerVL)`；多出的行不是 source 语义 |
-| axis1 canonical B16 / axis0 FP16 MXFP4 / axis0 interleave FP32 | 所有可观察输入输出 | 最终 pin 满足 §3.1.1：不得借用 `exp` / `max` / `dst` 作隐藏 scratch，不得越过 source tail，`max` 全部 group 值保持可观察 | 当前 main 的行为不能由 verifier capacity 安全表达，属于 pin blocker，不是 IR 合法形态 |
+| axis1，exp 2D branch | `exp` | `physicalRows > 1`，valid 必须是 canonical `[M, N/32]`；`physicalRows >= M`、`physicalCols >= N/32`；capacity ≥ `(M-1)*physicalCols + N/32` | `TileDataExp::Rows > 1` 选择 2D path，并使用 `TileDataExp::Cols` 作为真实行步长；padded source 必须先匹配此分支，B16 再由下一行拒绝 |
+| 任意 f16/bf16 且 `srcValidCols < srcPhysicalCols` | `src` | 普通 source footprint 仍是合法上界；若 `128 % Ps == 0` 且 `(M*Ps) % 128 != 0`，latest 会进入不带 row-tail 的 VL-aligned store，**拒绝** | B16 下 `elemPerVL = 128`；不能要求 IR 额外容纳 `alignTo(M*Ps, 128)`，多出的行不是 source 语义 |
+| axis1 canonical 2D 且 src 为 f16/bf16 | 所有可观察输出 | **latest 下 unsupported，拒绝** | MXFP8 会按 group 数借用 `exp` 或覆盖 `max`；MXFP4 始终借用 `max`，无法用 capacity 约束保持可观察输出语义 |
+| axis0 FP16 MXFP4 且 `(Ps/2) % 32 != 0` | `dst` | **latest 下 unsupported，拒绝** | 当前实现把 `dst + physicalRows*Ps/2` 当临时区，已经越过声明 footprint |
+| axis0 FP32 MXFP8 且 `interleave=true` | `dst` | **latest 下 unsupported，拒绝** | 当前实现把 source-derived-stride 线性 exponent 暂存在 dst；普通 destination footprint 无法证明安全 |
 
 当 `M == 1` 时 canonical 与 legacy flat 数值上相同，`physicalRows == 1` 归入 flat branch；
 除此之外，legacy-flat valid shape 配上 `physicalRows > 1` 必须拒绝，不能只因元素总数一致
@@ -858,8 +887,9 @@ if (isDn) {
 
 ```
 
-该 verifier 骨架以 §3.1.1 / §13-10 的五项 pin 门槛已经在依赖选择阶段满足为前提；pin 内容
-契约不是单条 IR 能在 verifier 中查询的属性。实现不得为旧 pin 的隐藏 scratch 增加
+上述 shape/stride 骨架之后必须追加 latest 支持边界检查：axis1 canonical 2D B16、
+axis0 FP16 MXFP4 的非 32B packed stride、axis0 FP32 MXFP8 interleave，以及命中不完整
+VL-aligned store 的 padded B16 source 均返回稳定诊断。实现不得为隐藏 scratch 增加
 “特殊大 allocation 即合法”分支，也不得把 B16 source capacity 向完整 VL 向上取整。
 
 例如 axis0 的 `src valid=64x16, physical=64x32` 会让辅助输出使用 32 元素行步长；
@@ -876,9 +906,8 @@ axis1 的两个反例也被直接拒绝：
 > **来源标注**：上面这组 interleave 约束（64 对齐、`align32(2N)` physical shape）来自评审
 > 指出的 PTO-ISA `include/pto/npu/a5/TQuant.hpp` L3394-L3406。**本文档基线快照
 > `7af803bc`（`TQuant.hpp` 共 3106 行）里根本没有 `bool interleave` 这个 overload**，
-> `grep "bool interleave"` 零命中，故本节无法在该快照上自证。实现前必须在**目标 pin**
-> 上重新核对，按 §13-2 对每个实际 remote 分别验证。这也直接决定了
-> interleave 必须先 bump pin。
+> `grep "bool interleave"` 零命中，故本节无法在该快照上自证。rev11 已在目标 latest pin
+> `69a81f3/40e741b` 上复核；这也直接决定了 interleave 实现前必须先完成 commit 0 的 pin bump。
 
 `exp_zz` 互斥（§5.4）：
 
@@ -940,7 +969,7 @@ tile**，它的列数是原矩阵的 `N / 32`。ISA 侧的真实约束来自 `Ge
 `P = groupedCols / 2` 这个整除——要求 **exponent 列数为偶数**，换算回原矩阵才是 `N % 64 == 0`。
 早期版本直接对 exponent 列数写 `% 64 == 0`，等于把约束放大了 32 倍，**会拒掉本文档自己
 列出的每一个 ND 用例**：§11.1 的 `nd_fp8_ocp`（src `16x64` → exp `16x2`，`2 % 64 != 0`）、
-§11.6 的 `nd_fp8_ocp_16x128`（exp `16x4`，`4 % 64 != 0`）无一幸免。
+§11.6 的 `nd_fp8_f32_ocp_16x128`（exp `16x4`，`4 % 64 != 0`）无一幸免。
 
 **规则 9 不要求 valid 行对齐**：`rowBlockCount = (rows + 15) / 16` 是显式的 ceil-divide，注释写着
 "to support non-16-aligned row counts"，并且 `ZeroSourcePaddingB16` 会把 `validRow` 之外、
@@ -954,8 +983,8 @@ tile**，它的列数是原矩阵的 `N / 32`。ISA 侧的真实约束来自 `Ge
 `hatM = 1`）当作"退化 identity"放行，只有在 `src`/`dst` 地址别名时才碰巧成立；
 对独立分配的 `dst` 就是读未初始化内存。若确实需要支持 `M = 32`，应当在 lowering 阶段
 显式降成一次 copy（或证明别名），而不是生成 `TMOV<0>`。§11.6 早期原计划的
-`m=32` **完整链路** ST 用例相应改为 TMov **负向 lit**；同 shape 的 TQUANT-only
-padding-tail case 仍合法，但绝不生成后续 `TMOV<0>`。
+`m=32` **完整链路** ST 用例相应改为 TMov **负向 lit**；带不完整 B16 VL-tail 的
+TQUANT 形态在 latest pin 下也由 §7.1.1 拒绝，只保留 §11.6.1 的原生行为审计。
 
 规则 12 只对 ND 施加。DN 侧不做 `tmp` **最小容量**校验，理由见 §9 与 §13-1：
 当前 ISA 实现里 DN 的 `tmp` 是 `(void)tmp;`，**根本不使用**。但这不意味着 DN
@@ -1100,9 +1129,9 @@ padding”的情况下猜测。`dst`、`exp`、`max`、`scaling`（以及存在�
 f32 与无 padding f16 的对照，防止把所有 source 无条件扩大为 `Read + Write`。
 
 `Read + Write` 只授权修改 source **声明 footprint 内**的行尾 padding，不授权
-`ZeroPadColumns_VLAligned` 在最后一个 VL 写不存在的额外 rows。该边界由 §3.1.1 的
-pin 修复与 §11.6.1 的 source 精确 redzone 保证，不通过扩大 `MemoryEffects` 或 source
-capacity 规避。
+`ZeroPadColumns_VLAligned` 在最后一个 VL 写不存在的额外 rows。该边界由 §7.1.1 的
+latest 支持边界的 verifier 拒绝规则保证，§11.6.1 的 source 精确 redzone 只保存底层行为证据；
+不通过扩大 `MemoryEffects` 或 source capacity 规避。
 
 X-to-ZZ 的 src/dst 都是 vec tile，现有 `TMovOp::getPipe()` 会返回 `PIPE_V`；无需新增
 pipe 实现，但 InsertSync 必须使用上面的分支 effects。
@@ -1123,8 +1152,8 @@ pipe 实现，但 InsertSync 必须使用上面的分支 effects。
 | Memory effects | `TQuantMxOp::getEffects()` 按 f16/bf16 source padding 分支为 `Read + Write`；`TMovOp::getEffects()` 按 FP/X-to-ZZ 与 axis 分支；PlanMemory/InsertSync 增加 source mutation 回归 |
 | 文档 | `docs/PTO_IR_manual.md`（两个 op 章节）、`docs/release/PTO-tile-Instruction-SPEC-v0.4.md`、本设计文档 |
 | 测试 | 见 §11 |
-| **pto-isa pin** | `interleave` 需要含该 overload 的修订（§13-2），但 `f03c2454` 与 `main@dfc2be6f` 都不满足 §3.1.1/§13-10 的五项门槛，不能直接作为最终 pin。每个目标建模为 `(repo, revision, 兼容性约束)`，在实际 repo 中验证 revision 存在，并验证：flat/source group 语义、source-derived dst stride、canonical B16 不借用 exp/max、DN FP16 MXFP4 不越过 dst、DN FP32 interleave 不借用 dst、B16 VL-tail 不越过 source、max 输出保持。`Dockerfile.dev` 仍按 CANN 9.0 独立决策；updater 不假设 remote 永远共享或必然不共享 SHA。该建模与最终修复 revision 的 pin bump 由本 PR 落地；#1122 只作为基线 |
-| ReleaseNotes | 记录 `pto.tmov` 新增非-scaling `tmp` 的 X-to-ZZ 形态，以及 `grpAxis`/`interleave`；标注 `exp_zz`/`storeMode` deprecated；说明 axis1 canonical / tight-source legacy flat 都受支持、两个 tight MXFP8 legacy-flat case 无需迁移，flat+padded source 改用 canonical；明确 MXFP4 destination physical cols 收紧为 source physical cols / 2，既有 `tquant_mx_a5_emitc.pto` 要迁移；另记录 §8.1 的生成文本变化 |
+| **pto-isa pin** | 直接对齐最新发布头：GitCode `master@69a81f3` 用于 CI、主 Dockerfile 与 remote-validation；GitHub `main@40e741b` 用于 `ci_sim`。GitHub commit 是 PR #239 的 merge，内容同步自 GitCode `69a81f3`。每个目标仍建模为 `(repo, revision, 兼容性约束)` 并在自己的 remote 验证。`Dockerfile.dev@662d7f2` 继续作为 CANN 9.0 独立目标，仅在 latest 通过该环境验证后更新。原 updater 已删除，本 PR 重新落地 repo-aware target map/updater；不引入未来占位 revision，也不要求 pto-isa 先合其他修改 |
+| ReleaseNotes | 记录 `pto.tmov` 新增非-scaling `tmp` 的 X-to-ZZ 形态，以及 `grpAxis`/`interleave`；标注 `exp_zz`/`storeMode` deprecated；说明 axis1 f32 canonical / tight-source legacy flat 受支持、两个 tight MXFP8 legacy-flat case 无需迁移，B16 canonical 及 §7.1.1 另外三类 latest 限制会被拒绝；明确 MXFP4 destination physical cols 收紧为 source physical cols / 2，既有 `tquant_mx_a5_emitc.pto` 要迁移；另记录 §8.1 的生成文本变化 |
 
 **PTO-BC 注意事项**：这里必须区分“已有 known-op schema”和“generic record”。
 PTOAS `988d50e24` 的 `tools/ptobc/generated/ptobc_opcodes_v0.h` 只登记了
@@ -1156,18 +1185,13 @@ TQuantMx 和 X-to-ZZ 都选择 generic，而不是依赖环境变量后只 grep 
 
 | 函数 | `grpAxis` | alg | valid shape | physical 关键契约 | 期望模板参数 |
 |---|---|---|---|---|---|
-| `nd_fp8_ocp` | 默认 | MXFP8 × OCP | src/dst `16x64`；exp/max/scaling `16x2` | src/dst physical cols 均为 `64`；exp/max/scaling 为 `2/2/2`，max/scaling compact | `TQUANT<1, MxQuantAlg::OcpMxFp8E4M3>` |
-| `nd_exp_2d_strided` | axis1 | MXFP8 × OCP | src/dst `16x64`；exp/max/scaling `16x2` | src/dst physical cols 均为 `128`；exp physical `16x32`，证明 padded source 走 2D exp 且 destination 匹配 source-derived stride；max/scaling 仍 compact | `TQUANT<1, MxQuantAlg::OcpMxFp8E4M3>` |
-| `nd_fp8_nv` | axis1 | MXFP8 × NV | src `16x64`；exp/max/scaling `16x2` | 同 `nd_fp8_ocp` | `TQUANT<1, MxQuantAlg::NvMxFp8E4M3>` |
+| `nd_fp8_ocp` | 默认 | MXFP8 × OCP | src f32/dst `16x64`；exp/max/scaling `16x2` | src/dst physical cols 均为 `64`；exp/max/scaling 为 `2/2/2`，max/scaling compact | `TQUANT<1, MxQuantAlg::OcpMxFp8E4M3>` |
+| `nd_exp_2d_strided` | axis1 | MXFP8 × OCP | src f32/dst `16x64`；exp/max/scaling `16x2` | src/dst physical cols 均为 `128`；exp physical `16x32`，证明 padded source 走 2D exp 且 destination 匹配 source-derived stride；max/scaling 仍 compact | `TQUANT<1, MxQuantAlg::OcpMxFp8E4M3>` |
+| `nd_fp8_nv` | axis1 | MXFP8 × NV | src f32 `16x64`；exp/max/scaling `16x2` | 同 `nd_fp8_ocp` | `TQUANT<1, MxQuantAlg::NvMxFp8E4M3>` |
 | `nd_fp8_legacy_flat` | 默认 | MXFP8 × OCP | src/dst `16x32`；exp/max/scaling `1x16` | src/dst physical cols 均为 `32`（flat source 必须 tight）；exp physical rows 为 `1`；三个辅助输出都是 compact prefix | `TQUANT<1, MxQuantAlg::OcpMxFp8E4M3>` |
-| `nd_fp4_2d_padded` | axis1 | MXFP4_E2M1 × OCP | src `16x64`；dst packed `16x32`；exp/max/scaling `16x2` | src physical cols `128`，dst packed physical cols `64`；exp 为 2D，max/scaling compact | `TQUANT<1, MxQuantAlg::OcpMxFp4E2M1>` |
-| `nd_fp8_b16_small_groups` | axis1 | MXFP8 × OCP | src/dst `2x32`；exp/max/scaling `2x1` | canonical exact allocation；要求修复后的 pin 不再写 `exp+16` | `TQUANT<1, MxQuantAlg::OcpMxFp8E4M3>` |
-| `nd_fp8_b16_eight_groups` | axis1 | MXFP8 × OCP | src/dst `8x32`；exp/max/scaling `8x1` | canonical exact allocation；要求 `max` 不被 scale scratch 覆盖 | `TQUANT<1, MxQuantAlg::OcpMxFp8E4M3>` |
 | `dn_fp8_ocp` | axis0 | MXFP8 × OCP | src/dst `64x16`；exp/max/scaling `2x16` | src physical `64x32`；dst 可为 `64x16`；exp/max/scaling 均为 `2x32` | `TQUANT<0, MxQuantAlg::OcpMxFp8E4M3>` |
-| `dn_fp4_ocp` | axis0 | MXFP4_E2M1 × OCP | src f16 `64x16`；dst packed `64x8`；exp/max/scaling `2x16` | src physical cols `32`；dst packed physical cols `16`；三个辅助输出均为 `2x32`；pin 不得越过 dst footprint 使用 scratch | `TQUANT<0, MxQuantAlg::OcpMxFp4E2M1>` |
-| `dn_fp8_interleave` | axis0 | MXFP8 × OCP | src/dst `128x16`；exp `2x32`；max/scaling `4x16` | src physical `128x32`；dst 可为 `128x16`；exp `2x64`；max/scaling `4x32` | `TQUANT<0, MxQuantAlg::OcpMxFp8E4M3, true>` |
-| `dn_fp8_f32_interleave_tight_dst` | axis0 | MXFP8 × OCP | src/dst valid `64x1` | src physical `64x128`；dst physical `64x1`；exp physical `1x256`；max/scaling physical `2x128`；修复后的 pin 不借用 dst | `TQUANT<0, MxQuantAlg::OcpMxFp8E4M3, true>` |
-| `dn_bf16_padding_vl_tail` | axis0 | MXFP8 × OCP | src/dst valid `32x1`；exp/max/scaling `1x1` | src bf16 physical `32x2`；dst `32x1`；三个辅助输出 physical `1x2`；普通 source footprint 合法 | `TQUANT<0, MxQuantAlg::OcpMxFp8E4M3>` |
+| `dn_fp4_ocp` | axis0 | MXFP4_E2M1 × OCP | src bf16 `64x16`；dst packed `64x8`；exp/max/scaling `2x16` | src physical cols `32`；dst packed physical cols `16`；三个辅助输出均为 `2x32` | `TQUANT<0, MxQuantAlg::OcpMxFp4E2M1>` |
+| `dn_fp8_interleave` | axis0 | MXFP8 × OCP | src bf16/dst `128x16`；exp `2x32`；max/scaling `4x16` | src physical `128x32`，总 physical 元素数整除 B16 VL；dst 可为 `128x16`；exp `2x64`；max/scaling `4x32` | `TQUANT<0, MxQuantAlg::OcpMxFp8E4M3, true>` |
 
 CHECK 要点：
 - 断言**完整的模板参数串**，而不只是 `TQUANT(`，否则 axis/alg 写错测不出来；
@@ -1179,10 +1203,9 @@ CHECK 要点：
 - `nd_fp8_legacy_flat` 必须保留精确的 `1x16` valid shape，它与现有
   `tquant_mx_a5_emitc.pto` / `quant_mx_tile_native.pto` 共同固定 axis1 legacy flat
   兼容契约；同时 physical rows 必须为 `1` 且 source tight，确保实际命中安全的 flat branch；
-- `nd_fp8_b16_small_groups` / `nd_fp8_b16_eight_groups` 的 lit 只证明 verifier 与 EmitC
-  接受修复后的合法形态；`dn_fp8_f32_interleave_tight_dst` 与
-  `dn_bf16_padding_vl_tail` 同理。§11.6.1 的原生 redzone / max golden 才是 pin 门槛，
-  lit 和经过 256B PlanMemory slot 的普通 canary 都不能证明运行时没有越界；
+- canonical B16 2D、FP32 interleave、FP16 MXFP4 非 32B packed stride 与不完整 B16
+  VL-tail 不在本正向表中；它们由 §11.3 的 latest 支持边界负向用例拒绝。§11.6.1 仅保留
+  原生行为审计，不能拿经过 256B PlanMemory slot 的普通 canary 掩盖实际越界；
 - 实施 §7.1.1 的 MXFP4 packed dst 规则时，同提交把现有
   `test/lit/pto/tquant_mx_a5_emitc.pto` 的 `%dst_fp4` physical cols 从 `32` 改为 `16`
   （`v_col=16` 不变），并同步 `outs` type。该用例不是兼容哨兵；两个保持不迁移的
@@ -1219,8 +1242,8 @@ source-mutating 修正。
 
 - `dn_f16_padded_src`：src valid `64x16`、physical `64x32`，TQuant 后再次读取同一
   source，断言 `src = Read + Write` 且 PlanMemory/InsertSync 保留依赖；
-- `nd_bf16_padded_src`：axis1 使用 canonical 2D exp 覆盖 `validCols < physicalCols`；
-  flat exp + padded source 已由 §11.3 单独拒绝；
+- `dn_bf16_padded_src_vl_complete`：选择 `M*physicalCols` 整除 128 的 axis0 shape，断言
+  `src = Read + Write`；不完整 VL 由 §11.3 拒绝；
 - `dn_f32_padded_src_control`：同 shape 的 f32 source 只声明 `Read`；
 - `dn_f16_tight_src_control`：f16 但 `validCols == physicalCols` 时只声明 `Read`。
 
@@ -1262,6 +1285,10 @@ source-mutating 修正。
 | `nd_fp4_dst_packed_stride_mismatch`（src physical cols `128`、dst packed physical cols `32`） | `expects MXFP4 axis1 dst physical cols to equal src physical cols / 2` |
 | `dn_fp4_dst_packed_stride_mismatch` | `expects MXFP4 axis0 dst physical cols to equal src physical cols / 2` |
 | `mxfp4_odd_src_physical_cols` | `expects MXFP4 src physical cols to be even for packed destination addressing` |
+| `nd_canonical_b16_latest_unsupported` | `does not support axis1 canonical 2D B16 quantization with the pinned pto-isa revision` |
+| `dn_fp4_fp16_unaligned_packed_stride_latest_unsupported` | `does not support FP16 MXFP4 axis0 when packed source stride is not a multiple of 32 bytes` |
+| `dn_fp8_f32_interleave_latest_unsupported` | `does not support FP32 interleave with the pinned pto-isa revision` |
+| `b16_padding_incomplete_vl_latest_unsupported` | `does not support padded B16 source whose VL-aligned padding store has an incomplete final VL` |
 | `tquant_dynamic_valid` | `expects static valid and physical shapes for <tile> in MX quantization` |
 | `tquant_dynamic_physical` | 同上；至少分别覆盖 axis0 source-derived stride 与 axis1 compact-prefix 两条路径 |
 | `exp_zz_with_axis0` | `expects the deprecated exp_zz form to use grpAxis=axis1` |
@@ -1321,7 +1348,7 @@ destination packed stride。实现不能只验证 valid shape、元素总数或 
 
 ```
 test/samples/TquantMxDn/
-├── tquant_mx_dn.pto             # DN 完整链路 + 明确分离的 TQUANT-only mirror
+├── tquant_mx_dn.pto             # latest 支持范围内的 DN 完整链路
 ├── tquant_mx_dn_golden.py       # numpy 参考实现
 ├── tquant_mx_dn_compare.py      # 逐输出 dtype + 容差比较
 └── npu_validation/golden.py     # 板测独立路径
@@ -1343,8 +1370,8 @@ golden 需要实现两段：
    q in [0, 16), delta in {0, 1}
    ```
 
-完整链路 case 执行两段；§11.6 中两个 `n=1` TQUANT-only mirror 只执行第 1 段并比较
-量化输出，禁止为了复用 runner 而无条件执行第 2 段。
+完整链路 case 执行两段。两个 `n=1` case 只留在 §11.6.1 的原生行为审计中，不进入该
+sample runner；禁止为了复用 runner 而把 unsupported TQUANT case 混入正向精度套件。
 
 容差沿用 `tquant_mx_compare.py` 的做法：
 
@@ -1358,32 +1385,21 @@ golden 需要实现两段：
 
 exponent 与量化结果都是**位精确**的，不允许容差；只有 `max`/`scaling` 走浮点容差。
 case metadata 必须同时记录 source dtype、每个输出的 storage dtype/shape 与 packed factor，
-reader 先据此计算字节数。尤其 canonical BF16/FP16 与 MXFP4 canary case 的 max/scaling
-文件不能沿用 float32 reader，否则元素数量减半且位解释错误，无法证明 max preservation。
+reader 先据此计算字节数。尤其 BF16/FP16 与 MXFP4 case 的 max/scaling 文件不能沿用
+float32 reader，否则元素数量减半且位解释错误，无法证明输出。
 golden 也先舍入到相同 f16/bf16 storage dtype，再提升到 float32 比较，避免拿无限精度参考值
 误判合法的存储舍入。
 
 同时给 `test/samples/TquantMx/` 追加一条 ND + `pto.tmov` 非-scaling tmp 的用例，
 覆盖 ND-to-ZZ。
 
-实现完成后，该目录增加三组 canonical B16 case，并追加 DN FP32 interleave /
-B16 padding-tail 两组，作为 §11.6.1 原生 pin harness 的 **PTOAS mirror regression**：
+实现阶段只增加 §7.1.1 在 latest pin 上明确支持的精度 case。canonical B16 2D、DN FP32
+interleave、DN FP16 MXFP4 非 32B packed stride 和不完整 B16 padding-tail 不建立正向 sample；
+它们由 verifier 负向测试固定，原生层面的实际行为仅由 §11.6.1 记录。
 
-- MXFP8 `2x32`（`totalGroups=2 < 8`）：exp physical 精确为 `2x1`，比较 exp/max/scaling
-  与 golden；
-- MXFP8 `8x32`（`totalGroups=8`）：`max` 与独立 golden 逐项比较，证明 scale scratch
-  不再覆盖已经产出的 max；
-- MXFP4 `2x32`：同样对 `max` 做逐项比较，覆盖 MXFP4 始终借用 max 的旧行为；
-- DN MXFP8 f32 interleave：使用 `src valid=64x1, physical=64x128`、tight
-  `dst=64x1` 与 exp/max/scaling 的 §11.1 physical shape，比较所有可观察输出；
-- DN MXFP8 bf16 padding tail：使用 `src valid=32x1, physical=32x2`，比较声明
-  footprint 内的 source padding 和所有输出。
-
-这些 sample 经过 PlanMemory 后，VEC allocation slot 会按 256B 对齐。因而不能把“下一个
-allocation 的 canary 未变”当成精确越界证明：`2x1 ui8` 的 2B exp 后 `+16` 仍在同一
-256B slot；`32x2 bf16` 的 128B source 后第 33–64 行也正好落在该 slot 后半段。
-sample 必须按上表比较完整输出，但它只证明 PTOAS IR/lowering 与已验证 pin 组合后的语义；
-提交 0 的 revision 准入唯一依赖 §11.6.1 中 redzone 紧贴声明 footprint 的原生 harness。
+原因是 PTOAS PlanMemory 会把 VEC allocation slot 对齐到 256B，普通 sample 的相邻 allocation
+canary 可能掩盖 footprint 外写；同时 `max` 覆盖发生在合法 payload 内，单纯 redzone 也发现
+不了。被 verifier 拒绝的组合不能再作为 PTOAS runtime 正向验收来证明 latest 安全。
 
 `runop.sh` 的 `PTO_PTO_DIRS` 需要把 `TquantMxDn` 加入默认列表。
 
@@ -1392,39 +1408,28 @@ sample 必须按上表比较完整输出，但它只证明 PTOAS IR/lowering 与
 对照 `testcase/tmatmul_mx/` 的结构：`cases.py`（唯一真值源）、`gen_data.py`、
 `compare.py`、`main.cpp`、`launch.cpp`、`CMakeLists.txt`、`tquant_mx_dn.pto`。
 
-`cases.py` 必须把“DN 量化 + DN-to-ZZ 完整链路”和“TQUANT-only mirror”分成两个列表，
-不能让后者自动拼接 `pto.tmov`：
+`cases.py` 只列 latest pin 下受支持的“DN 量化 + DN-to-ZZ 完整链路”；命中 §7.1.1
+unsupported 边界的 TQUANT case 不进入正向 ST：
 
 ```python
 FULL_CHAIN_CASES = [
     {"name": "dn_fp8_ocp_64x64",    "m": 64,  "n": 64,  "grp_axis": 0, "alg": "ocp", "eps": 0.0},
     {"name": "dn_fp8_ocp_128x32",   "m": 128, "n": 32,  "grp_axis": 0, "alg": "ocp", "eps": 0.0},
     {"name": "dn_fp8_nv_64x64",     "m": 64,  "n": 64,  "grp_axis": 0, "alg": "nv",  "eps": 0.0},
-    {"name": "dn_fp4_ocp_64x64",    "m": 64,  "n": 64,  "grp_axis": 0, "alg": "ocp", "fp4": True},
-    {"name": "dn_fp4_fp16_unaligned_stride_64x96", "m": 64, "n": 96, "grp_axis": 0,
-     "alg": "ocp", "fp4": True, "src_type": "fp16"},  # packed row stride 48B，覆盖旧 dst scratch
+    {"name": "dn_fp4_bf16_ocp_64x64", "m": 64, "n": 64, "grp_axis": 0,
+     "alg": "ocp", "fp4": True, "src_type": "bf16"},
     {"name": "dn_fp8_ocp_64x96",    "m": 64,  "n": 96,  "grp_axis": 0, "alg": "ocp"},   # hatM=2 最小合法
-    {"name": "nd_fp8_ocp_16x128",   "m": 16,  "n": 128, "grp_axis": 1, "alg": "ocp"},   # 非 16 对齐行的邻居
-    {"name": "nd_fp8_ocp_20x128",   "m": 20,  "n": 128, "grp_axis": 1, "alg": "ocp"},   # 行数非 16 对齐
-]
-
-TQUANT_ONLY_MIRROR_CASES = [
-    {"name": "dn_fp8_f32_interleave_scratch_64x1", "m": 64, "n": 1, "grp_axis": 0,
-     "alg": "ocp", "interleave": True, "src_physical_cols": 128, "dst_physical_cols": 1},
-    {"name": "dn_fp8_bf16_padding_tail_32x1", "m": 32, "n": 1, "grp_axis": 0,
-     "alg": "ocp", "src_type": "bf16", "src_physical_cols": 2, "dst_physical_cols": 1},
+    {"name": "nd_fp8_f32_ocp_16x128", "m": 16, "n": 128, "grp_axis": 1,
+     "alg": "ocp", "src_type": "f32"},
+    {"name": "nd_fp8_f32_ocp_20x128", "m": 20, "n": 128, "grp_axis": 1,
+     "alg": "ocp", "src_type": "f32"},
 ]
 ```
 
-**`m = 32,n = 1` 只对 TQUANT 是正向用例，不是完整链路正向用例。** TQuant 产生的
-exponent valid shape 是 `1x1`；若继续喂给 DN-to-ZZ，`srcRows=1` 使
-`numPairs=0`、转换 destination 不被写，同时 `srcCols=1` 也不满足 16 对齐。因此它仅放在
-`TQUANT_ONLY_MIRROR_CASES`，用于复现 B16 padding tail；§11.4 仍以独立构造的
-`dn_src_rows_is_one` 拒绝 TMov 输入。
-
-`m = 64,n = 1` 同样只能 TQUANT-only：它的 exponent 是 `2x1`，虽然 rows 已满足最小
-pair 数，cols 仍违反 §7.2 规则 11 的 `% 16 == 0`。它用于复现 interleave destination
-scratch，不得被 case generator 拼进 DN-to-ZZ 链路。
+`m = 32,n = 1` / `m = 64,n = 1` 分别用于 §11.6.1 复现 B16 padding-tail 与 FP32
+interleave destination scratch，不是 latest 支持的 PTOAS 正向 case。即使只看 DN-to-ZZ，
+前者的 exponent `1x1` 同时违反 rows ≥ 2 与 cols % 16，后者的 `2x1` 仍违反 cols % 16；
+因此 case generator 不得把它们拼进完整链路。
 
 当 exponent cols 同时满足 `% 16 == 0` 时，`m = 64`（`hatM = 2`，`numPairs = 1`）
 才是 DN-to-ZZ 真正的最小合法行边界；`dn_fp8_ocp_64x96` 单独固定该边界。
@@ -1433,21 +1438,15 @@ scratch，不得被 case generator 拼进 DN-to-ZZ 链路。
 `align16(20) * (128/32) = 128` 字节，source 必须是 compact prefix；它同时验证
 source padding 零写、destination padded 写出与 `tmp` 容量公式里的 `ceil` 都没有算少。
 
-`dn_fp4_fp16_unaligned_stride_64x96` 逐项比较 packed dst/exp/max/scaling；它是
-§11.6.1 DN FP16 MXFP4 redzone case 的 PTOAS mirror，不允许通过扩大 PTO IR 的 dst
-visible shape 来规避，但普通 ST allocation 后的 canary 不是提交 0 的权威越界判据。
+DN FP16 MXFP4 非 32B packed stride、FP32 interleave 与不完整 B16 padding-tail 只保留
+§11.3 verifier 负向测试和下一节的原生行为证据，不进入 ST case list。
 
-`dn_fp8_f32_interleave_scratch_64x1` 使用 tight dst、exp physical `1x256`、
-max/scaling physical `2x128`；`dn_fp8_bf16_padding_tail_32x1` 使用 source physical
-`32x2`。两者只执行 TQUANT 并比较可观察结果，不生成 X-to-ZZ `TMOV<0>`。它们分别 mirror
-destination scratch 与最后一个 VL row-tail 修复；精确越界仍由下一节的原生 redzone 检测。
+### 11.6.1 latest pin 的 PTO-ISA 原生行为审计（非 pin 门槛）
 
-### 11.6.1 提交 0 的 PTO-ISA 原生 redzone harness
-
-pin 候选必须先在 PTO-ISA 仓库提供一个独立 C++ harness，直接构造 TileData 并调用候选
-revision 的 `TQUANT`；它不经 PTOAS parser、verifier、lowering、`pto.alloc_tile` 或
-PlanMemory，因此在提交 1–5 尚未实现时也能运行。该 harness 是提交 0 判断隐藏写是否修复的
-权威依据，PTOAS sample/ST 只是提交 7 的 mirror。
+为保存 §3.1.1 的实证依据，可用独立 C++ harness 直接构造 TileData 并调用
+`69a81f3/40e741b` 的 `TQUANT`。它不经 PTOAS parser、verifier、lowering、
+`pto.alloc_tile` 或 PlanMemory，因此能准确暴露 latest 的隐藏写。该 harness 不要求合入
+pto-isa，也不决定 pin SHA；PTOAS 的合入保护来自 §11.3 对这些组合的 verifier 拒绝。
 
 每个 testcase 使用一个显式对齐的 raw byte backing buffer，并由 harness 手工切分所有
 tile payload / redzone；禁止调用会把每个 tile 扩到 256B slot 的 allocator。每个被监测 tile
@@ -1470,22 +1469,21 @@ suffix redzone 与 alignment gap，执行后逐字节检查 sentinel。harness �
 
 | case | 被监测 payload / 紧贴 redzone | 最低判据 |
 |---|---|---|
-| canonical B16 MXFP8 small groups `2x32` | exp `2x1 ui8 = 2B`；redzone 从 byte 2 开始并覆盖 `exp+16` 后的完整临时写范围 | 旧 `exp+16` 写必须破坏 redzone；候选 pin 不破坏 |
-| canonical B16 MXFP8 eight groups `8x32` | max 是可观察 payload | 所有 max 与按 source storage dtype 生成的 golden 一致；这是 payload 覆盖检测，不以 redzone 代替 |
-| canonical B16 MXFP4 `2x32` | max 是可观察 payload；exp/max/scaling/dst 的 suffix redzone 都紧贴 footprint | max 保留且所有 redzone 不变，dst 按 packed byte 比较 |
-| DN FP16 MXFP4 unaligned packed stride `64x96` | dst suffix redzone 从 packed destination footprint 的下一字节开始 | 旧实现从 dst 末尾借 scratch 时立即命中 redzone |
-| DN FP32 interleave `64x1`、src physical cols 128 | tight dst `64x1 ui8 = 64B`；redzone 至少覆盖 offset 128 的第二个 exponent scratch row 及其写宽 | 旧 stage 2 的 source-derived-stride scratch 必须命中 redzone |
-| DN BF16 padding tail `32x1`、src physical `32x2` | source `32x2 bf16 = 128B`；redzone 紧接 byte 128 并至少覆盖到一个完整 256B VL store 末端 | 旧实现写第 33–64 行时命中 redzone |
+| canonical B16 MXFP8 small groups `2x32` | exp `2x1 ui8 = 2B`；redzone 从 byte 2 开始并覆盖 `exp+16` 后的完整临时写范围 | latest 的 `exp+16` 写破坏 redzone，对应 verifier 必须拒绝 |
+| canonical B16 MXFP8 eight groups `8x32` | max 是可观察 payload | latest 的 max 与 golden 不一致，对应 verifier 必须拒绝；这是 payload 覆盖检测，不以 redzone 代替 |
+| canonical B16 MXFP4 `2x32` | max 是可观察 payload；exp/max/scaling/dst 的 suffix redzone 都紧贴 footprint | latest 覆盖 max，对应 verifier 必须拒绝，dst 仍按 packed byte 审计 |
+| DN FP16 MXFP4 unaligned packed stride `64x96` | dst suffix redzone 从 packed destination footprint 的下一字节开始 | latest 从 dst 末尾借 scratch 并命中 redzone，对应 verifier 必须拒绝 |
+| DN FP32 interleave `64x1`、src physical cols 128 | tight dst `64x1 ui8 = 64B`；redzone 至少覆盖 offset 128 的第二个 exponent scratch row 及其写宽 | latest 的 source-derived-stride scratch 命中 redzone，对应 verifier 必须拒绝 |
+| DN BF16 padding tail `32x1`、src physical `32x2` | source `32x2 bf16 = 128B`；redzone 紧接 byte 128 并至少覆盖到一个完整 256B VL store 末端 | latest 写第 33–64 行并命中 redzone，对应 verifier 必须拒绝 |
 
-redzone 长度由“旧实现最远可能写到的 byte offset + 一次写宽”推导，并在 harness 中以
+redzone 长度由“latest 实现最远可能写到的 byte offset + 一次写宽”推导，并在 harness 中以
 `static_assert` / checked arithmetic 固定，不能只取一个经验常量。canonical max overwrite
 发生在合法 payload 内，必须靠逐元素 golden 发现；其余四类 footprint 越界行为还必须由
 精确 redzone 发现。
-先把 `main@dfc2be6f` 作为 known-bad negative control：六个 case 必须分别因对应 redzone
-或 max golden 失败；若某个 case 在旧 revision 也通过，说明 harness 没有命中目标分支，
-不能用于证明修复。随后修复 revision 六组全过，才进入 repo-aware pin 候选。
-CPU-sim 是提交 0 必跑项；具备 A5 环境时用相同 raw layout 再跑设备路径，并把命令、
-revision、每个 negative-control failure offset 与候选结果记录在 pin 提交说明中。
+`69a81f3` 与 `40e741b` 的六个 case 应分别复现对应 redzone/max-golden failure；若某个 case
+意外通过，先重新核对最新头文件与命中分支，再决定是否可缩小 verifier 的 unsupported
+范围。该审计结果记录 revision 和首个 failure offset，但不阻止 commit 0 把 pin 对齐 latest。
+将来上游修复后，可用同一 harness 证明某条限制消失，再配套放宽 PTOAS verifier。
 
 ### 11.7 PTO-BC roundtrip
 
@@ -1516,8 +1514,10 @@ revision、每个 negative-control failure offset 与候选结果记录在 pin �
 ### 11.8 运行方式
 
 ```bash
-# 0) pin 准入（在候选 pto-isa revision 的 build tree，不依赖 PTOAS 新功能）
-ctest --test-dir <pto-isa-build> -R 'tquant_mx_redzone' --output-on-failure
+# 0) pin 对齐与接口验证（两个 remote 分别 fetch/checkout）
+git -C <gitcode-pto-isa> checkout 69a81f3b2d145fe4f9925cfd65a083f78ad1f804
+git -C <github-pto-isa> checkout 40e741bf1cfce99da3b1caa514e08c2f72894922
+# 可选：运行 §11.6.1 原生 harness，记录 latest 已知限制；失败不是 pin 拒绝条件
 
 # 1) 构建 PTOAS（本地开发树；LLVM_BUILD_DIR 指向已有 LLVM 构建）
 LLVM_BUILD_DIR=<llvm-build> ./quick_install.sh
@@ -1552,7 +1552,8 @@ PTOAS_BIN=build/tools/ptoas/ptoas ./test/samples/runop.sh -t TquantMx
 #    参考 test/tilelang_st/npu/a5 的既有流程运行 tquant_mx_dn
 ```
 
-提交 0 必须先跑完第 0 步；功能实现后的最终验收必须跑完 1–6，7 在具备环境时补充。
+提交 0 必须先跑完第 0 步的 remote 存在性、checkout、头文件接口与既有编译线验证；
+功能实现后的最终验收必须跑完 1–6，7 在具备环境时补充。
 第 6 步不能省：本特性的全部价值就是生成能被 pto-isa 接受的调用，lit 只能证明文本形态。
 
 ## 12. 实施顺序
@@ -1561,33 +1562,32 @@ PTOAS_BIN=build/tools/ptoas/ptoas ./test/samples/runop.sh -t TquantMx
 
 | # | 内容 | 验证 |
 |---|---|---|
-| 0 | **先取得满足 §3.1.1 的 pto-isa 修复 revision，再由本 PR 落地 pin 三元组、存在性验证与 bump**：`f03c2454` 只可作为含接口/CPU-sim 修复的祖先候选，不能直接使用；GitHub `main@dfc2be6f` 也仍不合格。若尚无 revision，先在 pto-isa 修复 canonical B16 exp/max scratch、DN FP16 MXFP4 dst scratch、DN FP32 interleave dst scratch 与 B16 VL-tail predicate；PTOAS 不用 verifier 容量特例掩盖。随后按 `(repo, revision, 兼容性约束)` 对 `ci` / `ci_sim` 各自 remote 验证，`Dockerfile.dev` 继续独立维持 CANN 9.0 兼容 pin，updater 改为每目标带 repo | **只运行 §11.6.1 独立 PTO-ISA C++ redzone harness 作为 pin 准入**：`main@dfc2be6f` 的六个 known-bad case 分别失败，候选 revision 六组全过，且每个 guard 从声明 footprint 下一字节开始；再实跑现有 CI/容器线并复核 interleave、ND padding/stride、DN `(void)tmp;`。本步不运行依赖提交 1–5 的 PTOAS sample/ST |
+| 0 | **直接对齐两个 remote 的 latest pin**：GitCode CI 默认值/job env、主 Dockerfile 与 remote-validation 更新到 `69a81f3b2d145fe4f9925cfd65a083f78ad1f804`；GitHub `ci_sim` 更新到 `40e741bf1cfce99da3b1caa514e08c2f72894922`。后者是已合并 PR #239 的 merge commit，明确同步前者。重新引入 repo-aware target map/updater，不创建未来占位 revision，不等待 pto-isa 再合其他修改；`Dockerfile.dev@662d7f2` 继续按 CANN 9.0 独立处理 | 两个 remote 分别 fetch/checkout；核对 grouped/interleave 与 X-to-ZZ 接口；实跑现有 CI/容器线。`Dockerfile.dev` 单独尝试 latest 的 CANN 9.0 编译验证，通过才更新，否则保留旧 pin 并记录依据；§11.6.1 只记录已知行为，不作为 pin gate |
 | 1 | `MxGroupAxis` 枚举 + `TQuantMxOp` 两个属性（ODS/parser/printer/CAPI/Python） | 现有 lit 全绿（默认值保证零行为变化） |
-| 2 | `TQuantMxOp::verify()` 按轴分派，axis1 同时保留 canonical / legacy flat；落实 §7.1.1 的 flat-tight-source、MXFP8/MXFP4 destination packed stride、完整 physical 矩阵、dynamic reject 与 f16/bf16 padded-source `Read + Write` effects；同提交把 `tquant_mx_a5_emitc.pto` 的 MXFP4 dst physical cols `32→16` | 两个 tight MXFP8 legacy IR 不迁移 + MXFP4 迁移后 lit + flat-padded/dst-stride/physical/动态负向 lit + MemoryEffects/PlanMemory/InsertSync 回归 |
+| 2 | `TQuantMxOp::verify()` 按轴分派，axis1 同时保留 canonical / legacy flat；落实 §7.1.1 的 flat-tight-source、MXFP8/MXFP4 destination packed stride、完整 physical 矩阵、dynamic reject、latest unsupported 边界与 f16/bf16 padded-source `Read + Write` effects；同提交把 `tquant_mx_a5_emitc.pto` 的 MXFP4 dst physical cols `32→16` | 两个 tight MXFP8 legacy IR 不迁移 + MXFP4 迁移后 lit + flat-padded/dst-stride/physical/动态/latest-unsupported 负向 lit + MemoryEffects/PlanMemory/InsertSync 回归 |
 | 3 | `PTOQuantMxToEmitC` 形态 B + §11.1 正向用例 + 更新受影响的既有 lit 期望 | 定向 lit + `check-pto` |
 | 4 | 保留 `TMovOp::$fp` API，增加 optional `grpAxis` 与共享 `classifyTMovForm(getFp())`；扩展 verifier / memory effects，包含 compact/stride/capacity/dynamic-physical 契约与 ND `src` 读写效应 + §11.2/11.4 用例 | Python `fp=` / C++ `getFp()` 兼容回归 + 既有 plain/FP TMOV 回归 + 定向 lit + PlanMemory / InsertSync 回归 |
 | 5 | 扩展既有 `PTOMovToEmitC` 的 X-to-ZZ 分支，审计 RemoveIdentity/Normalize/InferMemScope 等 TMov 消费者 + §11.2 正向用例 | 定向 lit + `check-pto`，证明 scaling FP 文本不变且非-scaling tmp 不被误删/误改写 |
 | 6 | PTO-BC roundtrip + schema 守卫：给 `TQuantMxOp` 增加无环境变量依赖的 generic compatibility shim；scaling FP 保持 `kTMovFpWireOpcode`，X-to-ZZ 走已有 generic v0 record 并保留 `grpAxis`；不分配新专用 opcode，也不虚构 TQuantMx known-op schema | 不设置 `PTOBC_ALLOW_GENERIC` 运行 `check-ctest`；二进制解析确认 TQuantMx/X-to-ZZ 为 `kOpcodeGeneric`，并检查 scaling FP 分支不能互换 |
-| 7 | 精度样例 + ST 用例 + 手册 / SPEC / ReleaseNotes；加入 §11.5/11.6 PTOAS mirror，两个 `n=1` case 明确为 TQUANT-only | `runop.sh` + 全量 lit + mirror sample/ST；与提交 0 的原生 harness 共同作为最终合入门槛 |
+| 7 | latest 支持范围内的精度样例 + ST 用例 + 手册 / SPEC / ReleaseNotes；`n=1` 与四类 unsafe 组合不作为正向 case | `runop.sh` + 全量 lit + 受支持 sample/ST；§11.3 的 latest-unsupported 负向用例必须全过 |
 
 提交 3 会改动既有 lit 的期望文本（§8.1），单独成一个提交便于 review 和回滚。
 
 提交 0 必须**排在最前**：`interleave` 的 verifier 常量（64 对齐、`align32(2N)`）、
-TQuantMx 的 destination/source-derived stride、隐藏 scratch / padding-tail 修复与 X-to-ZZ 的
-compact/padding 契约都绑定目标 pin 的真实头文件。`f03c2454` 在 GitHub 上存在且包含
-CPU-sim 修复这一事实仍成立，但 rev10 已证明它和最新 main 都不能直接作为最终 pin；
-必须选择或先产出一个满足 §3.1.1 内容契约的后继，再对每个 remote 独立验证。
+TQuantMx 的 destination/source-derived stride、latest unsupported 边界与 X-to-ZZ 的
+compact/padding 契约都绑定目标 pin 的真实头文件。`f03c2454` 的 ancestry 事实仍成立，但不再
+参与选择；rev11 的唯一目标就是 GitCode `69a81f3` 与 GitHub `40e741b`，并对两个 remote
+独立验证。
 
-提交 0 的验证不能引用 §11.5/11.6 的 PTOAS case：这些 case 需要提交 1–5 才新增的属性、
-verifier 与 lowering，测试目录本身也到提交 7 才加入。提交 0 只依赖候选 pto-isa revision
-自带或同 revision 可复现的 §11.6.1 原生 harness；功能实现后再跑 PTOAS mirror，验证从
-raw TileData 契约到 IR/lowering 的整条链路没有偏移。
+提交 0 不引用 §11.5/11.6 的 PTOAS case：这些 case 需要提交 1–5 才新增的属性、verifier
+与 lowering。提交 0 只验证 exact SHA、接口与既有构建线；§11.6.1 可作为补充审计记录
+latest 的已知限制，但其预期失败不阻止 pin bump。
 
-**合入门槛已经固定**：本 PR 在实现阶段必须完成每个相关 remote 的候选验证，并为所有
-目标选择满足 §3.1.1 / §13-10 的 revision；在隐藏 scratch / padding-tail 修复、pin 与 CI 验证完成前，
-TQuantMx verifier/lowering 与 `interleave` 实现都不合入。`Dockerfile.dev` 按 CANN 9.0 兼容性独立选择 revision，
-允许与 `ci` / `ci_sim` 不同，但必须记录兼容性依据。本 PR 不把三元组建模、updater
-扩展或本特性 pin bump 转交给后续 PR，也不依赖 #1122 的未来工作。
+**合入门槛已经固定**：本 PR 在实现阶段先完成 latest pin 与 CI/容器验证，再按 §7.1.1
+拒绝当前头文件不能安全承诺的组合；不等待 pto-isa 隐藏 scratch / padding-tail 修复。
+`Dockerfile.dev` 仍按 CANN 9.0 独立选择：latest `69a81f3` 验证通过才更新，否则保留
+`662d7f2a` 并记录兼容性依据。本 PR 不把三元组建模、repo-aware target map/updater 或
+本特性 pin bump 转交给后续 PR，也不依赖 #1122 的未来工作。
 
 ## 13. 风险、结论与行动
 
@@ -1599,76 +1599,47 @@ TQuantMx verifier/lowering 与 `interleave` 实现都不合入。`Dockerfile.dev
    → **遗留行动**：这条事实被 §9 的按轴效应建模所依赖，因此把"复核 DN 是否仍不使用
    `tmp`"写进 **pin bump 检查清单**：
    `grep -n "void)tmp" include/pto/npu/a5/TMov.hpp` 应在 DN 函数体内命中。
-2. **~~pto-isa pin 是否包含所需接口~~ —— 已关闭，结论是必须 bump。**
-   评审确认：`ce3262e3` 有 grouped `TQUANT` / `TMOV`，但**没有 `bool interleave` 这个
-   overload**，`f03c2454` 才有。因此只要实现 `interleave`，pin bump 就是前置依赖，
-   不再是开放问题。
-   rev4 已直接验证 GitHub `hw-native-sys/pto-isa` 上的
-   [`f03c2454e4211bdfc5fe9d3e859bc9239443514c`](https://github.com/hw-native-sys/pto-isa/commit/f03c2454e4211bdfc5fe9d3e859bc9239443514c)：
-   commit 存在，且 [`a8168c6...f03c2454`](https://github.com/hw-native-sys/pto-isa/compare/a8168c6ca8ae22b06e4ea440506f0a87e446e9a2...f03c2454e4211bdfc5fe9d3e859bc9239443514c)
-   为 ahead 8 / behind 0。因此 `f03c2454` 已包含
-   `a8168c6` 携带的 CPU-Sim duplicate-stub 修复，`ci_sim` 不需为保留该修复而
-   停在旧 pin，也不需先搜索一个抽象的"共同后继"。
+2. **~~pto-isa pin 是否包含所需接口~~ —— 已关闭，结论是直接 bump 到 latest。**
+   评审最初确认 `ce3262e3` 缺少 `bool interleave` overload，而 `f03c2454` 已包含该接口与
+   当时的 CPU-sim duplicate-stub 修复；该 ancestry 事实仍成立。但 rev11 重新盘点 PTOAS
+   `main@f8912bc7` 后，目标不再做共同后继搜索，也不等待新的修复 SHA：
 
-   → **ownership 已定**：[#1122](https://github.com/hw-native-sys/PTOAS/pull/1122) 已于
-   2026-08-10 合入。它合入后的 updater 仍以单一 `DEFAULT_REPO_URL` 解析一个 SHA，
-   再同步到 GitCode 组目标；它没有完成本设计所需的每目标 repo-aware 三元组。
-   因此**本 PR 自带 updater 扩展与 pin bump**，#1122 只作为已合入的实现基线和
-   PTO-BC 兼容经验，不再声明对它的未来依赖。
-
-   → **实施边界**：下列目标确实使用不同 remote / 环境，
-   但这只意味着"必须分别验证"，不意味着"必然使用不同 SHA"：
-
-   | 位置 | 远端 | 当前 SHA | 能否由现 updater 管理 |
+   | 目标 | 远端 | rev11 当前 SHA | 本特性目标 |
    |---|---|---|---|
-   | `.github/workflows/ci.yml:430` | GitCode `cann/pto-isa` | `ce3262e3` | 是 |
-   | `docker/Dockerfile:122,123` | GitCode `cann/pto-isa` | `ce3262e3` | 是 |
-   | `test/npu_validation/scripts/run_remote_npu_validation.sh:17` | GitCode `cann/pto-isa` | `ce3262e3` | 是 |
-   | `.github/workflows/ci_sim.yml:122` | **GitHub `hw-native-sys/pto-isa`** | `a8168c6c` | 需为该目标增加 repo-aware 验证 |
-   | `docker/Dockerfile.dev:17` | GitCode `cann/pto-isa` | `662d7f2a` | 作为 CANN 9.0 兼容目标独立管理 |
+   | `.github/workflows/ci.yml` 默认值、job env | GitCode `cann/pto-isa` | `27386d906e8fdcbd93aec84197939bc0b2c6caea` | `69a81f3b2d145fe4f9925cfd65a083f78ad1f804` |
+   | `docker/Dockerfile` | GitCode `cann/pto-isa` | `27386d906e8fdcbd93aec84197939bc0b2c6caea` | `69a81f3b2d145fe4f9925cfd65a083f78ad1f804` |
+   | `test/npu_validation/scripts/run_remote_npu_validation.sh` | GitCode `cann/pto-isa` | `27386d906e8fdcbd93aec84197939bc0b2c6caea` | `69a81f3b2d145fe4f9925cfd65a083f78ad1f804` |
+   | `docker/Dockerfile.dev` | GitCode `cann/pto-isa` | `662d7f2a916d6bbde3109ce4a16ed5c28f5d900a` | CANN 9.0 独立验证；latest 通过才更新，否则保持 |
+   | `.github/workflows/ci_sim.yml` | GitHub `hw-native-sys/pto-isa` | `e948507e18ec4f39037a04914b97e77f5b9d75e3` | `40e741bf1cfce99da3b1caa514e08c2f72894922` |
 
-   `ci_sim.yml:348-353` 用
-   `actions/checkout` 拉 `repository: hw-native-sys/pto-isa`（GitHub），而
-   `update_pto_isa_pin.py:17` 的 `DEFAULT_REPO_URL` 是
-   `https://gitcode.com/cann/pto-isa.git`，`resolve_head_commit()` 也是对着 GitCode 做
-   `git ls-remote`。现有 updater 的缺陷是把 repo 隐含为全局常量，而不是它使用了
-   "注定不可共享的 SHA 空间"。同一 commit ID 可能因同步而在两个 remote 都存在，
-   也可能只在其中一个存在；唯一可信判定是对实际 remote 执行 fetch/checkout 或等价 API 查询。
+   GitCode `master@69a81f3` 是当前发布头；GitHub PR #239 已合并为
+   `main@40e741b`，其 commit message 是 `sync: GitCode master @ 69a81f3b2d14`。因此这里的
+   两个 SHA 不是“不同功能版本”，而是同一轮内容同步在两个 remote 上的实际 revision。
 
-   **`Dockerfile.dev` 也不是"漏更"**：它的基础镜像是
-   `quay.io/ascend/cann:9.0.0-910b-ubuntu22.04-py3.12`（CANN **9.0.0** + py3.12），
-   而主 `Dockerfile` 的 runtime 是 `cann:8.5.0-...-py3.11`（CANN **8.5.0** + py3.11）。
-   两个环境的工具链不同，`662d7f2a` 这个更老的 revision 很可能是为 CANN 9.0 兼容性
-   有意保留的。在没有确认之前，不能把它当成滞后。
+   → **pin 落地顺序已定**：
 
-   → **修正后的行动**：
-
-   1. 将 updater 的输入改为每目标显式携带
-      **(repo, revision, 兼容性约束)**；它可以更新 `ci_sim.yml`，但必须用
-      GitHub repo 验证该目标，不得把在 GitCode 上解析的 SHA 未验证广播过去。
-   2. `f03c2454` 只作为已知包含 interleave 与 CPU-Sim 修复的**祖先基线**；最终候选必须是
-      还包含 §3.1.1 隐藏 scratch / padding-tail 修复的 revision。GitHub `main@dfc2be6f` 仍不满足，
-      因此当前没有可直接写入的最终 SHA。取得修复 revision 后，对 GitCode/GitHub 两个
-      remote **分别** fetch/checkout；允许验证后共享同一 SHA。
-   3. 对每个最终 revision 核对内容契约：`bool interleave` overload、ND
-      `ZeroSourcePaddingB16`、DN `(void)tmp;`、flat/source group 计数、MXFP8/MXFP4
-      destination stride，以及 canonical B16 不借用 exp/max、DN FP16 MXFP4 不越过 dst、
-      DN FP32 interleave 不借用 dst、B16 VL-aligned padding 有 row-tail predicate、全部
-      `max` 值保留；再核对该 CI 线需要的 CPU-Sim 修复。不只检查 commit 名或注释。
-   4. `Dockerfile.dev` 按 CANN 9.0 兼容性独立选 pin；保留旧 revision 时，在文件和本设计中
-      写明兼容性依据，**明确记录为有意保留，不是漏更**。
-   5. 所有相关 CI 目标的 revision 与内容契约验证是 `interleave` 的合入门槛。本 PR 完成
-      该验证、updater 扩展和必要 pin bump，不把 `interleave` 或 pin 工作单独排到 #1122
-      或另一个后续 PR。
+   1. 分别从 GitCode 与 GitHub fetch/checkout 上表 SHA，验证 grouped/interleave、X-to-ZZ
+      overload 及 CPU-sim duplicate-stub 契约；不以一个 remote 的可达性代替另一个。
+   2. GitCode 的 CI/主 Dockerfile/remote-validation 更新为 `69a81f3`；GitHub `ci_sim`
+      更新为 `40e741b`。不创建占位符，不等待 pto-isa 再合隐藏 scratch/padding-tail 修复。
+   3. `.github/scripts/update_pto_isa_pin.py` 已在 `e488f9e3d` 删除，当前不存在可“扩展”的
+      updater。本 PR 重新引入显式 target map：每项携带
+      **(repo, revision, 兼容性约束, files)**，或实现等价的 repo-aware updater；禁止把
+      GitCode SHA 原样广播到 GitHub。
+   4. `Dockerfile.dev` 的基础镜像是 CANN 9.0.0，因此验证线与 target 独立；尝试 GitCode
+      latest `69a81f3`，通过才更新，失败则保留 `662d7f2a` 并记录兼容性依据。
+   5. 本 PR 完成 target map/updater 与上述 pin bump，不把工作转交 #1122 或另一个 PTOAS
+      后续 PR。
 3. **~~ND 分组 shape 兼容策略~~ —— 已关闭，axis1 采用双形态契约。**
    兼容性破坏已由现有 IR 直接证明：`tquant_mx_a5_emitc.pto` 的 MXFP8 case 和
    `quant_mx_tile_native.pto` 的 MXFP8 case 都对 `src=16x32` 使用
    `exp/max/scaling valid=1x16`。
    新 canonical 形状是 `16x1`，如果只做逐维 canonical 校验，会破坏仓库内两个已知
    tight-source legacy IR 的兼容性。
-   → **结论**：axis1 同时接受 canonical `[M, N/32]` 和 legacy flat
-   `[1, M*N/32]`；axis0 只接受 `[M/32, N]`。这两个 tight MXFP8 case 不迁移 shape；
-   MXFP4 destination 的已知 physical cols 迁移单列在问题 11，不再笼统承诺整个仓库零迁移。
+   → **结论**：axis1 的 shape 分类同时识别 canonical `[M, N/32]` 和 legacy flat
+   `[1, M*N/32]`；axis0 只接受 `[M/32, N]`。latest pin 下 canonical B16 再由
+   §7.1.1 拒绝。这两个 tight MXFP8 case 不迁移 shape；MXFP4 destination 的已知 physical
+   cols 迁移单列在问题 11，不再笼统承诺整个仓库零迁移。
 4. **§8.1 的生成文本变化。** 现有 ND IR 的输出会从"类型列表模板参数"变成
    `<1, MxQuantAlg::...>`。语义等价但文本变化，属于对下游 golden/期望文件的影响面。
    → **行动**：提交 3 单独处理，并在 ReleaseNotes 说明。
@@ -1701,18 +1672,16 @@ TQuantMx verifier/lowering 与 `interleave` 实现都不合入。`Dockerfile.dev
    → **结论**：ODS 继续命名 `$fp`，仅由共享 `classifyTMovForm(getFp())` 按地址空间赋予
    FP 或 X-to-ZZ tmp 语义。旧 scaling FP 保持 legacy FP wire；非-scaling 第三个 tile
    走 generic v0 compatibility record，避免被 `getFp()` 的存在性误编码成 FP payload。
-10. **PTO-ISA TQuantMx 隐藏 scratch / padding tail —— 硬 blocker，修复 revision 出现前不实现。**
-    `main@dfc2be6f` 仍会在 canonical B16 小 group case 写 `exp+16`，在较大 MXFP8
-    与全部 MXFP4 canonical case 覆盖 `max`，并在 DN FP16 MXFP4 的特定 packed stride
-    下越过 `dst` footprint 使用 scratch；DN FP32 interleave 还会借用 tight dst，B16
-    VL-aligned padding 会在最后一个不完整 VL 越过 source rows。
-    → **结论**：不重新定义 `max`，不要求用户伪造更大的 visible input/output，也不在
-    PTOAS verifier 中为旧实现放宽。pto-isa 必须先改为内部安全临时空间或等价无 scratch
-    实现，并给 B16 tail 加剩余行 predicate；§11.6.1 的独立 PTO-ISA harness 必须用一个
-    手工切分的 raw backing buffer，把 redzone 精确放在各声明 footprint 的下一字节，并让
-    六组 redzone + max golden 全过后，该 revision 才能进入 repo-aware pin 候选集。
-    PTOAS sample/ST 的 256B PlanMemory slot 可能吸收旧越界，只在提交 7 作为 mirror，不能
-    替代提交 0 的 pin 证明。
+10. **~~PTO-ISA TQuantMx 隐藏 scratch / padding tail 是否阻塞 pin~~ —— 已关闭，不阻塞 latest pin。**
+    GitCode `69a81f3` / GitHub `40e741b` 仍会在 canonical B16 小 group case 写
+    `exp+16`，在较大 MXFP8 与全部 MXFP4 canonical case 覆盖 `max`，并在 DN FP16
+    MXFP4 的非 32B packed stride 下越过 `dst` footprint 使用 scratch；DN FP32 interleave
+    还会借用 tight dst，B16 VL-aligned padding 会在最后一个不完整 VL 越过 source rows。
+    → **结论**：pin 仍直接对齐 latest，不要求 pto-isa 再合修改；同时不重新定义 `max`，也
+    不要求用户伪造更大的 visible input/output。§7.1.1 把四类对应组合标为 unsupported，
+    §11.3 逐条验证拒绝。§11.6.1 的 raw-buffer redzone/max-golden 只保存 latest 行为证据，
+    不再要求“候选 revision 六组全过”。将来上游行为变化后，必须显式放宽 verifier 并补
+    正向精度测试，不能让 pin bump 自动改变合法集合。
 11. **~~既有 MXFP4 lit 是否需要迁移~~ —— 已关闭，需要迁移一个 physical shape。**
     `test/lit/pto/tquant_mx_a5_emitc.pto` 的 MXFP4 source physical cols 是 32，packed dst
     physical cols 也是 32；§7.1.1 的真实寻址契约要求后者为 16。
@@ -1731,16 +1700,18 @@ TQuantMx verifier/lowering 与 `interleave` 实现都不合入。`Dockerfile.dev
   非-scaling 第三个 tile 走三参数 X-to-ZZ `TMOV`，无第三个 tile 的普通形态保持不变；
 - `TMovOp` 的 ODS operand 名仍为 `$fp`，现有 Python `fp=`、C++ `getFp()` 与 builder
   源码兼容；实现中不存在公开 `aux=` / `getAux()` API；
-- 两个既有 tight MXFP8 legacy-flat case **语义与 shape 不变**：axis1 canonical
-  `[M, N/32]` 与 tight-source legacy flat `[1, M*N/32]` 都受支持；不再对所有现有
-  `tquant.mx` IR 作零迁移承诺；
+- 两个既有 tight MXFP8 legacy-flat case **语义与 shape 不变**：tight-source legacy flat
+  `[1, M*N/32]` 继续受支持；axis1 canonical `[M, N/32]` 在 latest pin 下先支持 f32，
+  B16 canonical 受 §7.1.1 限制；不再对所有现有 `tquant.mx` IR 作零迁移承诺；
 - `tquant_mx_a5_emitc.pto` 的 MXFP4 packed dst physical cols 按 §13-11 从 32 迁移为 16，
   valid cols 保持 16，ReleaseNotes 明确记录该 physical-stride 收紧；
 - TQuantMx 的 physical 契约与 §7.1.1 逐项一致：axis0 的 max/scaling 及非-interleave exp
   使用 source-derived physical row stride；axis1 max/scaling 是 compact prefix，exp 的
-  flat/2D 校验与 `TileDataExp::Rows` 实际选择一致；flat+padded source 被拒，padded source
+  flat/2D 校验与 `TileDataExp::Rows` 实际选择一致；flat+padded source 被拒，f32 padded source
   使用 canonical 2D；MXFP8/MXFP4 destination 分别按 source stride / packed source stride
-  验证 physical cols 与 capacity；相关 valid/physical shape 动态时拒绝；
+  验证 physical cols 与 capacity；相关 valid/physical shape 动态时拒绝；canonical B16 2D、
+  DN FP16 MXFP4 非 32B packed stride、DN FP32 interleave 与不完整 B16 padding VL
+  在 `69a81f3/40e741b` 下明确拒绝；
 - §7 的每一条 verifier 规则都有对应的负向 lit 用例；
 - ND X-to-ZZ 的 padded-stride、source 容量不足、destination 容量不足和动态
   valid/physical shape 均被 verifier 拒绝，而紧密且容量足够的非 16 对齐行用例通过；
@@ -1752,18 +1723,19 @@ TQuantMx verifier/lowering 与 `interleave` 实现都不合入。`Dockerfile.dev
 - `TQuantMxOp` 对 f16/bf16 且 `srcValidCols < srcPhysicalCols` 的 source 声明
   `Read + Write`，f32 或 tight f16/bf16 source 保持 `Read`；padding 后再次读取 source 的
   PlanMemory/InsertSync 回归证明依赖边未丢失；
-- DN 量化 + DN-to-ZZ 的完整链路精度用例在 exponent 与量化结果上**位精确**通过；
-  `m=32,n=1` / `m=64,n=1` 明确只运行 TQUANT，不误接 DN-to-ZZ；max/scaling 按 source
-  storage dtype 读取后再提升比较，MXFP4 dst 按 packed byte 比较；
-- 提交 0 的独立 PTO-ISA harness 使用不经 PlanMemory 的 raw backing buffer，六组 case 的
-  suffix redzone 均从声明 footprint 下一字节开始；`main@dfc2be6f` 的六个 negative control
-  分别失败，候选 pin 的全部 redzone 保持不变且 `max` 与 golden 逐项匹配；提交 7 的
-  PTOAS sample/ST mirror 也全过，但不把 256B slot 内的未观测空间当 redzone；
+- latest 支持范围内的 DN 量化 + DN-to-ZZ 完整链路精度用例在 exponent 与量化结果上
+  **位精确**通过；`m=32,n=1` / `m=64,n=1` 只保留为原生行为诊断，不误接 DN-to-ZZ，
+  也不作为 PTOAS 正向 TQUANT case；max/scaling 按 source storage dtype 读取后再提升比较，
+  MXFP4 dst 按 packed byte 比较；
+- §11.6.1 的独立 PTO-ISA harness 使用不经 PlanMemory 的 raw backing buffer，六组 case 的
+  suffix redzone 均从声明 footprint 下一字节开始；`69a81f3/40e741b` 的已知 failure 与
+  §11.3 的 verifier 拒绝一一对应。harness 是非 gating 行为证据，不要求另一个修复 revision；
 - PTO-BC roundtrip 保持真正存在的 `pto.tquant`、普通 `pto.tmov` 与 scaling-FP legacy wire
   schema 不变；known-op 表仍不含 `pto.tquant.mx`。不设置 `PTOBC_ALLOW_GENERIC` 时，
   `TQuantMxOp` 与 X-to-ZZ 都经显式 compatibility shim 选择现有 `kOpcodeGeneric` 并完整
   保留 operands/attributes；scaling FP 继续选择 `kTMovFpWireOpcode`，不得互换；
-- updater 能为每个目标显式处理 `(repo, revision, 兼容性约束)`，分别验证 GitCode/GitHub
-  候选；最终 revision 已修复 §3.1.1 的所有隐藏 scratch 与 B16 padding tail，且本 PR 完成本特性所需 pin
-  bump；`Dockerfile.dev` 的独立 pin 有可审计依据；
+- updater 能为每个目标显式处理 `(repo, revision, 兼容性约束)`，分别验证 GitCode/GitHub；
+  GitCode 的 CI/主 Dockerfile/remote-validation 固定为 `69a81f3`，GitHub `ci_sim` 固定为
+  `40e741b`，且本 PR 完成本特性所需 pin bump；`Dockerfile.dev` 有独立的 CANN 9.0 pin
+  与验证记录；
 - `docs/PTO_IR_manual.md` 与 SPEC 中的 shape 表、约束表与 verifier 实现一致。
