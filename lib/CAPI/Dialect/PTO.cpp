@@ -53,8 +53,9 @@ static CanonicalValidShapeVector
 canonicalizeTileBufValidShape(ArrayRef<int64_t> validShape) {
   CanonicalValidShapeVector canonical;
   canonical.reserve(validShape.size());
-  for (int64_t dim : validShape)
+  for (int64_t dim : validShape) {
     canonical.push_back(dim < 0 ? ShapedType::kDynamic : dim);
+  }
   return canonical;
 }
 
@@ -298,7 +299,9 @@ MlirType mlirPTOTileBufTypeGetWithConfig(MlirContext ctx, intptr_t rank,
   MLIRContext *c = unwrap(ctx);
   auto shp = llvm::ArrayRef<int64_t>(shape, rank);
   auto cfg = mlir::dyn_cast_or_null<mlir::pto::TileBufConfigAttr>(unwrap(config));
-  if (!cfg) cfg = mlir::pto::TileBufConfigAttr::getDefault(c);
+  if (!cfg) {
+    cfg = mlir::pto::TileBufConfigAttr::getDefault(c);
+  }
   auto ty = mlir::pto::TileBufType::get(c, shp, unwrap(elementType), unwrap(memorySpace), cfg);
   return wrap(ty);
 }
@@ -615,16 +618,18 @@ MlirAttribute mlirPTOMaskPatternAttrGet(MlirContext ctx, int32_t value) {
   default:
     break;
   }
-  if (!v)
+  if (!v) {
     return MlirAttribute{nullptr};
+  }
   return wrap(mlir::pto::MaskPatternAttr::get(c, *v));
 }
 
 MlirAttribute mlirPTOMaskPatternAttrGetLegacyRaw(MlirContext ctx, int32_t value) {
   auto *c = unwrap(ctx);
   std::optional<mlir::pto::MaskPattern> v = maskPatternFromLegacyRaw(value);
-  if (!v)
+  if (!v) {
     return MlirAttribute{nullptr};
+  }
   return wrap(mlir::pto::MaskPatternAttr::get(c, *v));
 }
 
@@ -642,8 +647,9 @@ MlirAttribute mlirPTOMaskPatternAttrGetEnum(MlirContext ctx,
   auto *c = unwrap(ctx);
   std::optional<mlir::pto::MaskPattern> v =
       maskPatternFromIsaValue(static_cast<int32_t>(value));
-  if (!v)
+  if (!v) {
     return MlirAttribute{nullptr};
+  }
   return wrap(mlir::pto::MaskPatternAttr::get(c, *v));
 }
 
@@ -692,30 +698,41 @@ MlirAttribute mlirPTOTileBufConfigAttrGetDefault(MlirContext ctx) {
 }
 
 static mlir::pto::BLayoutAttr toBLayoutAttr(mlir::MLIRContext *c, mlir::Attribute a) {
-  if (auto bl = mlir::dyn_cast<mlir::pto::BLayoutAttr>(a)) return bl;
-  if (auto ia = mlir::dyn_cast<mlir::IntegerAttr>(a))
+  if (auto bl = mlir::dyn_cast<mlir::pto::BLayoutAttr>(a)) {
+    return bl;
+  }
+  if (auto ia = mlir::dyn_cast<mlir::IntegerAttr>(a)) {
     return mlir::pto::BLayoutAttr::get(c, static_cast<mlir::pto::BLayout>(ia.getInt()));
+  }
   return {};
 }
 static mlir::pto::SLayoutAttr toSLayoutAttr(mlir::MLIRContext *c, mlir::Attribute a) {
-  if (auto sl = mlir::dyn_cast<mlir::pto::SLayoutAttr>(a)) return sl;
-  if (auto ia = mlir::dyn_cast<mlir::IntegerAttr>(a))
+  if (auto sl = mlir::dyn_cast<mlir::pto::SLayoutAttr>(a)) {
+    return sl;
+  }
+  if (auto ia = mlir::dyn_cast<mlir::IntegerAttr>(a)) {
     return mlir::pto::SLayoutAttr::get(c, static_cast<mlir::pto::SLayout>(ia.getInt()));
+  }
   return {};
 }
 static mlir::pto::PadValueAttr toPadValueAttr(mlir::MLIRContext *c, mlir::Attribute a) {
-  if (auto pv = mlir::dyn_cast<mlir::pto::PadValueAttr>(a)) return pv;
-  if (auto ia = mlir::dyn_cast<mlir::IntegerAttr>(a))
+  if (auto pv = mlir::dyn_cast<mlir::pto::PadValueAttr>(a)) {
+    return pv;
+  }
+  if (auto ia = mlir::dyn_cast<mlir::IntegerAttr>(a)) {
     return mlir::pto::PadValueAttr::get(c, static_cast<mlir::pto::PadValue>(ia.getInt()));
+  }
   return {};
 }
 static mlir::pto::CompactModeAttr toCompactModeAttr(mlir::MLIRContext *c,
                                                     mlir::Attribute a) {
-  if (auto cm = mlir::dyn_cast<mlir::pto::CompactModeAttr>(a))
+  if (auto cm = mlir::dyn_cast<mlir::pto::CompactModeAttr>(a)) {
     return cm;
-  if (auto ia = mlir::dyn_cast<mlir::IntegerAttr>(a))
+  }
+  if (auto ia = mlir::dyn_cast<mlir::IntegerAttr>(a)) {
     return mlir::pto::CompactModeAttr::get(
         c, static_cast<mlir::pto::CompactMode>(ia.getInt()));
+  }
   return {};
 }
 
@@ -859,12 +876,14 @@ MlirAttribute mlirPTOTileBufConfigAttrGetWithCompactMode(
   auto slA = toSLayoutAttr(c, unwrap(sLayout));
   auto pvA = toPadValueAttr(c, unwrap(pad));
   auto cmA = toCompactModeAttr(c, unwrap(compactMode));
-  if (!blA || !slA || !pvA || !cmA)
+  if (!blA || !slA || !pvA || !cmA) {
     return MlirAttribute{nullptr};
+  }
 
   auto sz = mlir::dyn_cast<mlir::IntegerAttr>(unwrap(sFractalSize));
-  if (!sz || !sz.getType().isInteger(kI32BitWidth))
+  if (!sz || !sz.getType().isInteger(kI32BitWidth)) {
     return MlirAttribute{nullptr};
+  }
 
   return wrap(mlir::pto::TileBufConfigAttr::get(c, blA, slA, sz, pvA, cmA));
 }
@@ -877,8 +896,9 @@ MlirType mlirPTOGMTypeGet(MlirContext ctx, intptr_t rank, const int64_t *shape,
 
   llvm::SmallVector<int64_t, kGMTypeStrideInlineCapacity> strides(
       static_cast<size_t>(rank), ShapedType::kDynamic);
-  if (rank > 0)
-    strides[static_cast<size_t>(rank) - 1] = 1;
+  if (rank > 0) {
+      strides[static_cast<size_t>(rank) - 1] = 1;
+    }
   auto layout =
       StridedLayoutAttr::get(c, ShapedType::kDynamic, llvm::ArrayRef<int64_t>(strides));
   auto memSpace = mlir::pto::AddressSpaceAttr::get(c, mlir::pto::AddressSpace::GM);

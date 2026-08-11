@@ -309,8 +309,9 @@ buildPersistentTransformWorklist(const PersistentMaterializationPlan &plan,
               accessLane.op
                   ? accessLane.op->getParentOfType<pto::SectionSimtOp>()
                   : pto::SectionSimtOp();
-          if (accessSection == section)
-            localAccesses.push_back(accessLane);
+if (accessSection == section) {
+          localAccesses.push_back(accessLane);
+        }
         }
         sectionWorklist.elements.push_back(
             {&fragment, &residentElement, std::move(localAccesses)});
@@ -412,8 +413,9 @@ static LogicalResult
 materializeSection(const PersistentSectionWorklist &sectionWorklist,
                    const DataLayout &dataLayout, DominanceInfo &dominance) {
   const auto &elements = sectionWorklist.elements;
-  if (elements.empty())
+  if (elements.empty()) {
     return success();
+  }
 
   pto::SectionSimtOp section = sectionWorklist.section;
   Block &body = section.getBody().front();
@@ -439,8 +441,9 @@ materializeSection(const PersistentSectionWorklist &sectionWorklist,
     const PersistentFragmentAnalysis &fragment = *element.fragment;
     const ResidentElementPlan &residentElement = *element.residentElement;
     LLVM::AllocaOp allocaOp = fragment.allocaOp;
-    if (section == fragment.initSection)
+    if (section == fragment.initSection) {
       continue;
+    }
 
     rewrites[elementIndex].resumeValue =
         entryBuilder
@@ -453,8 +456,9 @@ materializeSection(const PersistentSectionWorklist &sectionWorklist,
   // its accesses. Carry sections seed it from resume; init sections rely on
   // the previously validated first-store initialization.
   for (auto [elementIndex, element] : llvm::enumerate(elements)) {
-    if (element.accesses.empty())
+    if (element.accesses.empty()) {
       continue;
+    }
 
     const PersistentFragmentAnalysis &fragment = *element.fragment;
     LLVM::AllocaOp allocaOp = fragment.allocaOp;
@@ -477,8 +481,9 @@ materializeSection(const PersistentSectionWorklist &sectionWorklist,
   size_t rewrittenAccessCount = 0;
   for (Operation &op : llvm::make_early_inc_range(body)) {
     auto accessIt = laneRewritesByAccess.find(&op);
-    if (accessIt == laneRewritesByAccess.end())
+    if (accessIt == laneRewritesByAccess.end()) {
       continue;
+    }
     if (failed(rewritePersistentAccess(&op, accessIt->second, rewrites)))
       return failure();
     ++rewrittenAccessCount;
@@ -523,8 +528,9 @@ materializeSection(const PersistentSectionWorklist &sectionWorklist,
   promotionBuilder.setInsertionPointToStart(&body);
   for (auto [elementIndex, element] : llvm::enumerate(elements)) {
     LLVM::AllocaOp proxy = rewrites[elementIndex].proxy;
-    if (!proxy)
+    if (!proxy) {
       continue;
+    }
     SmallVector<PromotableAllocationOpInterface, 1> allocators{
         cast<PromotableAllocationOpInterface>(proxy.getOperation())};
     if (failed(tryToPromoteMemorySlots(allocators, promotionBuilder, dataLayout,
@@ -536,8 +542,9 @@ materializeSection(const PersistentSectionWorklist &sectionWorklist,
     }
   }
 
-  if (proxyArraySize && proxyArraySize.use_empty())
+  if (proxyArraySize && proxyArraySize.use_empty()) {
     proxyArraySize.getDefiningOp()->erase();
+  }
   return success();
 }
 

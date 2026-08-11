@@ -135,8 +135,9 @@ int runPTOASFromPython(const std::vector<std::string> &arguments) {
   std::vector<std::string> storage = arguments;
   std::vector<char *> argv;
   argv.reserve(storage.size());
-  for (std::string &argument : storage)
+  for (std::string &argument : storage) {
     argv.push_back(argument.data());
+  }
 
   py::object contextOwner =
       py::module_::import("ptoas.mlir.ir").attr("Context")();

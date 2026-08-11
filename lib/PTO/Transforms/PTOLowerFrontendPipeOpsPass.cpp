@@ -64,8 +64,9 @@ static LogicalResult requireFrontendGmSlotBuffer(InitOpT initOp) {
 template <typename InitOpT>
 static void propagateFrontendIdAttr(InitOpT initOp, Operation *pipeOp,
                                     IRRewriter &rewriter) {
-  if (!pipeOp)
+  if (!pipeOp) {
     return;
+  }
   pipeOp->setAttr(kFrontendPipeIdAttrName,
                   rewriter.getI32IntegerAttr(initOp.getId()));
 }
@@ -74,12 +75,14 @@ template <typename InitOpT>
 static void propagateFixpipePeerKeyAttrs(InitOpT initOp, Operation *pipeOp,
                                          IRRewriter &rewriter) {
   if (!pipeOp || !initOp.getAccPushEpilogueAttr() ||
-      initOp.getDirMask() != kC2VDirMask || !initOp.getC2vConsumerBuf())
+      initOp.getDirMask() != kC2VDirMask || !initOp.getC2vConsumerBuf()) {
     return;
+  }
 
   auto currentFunc = initOp->template getParentOfType<func::FuncOp>();
-  if (!currentFunc)
+  if (!currentFunc) {
     return;
+  }
 
   auto setPeerKeyAttrs = [&](FlatSymbolRefAttr ownerFuncAttr,
                              StringRef reserveName) {
@@ -108,8 +111,9 @@ static void propagateFixpipePeerKeyAttrs(InitOpT initOp, Operation *pipeOp,
 
 template <typename InitOpT>
 static int32_t getFrontendSlotNum(InitOpT initOp) {
-  if (auto slotNumAttr = initOp.getSlotNumAttr())
+  if (auto slotNumAttr = initOp.getSlotNumAttr()) {
     return slotNumAttr.getInt();
+  }
   return initOp.getDirMask() == kBidirectionalDirMask
              ? kBidirectionalSlotNum
              : kSingleDirectionSlotNum;
@@ -127,12 +131,14 @@ static std::optional<int64_t> getStaticIndexLikeValue(Value value) {
 
 static SmallVector<int64_t> getStaticTensorViewStrides(Value tensor) {
   SmallVector<int64_t> strides;
-  if (!tensor)
+  if (!tensor) {
     return strides;
+  }
 
   auto makeView = tensor.getDefiningOp<MakeTensorViewOp>();
-  if (!makeView)
+  if (!makeView) {
     return strides;
+  }
 
   auto tvTy = dyn_cast<TensorViewType>(makeView.getResult().getType());
   if (!tvTy ||
@@ -142,8 +148,9 @@ static SmallVector<int64_t> getStaticTensorViewStrides(Value tensor) {
   strides.reserve(makeView.getStrides().size());
   for (Value stride : makeView.getStrides()) {
     auto staticStride = getStaticIndexLikeValue(stride);
-    if (!staticStride)
+    if (!staticStride) {
       return {};
+    }
     strides.push_back(*staticStride);
   }
   return strides;
@@ -152,8 +159,9 @@ static SmallVector<int64_t> getStaticTensorViewStrides(Value tensor) {
 static void propagateGlobalTensorStrides(DeclareGlobalOp decl,
                                          ArrayRef<int64_t> strides,
                                          IRRewriter &rewriter) {
-  if (strides.empty())
+  if (strides.empty()) {
     return;
+  }
   decl->setAttr(kGlobalTensorStridesAttrName,
                 rewriter.getDenseI64ArrayAttr(strides));
 }
@@ -176,8 +184,9 @@ static FailureOr<Value> createFrontendGlobalTensorPipe(InitOpT initOp,
   IntegerAttr localSlotNumAttr;
   if (localAddr) {
     localSlotNumAttr = initOp.getLocalSlotNumAttr();
-    if (!localSlotNumAttr)
+    if (!localSlotNumAttr) {
       localSlotNumAttr = rewriter.getI32IntegerAttr(slotNum);
+    }
   }
   auto pipe = rewriter.create<InitializeL2G2LPipeOp>(
       loc, pipeTy, dirAttr, slotSizeAttr, slotNumAttr, localSlotNumAttr,
@@ -217,13 +226,15 @@ static FailureOr<Value> createFrontendLocalPipe(InitOpT initOp,
 
   if (failed(requireFrontendGmSlotBuffer(initOp)))
     return failure();
-  if (!localAddr)
+  if (!localAddr) {
     return initOp.emitOpError(
         "requires local consumer buffer operands for local FIFO pipe lowering");
+  }
 
   IntegerAttr localSlotNumAttr = initOp.getLocalSlotNumAttr();
-  if (!localSlotNumAttr)
+  if (!localSlotNumAttr) {
     localSlotNumAttr = rewriter.getI32IntegerAttr(slotNum);
+  }
   auto pipe = rewriter.create<InitializeL2G2LPipeOp>(
       loc, pipeTy, dirAttr, slotSizeAttr, slotNumAttr, localSlotNumAttr,
       IntegerAttr{}, noSplitAttr, accPushEpilogueAttr, initOp.getGmSlotBuffer(),
@@ -317,21 +328,25 @@ template <typename InitOpT>
 static void propagateFrontendNoSplitAttr(InitOpT initOp,
                                          const FrontendPipeHandles &handles) {
   auto noSplitAttr = initOp.getNosplitAttr();
-  if (!noSplitAttr)
+  if (!noSplitAttr) {
     return;
+  }
 
-  if (handles.anchorOp)
+  if (handles.anchorOp) {
     handles.anchorOp->setAttr("nosplit", noSplitAttr);
+  }
 
   Operation *c2vOp =
       handles.c2vPipe ? handles.c2vPipe.getDefiningOp() : nullptr;
   Operation *v2cOp =
       handles.v2cPipe ? handles.v2cPipe.getDefiningOp() : nullptr;
 
-  if (c2vOp && c2vOp != handles.anchorOp)
+  if (c2vOp && c2vOp != handles.anchorOp) {
     c2vOp->setAttr("nosplit", noSplitAttr);
-  if (v2cOp && v2cOp != handles.anchorOp && v2cOp != c2vOp)
+  }
+  if (v2cOp && v2cOp != handles.anchorOp && v2cOp != c2vOp) {
     v2cOp->setAttr("nosplit", noSplitAttr);
+  }
 }
 
 template <typename InitOpT>
@@ -383,8 +398,9 @@ static FailureOr<FrontendPipeHandleMap> lowerInitIfPresent(func::FuncOp funcOp,
     return WalkResult::advance();
   });
 
-  if (hasDuplicateId)
+  if (hasDuplicateId) {
     return failure();
+  }
 
   if (hasAicInit && hasAivInit) {
     funcOp.emitOpError("cannot mix pto.aic_initialize_pipe and "

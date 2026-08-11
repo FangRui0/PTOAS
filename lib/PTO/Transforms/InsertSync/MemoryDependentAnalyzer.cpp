@@ -180,8 +180,8 @@ bool MemoryDependentAnalyzer::MemAlias(const BaseMemInfo *a,
     llvm::errs() << "  [MemAlias Check]\n";
     printValueDebug("    Root A", a->rootBuffer);
     printValueDebug("    Root B", b->rootBuffer);
-    llvm::errs() << "    Scope A: " << (int)as << ", Scope B: " << (int)bs
-                 << "\n";
+    llvm::errs() << "    Scope A: " << static_cast<int>(as)
+                 << ", Scope B: " << static_cast<int>(bs) << "\n";
   }
  
   if (as != bs) {

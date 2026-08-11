@@ -1598,7 +1598,6 @@ void VMILowerUnifiedToLegacyPass::runOnOperation() {
       continue;
     }
   }
-
 }
 
 std::unique_ptr<Pass> mlir::pto::createVMILowerUnifiedToLegacyPass() {

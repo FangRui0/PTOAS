@@ -38,18 +38,21 @@ enum class DmaArch { A2A3, A5 };
 constexpr uint64_t kMxScaleAddressShift = 4;
 
 static DmaArch getDmaArch(ModuleOp mod) {
-  if (!mod)
+  if (!mod) {
     return DmaArch::A2A3;
+  }
   auto arch = mod->getAttrOfType<StringAttr>("pto.target_arch");
-  if (arch && arch.getValue() == "a5")
+  if (arch && arch.getValue() == "a5") {
     return DmaArch::A5;
+  }
   return DmaArch::A2A3;
 }
 
 static pto::AddressSpaceAttr getPointerMemorySpace(Attribute memorySpace,
                                                    MLIRContext *ctx) {
-  if (auto addrSpace = dyn_cast_or_null<pto::AddressSpaceAttr>(memorySpace))
+  if (auto addrSpace = dyn_cast_or_null<pto::AddressSpaceAttr>(memorySpace)) {
     return addrSpace;
+  }
   if (auto intAttr = dyn_cast_or_null<IntegerAttr>(memorySpace))
     return pto::AddressSpaceAttr::get(
         ctx, static_cast<pto::AddressSpace>(intAttr.getInt()));
@@ -58,48 +61,57 @@ static pto::AddressSpaceAttr getPointerMemorySpace(Attribute memorySpace,
 
 static bool hasZeroReinterpretOffset(memref::ReinterpretCastOp op) {
   for (int64_t offset : op.getStaticOffsets()) {
-    if (ShapedType::isDynamic(offset) || offset != 0)
+    if (ShapedType::isDynamic(offset) || offset != 0) {
       return false;
+    }
   }
   return true;
 }
 
 static Value materializeBufferPointer(Value value, PatternRewriter &rewriter,
                                       Location loc) {
-  if (!value)
+  if (!value) {
     return {};
+  }
 
   if (auto ptrType = dyn_cast<pto::PtrType>(value.getType())) {
     if (auto cast = value.getDefiningOp<UnrealizedConversionCastOp>()) {
-      if (cast->getNumOperands() != 1 || cast->getNumResults() != 1)
+      if (cast->getNumOperands() != 1 || cast->getNumResults() != 1) {
         return {};
+      }
       Value basePtr =
           materializeBufferPointer(cast.getOperand(0), rewriter, loc);
-      if (!basePtr)
+      if (!basePtr) {
         return {};
-      if (basePtr.getType() == ptrType)
+      }
+      if (basePtr.getType() == ptrType) {
         return basePtr;
+      }
       return rewriter.create<pto::CastPtrOp>(loc, ptrType, basePtr).getResult();
     }
     return value;
   }
 
   if (auto cast = value.getDefiningOp<UnrealizedConversionCastOp>()) {
-    if (cast->getNumOperands() != 1 || cast->getNumResults() != 1)
+    if (cast->getNumOperands() != 1 || cast->getNumResults() != 1) {
       return {};
+    }
     return materializeBufferPointer(cast.getOperand(0), rewriter, loc);
   }
 
-  if (auto cast = value.getDefiningOp<memref::CastOp>())
+  if (auto cast = value.getDefiningOp<memref::CastOp>()) {
     return materializeBufferPointer(cast.getSource(), rewriter, loc);
+  }
 
-  if (auto cast = value.getDefiningOp<memref::MemorySpaceCastOp>())
+  if (auto cast = value.getDefiningOp<memref::MemorySpaceCastOp>()) {
     return materializeBufferPointer(cast.getSource(), rewriter, loc);
+  }
 
   if (auto cast = value.getDefiningOp<memref::ReinterpretCastOp>()) {
     auto resultType = dyn_cast<MemRefType>(value.getType());
-    if (!resultType)
+    if (!resultType) {
       return {};
+    }
 
     if (hasZeroReinterpretOffset(cast)) {
       Value basePtr = materializeBufferPointer(cast.getSource(), rewriter, loc);
@@ -108,16 +120,18 @@ static Value materializeBufferPointer(Value value, PatternRewriter &rewriter,
             rewriter.getContext(), resultType.getElementType(),
             getPointerMemorySpace(resultType.getMemorySpace(),
                                   rewriter.getContext()));
-        if (basePtr.getType() == ptrType)
+        if (basePtr.getType() == ptrType) {
           return basePtr;
+        }
         return rewriter.create<pto::CastPtrOp>(loc, ptrType, basePtr).getResult();
       }
     }
   }
 
   auto memrefType = dyn_cast<MemRefType>(value.getType());
-  if (!memrefType)
+  if (!memrefType) {
     return {};
+  }
 
   auto ptrType =
       pto::PtrType::get(rewriter.getContext(), memrefType.getElementType(),
@@ -127,18 +141,21 @@ static Value materializeBufferPointer(Value value, PatternRewriter &rewriter,
 }
 
 static Type getBufferElementType(Type type) {
-  if (auto ptrType = dyn_cast<pto::PtrType>(type))
+  if (auto ptrType = dyn_cast<pto::PtrType>(type)) {
     return ptrType.getElementType();
-  if (auto memrefType = dyn_cast<BaseMemRefType>(type))
+  }
+  if (auto memrefType = dyn_cast<BaseMemRefType>(type)) {
     return memrefType.getElementType();
+  }
   return {};
 }
 
 static Value offsetBufferPointer(Value basePtr, Type elementType,
                                  Value elementOffset,
                                  PatternRewriter &rewriter, Location loc) {
-  if (!basePtr)
+  if (!basePtr) {
     return {};
+  }
 
   Value offsetIndex = elementOffset;
   if (!offsetIndex.getType().isIndex())
@@ -156,8 +173,9 @@ static bool isKnownOne(Value value) {
 }
 
 static bool shouldRestoreDmaLoopSize(Value loop1Count, Value loop2Count) {
-  if (!loop1Count)
+  if (!loop1Count) {
     return false;
+  }
   return !isKnownOne(loop1Count) || !isKnownOne(loop2Count);
 }
 
@@ -174,17 +192,21 @@ static SmallVector<pto::DmaLoopConfig> collectLoopConfigs(ValueRange counts,
 
 static Value offsetPointerByBytes(Value basePtr, Value byteOffset,
                                   PatternRewriter &rewriter, Location loc) {
-  if (!basePtr)
+  if (!basePtr) {
     return {};
+  }
 
   Value basePtrValue = materializeBufferPointer(basePtr, rewriter, loc);
   auto ptrType = dyn_cast_or_null<pto::PtrType>(basePtrValue.getType());
-  if (!ptrType)
+  if (!ptrType) {
     return {};
+  }
 
   APInt constOffset;
-  if (matchPattern(byteOffset, m_ConstantInt(&constOffset)) && constOffset.isZero())
+  if (matchPattern(byteOffset, m_ConstantInt(&constOffset)) &&
+      constOffset.isZero()) {
     return basePtrValue;
+  }
 
   auto bytePtrType =
       pto::PtrType::get(rewriter.getContext(), rewriter.getI8Type(),
@@ -204,35 +226,44 @@ static Value offsetPointerByBytes(Value basePtr, Value byteOffset,
 [[maybe_unused]] static Value materializeFpcValue(Value fpc,
                                                   PatternRewriter &rewriter,
                                                   Location loc) {
-  if (!fpc)
+  if (!fpc) {
     return {};
-  if (fpc.getType().isInteger(64))
+  }
+  if (fpc.getType().isInteger(64)) {
     return fpc;
-  if (isa<pto::PtrType>(fpc.getType()))
+  }
+  if (isa<pto::PtrType>(fpc.getType())) {
     return rewriter.create<pto::CastPtrOp>(loc, rewriter.getI64Type(), fpc);
+  }
   return {};
 }
 
 static Value materializeI64Value(Value value, PatternRewriter &rewriter,
                                  Location loc) {
-  if (!value)
+  if (!value) {
     return {};
-  if (value.getType().isInteger(64))
+  }
+  if (value.getType().isInteger(64)) {
     return value;
-  if (auto intType = dyn_cast<IntegerType>(value.getType()))
+  }
+  if (auto intType = dyn_cast<IntegerType>(value.getType())) {
     return rewriter.create<arith::ExtUIOp>(loc, rewriter.getI64Type(), value);
-  if (isa<pto::PtrType>(value.getType()))
+  }
+  if (isa<pto::PtrType>(value.getType())) {
     return rewriter.create<pto::CastPtrOp>(loc, rewriter.getI64Type(), value);
+  }
   return {};
 }
 
 static Value materializeAccStoreScalarPayload(Value value,
                                               PatternRewriter &rewriter,
                                               Location loc) {
-  if (!value)
+  if (!value) {
     return {};
-  if (Value raw = materializeI64Value(value, rewriter, loc))
+  }
+  if (Value raw = materializeI64Value(value, rewriter, loc)) {
     return raw;
+  }
 
   Type type = value.getType();
   Value f32Value = value;
@@ -249,8 +280,9 @@ static Value materializeAccStoreScalarPayload(Value value,
 static Value materializeAccStoreClipPayload(Value value, Type destinationElementType,
                                             PatternRewriter &rewriter,
                                             Location loc) {
-  if (!value)
+  if (!value) {
     return {};
+  }
 
   if (value.getType().isF16()) {
     Value bitsI16 =
@@ -259,8 +291,9 @@ static Value materializeAccStoreClipPayload(Value value, Type destinationElement
   }
 
   auto intType = dyn_cast<IntegerType>(value.getType());
-  if (!intType)
+  if (!intType) {
     return {};
+  }
 
   Value widened;
   if (auto dstIntType = dyn_cast<IntegerType>(destinationElementType);
@@ -283,8 +316,9 @@ static Value deriveMxScaleDestination(Value dataDestination,
                                       PatternRewriter &rewriter,
                                       Location loc) {
   auto ptrType = dyn_cast<pto::PtrType>(dataDestination.getType());
-  if (!ptrType)
+  if (!ptrType) {
     return {};
+  }
 
   Value dataAddress = rewriter.create<pto::CastPtrOp>(
       loc, rewriter.getI64Type(), dataDestination);
@@ -334,8 +368,9 @@ static Value buildAccStoreFpcValue(Location loc, Value preQuant,
     case pto::AccStoreQuantPreMode::QF322F16PreVec:
     case pto::AccStoreQuantPreMode::QF322BF16PreVec:
     case pto::AccStoreQuantPreMode::QS322BF16PreVec:
-      if (Value quantPtr = materializeI64Value(preQuant, rewriter, loc))
+      if (Value quantPtr = materializeI64Value(preQuant, rewriter, loc)) {
         quantAddr = encodeFixpipeBufferAddr(quantPtr, /*unitShift=*/7);
+      }
       break;
     default:
       break;
@@ -344,12 +379,14 @@ static Value buildAccStoreFpcValue(Location loc, Value preQuant,
 
   Value reluAddr;
   if (preReluMode && *preReluMode == pto::ReluPreMode::VectorRelu) {
-    if (Value reluPtr = materializeI64Value(preRelu, rewriter, loc))
+    if (Value reluPtr = materializeI64Value(preRelu, rewriter, loc)) {
       reluAddr = encodeFixpipeBufferAddr(reluPtr, /*unitShift=*/6);
+    }
   }
 
-  if (!quantAddr && !reluAddr)
+  if (!quantAddr && !reluAddr) {
     return {};
+  }
 
   Value mask = getI64Constant(loc, rewriter, 0xff);
   Value fpc = getI64Constant(loc, rewriter, 0);
@@ -400,12 +437,16 @@ static void configureAccStoreScalarPreOps(Location loc, Value preQuant,
   if (preQuantMode &&
       *preQuantMode != pto::AccStoreQuantPreMode::NoConvert &&
       !isVectorQuantMode(*preQuantMode)) {
-    if (Value quantValue = materializeAccStoreScalarPayload(preQuant, rewriter, loc))
+    if (Value quantValue =
+            materializeAccStoreScalarPayload(preQuant, rewriter, loc)) {
       rewriter.create<pto::SetQuantPreOp>(loc, quantValue);
+    }
   }
   if (preReluMode && *preReluMode == pto::ReluPreMode::ScalarRelu) {
-    if (Value reluAlpha = materializeAccStoreScalarPayload(preRelu, rewriter, loc))
+    if (Value reluAlpha =
+            materializeAccStoreScalarPayload(preRelu, rewriter, loc)) {
       rewriter.create<pto::SetReluAlphaOp>(loc, reluAlpha);
+    }
   }
   if (clipValue) {
     if (Value clip = materializeAccStoreClipPayload(clipValue,
@@ -420,8 +461,9 @@ static Value configureAccStoreCtrl(Location loc, bool allowAtomic,
                                    std::optional<pto::AccStoreAtomicOp> atomicOp,
                                    std::optional<pto::AccStoreSatMode> satMode,
                                    PatternRewriter &rewriter) {
-  if ((!allowAtomic || !atomicType || !atomicOp) && !satMode)
+  if ((!allowAtomic || !atomicType || !atomicOp) && !satMode) {
     return {};
+  }
 
   Value originalCtrl = rewriter.create<pto::GetCtrlOp>(loc);
   Value ctrl = originalCtrl;
@@ -480,22 +522,27 @@ static Value packLoopSize(Location loc, Value loop2, Value loop1,
 
 static Value castIntegerLikeTo(Location loc, Value value, Type targetType,
                                PatternRewriter &rewriter) {
-  if (value.getType() == targetType)
+  if (value.getType() == targetType) {
     return value;
+  }
 
   auto targetInt = dyn_cast<IntegerType>(targetType);
-  if (value.getType().isIndex() && targetInt)
+  if (value.getType().isIndex() && targetInt) {
     return rewriter.create<arith::IndexCastOp>(loc, targetType, value);
+  }
   if (auto sourceInt = dyn_cast<IntegerType>(value.getType())) {
     if (targetInt) {
-      if (sourceInt.getWidth() < targetInt.getWidth())
+      if (sourceInt.getWidth() < targetInt.getWidth()) {
         return rewriter.create<arith::ExtUIOp>(loc, targetType, value);
-      if (sourceInt.getWidth() > targetInt.getWidth())
+      }
+      if (sourceInt.getWidth() > targetInt.getWidth()) {
         return rewriter.create<arith::TruncIOp>(loc, targetType, value);
+      }
       return value;
     }
-    if (targetType.isIndex())
+    if (targetType.isIndex()) {
       return rewriter.create<arith::IndexCastOp>(loc, targetType, value);
+    }
   }
 
   return {};
@@ -510,8 +557,9 @@ static FailureOr<Value> packMadXt(Location loc, Value m, Value n, Value k,
   Value mI64 = castIntegerLikeTo(loc, m, i64Ty, rewriter);
   Value nI64 = castIntegerLikeTo(loc, n, i64Ty, rewriter);
   Value kI64 = castIntegerLikeTo(loc, k, i64Ty, rewriter);
-  if (!mI64 || !nI64 || !kI64)
+  if (!mI64 || !nI64 || !kI64) {
     return failure();
+  }
 
   auto constant = [&](uint64_t value) -> Value {
     return rewriter.create<arith::ConstantIntOp>(loc, value, 64);
@@ -531,20 +579,24 @@ static FailureOr<Value> packMadXt(Location loc, Value m, Value n, Value k,
         *unitFlagMode == pto::MadUnitFlagMode::CheckOnly ? 2 : 3;
     xt = bitOr(xt, shl(constant(unitFlagCtrl), 55));
   }
-  if (disableGemv)
+  if (disableGemv) {
     xt = bitOr(xt, shl(constant(1), 61));
-  if (cmatrixSource)
+  }
+  if (cmatrixSource) {
     xt = bitOr(xt, shl(constant(1), 62));
-  if (cmatrixInit)
+  }
+  if (cmatrixInit) {
     xt = bitOr(xt, shl(constant(1), 63));
+  }
   return xt;
 }
 
 static Value setCtrlBit(Location loc, Value ctrl, unsigned bitIndex, bool value,
                         PatternRewriter &rewriter) {
   Value bit = rewriter.create<arith::ConstantIntOp>(loc, bitIndex, 64);
-  if (value)
+  if (value) {
     return rewriter.create<pto::Sbitset1Op>(loc, ctrl, bit).getResult();
+  }
   return rewriter.create<pto::Sbitset0Op>(loc, ctrl, bit).getResult();
 }
 
@@ -563,9 +615,10 @@ static Value buildMadSemanticCtrl(Location loc, Value ctrl,
     ctrl = setCtrlBit(loc, ctrl, 46, false, rewriter);
     ctrl = setCtrlBit(loc, ctrl, 47, false, rewriter);
   }
-  if (satMode)
+  if (satMode) {
     ctrl = setCtrlBit(loc, ctrl, 48, *satMode == pto::MadSatMode::NoSat,
                       rewriter);
+  }
   ctrl = setCtrlBit(loc, ctrl, 51, hasNDir, rewriter);
   return ctrl;
 }
@@ -803,8 +856,9 @@ deriveLoadCbufToCbControl(Location loc, Value k, Value n, Type elementType,
                           Value mStart, Value kStart, bool transpose,
                           PatternRewriter &rewriter) {
   unsigned elemBitWidth = pto::getPTOStorageElemBitWidth(elementType);
-  if (elemBitWidth == 0 || (elemBitWidth % 8) != 0)
+  if (elemBitWidth == 0 || (elemBitWidth % 8) != 0) {
     return failure();
+  }
   uint64_t elemBytes = elemBitWidth / 8;
   bool isFp4Packed = pto::isPTOFloat4PackedType(elementType);
 
@@ -856,8 +910,9 @@ deriveLoadCbufToCaControl(Location loc, Value m, Value k, Type elementType,
                           Value mStart, Value kStart, bool transpose,
                           PatternRewriter &rewriter) {
   unsigned elemBitWidth = pto::getPTOStorageElemBitWidth(elementType);
-  if (elemBitWidth == 0 || (elemBitWidth % 8) != 0)
+  if (elemBitWidth == 0 || (elemBitWidth % 8) != 0) {
     return failure();
+  }
   uint64_t elemBytes = elemBitWidth / 8;
   bool isFp4Packed = pto::isPTOFloat4PackedType(elementType);
 
@@ -909,8 +964,9 @@ deriveLoadCbufToCaMxControl(Location loc, Value m, Value k, Type elementType,
                             Value startRow, Value startCol,
                             PatternRewriter &rewriter) {
   unsigned elemBitWidth = pto::getPTOStorageElemBitWidth(elementType);
-  if (elemBitWidth == 0 || (elemBitWidth % 8) != 0)
+  if (elemBitWidth == 0 || (elemBitWidth % 8) != 0) {
     return failure();
+  }
   uint64_t elemBytes = elemBitWidth / 8;
 
   auto constant = [&](uint64_t value) -> Value {
@@ -938,8 +994,9 @@ deriveLoadCbufToCbMxControl(Location loc, Value k, Value n, Type elementType,
                             Value startRow, Value startCol,
                             PatternRewriter &rewriter) {
   unsigned elemBitWidth = pto::getPTOStorageElemBitWidth(elementType);
-  if (elemBitWidth == 0 || (elemBitWidth % 8) != 0)
+  if (elemBitWidth == 0 || (elemBitWidth % 8) != 0) {
     return failure();
+  }
   uint64_t elemBytes = elemBitWidth / 8;
 
   auto constant = [&](uint64_t value) -> Value {
@@ -1011,8 +1068,9 @@ struct ExpandUvldPattern : public OpRewritePattern<pto::UvldOp> {
   LogicalResult matchAndRewrite(pto::UvldOp op,
                                 PatternRewriter &rewriter) const override {
     auto vecType = dyn_cast<pto::VRegType>(op.getResult().getType());
-    if (!vecType)
+    if (!vecType) {
       return failure();
+    }
 
     Value basePtr = materializeBufferPointer(op.getSource(), rewriter, op.getLoc());
     if (!basePtr)
@@ -1035,8 +1093,9 @@ struct ExpandUvldPattern : public OpRewritePattern<pto::UvldOp> {
 enum class MadRawKind { Ordinary, OrdinaryBias, Mx, MxBias };
 
 static MadRawKind deriveMadRawKind(pto::MadSemanticOpInterface op) {
-  if (op.isMadMxFamily())
+  if (op.isMadMxFamily()) {
     return op.hasBiasOperand() ? MadRawKind::MxBias : MadRawKind::Mx;
+  }
   return op.hasBiasOperand() ? MadRawKind::OrdinaryBias
                              : MadRawKind::Ordinary;
 }
@@ -1087,8 +1146,9 @@ static LogicalResult lowerMadSemanticOp(pto::MadSemanticOpInterface op,
     satMode = satModeAttr.getValue();
 
   bool isHif8 = false;
-  if (auto lhsPtr = dyn_cast<pto::PtrType>(op.getLhs().getType()))
+  if (auto lhsPtr = dyn_cast<pto::PtrType>(op.getLhs().getType())) {
     isHif8 = pto::isPTOHiFloat8Type(lhsPtr.getElementType());
+  }
 
   Location loc = op->getLoc();
   Value ctrlSaved = rewriter.create<pto::GetCtrlOp>(loc).getResult();
@@ -1100,11 +1160,13 @@ static LogicalResult lowerMadSemanticOp(pto::MadSemanticOpInterface op,
       packMadXt(loc, op.getM(), op.getN(), op.getK(), unitFlagMode,
                 op.getDisableGemv(), op.initializesAccumulatorWithBias(),
                 op.initializesAccumulatorWithZero(), rewriter);
-  if (failed(xt))
+  if (failed(xt)) {
     return rewriter.notifyMatchFailure(op, "failed to pack mad xt");
+  }
 
-  if (failed(emitMadRawOp(op, deriveMadRawKind(op), *xt, rewriter)))
+  if (failed(emitMadRawOp(op, deriveMadRawKind(op), *xt, rewriter))) {
     return rewriter.notifyMatchFailure(op, "failed to emit mad raw op");
+  }
 
   rewriter.create<pto::SetCtrlOp>(loc, ctrlSaved);
   rewriter.eraseOp(op);
@@ -1120,8 +1182,9 @@ public:
   LogicalResult matchAndRewrite(SemanticOp op,
                                 PatternRewriter &rewriter) const override {
     auto semantic = dyn_cast<pto::MadSemanticOpInterface>(op.getOperation());
-    if (!semantic)
+    if (!semantic) {
       return failure();
+    }
     return lowerMadSemanticOp(semantic, rewriter);
   }
 };
@@ -1174,18 +1237,21 @@ struct ExpandDmaLoadPattern : public OpRewritePattern<pto::MteGmUbOp> {
     }
 
     Value leftPadding = op.getLeftPaddingCount();
-    if (!leftPadding)
+    if (!leftPadding) {
       leftPadding = rewriter.create<arith::ConstantIntOp>(loc, 0, 64);
+    }
     Value rightPadding = op.getRightPaddingCount();
-    if (!rightPadding)
+    if (!rightPadding) {
       rightPadding = rewriter.create<arith::ConstantIntOp>(loc, 0, 64);
+    }
     Value dataSelect = rewriter.create<arith::ConstantOp>(
         loc, rewriter.getI1Type(),
         rewriter.getBoolAttr(static_cast<bool>(op.getPadValue())));
 
     bool hasPad = static_cast<bool>(op.getPadValue());
-    if (Value padValue = op.getPadValue())
+    if (Value padValue = op.getPadValue()) {
       rewriter.create<pto::SetMovPadValOp>(loc, padValue);
+    }
 
     Value effectiveNBurst = (dmaArch == DmaArch::A5) ? op.getNBurst() : one;
 
@@ -1199,8 +1265,9 @@ struct ExpandDmaLoadPattern : public OpRewritePattern<pto::MteGmUbOp> {
               loc, source, destination, zero, effectiveNBurst, op.getLenBurst(),
               leftPadding, rightPadding, dataSelect, op.getL2CacheCtl(),
               op.getNburstSrcStride(), op.getNburstDstStride());
-          if (hasPad)
+          if (hasPad) {
             copyOp->setAttr("has_pad", UnitAttr::get(copyOp->getContext()));
+          }
         });
     if (dmaArch == DmaArch::A5 &&
         shouldRestoreDmaLoopSize(loop1Count, loop2Size))
@@ -1405,10 +1472,12 @@ struct ExpandBiasLoadPattern : public OpRewritePattern<pto::MteL1BtOp> {
     Value destination =
         materializeBufferPointer(op.getDestination(), rewriter, loc);
     auto sourceType = dyn_cast_or_null<pto::PtrType>(source.getType());
-    if (!sourceType)
+    if (!sourceType) {
       return rewriter.notifyMatchFailure(op, "expected pointer-like source");
-    if (!destination)
+    }
+    if (!destination) {
       return rewriter.notifyMatchFailure(op, "expected pointer-like destination");
+    }
 
     Value convControl = rewriter.create<arith::ConstantIntOp>(
         loc, sourceType.getElementType().isF16() ? 1 : 0, 1);
@@ -1428,8 +1497,9 @@ struct ExpandFpLoadPattern : public OpRewritePattern<pto::MteL1FbOp> {
     Value source = materializeBufferPointer(op.getSource(), rewriter, loc);
     Value destination =
         materializeBufferPointer(op.getDestination(), rewriter, loc);
-    if (!source || !destination)
+    if (!source || !destination) {
       return rewriter.notifyMatchFailure(op, "expected pointer-like operands");
+    }
 
     rewriter.replaceOpWithNewOp<pto::CopyCbufToFbufOp>(
         op, source, destination, op.getNBurst(),
@@ -1483,11 +1553,13 @@ struct ExpandLeftLoadPattern : public OpRewritePattern<pto::MteL1L0aOp> {
     Value destination =
         materializeBufferPointer(op.getDestination(), rewriter, loc);
     auto sourceType = dyn_cast_or_null<pto::PtrType>(source.getType());
-    if (!sourceType)
+    if (!sourceType) {
       return rewriter.notifyMatchFailure(op, "expected typed L1 source");
+    }
     Type elementType = sourceType.getElementType();
-    if (!destination)
+    if (!destination) {
       return rewriter.notifyMatchFailure(op, "expected pointer-like destination");
+    }
     FailureOr<LoadCbufToCbControl> control = deriveLoadCbufToCaControl(
         loc, op.getM(), op.getK(), elementType,
         op.getStartRow(), op.getStartCol(), op.getTranspose(), rewriter);
@@ -1522,11 +1594,13 @@ struct ExpandRightLoadPattern : public OpRewritePattern<pto::MteL1L0bOp> {
     Value destination =
         materializeBufferPointer(op.getDestination(), rewriter, loc);
     auto sourceType = dyn_cast_or_null<pto::PtrType>(source.getType());
-    if (!sourceType)
+    if (!sourceType) {
       return rewriter.notifyMatchFailure(op, "expected typed L1 source");
+    }
     Type elementType = sourceType.getElementType();
-    if (!destination)
+    if (!destination) {
       return rewriter.notifyMatchFailure(op, "expected pointer-like destination");
+    }
     FailureOr<LoadCbufToCbControl> control = deriveLoadCbufToCbControl(
         loc, op.getK(), op.getN(), elementType,
         op.getStartRow(), op.getStartCol(), op.getTranspose(), rewriter);
@@ -1561,10 +1635,12 @@ struct ExpandLeftLoadMxPattern : public OpRewritePattern<pto::MteL1L0aMxOp> {
     Value destination =
         materializeBufferPointer(op.getDestination(), rewriter, loc);
     auto sourceType = dyn_cast_or_null<pto::PtrType>(source.getType());
-    if (!sourceType)
+    if (!sourceType) {
       return rewriter.notifyMatchFailure(op, "expected typed L1 source");
-    if (!destination)
+    }
+    if (!destination) {
       return rewriter.notifyMatchFailure(op, "expected pointer-like destination");
+    }
     destination = deriveMxScaleDestination(destination, rewriter, loc);
     if (!destination)
       return rewriter.notifyMatchFailure(
@@ -1610,10 +1686,12 @@ struct ExpandRightLoadMxPattern : public OpRewritePattern<pto::MteL1L0bMxOp> {
     Value destination =
         materializeBufferPointer(op.getDestination(), rewriter, loc);
     auto sourceType = dyn_cast_or_null<pto::PtrType>(source.getType());
-    if (!sourceType)
+    if (!sourceType) {
       return rewriter.notifyMatchFailure(op, "expected typed L1 source");
-    if (!destination)
+    }
+    if (!destination) {
       return rewriter.notifyMatchFailure(op, "expected pointer-like destination");
+    }
     destination = deriveMxScaleDestination(destination, rewriter, loc);
     if (!destination)
       return rewriter.notifyMatchFailure(
@@ -1658,8 +1736,9 @@ struct ExpandAccStorePattern : public OpRewritePattern<pto::MteL0cL1Op> {
     Value source = materializeBufferPointer(op.getSource(), rewriter, loc);
     Value destination =
         materializeBufferPointer(op.getDestination(), rewriter, loc);
-    if (!source || !destination)
+    if (!source || !destination) {
       return rewriter.notifyMatchFailure(op, "expected pointer-like operands");
+    }
     Value zero = getI64Constant(loc, rewriter, 0);
     Value one = getI64Constant(loc, rewriter, 1);
     configureAccStoreScalarPreOps(loc, op.getPreQuant(), op.getPreQuantMode(),
@@ -1739,8 +1818,9 @@ struct ExpandAccStorePattern : public OpRewritePattern<pto::MteL0cL1Op> {
         rewriter);
     rewriter.create<pto::CopyMatrixCcToCbufOp>(loc, source,
                                                destination, xm, xt);
-    if (originalCtrl)
+    if (originalCtrl) {
       rewriter.create<pto::SetCtrlOp>(loc, originalCtrl);
+    }
     rewriter.eraseOp(op);
     return success();
   }
@@ -1755,8 +1835,9 @@ struct ExpandAccStoreGmPattern : public OpRewritePattern<pto::MteL0cGmOp> {
     Value source = materializeBufferPointer(op.getSource(), rewriter, loc);
     Value destination =
         materializeBufferPointer(op.getDestination(), rewriter, loc);
-    if (!source || !destination)
+    if (!source || !destination) {
       return rewriter.notifyMatchFailure(op, "expected pointer-like operands");
+    }
     Value zero = getI64Constant(loc, rewriter, 0);
     Value one = getI64Constant(loc, rewriter, 1);
     configureAccStoreScalarPreOps(loc, op.getPreQuant(), op.getPreQuantMode(),
@@ -1835,8 +1916,9 @@ struct ExpandAccStoreGmPattern : public OpRewritePattern<pto::MteL0cGmOp> {
         nz2dnEn, rewriter);
     rewriter.create<pto::CopyMatrixCcToGmOp>(loc, source,
                                              destination, xm, xt);
-    if (originalCtrl)
+    if (originalCtrl) {
       rewriter.create<pto::SetCtrlOp>(loc, originalCtrl);
+    }
     rewriter.eraseOp(op);
     return success();
   }
@@ -1851,8 +1933,9 @@ struct ExpandAccStoreUbPattern : public OpRewritePattern<pto::MteL0cUbOp> {
     Value source = materializeBufferPointer(op.getSource(), rewriter, loc);
     Value destination =
         materializeBufferPointer(op.getDestination(), rewriter, loc);
-    if (!source || !destination)
+    if (!source || !destination) {
       return rewriter.notifyMatchFailure(op, "expected pointer-like operands");
+    }
     Value zero = getI64Constant(loc, rewriter, 0);
     Value one = getI64Constant(loc, rewriter, 1);
     configureAccStoreScalarPreOps(loc, op.getPreQuant(), op.getPreQuantMode(),
@@ -1936,8 +2019,9 @@ struct ExpandAccStoreUbPattern : public OpRewritePattern<pto::MteL0cUbOp> {
     rewriter.create<pto::CopyMatrixCcToUbOp>(loc, source,
                                              destination, config0,
                                              config1);
-    if (originalCtrl)
+    if (originalCtrl) {
       rewriter.create<pto::SetCtrlOp>(loc, originalCtrl);
+    }
     rewriter.eraseOp(op);
     return success();
   }
@@ -2020,8 +2104,9 @@ struct VPTOExpandWrapperOpsPass
 
   void runOnOperation() override {
     func::FuncOp func = getOperation();
-    if (func.isExternal())
+    if (func.isExternal()) {
       return;
+    }
 
     DmaArch dmaArch = getDmaArch(func->getParentOfType<ModuleOp>());
 
@@ -2054,8 +2139,9 @@ struct VPTOExpandWrapperOpsPass
                  ExpandMadSemanticPattern<pto::MadMxOp>,
                  ExpandMadSemanticPattern<pto::MadMxAccOp>,
                  ExpandMadSemanticPattern<pto::MadMxBiasOp>>(&getContext());
-    if (failed(applyPatternsGreedily(func, std::move(patterns))))
+    if (failed(applyPatternsGreedily(func, std::move(patterns)))) {
       signalPassFailure();
+    }
   }
 };
 

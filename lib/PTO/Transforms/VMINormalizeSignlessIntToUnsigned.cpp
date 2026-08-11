@@ -100,7 +100,7 @@ static void insertNormalizeCastAfter(Operation *op, OpResult result,
 // ---------------------------------------------------------------------------
 
 struct NormalizeSignlessPattern : public RewritePattern {
-  NormalizeSignlessPattern(MLIRContext *ctx)
+  explicit NormalizeSignlessPattern(MLIRContext *ctx)
       : RewritePattern(MatchAnyOpTypeTag(), /*benefit=*/1, ctx) {}
 
   LogicalResult matchAndRewrite(Operation *op,

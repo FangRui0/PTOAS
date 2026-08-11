@@ -23,7 +23,7 @@ namespace ptobc {
 
 namespace {
 constexpr unsigned kBitsPerByte = 8;
-constexpr uint32_t kByteMask = 0xffu;
+constexpr uint32_t kByteMask = 0xffU;
 constexpr unsigned kU32SecondByteShift = kBitsPerByte;
 constexpr unsigned kU32ThirdByteShift = 2 * kBitsPerByte;
 constexpr unsigned kU32FourthByteShift = 3 * kBitsPerByte;
