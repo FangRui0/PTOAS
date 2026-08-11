@@ -5361,14 +5361,6 @@ def mem_bar(barrier_type):
     _pto.MemBarOp(kind=_membar_attr(barrier_name))
 
 
-def _is_fp4_packed_pointer_value(value, *, context: str) -> bool:
-    elem_type = _pointer_element_type(value, context=context)
-    return any(
-        _isinstance_pto_type(elem_type, type_name)
-        for type_name in ("F4E1M2x2Type", "F4E2M1x2Type")
-    )
-
-
 def _normalize_cube_transpose(value, *, context: str) -> bool:
     """Normalize the legacy BoolAttr-compatible 0/1 spelling."""
     if isinstance(value, bool):
@@ -5376,69 +5368,6 @@ def _normalize_cube_transpose(value, *, context: str) -> bool:
     if isinstance(value, int) and value in (0, 1):
         return bool(value)
     raise TypeError(f"{context} transpose expects bool or integer 0/1")
-
-
-def _emit_explicit_l1_l0_load(
-    source,
-    destination,
-    controls,
-    transpose,
-    *,
-    op_name: str,
-    regular_op,
-    s4_op,
-):
-    source_value = unwrap_surface_value(source)
-    destination_value = unwrap_surface_value(destination)
-    control_names = (
-        "m_start",
-        "k_start",
-        "m_step",
-        "k_step",
-        "src_stride",
-        "dst_stride",
-    )
-    source_is_fp4 = _is_fp4_packed_pointer_value(
-        source_value, context=f"{op_name} source"
-    )
-    destination_is_fp4 = _is_fp4_packed_pointer_value(
-        destination_value, context=f"{op_name} destination"
-    )
-    if source_is_fp4 != destination_is_fp4:
-        raise TypeError(
-            f"{op_name} source and destination must both use packed FP4 "
-            "or both use regular element types"
-        )
-    if source_is_fp4:
-        source_elem_type = _pointer_element_type(
-            source_value, context=f"{op_name} source"
-        )
-        destination_elem_type = _pointer_element_type(
-            destination_value, context=f"{op_name} destination"
-        )
-        if source_elem_type != destination_elem_type:
-            raise TypeError(
-                f"{op_name} source and destination packed FP4 element types "
-                "must match"
-            )
-    normalized_controls = tuple(
-        _coerce_i64(value, context=f"{op_name} {name}")
-        for name, value in zip(control_names, controls)
-    )
-    if source_is_fp4:
-        s4_op(
-            source_value,
-            destination_value,
-            *normalized_controls,
-            _coerce_i64(int(transpose), context=f"{op_name} transpose"),
-        )
-        return
-    regular_op(
-        source_value,
-        destination_value,
-        *normalized_controls,
-        transpose=transpose,
-    )
 
 
 @_explicit_mode_only("pto.mte_l1_l0a(...)")
@@ -5461,7 +5390,8 @@ def mte_l1_l0a(
     """``pto.mte_l1_l0a`` – structured or explicit-control L1-to-L0A load.
 
     Use either the existing shape-derived ``m``/``k`` form or provide all six
-    explicit L1-to-L0A controls. Packed FP4 sources select the S4 load path.
+    explicit L1-to-L0A controls. PTOAS selects the regular or packed-S4 raw
+    load during wrapper expansion.
     """
     transpose = _normalize_cube_transpose(transpose, context="mte_l1_l0a")
     controls = (m_start, k_start, m_step, k_step, src_stride, dst_stride)
@@ -5480,14 +5410,16 @@ def mte_l1_l0a(
                 "mte_l1_l0a explicit controls require m_start, k_start, "
                 "m_step, k_step, src_stride, and dst_stride"
             )
-        _emit_explicit_l1_l0_load(
-            source,
-            destination,
-            controls,
-            transpose,
-            op_name="mte_l1_l0a",
-            regular_op=_pto.LoadCbufToCaOp,
-            s4_op=_pto.LoadCbufToCaS4Op,
+        _pto.MteL1L0aOp(
+            unwrap_surface_value(source),
+            unwrap_surface_value(destination),
+            m_start=_coerce_i64(m_start, context="mte_l1_l0a m_start"),
+            k_start=_coerce_i64(k_start, context="mte_l1_l0a k_start"),
+            m_step=_coerce_i64(m_step, context="mte_l1_l0a m_step"),
+            k_step=_coerce_i64(k_step, context="mte_l1_l0a k_step"),
+            src_stride=_coerce_i64(src_stride, context="mte_l1_l0a src_stride"),
+            dst_stride=_coerce_i64(dst_stride, context="mte_l1_l0a dst_stride"),
+            transpose=transpose,
         )
         return
     if m is None or k is None:
@@ -5495,10 +5427,10 @@ def mte_l1_l0a(
     _pto.MteL1L0aOp(
         unwrap_surface_value(source),
         unwrap_surface_value(destination),
-        _coerce_i64(m, context="mte_l1_l0a m"),
-        _coerce_i64(k, context="mte_l1_l0a k"),
-        _coerce_i64(start_row, context="mte_l1_l0a start_row"),
-        _coerce_i64(start_col, context="mte_l1_l0a start_col"),
+        m=_coerce_i64(m, context="mte_l1_l0a m"),
+        k=_coerce_i64(k, context="mte_l1_l0a k"),
+        start_row=_coerce_i64(start_row, context="mte_l1_l0a start_row"),
+        start_col=_coerce_i64(start_col, context="mte_l1_l0a start_col"),
         transpose=transpose,
     )
 
@@ -5523,7 +5455,8 @@ def mte_l1_l0b(
     """``pto.mte_l1_l0b`` – structured or explicit-control L1-to-L0B load.
 
     Use either the existing shape-derived ``k``/``n`` form or provide all six
-    explicit L1-to-L0B controls. Packed FP4 sources select the S4 load path.
+    explicit L1-to-L0B controls. PTOAS selects the regular or packed-S4 raw
+    load during wrapper expansion.
     """
     transpose = _normalize_cube_transpose(transpose, context="mte_l1_l0b")
     controls = (m_start, k_start, m_step, k_step, src_stride, dst_stride)
@@ -5542,14 +5475,16 @@ def mte_l1_l0b(
                 "mte_l1_l0b explicit controls require m_start, k_start, "
                 "m_step, k_step, src_stride, and dst_stride"
             )
-        _emit_explicit_l1_l0_load(
-            source,
-            destination,
-            controls,
-            transpose,
-            op_name="mte_l1_l0b",
-            regular_op=_pto.LoadCbufToCbOp,
-            s4_op=_pto.LoadCbufToCbS4Op,
+        _pto.MteL1L0bOp(
+            unwrap_surface_value(source),
+            unwrap_surface_value(destination),
+            m_start=_coerce_i64(m_start, context="mte_l1_l0b m_start"),
+            k_start=_coerce_i64(k_start, context="mte_l1_l0b k_start"),
+            m_step=_coerce_i64(m_step, context="mte_l1_l0b m_step"),
+            k_step=_coerce_i64(k_step, context="mte_l1_l0b k_step"),
+            src_stride=_coerce_i64(src_stride, context="mte_l1_l0b src_stride"),
+            dst_stride=_coerce_i64(dst_stride, context="mte_l1_l0b dst_stride"),
+            transpose=transpose,
         )
         return
     if k is None or n is None:
@@ -5557,10 +5492,10 @@ def mte_l1_l0b(
     _pto.MteL1L0bOp(
         unwrap_surface_value(source),
         unwrap_surface_value(destination),
-        _coerce_i64(k, context="mte_l1_l0b k"),
-        _coerce_i64(n, context="mte_l1_l0b n"),
-        _coerce_i64(start_row, context="mte_l1_l0b start_row"),
-        _coerce_i64(start_col, context="mte_l1_l0b start_col"),
+        k=_coerce_i64(k, context="mte_l1_l0b k"),
+        n=_coerce_i64(n, context="mte_l1_l0b n"),
+        start_row=_coerce_i64(start_row, context="mte_l1_l0b start_row"),
+        start_col=_coerce_i64(start_col, context="mte_l1_l0b start_col"),
         transpose=transpose,
     )
 

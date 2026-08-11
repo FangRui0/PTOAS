@@ -594,7 +594,7 @@ class VectorCubeSurfaceTest(unittest.TestCase):
                         getattr(_ops, func_name)(*args)
                     self.assertEqual(op_ctor.call_args.args, expected_call)
 
-    def test_mte_l1_l0_explicit_controls_dispatch_to_load_cbuf_ops(self):
+    def test_mte_l1_l0_explicit_controls_emit_wrapper_ops(self):
         source = object()
         destination = object()
         controls = {
@@ -607,45 +607,54 @@ class VectorCubeSurfaceTest(unittest.TestCase):
         }
 
         with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
-             patch.object(_ops, "_coerce_i64", side_effect=lambda value, *, context: f"{context}:{value}"), \
-             patch.object(_ops, "_is_fp4_packed_pointer_value", return_value=False):
+             patch.object(_ops, "_coerce_i64", side_effect=lambda value, *, context: f"{context}:{value}"):
             ca_op = MagicMock()
-            with patch.object(_ops._pto, "LoadCbufToCaOp", ca_op):
+            with patch.object(_ops._pto, "MteL1L0aOp", ca_op):
                 _ops.mte_l1_l0a(source, destination, **controls, transpose=True)
             self.assertEqual(
                 ca_op.call_args.args,
                 (
                     source,
                     destination,
-                    "mte_l1_l0a m_start:3",
-                    "mte_l1_l0a k_start:5",
-                    "mte_l1_l0a m_step:16",
-                    "mte_l1_l0a k_step:2",
-                    "mte_l1_l0a src_stride:8",
-                    "mte_l1_l0a dst_stride:2",
                 ),
             )
-            self.assertEqual(ca_op.call_args.kwargs, {"transpose": True})
+            self.assertEqual(
+                ca_op.call_args.kwargs,
+                {
+                    "m_start": "mte_l1_l0a m_start:3",
+                    "k_start": "mte_l1_l0a k_start:5",
+                    "m_step": "mte_l1_l0a m_step:16",
+                    "k_step": "mte_l1_l0a k_step:2",
+                    "src_stride": "mte_l1_l0a src_stride:8",
+                    "dst_stride": "mte_l1_l0a dst_stride:2",
+                    "transpose": True,
+                },
+            )
 
             cb_op = MagicMock()
-            with patch.object(_ops._pto, "LoadCbufToCbOp", cb_op):
+            with patch.object(_ops._pto, "MteL1L0bOp", cb_op):
                 _ops.mte_l1_l0b(source, destination, **controls, transpose=True)
             self.assertEqual(
                 cb_op.call_args.args,
                 (
                     source,
                     destination,
-                    "mte_l1_l0b m_start:3",
-                    "mte_l1_l0b k_start:5",
-                    "mte_l1_l0b m_step:16",
-                    "mte_l1_l0b k_step:2",
-                    "mte_l1_l0b src_stride:8",
-                    "mte_l1_l0b dst_stride:2",
                 ),
             )
-            self.assertEqual(cb_op.call_args.kwargs, {"transpose": True})
+            self.assertEqual(
+                cb_op.call_args.kwargs,
+                {
+                    "m_start": "mte_l1_l0b m_start:3",
+                    "k_start": "mte_l1_l0b k_start:5",
+                    "m_step": "mte_l1_l0b m_step:16",
+                    "k_step": "mte_l1_l0b k_step:2",
+                    "src_stride": "mte_l1_l0b src_stride:8",
+                    "dst_stride": "mte_l1_l0b dst_stride:2",
+                    "transpose": True,
+                },
+            )
 
-    def test_mte_l1_l0_explicit_controls_dispatch_fp4_to_s4_ops(self):
+    def test_mte_l1_l0_explicit_fp4_controls_stay_on_wrapper_ops(self):
         controls = {
             "m_start": 0,
             "k_start": 4,
@@ -669,8 +678,8 @@ class VectorCubeSurfaceTest(unittest.TestCase):
                 with self.subTest(dtype=dtype), \
                      patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
                      patch.object(_ops, "_coerce_i64", side_effect=lambda value, *, context: f"{context}:{value}"), \
-                     patch.object(_ops._pto, "LoadCbufToCaS4Op") as ca_s4, \
-                     patch.object(_ops._pto, "LoadCbufToCbS4Op") as cb_s4:
+                     patch.object(_ops._pto, "MteL1L0aOp") as ca_op, \
+                     patch.object(_ops._pto, "MteL1L0bOp") as cb_op:
                     _ops.mte_l1_l0a(
                         source, destination_a, **controls, transpose=0
                     )
@@ -678,27 +687,27 @@ class VectorCubeSurfaceTest(unittest.TestCase):
                         source, destination_b, **controls, transpose=1
                     )
 
-                ca_s4.assert_called_once_with(
+                ca_op.assert_called_once_with(
                     source,
                     destination_a,
-                    "mte_l1_l0a m_start:0",
-                    "mte_l1_l0a k_start:4",
-                    "mte_l1_l0a m_step:16",
-                    "mte_l1_l0a k_step:4",
-                    "mte_l1_l0a src_stride:16",
-                    "mte_l1_l0a dst_stride:16",
-                    "mte_l1_l0a transpose:0",
+                    m_start="mte_l1_l0a m_start:0",
+                    k_start="mte_l1_l0a k_start:4",
+                    m_step="mte_l1_l0a m_step:16",
+                    k_step="mte_l1_l0a k_step:4",
+                    src_stride="mte_l1_l0a src_stride:16",
+                    dst_stride="mte_l1_l0a dst_stride:16",
+                    transpose=False,
                 )
-                cb_s4.assert_called_once_with(
+                cb_op.assert_called_once_with(
                     source,
                     destination_b,
-                    "mte_l1_l0b m_start:0",
-                    "mte_l1_l0b k_start:4",
-                    "mte_l1_l0b m_step:16",
-                    "mte_l1_l0b k_step:4",
-                    "mte_l1_l0b src_stride:16",
-                    "mte_l1_l0b dst_stride:16",
-                    "mte_l1_l0b transpose:1",
+                    m_start="mte_l1_l0b m_start:0",
+                    k_start="mte_l1_l0b k_start:4",
+                    m_step="mte_l1_l0b m_step:16",
+                    k_step="mte_l1_l0b k_step:4",
+                    src_stride="mte_l1_l0b src_stride:16",
+                    dst_stride="mte_l1_l0b dst_stride:16",
+                    transpose=True,
                 )
 
     def test_mte_l1_l0_explicit_controls_normalize_legacy_transpose(self):
@@ -715,10 +724,12 @@ class VectorCubeSurfaceTest(unittest.TestCase):
         destination = object()
         with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
              patch.object(_ops, "_coerce_i64", side_effect=lambda value, *, context: value), \
-             patch.object(_ops, "_is_fp4_packed_pointer_value", return_value=False), \
-             patch.object(_ops._pto, "LoadCbufToCaOp") as ca_op:
+             patch.object(_ops._pto, "MteL1L0aOp") as ca_op:
             _ops.mte_l1_l0a(source, destination, **controls, transpose=1)
-        self.assertEqual(ca_op.call_args.kwargs, {"transpose": True})
+        self.assertEqual(
+            ca_op.call_args.kwargs,
+            {**controls, "transpose": True},
+        )
 
         with self.assertRaisesRegex(
             TypeError, "mte_l1_l0a transpose expects bool or integer 0/1"
@@ -736,15 +747,21 @@ class VectorCubeSurfaceTest(unittest.TestCase):
              patch.object(_ops, "_coerce_i64", side_effect=lambda value, *, context: value), \
              patch.object(_ops._pto, "MteL1L0aOp") as ca_op:
             _ops.mte_l1_l0a(source, destination, 16, 32, transpose=0)
-        self.assertEqual(ca_op.call_args.kwargs, {"transpose": False})
+        self.assertEqual(
+            ca_op.call_args.kwargs,
+            {"m": 16, "k": 32, "start_row": 0, "start_col": 0, "transpose": False},
+        )
 
         with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
              patch.object(_ops, "_coerce_i64", side_effect=lambda value, *, context: value), \
              patch.object(_ops._pto, "MteL1L0bOp") as cb_op:
             _ops.mte_l1_l0b(source, destination, 32, 16, transpose=1)
-        self.assertEqual(cb_op.call_args.kwargs, {"transpose": True})
+        self.assertEqual(
+            cb_op.call_args.kwargs,
+            {"k": 32, "n": 16, "start_row": 0, "start_col": 0, "transpose": True},
+        )
 
-    def test_mte_l1_l0_explicit_controls_reject_mixed_fp4_types(self):
+    def test_mte_l1_l0_explicit_controls_defer_fp4_type_validation_to_vpto(self):
         controls = {
             "m_start": 0,
             "k_start": 0,
@@ -754,33 +771,25 @@ class VectorCubeSurfaceTest(unittest.TestCase):
             "dst_stride": 1,
         }
         with make_context():
-            cases = [
-                (
-                    "regular source with FP4 destination",
-                    "!pto.ptr<i8, l1>",
-                    "!pto.ptr<!pto.f4E2M1x2, l0a>",
-                ),
-                (
-                    "FP4 source with regular destination",
-                    "!pto.ptr<!pto.f4E2M1x2, l1>",
-                    "!pto.ptr<i8, l0a>",
-                ),
-                (
-                    "mismatched FP4 element types",
-                    "!pto.ptr<!pto.f4E1M2x2, l1>",
-                    "!pto.ptr<!pto.f4E2M1x2, l0a>",
-                ),
-            ]
-            for name, source_type, destination_type in cases:
-                with self.subTest(case=name):
-                    source = SimpleNamespace(type=Type.parse(source_type))
-                    destination = SimpleNamespace(
-                        type=Type.parse(destination_type)
-                    )
-                    with self.assertRaisesRegex(TypeError, "packed FP4"):
-                        _ops.mte_l1_l0a(
-                            source, destination, **controls, transpose=False
-                        )
+            source = SimpleNamespace(type=Type.parse("!pto.ptr<i8, l1>"))
+            destination = SimpleNamespace(
+                type=Type.parse("!pto.ptr<!pto.f4E2M1x2, l0a>")
+            )
+            with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+                 patch.object(_ops, "_coerce_i64", side_effect=lambda value, *, context: value), \
+                 patch.object(_ops._pto, "MteL1L0aOp") as ca_op:
+                _ops.mte_l1_l0a(source, destination, **controls, transpose=False)
+            ca_op.assert_called_once_with(
+                source,
+                destination,
+                m_start=0,
+                k_start=0,
+                m_step=1,
+                k_step=1,
+                src_stride=1,
+                dst_stride=1,
+                transpose=False,
+            )
 
     def test_mte_l1_l0_legacy_forms_preserve_keyword_compatibility(self):
         source = object()
@@ -804,13 +813,18 @@ class VectorCubeSurfaceTest(unittest.TestCase):
                 (
                     source,
                     destination,
-                    "mte_l1_l0a m:128",
-                    "mte_l1_l0a k:64",
-                    "mte_l1_l0a start_row:2",
-                    "mte_l1_l0a start_col:4",
                 ),
             )
-            self.assertEqual(ca_op.call_args.kwargs, {"transpose": True})
+            self.assertEqual(
+                ca_op.call_args.kwargs,
+                {
+                    "m": "mte_l1_l0a m:128",
+                    "k": "mte_l1_l0a k:64",
+                    "start_row": "mte_l1_l0a start_row:2",
+                    "start_col": "mte_l1_l0a start_col:4",
+                    "transpose": True,
+                },
+            )
 
             cb_op = MagicMock()
             with patch.object(_ops._pto, "MteL1L0bOp", cb_op):
@@ -828,13 +842,18 @@ class VectorCubeSurfaceTest(unittest.TestCase):
                 (
                     source,
                     destination,
-                    "mte_l1_l0b k:64",
-                    "mte_l1_l0b n:128",
-                    "mte_l1_l0b start_row:4",
-                    "mte_l1_l0b start_col:2",
                 ),
             )
-            self.assertEqual(cb_op.call_args.kwargs, {"transpose": True})
+            self.assertEqual(
+                cb_op.call_args.kwargs,
+                {
+                    "k": "mte_l1_l0b k:64",
+                    "n": "mte_l1_l0b n:128",
+                    "start_row": "mte_l1_l0b start_row:4",
+                    "start_col": "mte_l1_l0b start_col:2",
+                    "transpose": True,
+                },
+            )
 
     def test_mte_l1_l0_explicit_controls_reject_ambiguous_forms(self):
         source = object()

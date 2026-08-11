@@ -3056,51 +3056,55 @@ def PTO_MteGmL1FracOp : PTO_MteOp<"mte_gm_l1_frac", [
 }
 
 def PTO_MteL1L0aOp : PTO_MteOp<"mte_l1_l0a", [
+    AttrSizedOperandSegments,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
     PTO_BufferLikeType:$source,
     PTO_BufferLikeType:$destination,
-    I64:$m,
-    I64:$k,
-    I64:$start_row,
-    I64:$start_col,
+    Optional<I64>:$m,
+    Optional<I64>:$k,
+    Optional<I64>:$start_row,
+    Optional<I64>:$start_col,
+    Optional<I64>:$m_start,
+    Optional<I64>:$k_start,
+    Optional<I64>:$m_step,
+    Optional<I64>:$k_step,
+    Optional<I64>:$src_stride,
+    Optional<I64>:$dst_stride,
     DefaultValuedAttr<BoolAttr, "false">:$transpose
   );
 
   let results = (outs);
 
   let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    $source `,` $destination `,` $m `,` $k `,` $start_row `,` $start_col
-    attr-dict `:` type($source) `,` type($destination) `,` type($m) `,`
-    type($k) `,` type($start_row) `,` type($start_col)
-  }];
+  let hasCustomAssemblyFormat = 1;
 }
 
 def PTO_MteL1L0bOp : PTO_MteOp<"mte_l1_l0b", [
+    AttrSizedOperandSegments,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
     PTO_BufferLikeType:$source,
     PTO_BufferLikeType:$destination,
-    I64:$k,
-    I64:$n,
-    I64:$start_row,
-    I64:$start_col,
+    Optional<I64>:$k,
+    Optional<I64>:$n,
+    Optional<I64>:$start_row,
+    Optional<I64>:$start_col,
+    Optional<I64>:$m_start,
+    Optional<I64>:$k_start,
+    Optional<I64>:$m_step,
+    Optional<I64>:$k_step,
+    Optional<I64>:$src_stride,
+    Optional<I64>:$dst_stride,
     DefaultValuedAttr<BoolAttr, "false">:$transpose
   );
 
   let results = (outs);
 
   let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    $source `,` $destination `,` $k `,` $n `,` $start_row `,` $start_col
-    attr-dict `:` type($source) `,` type($destination) `,` type($k) `,`
-    type($n) `,` type($start_row) `,` type($start_col)
-  }];
+  let hasCustomAssemblyFormat = 1;
 }
 
 def PTO_MteL1L0aMxOp : PTO_MteOp<"mte_l1_l0a_mx", [

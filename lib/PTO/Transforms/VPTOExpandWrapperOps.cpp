@@ -1574,9 +1574,15 @@ struct ExpandLeftLoadPattern : public OpRewritePattern<pto::MteL1L0aOp> {
     if (!destination) {
       return rewriter.notifyMatchFailure(op, "expected pointer-like destination");
     }
-    FailureOr<LoadCbufToCbControl> control = deriveLoadCbufToCaControl(
-        loc, op.getM(), op.getK(), elementType,
-        op.getStartRow(), op.getStartCol(), op.getTranspose(), rewriter);
+    FailureOr<LoadCbufToCbControl> control = [&]() -> FailureOr<LoadCbufToCbControl> {
+      if (op.getMStart())
+        return LoadCbufToCbControl{op.getMStart(), op.getKStart(),
+                                   op.getMStep(), op.getKStep(),
+                                   op.getSrcStride(), op.getDstStride()};
+      return deriveLoadCbufToCaControl(
+          loc, op.getM(), op.getK(), elementType, op.getStartRow(),
+          op.getStartCol(), op.getTranspose(), rewriter);
+    }();
     if (failed(control))
       return rewriter.notifyMatchFailure(op,
                                          "failed to derive load_cbuf_to_ca control");
@@ -1615,9 +1621,15 @@ struct ExpandRightLoadPattern : public OpRewritePattern<pto::MteL1L0bOp> {
     if (!destination) {
       return rewriter.notifyMatchFailure(op, "expected pointer-like destination");
     }
-    FailureOr<LoadCbufToCbControl> control = deriveLoadCbufToCbControl(
-        loc, op.getK(), op.getN(), elementType,
-        op.getStartRow(), op.getStartCol(), op.getTranspose(), rewriter);
+    FailureOr<LoadCbufToCbControl> control = [&]() -> FailureOr<LoadCbufToCbControl> {
+      if (op.getMStart())
+        return LoadCbufToCbControl{op.getMStart(), op.getKStart(),
+                                   op.getMStep(), op.getKStep(),
+                                   op.getSrcStride(), op.getDstStride()};
+      return deriveLoadCbufToCbControl(
+          loc, op.getK(), op.getN(), elementType, op.getStartRow(),
+          op.getStartCol(), op.getTranspose(), rewriter);
+    }();
     if (failed(control))
       return rewriter.notifyMatchFailure(op,
                                          "failed to derive load_cbuf_to_cb control");

@@ -6944,34 +6944,35 @@ def main() -> None:
     expect("pto.vsstb" in vsstb_post_update_surface_text, "vsstb(..., post_update=ON) should still lower through pto.vsstb on the current VPTO IR")
     expect("-> !pto.ptr<f32, ub>" in vsstb_post_update_surface_text, "vsstb(..., post_update=ON) should request the updated destination pointer result")
     expect("pto.mte_l1_l0b" in public_surface_text, "mte_l1_l0b(...) should lower to pto.mte_l1_l0b")
-    expect(public_surface_text.count("pto.load_cbuf_to_ca") == 1, "explicit mte_l1_l0a(...) should lower directly to pto.load_cbuf_to_ca")
-    expect(public_surface_text.count("pto.load_cbuf_to_cb") == 1, "explicit mte_l1_l0b(...) should lower directly to pto.load_cbuf_to_cb")
     expect(
-        explicit_fp4_s4_staging_text.count("pto.load_cbuf_to_ca_s4") == 1,
-        "FP4 explicit mte_l1_l0a(...) should select pto.load_cbuf_to_ca_s4",
+        public_surface_text.count("pto.mte_l1_l0a") >= 2,
+        "explicit mte_l1_l0a(...) should remain on the public wrapper op",
     )
     expect(
-        explicit_fp4_s4_staging_text.count("pto.load_cbuf_to_cb_s4") == 1,
-        "FP4 explicit mte_l1_l0b(...) should select pto.load_cbuf_to_cb_s4",
+        public_surface_text.count("pto.mte_l1_l0b") >= 2,
+        "explicit mte_l1_l0b(...) should remain on the public wrapper op",
     )
-    for op_name in ("load_cbuf_to_ca_s4", "load_cbuf_to_cb_s4"):
-        expect(
-            re.search(
-                rf"pto\.{op_name} .*%c0_i64(?:_\d+)?, %c4_i64(?:_\d+)?, "
-                rf"%c16_i64(?:_\d+)?, %c4_i64(?:_\d+)?, "
-                rf"%c16_i64(?:_\d+)?, %c16_i64(?:_\d+)?",
-                explicit_fp4_s4_staging_text,
-            ) is not None,
-            f"{op_name} should preserve raw packed-S4 k_start/k_step and strides",
-        )
+    expect(
+        explicit_fp4_s4_staging_text.count("pto.mte_l1_l0a") == 1,
+        "FP4 explicit mte_l1_l0a(...) should trace through pto.mte_l1_l0a",
+    )
+    expect(
+        explicit_fp4_s4_staging_text.count("pto.mte_l1_l0b") == 1,
+        "FP4 explicit mte_l1_l0b(...) should trace through pto.mte_l1_l0b",
+    )
+    expect(
+        "pto.load_cbuf_to_ca_s4" not in explicit_fp4_s4_staging_text and
+        "pto.load_cbuf_to_cb_s4" not in explicit_fp4_s4_staging_text,
+        "PTODSL must not expose internal raw S4 load operations",
+    )
     explicit_ca_controls = (
-        r"pto\.load_cbuf_to_ca .*%c4_i64(?:_\d+)?, %c0_i64(?:_\d+)?, "
+        r"pto\.mte_l1_l0a .*%c4_i64(?:_\d+)?, %c0_i64(?:_\d+)?, "
         r"%c4_i64(?:_\d+)?, %c16_i64(?:_\d+)?, "
         r"%c16_i64(?:_\d+)?, %c4_i64(?:_\d+)? \{transpose = true\}"
     )
     expect(
         re.search(explicit_ca_controls, public_surface_text) is not None,
-        "explicit mte_l1_l0a controls should preserve independent source and destination strides",
+        "explicit mte_l1_l0a controls should remain on the public wrapper",
     )
     expect("pto.mte_l1_l0a_mx" in public_surface_text, "mte_l1_l0a_mx(...) should lower to pto.mte_l1_l0a_mx")
     expect("pto.mte_l1_l0b_mx" in public_surface_text, "mte_l1_l0b_mx(...) should lower to pto.mte_l1_l0b_mx")
