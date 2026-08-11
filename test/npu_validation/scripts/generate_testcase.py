@@ -125,6 +125,33 @@ CASE_INT_SCALAR_DEFAULTS.update({
 # overrides sample-scoped because identically named kernels in other model
 # revisions can have different scalar signatures.
 SAMPLE_CASE_INT_SCALAR_DEFAULTS = {
+    "qwen3_14bdecodea3": {
+        # The exported projection kernels take tensor-view offsets followed by
+        # the PyPTO SPMD worker id/count.  Exercise the first valid view with a
+        # single worker; the generic value `1` selects a shifted weight block.
+        "k_proj": {"v4": 0, "v5": 0, "v6": 1},
+        "v_proj": {"v4": 0, "v5": 0, "v6": 1},
+        "q_proj": {"v4": 0, "v5": 0, "v6": 1},
+        "down_proj": {"v4": 0, "v5": 0, "v6": 0},
+        "out_proj": {"v4": 0, "v5": 0, "v6": 0},
+    },
+    "qwen3_14bprefilla3": {
+        # Dynamic tensor dimensions must describe the backing views, while
+        # offset and SPMD-index arguments select the first validation tile.
+        "gate_up_proj": {
+            "v6": 0,
+            "v7": 0,
+            "v8": 0,
+            "v9": 128,
+            "v10": 5_120,
+            "v11": 0,
+            "v12": 1,
+        },
+        "kv_proj": {"v6": 0, "v7": 5_120, "v8": 0, "v9": 1},
+        "out_proj_aic": {"v4": 0, "v5": 5_120, "v6": 0, "v7": 1},
+        "q_proj": {"v4": 0, "v5": 5_120, "v6": 0, "v7": 1},
+        "lm_head": {"v4": 1, "v5": 1, "v6": 0, "v7": 1},
+    },
     "deepseekv4decodea5": {
         "idx_qr_proj_matmul": {"v4": 0, "v5": 1},
         # Exercise one complete 16-row tile instead of truncating arg5 / 16
@@ -240,6 +267,70 @@ CASE_POINTER_COUNT_MINIMUMS = {
 # source revision.  Scope by sample so older DeepSeek variants with the same
 # testcase names retain their already validated layouts.
 SAMPLE_CASE_POINTER_COUNT_MINIMUMS = {
+    "qwen3_14bdecodea3": {
+        # The generic EmitC footprint analysis follows individual partition
+        # views and can miss later tiles in these large strided tensors.  Size
+        # the backing allocations from the complete PTO tensor-view shapes.
+        "k_proj": {
+            "v1": 16 * 1_024,
+            "v2": 16 * 5_120,
+            "v3": 5_120 * 1_024,
+        },
+        "v_proj": {
+            "v1": 16 * 1_024,
+            "v2": 16 * 5_120,
+            "v3": 5_120 * 1_024,
+        },
+        "q_proj": {
+            "v1": 16 * 5_120,
+            "v2": 16 * 5_120,
+            "v3": 5_120 * 5_120,
+        },
+        "down_proj": {
+            "v1": 16 * 17_408,
+            "v2": 17_408 * 5_120,
+            "v3": 16 * 5_120,
+        },
+        "out_proj": {
+            "v1": 16 * 5_120,
+            "v2": 5_120 * 5_120,
+            "v3": 16 * 5_120,
+        },
+    },
+    "qwen3_14bprefilla3": {
+        "gate_up_proj": {
+            "v1": 128 * 8_704,
+            "v2": 128 * 5_120,
+            "v3": 5_120 * 17_408,
+            "v4": 128 * 8_704,
+            "v5": 5_120 * 17_408,
+        },
+        "kv_proj": {
+            "v1": 64 * 1_024,
+            "v2": 64 * 1_024,
+            "v3": 64 * 5_120,
+            "v4": 5_120 * 1_024,
+            "v5": 5_120 * 1_024,
+        },
+        "out_proj_aic": {
+            "v1": 64 * 5_120,
+            "v2": 64 * 5_120,
+            "v3": 5_120 * 5_120,
+        },
+        "q_proj": {
+            "v1": 64 * 5_120,
+            "v2": 64 * 5_120,
+            "v3": 5_120 * 5_120,
+        },
+        # A single validation worker computes the first 192 vocabulary rows.
+        # Allocating the entire 152064x5120 model weight would add 1.5 GiB for
+        # no extra coverage in this one-worker harness.
+        "lm_head": {
+            "v1": 152_064,
+            "v2": 16 * 5_120,
+            "v3": 192 * 5_120,
+        },
+    },
     "deepseekv4decodea5": {
         "kv_proj_matmul": {
             "v1": 16 * 512,
@@ -2241,6 +2332,11 @@ def generate_testcase(
             inferred_counts[name] = max(inferred_counts.get(name, 0), count)
     pointer_count_minimums = CASE_POINTER_COUNT_MINIMUMS.get(testcase, {})
     sample_name_lc = sample_root.name.lower()
+    if sample_name_lc.startswith("qwen") and "decode" in sample_name_lc:
+        pointer_count_minimums = {
+            **pointer_count_minimums,
+            **QWEN3_DECODE_POINTER_COUNT_MINIMUMS.get(testcase, {}),
+        }
     sample_pointer_count_minimums = (
         SAMPLE_CASE_POINTER_COUNT_MINIMUMS
         .get(sample_name_lc, {})
@@ -2250,11 +2346,6 @@ def generate_testcase(
         pointer_count_minimums = {
             **pointer_count_minimums,
             **sample_pointer_count_minimums,
-        }
-    if sample_name_lc.startswith("qwen") and "decode" in sample_name_lc:
-        pointer_count_minimums = {
-            **pointer_count_minimums,
-            **QWEN3_DECODE_POINTER_COUNT_MINIMUMS.get(testcase, {}),
         }
     for name, count in pointer_count_minimums.items():
         inferred_counts[name] = max(inferred_counts.get(name, 0), int(count))
