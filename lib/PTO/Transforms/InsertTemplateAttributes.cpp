@@ -19,6 +19,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Pass/Pass.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
@@ -47,6 +48,7 @@ constexpr llvm::StringLiteral kCandidatesAttr = "candidates";
 struct CandidateMetadata {
   int64_t id;
   std::string name;
+  int64_t priority;
   int64_t loopDepth;
   bool postUpdate;
   bool tail;
@@ -579,12 +581,14 @@ static void appendTileOperandSpecJson(std::string &json,
   pto::SLayout sLayout = pto::SLayout::NoneBox;
   int64_t fractalSize = 0;
   uint64_t padValue = 0;
+  int32_t compactMode = static_cast<int32_t>(pto::CompactMode::Null);
   if (auto config = tileType.getConfigAttr()) {
     bLayout = config.getBLayout().getValue();
     sLayout = config.getSLayout().getValue();
     if (config.getSFractalSize())
       fractalSize = config.getSFractalSize().getInt();
     padValue = static_cast<uint64_t>(config.getPad().getValue());
+    compactMode = static_cast<int32_t>(config.getCompactMode().getValue());
   }
 
   json += "\",\"config\":{\"b_layout\":\"";
@@ -595,7 +599,9 @@ static void appendTileOperandSpecJson(std::string &json,
   json += std::to_string(fractalSize);
   json += ",\"pad_value\":\"0x";
   json += llvm::utohexstr(padValue, /*LowerCase=*/false);
-  json += "\"}}";
+  json += "\",\"compact_mode\":";
+  json += std::to_string(compactMode);
+  json += "}}";
 }
 
 static void appendViewOperandSpecJson(std::string &json, Value operand,
@@ -778,7 +784,7 @@ parseCandidateAttributes(Operation *operation, StringRef metadataJson) {
   }
 
   auto *root = parsed->getAsObject();
-  auto *candidates = root ? root->getObject("candidates") : nullptr;
+  auto *candidates = root ? root->getArray("candidates") : nullptr;
   if (!candidates || candidates->empty()) {
     operation->emitError("InsertTemplateAttributes found no legal template "
                          "candidates for ")
@@ -788,8 +794,9 @@ parseCandidateAttributes(Operation *operation, StringRef metadataJson) {
 
   SmallVector<CandidateMetadata> parsedCandidates;
   parsedCandidates.reserve(candidates->size());
-  for (const auto &entry : *candidates) {
-    auto *metadata = entry.second.getAsObject();
+  llvm::DenseSet<int64_t> candidateIds;
+  for (const llvm::json::Value &entry : *candidates) {
+    auto *metadata = entry.getAsObject();
     if (!metadata) {
       operation->emitError(
           "InsertTemplateAttributes candidate metadata must be an object");
@@ -798,13 +805,14 @@ parseCandidateAttributes(Operation *operation, StringRef metadataJson) {
 
     auto name = metadata->getString("name");
     auto id = metadata->getInteger("id");
+    auto priority = metadata->getInteger("priority");
     auto loopDepth = metadata->getInteger("loop_depth");
     auto postUpdate = metadata->getBoolean("is_post_update");
     auto tail = metadata->getBoolean("has_tail");
-    if (!name || !loopDepth || !postUpdate || !tail) {
+    if (!name || !priority || !loopDepth || !postUpdate || !tail) {
       operation->emitError(
           "InsertTemplateAttributes candidate metadata is missing name, "
-          "loop_depth, is_post_update, or has_tail");
+          "priority, loop_depth, is_post_update, or has_tail");
       return failure();
     }
     if (!id && candidates->size() != 1) {
@@ -814,9 +822,17 @@ parseCandidateAttributes(Operation *operation, StringRef metadataJson) {
       return failure();
     }
 
+    int64_t candidateId = id.value_or(0);
+    if (!candidateIds.insert(candidateId).second) {
+      operation->emitError(
+          "InsertTemplateAttributes candidate ids must be unique");
+      return failure();
+    }
+
     parsedCandidates.push_back(CandidateMetadata{
-        id.value_or(0),
+        candidateId,
         name->str(),
+        *priority,
         *loopDepth,
         *postUpdate,
         *tail,
@@ -826,16 +842,20 @@ parseCandidateAttributes(Operation *operation, StringRef metadataJson) {
   llvm::sort(parsedCandidates,
              [](const CandidateMetadata &left,
                 const CandidateMetadata &right) {
-               if (left.id != right.id)
-                 return left.id < right.id;
+               if (left.priority != right.priority)
+                 return left.priority > right.priority;
                return left.name < right.name;
              });
-  for (auto [index, candidate] : llvm::enumerate(parsedCandidates)) {
-    if (index != 0 && candidate.id == parsedCandidates[index - 1].id) {
-      operation->emitError(
-          "InsertTemplateAttributes candidate ids must be unique");
-      return failure();
-    }
+  if (parsedCandidates.size() > 1 &&
+      parsedCandidates[0].priority == parsedCandidates[1].priority) {
+    operation->emitError(
+        "InsertTemplateAttributes found multiple legal templates tied at "
+        "the highest priority: ")
+        << parsedCandidates[0].name << " and " << parsedCandidates[1].name
+        << " at priority " << parsedCandidates[0].priority
+        << "; assign distinct priorities or make their constraints mutually "
+           "exclusive";
+    return failure();
   }
 
   Builder builder(operation->getContext());

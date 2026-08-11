@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from . import constraints as _constraints
 from . import registry as _registry
+from ._template_package import load_template
 from .metadata import ScalarSpec, ScalarType, TileSpec, VectorSpec, ViewSpec
-from TileOps import load_template
 
 
 def _build_tile_specs(descriptor, operand_specs: list) -> dict:
@@ -94,6 +94,9 @@ def _build_tile_specs(descriptor, operand_specs: list) -> dict:
             ) from exc
 
         valid_shape = spec.get("valid_shape")
+        s_fractal_size = config.get("s_fractal_size", 512)
+        if s_fractal_size == 0:
+            s_fractal_size = 512
         specs[name] = TileSpec(
             shape=shape,
             dtype=dtype,
@@ -101,7 +104,9 @@ def _build_tile_specs(descriptor, operand_specs: list) -> dict:
             valid_shape=tuple(valid_shape) if valid_shape is not None else None,
             b_layout=config.get("b_layout", "row_major"),
             s_layout=config.get("s_layout", "none_box"),
+            s_fractal_size=s_fractal_size,
             pad_value=spec.get("pad_value", config.get("pad_value", "Null")),
+            compact_mode=config.get("compact_mode", "null"),
         )
     return specs
 
@@ -207,8 +212,27 @@ def _legal_candidate_specs(
             f"no legal template for op={op!r} target={target!r}; {reasons}"
         )
 
-    legal.sort(key=lambda pair: pair[0].metadata.priority, reverse=True)
+    legal.sort(key=lambda pair: _registry.candidate_sort_key(pair[0]))
     return legal
+
+
+def _require_unambiguous_top_candidate(target: str, op: str, legal: list) -> None:
+    if len(legal) < 2:
+        return
+
+    top_priority = legal[0][0].metadata.priority
+    winners = [
+        descriptor
+        for descriptor, _ in legal
+        if descriptor.metadata.priority == top_priority
+    ]
+    if len(winners) > 1:
+        names = ", ".join(descriptor.name for descriptor in winners)
+        raise _registry.AmbiguousTemplate(
+            f"multiple templates tie at priority {top_priority} for op={op!r} "
+            f"target={target!r}: {names}; assign distinct priorities or make "
+            "their constraints mutually exclusive"
+        )
 
 
 def _select_descriptor_and_specs(
@@ -232,18 +256,7 @@ def _select_descriptor_and_specs(
     if len(legal) == 1:
         return legal[0]
 
-    top_priority = legal[0][0].metadata.priority
-    winners = [
-        (descriptor, specs)
-        for descriptor, specs in legal
-        if descriptor.metadata.priority == top_priority
-    ]
-    if len(winners) > 1:
-        names = ", ".join(descriptor.name for descriptor, _ in winners)
-        raise _registry.AmbiguousTemplate(
-            f"multiple templates tie at priority {top_priority} for op={op!r} "
-            f"target={target!r}: {names}"
-        )
+    _require_unambiguous_top_candidate(target, op, legal)
     return legal[0]
 
 
@@ -253,13 +266,14 @@ def metadata_request(
     operand_specs: list,
     context_attrs: dict | None = None,
 ) -> dict:
-    """Return every legal candidate and its selection metadata."""
+    """Return every legal candidate in deterministic selection order."""
     legal = _legal_candidate_specs(target, op, operand_specs, context_attrs)
+    _require_unambiguous_top_candidate(target, op, legal)
     return {
         "target": target,
         "op": op,
-        "candidates": {
-            descriptor.name: _metadata_for_descriptor(
+        "candidates": [
+            _metadata_for_descriptor(
                 descriptor,
                 {
                     **_constraints.build_context(specs, target, op),
@@ -267,7 +281,7 @@ def metadata_request(
                 },
             )
             for descriptor, specs in legal
-        },
+        ],
     }
 
 

@@ -118,7 +118,7 @@ from MLIR. The JSON shape sent to the Python service is deliberately close to
 
 | Operand kind | Required metadata |
 |---|---|
-| tile | dtype, shape, valid shape, memory space, block layout, sub-layout, fractal size, pad value |
+| tile | dtype, shape, valid shape, memory space, block layout, sub-layout, fractal size, pad value, compact mode |
 | view | dtype, shape, strides when known, memory space, optional layout |
 | vector | dtype and vector shape |
 | scalar | dtype and static integer value when recoverable |
@@ -159,21 +159,36 @@ then evaluates each registered candidate:
 5. Check layout and memory-space metadata.
 6. Merge context attributes.
 7. Run custom constraint predicates.
-8. Sort legal candidates by descending priority.
+8. Sort legal candidates by descending priority, using name only to make
+   equal-priority reporting deterministic.
 
 If no candidate is legal, the service reports a `NoMatchingTemplate` error with
 per-candidate reasons. If multiple candidates tie for the highest priority and
-no explicit candidate is requested, the registry reports ambiguity rather than
-silently picking one.
+no explicit candidate is requested, both normal selection and metadata
+insertion report ambiguity rather than silently picking one.
 
-For multi-candidate ops, candidate `id` values must be unique. The C++ pass
-sorts persisted candidate metadata by `id` and then by name, so ids should be
-stable and intentionally assigned.
+Constraint predicates may depend on concrete operand metadata, so general
+overlap cannot be proven when templates are merely registered. In-tree catalog
+selection tests catch ties for their representative operand forms before
+compiler integration runs; metadata insertion retains the concrete check for
+forms that a catalog cannot exhaustively enumerate. The ambiguity diagnostic
+directs authors to assign distinct priorities or make the constraints mutually
+exclusive.
+
+For multi-candidate ops, candidate `id` values must be unique and stable. IDs
+identify versions; they do not rank them.
+
+The service returns legal candidates as a JSON array in Python ranking order.
+Each wire entry includes priority so `InsertTemplateAttributes` can defensively
+normalize the result by descending priority and reject a highest-priority tie.
+This protects selection across the compiler/service boundary if a response is
+unsorted. Candidate ID, JSON object order, registration order, and import order
+do not participate in ranking.
 
 ## Compact Candidate Attribute
 
-`InsertTemplateAttributes` stores a compact `candidates` array attribute on the
-TileOp. Each entry contains:
+`InsertTemplateAttributes` stores the normalized candidates as a compact
+`candidates` array attribute on the TileOp. Each entry contains:
 
 - `id`
 - `name`
@@ -182,9 +197,11 @@ TileOp. Each entry contains:
 - `tail`
 
 This attribute is intentionally not a copy of the full Python metadata object.
-Legality has already happened in the service. The IR only needs a stable list of
-legal render targets and the small amount of metadata consumed by downstream
-passes.
+Legality has already happened in the service. Priority is consumed while
+validating and ordering the wire response; it is not persisted. The IR only
+needs a stable list of legal render targets and the small amount of metadata
+consumed by downstream passes. Array position is meaningful: candidate zero is
+the selected version.
 
 Do not add fields to the IR candidate payload simply because they exist in
 Python metadata. Add a field only when a C++ pass or IR-level test consumes it.
@@ -202,7 +219,7 @@ must include every input that can change the rendered helper body:
 - op name
 - target architecture
 - tile operand dtype, shape, valid shape, memory space, layouts, fractal size,
-  and pad value
+  pad value, and compact mode
 - view operand dtype, shape, strides, memory space, and layout
 - vector operand dtype and shape
 - scalar operand dtype and static value when known
@@ -220,6 +237,9 @@ faster to inspect.
   enough to accept ST-proven TileLangDSL forms.
 - Forward context attrs before porting a version that depends on them.
 - Use stable candidate ids for multi-candidate ops.
+- Treat candidate ids as identity only; use priority for preference.
+- Reject equal top-priority candidates instead of adding an incidental
+  tie-breaker.
 - Put all helper-code-affecting operand metadata in the specialization key.
 - Add a focused regression for each backend-selection bug.
 - Treat full ST status files as snapshots, not design documentation.
