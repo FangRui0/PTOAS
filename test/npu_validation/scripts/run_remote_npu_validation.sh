@@ -29,6 +29,13 @@ else
   exit 1
 fi
 
+EXPECTED_CASES_FILE="${EXPECTED_CASES_FILE:-${ROOT_DIR}/test/samples/expected_npu_validation_cases.txt}"
+EXPECTED_CASE_COUNT="${EXPECTED_CASE_COUNT:-}"
+# RUN_ONLY_CASES may be expanded by the board monitor into testcase basenames.
+# Keep the original user-facing group aliases here (for example qwen,deepseek)
+# so completeness is checked against every requested model variant.
+EXPECTED_CASES_FILTER="${EXPECTED_CASES_FILTER:-${RUN_ONLY_CASES}}"
+
 log() { echo "[$(date +'%F %T')] $*"; }
 
 append_unique_colon_item() {
@@ -221,6 +228,14 @@ log "DEVICE_ID=${DEVICE_ID}"
 log "PTO_ISA_REPO=${PTO_ISA_REPO}"
 log "PTO_ISA_COMMIT=${PTO_ISA_COMMIT}"
 log "ROOT_DIR=${ROOT_DIR}"
+if [[ -f "${EXPECTED_CASES_FILE}" ]]; then
+  log "EXPECTED_CASES_FILE=${EXPECTED_CASES_FILE}"
+elif [[ -n "${EXPECTED_CASE_COUNT}" ]]; then
+  log "EXPECTED_CASE_COUNT=${EXPECTED_CASE_COUNT}"
+else
+  log "WARN: no expected-case manifest/count; completeness cannot be verified"
+fi
+log "EXPECTED_CASES_FILTER=${EXPECTED_CASES_FILTER:-<all>}"
 
 RESULTS_TSV="${RESULTS_TSV:-${ROOT_DIR}/remote_npu_validation_results.tsv}"
 # Put all generated validation projects under a single root to avoid sprinkling
@@ -286,6 +301,30 @@ case_requires_multicard_comm() {
 
 SKIP_CASES_NORM="$(normalize_list "${SKIP_CASES}")"
 RUN_ONLY_CASES_NORM="$(normalize_list "${RUN_ONLY_CASES}")"
+EXPECTED_CASES_FILTER_NORM="$(normalize_list "${EXPECTED_CASES_FILTER}")"
+
+if [[ -n "${EXPECTED_CASE_COUNT}" && ! "${EXPECTED_CASE_COUNT}" =~ ^[0-9]+$ ]]; then
+  log "ERROR: EXPECTED_CASE_COUNT must be a non-negative integer: ${EXPECTED_CASE_COUNT}"
+  exit 2
+fi
+if [[ -n "${EXPECTED_CASES_FILE}" && ! -f "${EXPECTED_CASES_FILE}" \
+      && -z "${EXPECTED_CASE_COUNT}" ]]; then
+  log "ERROR: expected-case manifest is missing: ${EXPECTED_CASES_FILE}"
+  exit 2
+fi
+
+expected_case_is_selected() {
+  local case_id="$1"
+  local sample_name testcase
+  sample_name="${case_id%%/*}"
+  testcase="${case_id#*/}"
+  [[ -n "${sample_name}" && -n "${testcase}" && "${case_id}" == */* ]] || return 1
+  if [[ -n "${EXPECTED_CASES_FILTER_NORM}" ]] \
+      && ! run_only_matches "${EXPECTED_CASES_FILTER_NORM}" "${testcase}" "${sample_name}" "${case_id}"; then
+    return 1
+  fi
+  return 0
+}
 
 source_rc() {
   local f="$1"
@@ -774,6 +813,57 @@ log "=== SUMMARY ==="
 passed_count=$((ok_count + determinism_only_count))
 matched_count=$((passed_count + fail_count + skip_count))
 log "MATCHED=${matched_count} PASS=${passed_count} CORRECTNESS_OK=${ok_count} DETERMINISM_ONLY=${determinism_only_count} FAIL=${fail_count} SKIP=${skip_count}"
+
+coverage_tmp_dir="$(mktemp -d -t ptoas-board-coverage.XXXXXX)"
+actual_cases_file="${coverage_tmp_dir}/actual.txt"
+expected_cases_file="${coverage_tmp_dir}/expected.txt"
+missing_cases_file="${coverage_tmp_dir}/missing.txt"
+trap 'rm -rf "${coverage_tmp_dir}"' EXIT
+
+awk -F'\t' 'NR > 1 && $1 != "" { print $1 }' "${RESULTS_TSV}" \
+  | LC_ALL=C sort -u > "${actual_cases_file}"
+actual_unique_count="$(wc -l < "${actual_cases_file}")"
+duplicate_result_count=$((matched_count - actual_unique_count))
+if (( duplicate_result_count != 0 )); then
+  log "ERROR: duplicate testcase results detected: ${duplicate_result_count}"
+  status=1
+fi
+
+if [[ -f "${EXPECTED_CASES_FILE}" ]]; then
+  while IFS= read -r expected_case || [[ -n "${expected_case}" ]]; do
+    expected_case="${expected_case%$'\r'}"
+    [[ -n "${expected_case}" && "${expected_case}" != \#* ]] || continue
+    if ! expected_case_is_selected "${expected_case}"; then
+      continue
+    fi
+    printf '%s\n' "${expected_case}"
+  done < "${EXPECTED_CASES_FILE}" | LC_ALL=C sort -u > "${expected_cases_file}"
+
+  manifest_expected_count="$(wc -l < "${expected_cases_file}")"
+  if [[ -n "${EXPECTED_CASE_COUNT}" && "${manifest_expected_count}" -ne "${EXPECTED_CASE_COUNT}" ]]; then
+    log "ERROR: expected manifest/count disagree: manifest=${manifest_expected_count} count=${EXPECTED_CASE_COUNT}"
+    status=1
+  fi
+  comm -23 "${expected_cases_file}" "${actual_cases_file}" > "${missing_cases_file}"
+  missing_count="$(wc -l < "${missing_cases_file}")"
+  log "COVERAGE_EXPECTED=${manifest_expected_count} COVERAGE_OBSERVED=${actual_unique_count} COVERAGE_MISSING=${missing_count}"
+  if (( missing_count != 0 )); then
+    log "ERROR: board validation did not account for ${missing_count} expected testcase(s)"
+    while IFS= read -r missing_case; do
+      log "MISSING: ${missing_case}"
+    done < <(head -n 20 "${missing_cases_file}")
+    if (( missing_count > 20 )); then
+      log "MISSING: ... (+$((missing_count - 20)) more)"
+    fi
+    status=1
+  fi
+elif [[ -n "${EXPECTED_CASE_COUNT}" ]]; then
+  log "COVERAGE_EXPECTED=${EXPECTED_CASE_COUNT} COVERAGE_OBSERVED=${actual_unique_count}"
+  if [[ "${actual_unique_count}" -ne "${EXPECTED_CASE_COUNT}" ]]; then
+    log "ERROR: board validation observed ${actual_unique_count} testcase(s), expected ${EXPECTED_CASE_COUNT}"
+    status=1
+  fi
+fi
 log "RESULTS_TSV=${RESULTS_TSV}"
 
 exit "${status}"

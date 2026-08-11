@@ -1522,8 +1522,60 @@ PY
   return $overall
 }
 
+write_board_case_manifest() {
+  local out_dir="$1"
+  local manifest="${out_dir}/expected_npu_validation_cases.txt"
+  local manifest_tmp="${manifest}.tmp"
+  local soc_lc="${SOC_VERSION:-}"
+  local model_suffix="A3"
+  local cpp sample_name testcase source_file source_name model_dir
+
+  soc_lc="$(printf '%s' "${soc_lc}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${soc_lc}" == *"a5"* || "${soc_lc}" == *"950"* ]]; then
+    model_suffix="A5"
+  fi
+
+  {
+    # Preserve every generated non-model case that the board runner can see.
+    while IFS= read -r -d '' cpp; do
+      [[ "$(basename "${cpp}")" == ._* ]] && continue
+      sample_name="$(basename "$(dirname "${cpp}")")"
+      testcase="$(basename "${cpp}" .cpp)"
+      testcase="${testcase%-pto}"
+      testcase="${testcase%_pto}"
+      printf '%s/%s\n' "${sample_name}" "${testcase}"
+    done < <(find "${out_dir}" -type f -name '*-pto.cpp' -print0)
+
+    # Model completeness must come from the source inventory, not only from
+    # successfully generated payload files.  The board monitor marks filtered
+    # sources as *.pto.monitor-skip; include those too so an incomplete model
+    # alias cannot silently shrink a supposedly full Qwen/DeepSeek run.
+    for model_dir in \
+      "${BASE_DIR}"/Qwen*"${model_suffix}" \
+      "${BASE_DIR}"/Deepseek*"${model_suffix}"; do
+      [[ -d "${model_dir}" ]] || continue
+      sample_name="$(basename "${model_dir}")"
+      while IFS= read -r -d '' source_file; do
+        source_name="$(basename "${source_file}")"
+        source_name="${source_name%.monitor-skip}"
+        testcase="${source_name%.pto}"
+        printf '%s/%s\n' "${sample_name}" "${testcase}"
+      done < <(
+        find "${model_dir}" -type f \
+          \( -name '*.pto' -o -name '*.pto.monitor-skip' \) \
+          ! -path '*/npu_validation/*' \
+          ! -name '*-pto-ir.pto' \
+          ! -name '*-pto-ir.pto.monitor-skip' \
+          -print0
+      )
+    done
+  } | LC_ALL=C sort -u > "${manifest_tmp}"
+  mv -f "${manifest_tmp}" "${manifest}"
+  echo "BOARD_CASE_MANIFEST=${manifest} ($(wc -l < "${manifest}") cases)"
+}
+
 run_all() {
-  local results tmp out_dir
+  local tmp out_dir summary_rc
   out_dir="${PTOAS_OUT_DIR}"
   if [[ -z "${out_dir}" ]]; then
     out_dir="$(mktemp -d -t ptoas.samples.XXXXXX)"
@@ -1554,6 +1606,9 @@ run_all() {
       print "=============================";
       exit (fail==0 ? 0 : 1);
     }'
+  summary_rc=$?
+  write_board_case_manifest "${out_dir}"
+  return "${summary_rc}"
 }
 
 # -----------------------------------------------------------------------------
@@ -1586,6 +1641,7 @@ elif [[ $# -eq 2 && "$1" == "-t" ]]; then
   echo "PTOAS_OUT_DIR=${out_dir}"
   echo "========== SUMMARY =========="
   process_one_dir "$A" "$out_dir" | awk -F'\t' '{ printf "%-12s %-4s %s\n", $1, $2, $3 }'
+  write_board_case_manifest "${out_dir}"
 else
   usage
 fi
