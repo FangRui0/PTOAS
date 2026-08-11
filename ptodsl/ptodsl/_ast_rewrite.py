@@ -140,11 +140,25 @@ class _SectionLexicalRewriter(ast.NodeTransformer):
         old_env = self._env
         old_names = self._local_names
         old_outer_bindings = self._section_outer_bindings
+        entry_binding_count = len(self.section_entry_bindings)
         self._env = {}
         self._local_names = _name_info(stmts).stores
         self._section_outer_bindings = set(self._known_bindings)
         try:
-            return [self.visit(stmt) for stmt in stmts]
+            body = [self.visit(stmt) for stmt in stmts]
+            # Materialize outer values under their section-local aliases before
+            # any runtime control flow. Subsequent branch merges can then read
+            # the alias at the current program point instead of always falling
+            # back to the section entry value.
+            entry_bindings = list(self.section_entry_bindings.items())[entry_binding_count:]
+            initializers = [
+                ast.Assign(
+                    targets=[_name(alias, ast.Store())],
+                    value=_name(outer_name),
+                )
+                for alias, outer_name in entry_bindings
+            ]
+            return initializers + body
         finally:
             self._env = old_env
             self._local_names = old_names
@@ -970,13 +984,13 @@ class _ControlFlowRewriter:
         self._counter += 1
         return value
 
-    def _section_entry_value(self, name):
+    def _current_value(self, name):
         if name in self._section_uninitialized_aliases:
             raise PTODSLAstRewriteError(
                 "ast_rewrite=True runtime if reads a section-local value before it is initialized; "
                 f"initialize {name!r} before the conditional"
             )
-        return _name(self._section_entry_bindings.get(name, name))
+        return _name(name)
 
     def rewrite_block(self, stmts, *, live_after, live_after_slots=None, allow_loop_control=False, static_iters=None):
         rewritten_reversed = []
@@ -1232,7 +1246,7 @@ class _ControlFlowRewriter:
         result.extend(
             ast.Assign(
                 targets=[_name(old_name, ast.Store())],
-                value=self._section_entry_value(name),
+                value=self._current_value(name),
             )
             for name, old_name in old_value_names.items()
         )
@@ -1372,7 +1386,7 @@ class _ControlFlowRewriter:
                     keywords=[
                         ast.keyword(
                             arg=name,
-                            value=_name(self._section_entry_bindings.get(name, name)),
+                            value=self._current_value(name),
                         )
                         for name in loop_carried
                     ] + [
