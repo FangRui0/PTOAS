@@ -52,6 +52,7 @@ from ._surface_values import (
     compose_partition_spec,
     emit_as_ptr,
     infer_tile_element_type,
+    is_runtime_scalar_ir_type,
     parse_tile_type_metadata,
     resolve_address_access,
     unwrap_surface_value,
@@ -3393,13 +3394,26 @@ def tmuls(src, scalar, dst):
 
 
 def tdivs(src, scalar, dst, *, div_precision=None):
-    """``pto.tdivs ins(src, scalar) outs(dst)``."""
-    _pto.tdivs(
-        unwrap_surface_value(src),
-        _coerce_tile_scalar_operand(src, scalar, context="tdivs"),
-        unwrap_surface_value(dst),
-        precision_type=div_precision,
-    )
+    """``pto.tdivs ins(src, scalar) outs(dst)``.
+
+    Accepts both ``(tile, scalar, dst)`` and ``(scalar, tile, dst)`` operand
+    orders; the scalar-lhs form mirrors the A5 TileLib ``scalar_tile``
+    templates.
+    """
+    if is_runtime_scalar_ir_type(getattr(src, "type", None)):
+        _pto.tdivs(
+            unwrap_surface_value(src),
+            unwrap_surface_value(scalar),
+            unwrap_surface_value(dst),
+            precision_type=div_precision,
+        )
+    else:
+        _pto.tdivs(
+            unwrap_surface_value(src),
+            _coerce_tile_scalar_operand(src, scalar, context="tdivs"),
+            unwrap_surface_value(dst),
+            precision_type=div_precision,
+        )
 
 
 def tmaxs(src, scalar, dst):
