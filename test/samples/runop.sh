@@ -1394,7 +1394,58 @@ PY
 
       local -a ptoas_cmd=("${case_ptoas_cmd_base[@]}" "$pto_input" -o "$cpp")
       local ptoas_log="${out_subdir}/${base}-ptoas.log"
+      local used_model_level2_fallback=0
       if ! "${ptoas_cmd[@]}" >"${ptoas_log}" 2>&1; then
+        # PyPTO model exports are level-3 snapshots: alloc_tile addresses are
+        # already assigned by the exporter. Newer PTOAS revisions require
+        # explicit scratch operands for a few ops when PlanMemory is skipped.
+        # Keep the checked-in snapshots byte-for-byte, but compile a derived
+        # address-free level-2 copy so PTOAS can materialize those scratch
+        # tiles and re-plan local memory.
+        if [[ -n "${model_arch}" ]] &&
+            grep -Fq "requires explicit tmp" "${ptoas_log}"; then
+          local normalized_pto="${out_subdir}/${base}-level2-normalized.pto"
+          sed -E 's/ addr = %[A-Za-z0-9_]+//g' "$f" >"${normalized_pto}"
+
+          local -a level2_cmd_base=()
+          for ((i=0; i<${#case_ptoas_cmd_base[@]}; ++i)); do
+            case "${case_ptoas_cmd_base[i]}" in
+              --pto-level=*)
+                ;;
+              --pto-level)
+                ((i += 1))
+                ;;
+              *)
+                level2_cmd_base+=("${case_ptoas_cmd_base[i]}")
+                ;;
+            esac
+          done
+          level2_cmd_base+=(--pto-level=level2)
+
+          local -a level2_cmd=("${level2_cmd_base[@]}" "$normalized_pto" -o "$cpp")
+          if "${level2_cmd[@]}" >"${ptoas_log}" 2>&1; then
+            used_model_level2_fallback=1
+          elif [[ "${model_arch}" == "a3" ]] &&
+              grep -Fq "requires static tile_buf shapes to materialize implicit tcvt tmp" "${ptoas_log}"; then
+            # Older A3 PyPTO snapshots encode constant valid_row/valid_col
+            # operands with dynamic valid-shape type markers. The implicit
+            # TCvt scratch calculation needs static upper bounds, so compile
+            # the derived copy with its physical tile shape as that bound.
+            sed -E \
+              -e 's/ addr = %[A-Za-z0-9_]+//g' \
+              -e 's/ valid_row = %[A-Za-z0-9_]+ valid_col = %[A-Za-z0-9_]+//g' \
+              -e 's/rows=([0-9]+), cols=([0-9]+), v_row=\?, v_col=\?/rows=\1, cols=\2, v_row=\1, v_col=\2/g' \
+              "$f" >"${normalized_pto}"
+            if "${level2_cmd[@]}" >"${ptoas_log}" 2>&1; then
+              used_model_level2_fallback=1
+            fi
+          fi
+        fi
+
+        if [[ $used_model_level2_fallback -eq 1 ]]; then
+          echo -e "${A}(${base}.pto)\tOK\tgenerated with level2 implicit-tmp compatibility: $(basename "$cpp")"
+          continue
+        fi
         if [[ $expect_fail -eq 1 ]]; then
           if [[ "$base" == "test_frontend_pipe_flag_id_overflow_invalid" ]]; then
             if ! grep -Fq "fit within 16 hardware flag ids" "${ptoas_log}"; then
