@@ -1996,6 +1996,12 @@ LogicalResult VMIFPToSIOp::verify() {
   if (!contract) {
     return emitOpError("unsupported fp-to-si conversion element type pair");
   }
+  if (auto roundingAttr = (*this)->getAttrOfType<StringAttr>("rounding")) {
+    StringRef rounding = roundingAttr.getValue();
+    if (rounding != "R" && rounding != "A" && rounding != "F" &&
+        rounding != "C" && rounding != "Z")
+      return emitOpError("rounding attr must be R, A, F, C, or Z");
+  }
   if (contract->requiresSat) {
     auto satAttr = (*this)->getAttrOfType<StringAttr>("saturate");
     if (!satAttr)
@@ -2030,6 +2036,12 @@ LogicalResult VMIFPToUIOp::verify() {
                               resultType.getElementType());
   if (!contract) {
     return emitOpError("unsupported fp-to-ui conversion element type pair");
+  }
+  if (auto roundingAttr = (*this)->getAttrOfType<StringAttr>("rounding")) {
+    StringRef rounding = roundingAttr.getValue();
+    if (rounding != "R" && rounding != "A" && rounding != "F" &&
+        rounding != "C" && rounding != "Z")
+      return emitOpError("rounding attr must be R, A, F, C, or Z");
   }
   if (contract->requiresSat) {
     auto satAttr = (*this)->getAttrOfType<StringAttr>("saturate");
@@ -3938,14 +3950,21 @@ LogicalResult VMICvtOp::verify() {
 
   // --- rounding ---
   if (auto roundingAttr = (*this)->getAttrOfType<StringAttr>("rounding")) {
-    if (dir != CvtDirection::FpNarrow)
-      return emitOpError("'rounding' attribute is only valid for "
-                         "fp-narrowing conversions");
+    if (dir != CvtDirection::FpNarrow && dir != CvtDirection::FpToSi &&
+        dir != CvtDirection::FpToUi)
+      return emitOpError("'rounding' attribute is only valid for floating-point "
+                         "narrowing or floating-point-to-integer conversions");
     StringRef rnd = roundingAttr.getValue();
-    if (rnd != "R" && rnd != "A" && rnd != "H" && rnd != "Z")
-      return emitOpError("rounding must be 'R' (nearest-even), "
-                         "'A' (away-from-zero), 'H' (half-up), "
-                         "or 'Z' (toward-zero)");
+    if (dir == CvtDirection::FpNarrow) {
+      if (rnd != "R" && rnd != "A" && rnd != "H" && rnd != "Z")
+        return emitOpError("rounding must be 'R' (nearest-even), "
+                           "'A' (away-from-zero), 'H' (half-up), "
+                           "or 'Z' (toward-zero)");
+    } else if (rnd != "R" && rnd != "A" && rnd != "F" && rnd != "C" &&
+               rnd != "Z") {
+      return emitOpError("rounding must be 'R', 'A', 'F', 'C', or 'Z' for "
+                         "floating-point-to-integer conversions");
+    }
   }
 
   // --- saturate ---
