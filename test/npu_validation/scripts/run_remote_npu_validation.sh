@@ -844,7 +844,7 @@ if [[ -f "${EXPECTED_CASES_FILE}" ]]; then
     log "ERROR: expected manifest/count disagree: manifest=${manifest_expected_count} count=${EXPECTED_CASE_COUNT}"
     status=1
   fi
-  comm -23 "${expected_cases_file}" "${actual_cases_file}" > "${missing_cases_file}"
+  LC_ALL=C comm -23 "${expected_cases_file}" "${actual_cases_file}" > "${missing_cases_file}"
   missing_count="$(wc -l < "${missing_cases_file}")"
   log "COVERAGE_EXPECTED=${manifest_expected_count} COVERAGE_OBSERVED=${actual_unique_count} COVERAGE_MISSING=${missing_count}"
   if (( missing_count != 0 )); then
