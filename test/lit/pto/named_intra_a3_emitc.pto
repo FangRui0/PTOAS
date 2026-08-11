@@ -20,7 +20,7 @@ module attributes {
   }
 }
 
-// CHECK-LABEL: AICORE void named_intra_a3_emitc()
+// CHECK-LABEL: extern "C" __global__ AICORE void named_intra_a3_emitc({{.*}}) {
 // CHECK: getFFTSMsg(FFTS_MODE_VAL, {{.*}})
 // CHECK-NEXT: __builtin_cce_ffts_cross_core_sync(PIPE_MTE1, {{.*}});
 // CHECK-NEXT: __builtin_cce_wait_flag_dev(15);
