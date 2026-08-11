@@ -4049,8 +4049,8 @@ def tsel(mask, src0, src1, dst, *, tmp=None):
         unwrap_surface_value(mask),
         unwrap_surface_value(src0),
         unwrap_surface_value(src1),
-        unwrap_surface_value(resolved_tmp),
         unwrap_surface_value(dst),
+        tmp=unwrap_surface_value(resolved_tmp),
     )
 
 
@@ -4060,9 +4060,9 @@ def tsels(mask, src, scalar, dst, *, tmp=None):
     _pto.tsels(
         unwrap_surface_value(mask),
         unwrap_surface_value(src),
-        unwrap_surface_value(resolved_tmp),
         _coerce_tile_scalar_operand(src, scalar, context="tsels"),
         unwrap_surface_value(dst),
+        tmp=unwrap_surface_value(resolved_tmp),
     )
 
 
