@@ -24,6 +24,7 @@ Public API
 
 from ._diagnostics import explicit_mode_required_with_context_error
 from ._runtime_index_ops import coerce_runtime_index
+from ._scalar_adaptation import coerce_runtime_integer_to_i1
 from ._scalar_coercion import coerce_scalar_to_type
 from ._surface_types import const_expr
 from ._tracing.active import current_session, require_active_session
@@ -31,7 +32,7 @@ from ._surface_values import unwrap_surface_value, wrap_like_surface_value, wrap
 from ._types import _StructDescriptor
 
 from ptoas.mlir.dialects import pto as _pto, scf
-from ptoas.mlir.ir import InsertionPoint
+from ptoas.mlir.ir import IndexType, InsertionPoint, IntegerType
 
 
 # ── vecscope ──────────────────────────────────────────────────────────────────
@@ -423,6 +424,11 @@ class _IfCM:
 
     def __enter__(self):
         self._cond_value = unwrap_surface_value(self._cond)
+        if not _is_i1_type(self._cond_value.type) and _is_integer_like_type(self._cond_value.type):
+            self._cond_value = coerce_runtime_integer_to_i1(
+                self._cond_value,
+                context="pto.if_(...) condition",
+            )
         self._tmp_if = scf.IfOp(self._cond_value, hasElse=True)
         self._parent_block = _find_parent_block(self._tmp_if)
         self._handle = BranchHandle(self)
@@ -555,6 +561,8 @@ class _IfCM:
                 name,
                 then_value,
                 else_value,
+                then_block=self._tmp_if.then_block,
+                else_block=self._tmp_if.else_block,
             )
             if then_value.type != else_value.type:
                 raise RuntimeError(
@@ -649,11 +657,39 @@ def _is_branch_assign_literal(value) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def _reconcile_branch_assignment_values(name, then_value, else_value):
+def _is_i1_type(type_obj) -> bool:
+    return IntegerType.isinstance(type_obj) and IntegerType(type_obj).width == 1
+
+
+def _is_integer_like_type(type_obj) -> bool:
+    return IndexType.isinstance(type_obj) or IntegerType.isinstance(type_obj)
+
+
+def _coerce_integer_to_i1_at(value, *, block, context):
+    with InsertionPoint(block):
+        return coerce_runtime_integer_to_i1(value, context=context)
+
+
+def _reconcile_branch_assignment_values(name, then_value, else_value, *, then_block=None, else_block=None):
     then_is_typed = hasattr(then_value, "type")
     else_is_typed = hasattr(else_value, "type")
 
     if then_is_typed and else_is_typed:
+        then_is_i1 = _is_i1_type(then_value.type)
+        else_is_i1 = _is_i1_type(else_value.type)
+        if then_is_i1 != else_is_i1:
+            if then_is_i1 and _is_integer_like_type(else_value.type):
+                else_value = _coerce_integer_to_i1_at(
+                    else_value,
+                    block=else_block,
+                    context=f"br.assign(...) else branch value for '{name}'",
+                )
+            elif else_is_i1 and _is_integer_like_type(then_value.type):
+                then_value = _coerce_integer_to_i1_at(
+                    then_value,
+                    block=then_block,
+                    context=f"br.assign(...) then branch value for '{name}'",
+                )
         return then_value, else_value
     if then_is_typed:
         return then_value, coerce_scalar_to_type(
