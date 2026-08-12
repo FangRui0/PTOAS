@@ -1375,26 +1375,32 @@ struct ExpandRawFillL1Pattern : public OpRewritePattern<pto::RawFillL1Op> {
     Location loc = op.getLoc();
 
     APInt wordBits;
-    if (!matchPattern(op.getFillWordBits(), m_ConstantInt(&wordBits)))
+    if (!matchPattern(op.getFillWordBits(), m_ConstantInt(&wordBits))) {
       return rewriter.notifyMatchFailure(op, "fill_word_bits not constant");
+    }
     unsigned viewWidth = wordBits.getZExtValue() == 16 ? 16 : 32;
 
     Value basePtr = materializeBufferPointer(op.getDst(), rewriter, loc);
-    if (!basePtr || !isa<pto::PtrType>(basePtr.getType()))
+    if (!basePtr || !isa<pto::PtrType>(basePtr.getType())) {
       return rewriter.notifyMatchFailure(op, "failed to materialize dst ptr");
+    }
 
     Value targetPtr =
         offsetPointerByBytes(basePtr, op.getByteOffset(), rewriter, loc);
-    if (!targetPtr)
+    if (!targetPtr) {
       return rewriter.notifyMatchFailure(op, "failed to apply byte offset");
+    }
 
     auto dstPtrType = cast<pto::PtrType>(targetPtr.getType());
-    Type viewElement =
-        viewWidth == 16 ? rewriter.getI16Type() : rewriter.getI32Type();
+    Type viewElement = IntegerType::get(rewriter.getContext(), viewWidth,
+                                        IntegerType::Unsigned);
     auto viewType = pto::PtrType::get(rewriter.getContext(), viewElement,
                                       dstPtrType.getMemorySpace());
-    Value viewPtr =
-        rewriter.create<pto::CastPtrOp>(loc, viewType, targetPtr);
+    Value viewPtr = targetPtr;
+    const bool needsViewCast = targetPtr.getType() != viewType;
+    if (needsViewCast) {
+      viewPtr = rewriter.create<pto::CastPtrOp>(loc, viewType, targetPtr);
+    }
 
     rewriter.create<pto::CreateCbufMatrixOp>(
         loc, viewPtr, op.getRawValue(), op.getRepeatTimes(),

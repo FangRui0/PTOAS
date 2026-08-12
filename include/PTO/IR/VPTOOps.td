@@ -3100,7 +3100,7 @@ def PTO_RawFillL1Op : PTO_MicroOp<"raw_fill_l1", [
   }];
 }
 
-def PTO_CreateCbufMatrixOp : PTO_MicroOp<"create_cbuf_matrix", [
+def PTO_CreateCbufMatrixOp : PTO_CubeMicroOp<"create_cbuf_matrix", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let summary = "Canonical L1 raw-pattern fill micro-op";
@@ -3108,7 +3108,7 @@ def PTO_CreateCbufMatrixOp : PTO_MicroOp<"create_cbuf_matrix", [
     Canonical micro-op for filling a strided L1/CBUF matrix region with a raw
     bit pattern. Produced by the `pto.raw_fill_l1` wrapper expansion.
 
-    `dst` must be a `!pto.ptr<i16|i32, #pto.address_space<mat>>` pointer that
+    `dst` must be a `!pto.ptr<ui16|ui32, #pto.address_space<mat>>` pointer that
     already includes `byte_offset`; `raw_value` is the raw 32-bit bit pattern
     and `fill_word_bits` (exactly 16 or 32) selects whether the 16-bit or
     32-bit fill view is used. The control fields pack into the hardware

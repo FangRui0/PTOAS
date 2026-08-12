@@ -5698,8 +5698,10 @@ public:
 
     Type i32Ty = rewriter.getI32Type();
     Type i64Ty = rewriter.getI64Type();
-    if (rawValue.getType() != i32Ty || repeatTimes.getType() != i64Ty ||
-        blockNum32b.getType() != i64Ty || dstGap32b.getType() != i64Ty) {
+    const bool validControlTypes =
+        rawValue.getType() == i32Ty && repeatTimes.getType() == i64Ty &&
+        blockNum32b.getType() == i64Ty && dstGap32b.getType() == i64Ty;
+    if (!validControlTypes) {
       return rewriter.notifyMatchFailure(op, "expected i32 value and i64 controls");
     }
 

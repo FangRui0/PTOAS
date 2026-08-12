@@ -605,10 +605,12 @@ struct ConvertRawFillL1OperandPattern
                   ConversionPatternRewriter &rewriter) const override {
     Value dst =
         materializeBoundaryOperandPtr(adaptor.getDst(), rewriter, op.getLoc());
-    if (!dst)
+    if (!dst) {
       return rewriter.notifyMatchFailure(op, "failed to materialize dst ptr");
-    if (!isa<pto::PtrType>(dst.getType()))
+    }
+    if (!isa<pto::PtrType>(dst.getType())) {
       return rewriter.notifyMatchFailure(op, "expected ptr-form dst");
+    }
 
     SmallVector<Value> operands(adaptor.getOperands().begin(),
                                 adaptor.getOperands().end());

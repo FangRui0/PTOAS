@@ -401,6 +401,10 @@ pto.raw_fill_l1 %dst, %byte_offset, %raw_value, %repeat_times,
   `32767` when constant.
 - `%fill_word_bits` must be a compile-time `16` or `32` value.
 
+Wrapper expansion applies `%byte_offset` in byte units and casts the resulting
+destination to the canonical `!pto.ptr<ui16, mat>` or `!pto.ptr<ui32, mat>`
+view selected by `%fill_word_bits` before emitting the raw fill micro-op.
+
 **Example:**
 
 ```mlir

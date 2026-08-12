@@ -7560,71 +7560,93 @@ static LogicalResult verifyRawFillGeometry(Operation *op, Value byteOffset,
                                            Value repeatTimes,
                                            Value blockNum32b, Value dstGap32b) {
   auto checkNonNegativeConst = [&](Value value, StringRef name) -> LogicalResult {
-    if (!value)
+    if (!value) {
       return success();
+    }
     APInt intValue;
-    if (matchPattern(value, m_ConstantInt(&intValue)) && intValue.isNegative())
-      return op->emitOpError() << name << " must be non-negative";
+    if (matchPattern(value, m_ConstantInt(&intValue))) {
+      if (intValue.isNegative()) {
+        return op->emitOpError() << name << " must be non-negative";
+      }
+    }
     return success();
   };
   auto checkConstMax = [&](Value value, StringRef name,
                            uint64_t max) -> LogicalResult {
-    if (!value)
+    if (!value) {
       return success();
+    }
     APInt intValue;
-    if (matchPattern(value, m_ConstantInt(&intValue)) &&
-        intValue.getZExtValue() > max)
-      return op->emitOpError() << name << " must be <= " << max;
+    if (matchPattern(value, m_ConstantInt(&intValue))) {
+      uint64_t fieldValue = intValue.getZExtValue();
+      if (fieldValue > max) {
+        return op->emitOpError() << name << " must be <= " << max;
+      }
+    }
     return success();
   };
-  if (failed(checkNonNegativeConst(byteOffset, "byte_offset")) ||
-      failed(checkNonNegativeConst(repeatTimes, "repeat_times")) ||
-      failed(checkNonNegativeConst(blockNum32b, "block_num_32b")) ||
-      failed(checkNonNegativeConst(dstGap32b, "dst_gap_32b")))
+  const bool hasNonNegativeGeometry =
+      succeeded(checkNonNegativeConst(byteOffset, "byte_offset")) &&
+      succeeded(checkNonNegativeConst(repeatTimes, "repeat_times")) &&
+      succeeded(checkNonNegativeConst(blockNum32b, "block_num_32b")) &&
+      succeeded(checkNonNegativeConst(dstGap32b, "dst_gap_32b"));
+  if (!hasNonNegativeGeometry) {
     return failure();
+  }
   if (failed(checkConstMax(repeatTimes, "repeat_times",
                            kRawFillControlFieldMax)) ||
       failed(checkConstMax(blockNum32b, "block_num_32b",
                            kRawFillControlFieldMax)) ||
       failed(checkConstMax(dstGap32b, "dst_gap_32b",
-                           kRawFillControlFieldMax)))
+                           kRawFillControlFieldMax))) {
     return failure();
+  }
   return success();
 }
 
 static LogicalResult verifyRawFillWordBits(Operation *op, Value fillWordBits) {
-  if (!fillWordBits)
+  if (!fillWordBits) {
     return op->emitOpError("missing fill_word_bits");
+  }
   APInt wordBits;
-  if (!matchPattern(fillWordBits, m_ConstantInt(&wordBits)))
+  if (!matchPattern(fillWordBits, m_ConstantInt(&wordBits))) {
     return op->emitOpError(
         "fill_word_bits must be a compile-time constant 16 or 32");
-  if (wordBits.getZExtValue() != 16 && wordBits.getZExtValue() != 32)
+  }
+  const bool validWordBits = wordBits.getZExtValue() == 16 ||
+                             wordBits.getZExtValue() == 32;
+  if (!validWordBits) {
     return op->emitOpError()
            << "fill_word_bits must be 16 or 32, got "
            << wordBits.getZExtValue();
+  }
   return success();
 }
 
 static LogicalResult verifyRawFillDestination(Operation *op, Type dstType,
                                               StringRef dstName) {
   auto addressSpace = getBufferAddressSpace(dstType);
-  if (!addressSpace)
+  if (!addressSpace) {
     return op->emitOpError()
            << "requires " << dstName
            << " with an explicit PTO address space for L1 raw fill";
-  if (*addressSpace != pto::AddressSpace::MAT)
+  }
+  if (*addressSpace != pto::AddressSpace::MAT) {
     return op->emitOpError()
            << "requires " << dstName << " in the mat/l1 address space, got "
            << getAddressSpaceDiagnosticName(*addressSpace);
+  }
   return success();
 }
 
 LogicalResult RawFillL1Op::verify() {
-  if (failed(verifyRawFillDestination(getOperation(), getDst().getType(), "dst")))
+  if (failed(
+          verifyRawFillDestination(getOperation(), getDst().getType(), "dst"))) {
     return failure();
-  if (failed(verifyRawFillWordBits(getOperation(), getFillWordBits())))
+  }
+  if (failed(verifyRawFillWordBits(getOperation(), getFillWordBits()))) {
     return failure();
+  }
   return verifyRawFillGeometry(getOperation(), getByteOffset(),
                                getRepeatTimes(), getBlockNum_32b(),
                                getDstGap_32b());
@@ -7632,9 +7654,12 @@ LogicalResult RawFillL1Op::verify() {
 
 LogicalResult CreateCbufMatrixOp::verify() {
   auto ptrType = dyn_cast<pto::PtrType>(getDst().getType());
-  if (!ptrType)
+  if (!ptrType) {
     return emitOpError("requires a typed !pto.ptr destination");
-  if (ptrType.getMemorySpace().getAddressSpace() != pto::AddressSpace::MAT) {
+  }
+  const bool matDestination =
+      ptrType.getMemorySpace().getAddressSpace() == pto::AddressSpace::MAT;
+  if (!matDestination) {
     return emitOpError()
            << "requires a mat/l1 destination, got "
            << getAddressSpaceDiagnosticName(
@@ -7642,21 +7667,28 @@ LogicalResult CreateCbufMatrixOp::verify() {
   }
   Type elementType = ptrType.getElementType();
   auto integerType = dyn_cast<IntegerType>(elementType);
-  if (!integerType ||
-      (integerType.getWidth() != 16 && integerType.getWidth() != 32))
+  const bool canonicalView =
+      integerType && integerType.isUnsigned() &&
+      (integerType.getWidth() == 16 || integerType.getWidth() == 32);
+  if (!canonicalView) {
     return emitOpError()
-           << "requires a 16-bit or 32-bit integer destination view, got "
+           << "requires a ui16 or ui32 destination view, got "
               "element type "
            << elementType;
-  if (failed(verifyRawFillWordBits(getOperation(), getFillWordBits())))
+  }
+  if (failed(verifyRawFillWordBits(getOperation(), getFillWordBits()))) {
     return failure();
+  }
   APInt wordBits;
-  if (matchPattern(getFillWordBits(), m_ConstantInt(&wordBits)) &&
-      wordBits.getZExtValue() != integerType.getWidth())
+  const bool wordWidthMatches =
+      !matchPattern(getFillWordBits(), m_ConstantInt(&wordBits)) ||
+      wordBits.getZExtValue() == integerType.getWidth();
+  if (!wordWidthMatches) {
     return emitOpError()
            << "fill_word_bits " << wordBits.getZExtValue()
            << " does not match the " << integerType.getWidth()
            << "-bit destination view";
+  }
   return verifyRawFillGeometry(getOperation(), /*byteOffset=*/{},
                                getRepeatTimes(), getBlockNum_32b(),
                                getDstGap_32b());
