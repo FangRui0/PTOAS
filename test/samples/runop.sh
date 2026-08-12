@@ -340,11 +340,6 @@ process_one_dir() {
       echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a5"
       continue
     fi
-    if [[ ( "$base" == "mgather" || "$base" == "mscatter" ) && \
-          "${target_arch_lc}" != "a5" ]]; then
-      echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a5"
-      continue
-    fi
     if [[ "$base" == "test_intercore_sync_a3" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a3" ]]; then
       echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a3"
       continue
@@ -398,7 +393,7 @@ process_one_dir() {
     mlir="${out_subdir}/${base}-pto-ir.pto"
     cpp="${out_subdir}/${base}-pto.cpp"
 
-    if ! "$python" "$f" > "$mlir"; then
+    if ! PTOAS_SAMPLE_ARCH="${target_arch_lc}" "$python" "$f" > "$mlir"; then
       if [[ $expect_fail -eq 1 ]]; then
         echo -e "${A}(${base}.py)\tXFAIL\tpython failed as expected"
         continue
