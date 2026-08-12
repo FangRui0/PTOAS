@@ -28,8 +28,9 @@ namespace {
 static LogicalResult flattenFusionRegion(pto::FusionRegionOp fusionRegion) {
   Block &body = fusionRegion.getBody().front();
   auto yieldOp = dyn_cast<pto::YieldOp>(body.getTerminator());
-  if (!yieldOp)
+  if (!yieldOp) {
     return fusionRegion.emitOpError("expects body to terminate with pto.yield");
+  }
 
   SmallVector<Value, 8> yieldedValues(yieldOp.getValues().begin(),
                                       yieldOp.getValues().end());
@@ -60,8 +61,9 @@ struct PTOFlattenFusionRegionPass
 
   void runOnOperation() override {
     func::FuncOp func = getOperation();
-    if (func.isExternal())
+    if (func.isExternal()) {
       return;
+    }
 
     SmallVector<pto::FusionRegionOp, 8> fusionRegions;
     func.walk<WalkOrder::PostOrder>([&](pto::FusionRegionOp fusionRegion) {

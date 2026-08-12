@@ -394,14 +394,16 @@ collectResidentElements(pto::SectionSimtOp initSection,
                         llvm::DenseSet<int64_t> &residentElementSet) {
   for (Operation &op : initSection.getBody().front()) {
     auto accessIt = discovery.accessIndices.find(&op);
-    if (accessIt == discovery.accessIndices.end())
+    if (accessIt == discovery.accessIndices.end()) {
       continue;
+    }
 
     for (unsigned accessIndex : accessIt->second) {
       const NormalizedPersistentAccess &access =
           discovery.accesses[accessIndex];
-      if (!residentElementSet.insert(access.elementOffset).second)
+      if (!residentElementSet.insert(access.elementOffset).second) {
         continue;
+      }
 
       if (!isa<LLVM::StoreOp>(access.op)) {
         return access.op->emitOpError()
@@ -559,8 +561,9 @@ materializeResidentAccessLanes(const PersistentMaterializationPlan &plan,
     }
     for (Operation &op : section.getBody().front()) {
       auto accessIt = discovery.accessIndices.find(&op);
-      if (accessIt == discovery.accessIndices.end())
+      if (accessIt == discovery.accessIndices.end()) {
         continue;
+      }
 
       for (unsigned accessIndex : accessIt->second) {
         if (accessIndex >= discovery.accesses.size()) {
@@ -713,8 +716,9 @@ SIMTPersistentFragmentAnalysis::SIMTPersistentFragmentAnalysis(
     func::FuncOp func) {
   SmallVector<LLVM::AllocaOp> persistentAllocas;
   func.walk([&](LLVM::AllocaOp allocaOp) {
-    if (allocaOp->hasAttr(kPersistentAttrName))
+    if (allocaOp->hasAttr(kPersistentAttrName)) {
       persistentAllocas.push_back(allocaOp);
+    }
   });
 
   // A function without persistent allocations has a valid empty plan and does

@@ -51,8 +51,9 @@ static int64_t getEffectiveFactor(pto::FusionRegionOp region,
                                   llvm::StringRef attrName) {
   if (auto attr = region->getAttrOfType<IntegerAttr>(attrName)) {
     int64_t v = attr.getInt();
-    if (v > 1)
+    if (v > 1) {
       return v;
+    }
   }
   return 0;
 }
@@ -74,8 +75,9 @@ static std::optional<int64_t> getConstantTripCount(scf::ForOp forOp) {
   std::optional<int64_t> lb = getConstantIntValue(forOp.getLowerBound());
   std::optional<int64_t> ub = getConstantIntValue(forOp.getUpperBound());
   std::optional<int64_t> step = getConstantIntValue(forOp.getStep());
-  if (!lb || !ub || !step || *step <= 0 || *ub <= *lb)
+  if (!lb || !ub || !step || *step <= 0 || *ub <= *lb) {
     return std::nullopt;
+  }
   return (*ub - *lb + *step - 1) / *step; // ceilDiv
 }
 
@@ -180,8 +182,9 @@ struct PTOUnrollAfterLoopFusion
     SmallVector<scf::ForOp, 4> candidates;
     func.walk([&](scf::ForOp forOp) { candidates.push_back(forOp); });
 
-    for (scf::ForOp forOp : candidates)
+    for (scf::ForOp forOp : candidates) {
       (void)tryUnrollLeafForOp(forOp);
+    }
   }
 };
 

@@ -52,13 +52,16 @@ static constexpr int64_t kNZFractalBytes = 512;
 using LayoutRankVector = SmallVector<int64_t, kPaddedLayoutRank>;
 
 static std::optional<int64_t> getConstInt(Value v) {
-  if (auto c = v.getDefiningOp<arith::ConstantIndexOp>())
+  if (auto c = v.getDefiningOp<arith::ConstantIndexOp>()) {
     return c.value();
-  if (auto c = v.getDefiningOp<arith::ConstantIntOp>())
+  }
+  if (auto c = v.getDefiningOp<arith::ConstantIntOp>()) {
     return c.value();
+  }
   if (auto c = v.getDefiningOp<arith::ConstantOp>()) {
-    if (auto ia = dyn_cast<IntegerAttr>(c.getValue()))
+    if (auto ia = dyn_cast<IntegerAttr>(c.getValue())) {
       return ia.getInt();
+    }
   }
   return std::nullopt;
 }
@@ -66,8 +69,9 @@ static std::optional<int64_t> getConstInt(Value v) {
 static std::optional<int64_t> getConstInt(OpFoldResult ofr) {
   if (isa<Attribute>(ofr)) {
     Attribute attr = cast<Attribute>(ofr);
-    if (auto ia = dyn_cast<IntegerAttr>(attr))
+    if (auto ia = dyn_cast<IntegerAttr>(attr)) {
       return ia.getInt();
+    }
     return std::nullopt;
   }
   return getConstInt(cast<Value>(ofr));
@@ -110,10 +114,12 @@ static bool isMinor2DLayout(Layout layout) {
 
 static std::optional<ShapeStride5D> rightAlignTo5D(ArrayRef<int64_t> shape,
                                                    ArrayRef<int64_t> stride) {
-  if (shape.size() != stride.size())
+  if (shape.size() != stride.size()) {
     return std::nullopt;
-  if (shape.size() > kPaddedLayoutRank)
+  }
+  if (shape.size() > kPaddedLayoutRank) {
     return std::nullopt;
+  }
 
   ShapeStride5D out;
   out.shape.assign(kPaddedLayoutRank, kUnitExtent);
@@ -128,27 +134,32 @@ static std::optional<ShapeStride5D> rightAlignTo5D(ArrayRef<int64_t> shape,
 
   // Derive the padded leading strides with the same rule used in EmitC:
   // stride[i] = shape[i+1] * stride[i+1].
-  for (int i = shift - 1; i >= 0; --i)
+  for (int i = shift - 1; i >= 0; --i) {
     out.stride[i] = out.shape[i + 1] * out.stride[i + 1];
+  }
 
   return out;
 }
 
 static bool matchesNDMinor2D(int64_t rows, int64_t cols, int64_t rowStride,
                              int64_t colStride) {
-  if (cols != 1 && colStride != 1)
+  if (cols != 1 && colStride != 1) {
     return false;
-  if (rows == 1)
+  }
+  if (rows == 1) {
     return true;
+  }
   return cols == 1 ? rowStride == 1 : rowStride == cols;
 }
 
 static bool matchesDNMinor2D(int64_t rows, int64_t cols, int64_t rowStride,
                              int64_t colStride) {
-  if (rows != 1 && rowStride != 1)
+  if (rows != 1 && rowStride != 1) {
     return false;
-  if (cols == 1)
+  }
+  if (cols == 1) {
     return true;
+  }
   return rows == 1 ? colStride == 1 : colStride == rows;
 }
 
@@ -157,11 +168,13 @@ static std::optional<Layout> inferMinor2DLayout(
     std::optional<Layout> preferredMinor2D, bool *isMinor2DAmbiguous) {
   const bool nd = matchesNDMinor2D(rows, cols, rowStride, colStride);
   const bool dn = matchesDNMinor2D(rows, cols, rowStride, colStride);
-  if (!nd && !dn)
+  if (!nd && !dn) {
     return Layout::ND;
+  }
   if (nd && dn) {
-    if (isMinor2DAmbiguous)
+    if (isMinor2DAmbiguous) {
       *isMinor2DAmbiguous = true;
+    }
     if (preferredMinor2D &&
         (*preferredMinor2D == Layout::ND || *preferredMinor2D == Layout::DN)) {
       return *preferredMinor2D;
@@ -183,8 +196,9 @@ static std::optional<Layout> inferNZLayout(ArrayRef<int64_t> shape,
       (sh3 == kNZInnerRows) &&
       (sh3 * sh4 * static_cast<int64_t>(elemBytes) == kNZFractalBytes);
   bool strideMatch = (st5 == kUnitExtent) && (st4 == sh5);
-  if (alignMatch && strideMatch)
+  if (alignMatch && strideMatch) {
     return Layout::NZ;
+  }
   return std::nullopt;
 }
 
@@ -194,16 +208,20 @@ static std::optional<Layout> inferLayout5D(ArrayRef<int64_t> shape,
                                            std::optional<Layout> preferredMinor2D =
                                                std::nullopt,
                                            bool *isMinor2DAmbiguous = nullptr) {
-  if (shape.size() != strides.size() || elemBytes == 0)
+  if (shape.size() != strides.size() || elemBytes == 0) {
     return std::nullopt;
-  if (isMinor2DAmbiguous)
+  }
+  if (isMinor2DAmbiguous) {
     *isMinor2DAmbiguous = false;
+  }
   auto padded = rightAlignTo5D(shape, strides);
-  if (!padded)
+  if (!padded) {
     return std::nullopt;
+  }
 
-  if (auto nz = inferNZLayout(padded->shape, padded->stride, elemBytes))
+  if (auto nz = inferNZLayout(padded->shape, padded->stride, elemBytes)) {
     return nz;
+  }
 
   const int64_t rows = padded->shape[3];
   const int64_t cols = padded->shape[4];
@@ -215,11 +233,13 @@ static std::optional<Layout> inferLayout5D(ArrayRef<int64_t> shape,
 
 static std::optional<Layout> tileBLayoutToGlobalLayout(Type tileLikeTy) {
   auto tbTy = dyn_cast<TileBufType>(tileLikeTy);
-  if (!tbTy)
+  if (!tbTy) {
     return std::nullopt;
+  }
   auto bl = dyn_cast_or_null<BLayoutAttr>(tbTy.getBLayoutAttr());
-  if (!bl)
+  if (!bl) {
     return std::nullopt;
+  }
   switch (bl.getValue()) {
   case BLayout::RowMajor:
     return Layout::ND;
@@ -231,8 +251,9 @@ static std::optional<Layout> tileBLayoutToGlobalLayout(Type tileLikeTy) {
 
 static bool isVectorTileType(Type tileLikeTy) {
   auto tbTy = dyn_cast<TileBufType>(tileLikeTy);
-  if (!tbTy)
+  if (!tbTy) {
     return false;
+  }
   auto ms = dyn_cast_or_null<AddressSpaceAttr>(tbTy.getMemorySpace());
   return ms && ms.getAddressSpace() == AddressSpace::VEC;
 }
@@ -254,10 +275,11 @@ static ResolvedLayoutInfo resolveLayoutFromViewValue(Value v);
 
 static void setLayoutAttr(Operation *op, Layout layout, bool inferred) {
   op->setAttr(kLayoutAttrName, LayoutAttr::get(op->getContext(), layout));
-  if (inferred)
+  if (inferred) {
     op->setAttr(kInferredLayoutAttrName, BoolAttr::get(op->getContext(), true));
-  else
+  } else {
     op->removeAttr(kInferredLayoutAttrName);
+  }
 }
 
 template <typename SignalFailureFn>
@@ -306,8 +328,9 @@ static void maybeRepairMinor2DLoadStoreLayout(LoadStoreOp op, ViewGetter getView
   auto tilePref = isVectorTileType(getTile(op).getType())
                       ? tileBLayoutToGlobalLayout(getTile(op).getType())
                       : std::nullopt;
-  if (!tilePref || (*tilePref != Layout::ND && *tilePref != Layout::DN))
+  if (!tilePref || (*tilePref != Layout::ND && *tilePref != Layout::DN)) {
     return;
+  }
 
   auto viewInfo = resolveLayoutFromViewValue(getView(op));
   if (!viewInfo.owner || !viewInfo.layout || !viewInfo.inferred ||
@@ -315,13 +338,15 @@ static void maybeRepairMinor2DLoadStoreLayout(LoadStoreOp op, ViewGetter getView
     return;
   }
   auto tv = dyn_cast<MakeTensorViewOp>(viewInfo.owner);
-  if (!tv)
+  if (!tv) {
     return;
+  }
 
   SmallVector<int64_t> shape, strides;
   bool ambiguous = false;
-  if (!getStaticShapeAndStride(tv, shape, strides))
+  if (!getStaticShapeAndStride(tv, shape, strides)) {
     return;
+  }
   (void)inferLayout5D(
       shape, strides,
       elemByteSize(cast<TensorViewType>(tv.getResult().getType()).getElementType()),
@@ -360,8 +385,9 @@ struct LayoutPreference {
 static LayoutPreference collectPreferredLayoutFromConsumers(Value tensorView) {
   LayoutPreference result;
   auto mergePref = [&](std::optional<Layout> candidate) {
-    if (!candidate)
+    if (!candidate) {
       return;
+    }
     if (!result.preferred) {
       result.preferred = candidate;
       return;
@@ -378,8 +404,9 @@ static LayoutPreference collectPreferredLayoutFromConsumers(Value tensorView) {
       unsigned operandIndex = use.getOperandNumber();
 
       if (auto part = dyn_cast<PartitionViewOp>(owner)) {
-        if (operandIndex == 0)
+        if (operandIndex == 0) {
           self(self, part.getResult());
+        }
         continue;
       }
 
@@ -413,8 +440,9 @@ static LayoutPreference collectPreferredLayoutFromConsumers(Value tensorView) {
       }
 
       if (auto store = dyn_cast<pto::TStoreOp>(owner)) {
-        if (operandIndex == 1 && isVectorTileType(store.getSrc().getType()))
+        if (operandIndex == 1 && isVectorTileType(store.getSrc().getType())) {
           mergePref(tileBLayoutToGlobalLayout(store.getSrc().getType()));
+        }
         continue;
       }
     }
@@ -433,8 +461,9 @@ static std::optional<Layout> inferMakeTensorViewLayout(
        *pref.preferred == Layout::MX_B_NN))
     return pref.preferred;
   std::optional<Layout> preferredForAmbiguous = std::nullopt;
-  if (!pref.conflict && isMinorColsOne(shape))
+  if (!pref.conflict && isMinorColsOne(shape)) {
     preferredForAmbiguous = pref.preferred;
+  }
   return inferLayout5D(
       shape, strides,
       elemByteSize(
@@ -445,25 +474,30 @@ static std::optional<Layout> inferMakeTensorViewLayout(
 static void reconcileAmbiguousTensorViewLayout(MakeTensorViewOp op,
                                                ArrayRef<int64_t> shape) {
   auto pref = collectPreferredLayoutFromConsumers(op.getResult());
-  if (!isMinorColsOne(shape))
+  if (!isMinorColsOne(shape)) {
     return;
-  if (!op->getAttrOfType<BoolAttr>(kInferredLayoutAttrName))
+  }
+  if (!op->getAttrOfType<BoolAttr>(kInferredLayoutAttrName)) {
     return;
+  }
   auto cur = op->getAttrOfType<LayoutAttr>(kLayoutAttrName);
-  if (cur && pref.preferred && *pref.preferred != cur.getLayout())
+  if (cur && pref.preferred && *pref.preferred != cur.getLayout()) {
     setLayoutAttr(op.getOperation(), *pref.preferred, /*inferred=*/true);
+  }
 }
 
 static bool getStaticShapeAndStride(MakeTensorViewOp op,
                                     SmallVectorImpl<int64_t> &shape,
                                     SmallVectorImpl<int64_t> &strides) {
   auto tvTy = dyn_cast<TensorViewType>(op.getResult().getType());
-  if (!tvTy)
+  if (!tvTy) {
     return false;
+  }
 
   const size_t rank = op.getShape().size();
-  if (rank == 0 || rank > kPaddedLayoutRank)
+  if (rank == 0 || rank > kPaddedLayoutRank) {
     return false;
+  }
 
   shape.clear();
   shape.reserve(rank);
@@ -471,8 +505,9 @@ static bool getStaticShapeAndStride(MakeTensorViewOp op,
     int64_t dim = tvTy.getShape()[i];
     if (dim == ShapedType::kDynamic) {
       auto v = getConstInt(op.getShape()[i]);
-      if (!v)
+      if (!v) {
         return false;
+      }
       dim = *v;
     }
     shape.push_back(dim);
@@ -482,8 +517,9 @@ static bool getStaticShapeAndStride(MakeTensorViewOp op,
   strides.reserve(rank);
   for (Value s : op.getStrides()) {
     auto v = getConstInt(s);
-    if (!v)
+    if (!v) {
       return false;
+    }
     strides.push_back(*v);
   }
   return true;
@@ -543,16 +579,18 @@ static void inferMakeTensorViewLayoutAttr(MakeTensorViewOp op,
   auto inferred = inferMakeTensorViewLayout(op, shape, strides, isAmbiguous);
   verifyOrSetLayoutAttr(op.getOperation(), inferred, signalFailure,
                         isAmbiguous);
-  if (isAmbiguous)
+  if (isAmbiguous) {
     reconcileAmbiguousTensorViewLayout(op, shape);
+  }
 }
 
 template <typename SignalFailureFn>
 static void inferReinterpretCastLayoutAttr(memref::ReinterpretCastOp op,
                                            SignalFailureFn signalFailure) {
   auto mrTy = dyn_cast<MemRefType>(op.getType());
-  if (!mrTy || !isGlobalMemRef(mrTy))
+  if (!mrTy || !isGlobalMemRef(mrTy)) {
     return;
+  }
 
   const size_t rank = op.getMixedSizes().size();
   if (rank == 0 || rank > kPaddedLayoutRank) {
@@ -608,11 +646,13 @@ struct InferPTOLayoutPass
     // ------------------------------------------------------------------
     func.walk([&](memref::SubViewOp op) {
       auto resTy = dyn_cast<MemRefType>(op.getType());
-      if (!resTy || !isGlobalMemRef(resTy))
+      if (!resTy || !isGlobalMemRef(resTy)) {
         return;
+      }
 
-      if (op->getAttrOfType<LayoutAttr>(kLayoutAttrName))
+      if (op->getAttrOfType<LayoutAttr>(kLayoutAttrName)) {
         return;
+      }
 
       if (Operation *def = op.getSource().getDefiningOp()) {
         if (auto srcLayout = def->getAttrOfType<LayoutAttr>(kLayoutAttrName)) {

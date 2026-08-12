@@ -69,8 +69,9 @@ struct PreFusionAnalysisIndex {
 
 static std::optional<int64_t> getRequiredI64Attr(Operation *op,
                                                  StringRef attrName) {
-  if (auto attr = op->getAttrOfType<IntegerAttr>(attrName))
+  if (auto attr = op->getAttrOfType<IntegerAttr>(attrName)) {
     return attr.getInt();
+  }
   return std::nullopt;
 }
 
@@ -87,8 +88,9 @@ collectGroupSpansInBlock(Block &block, SmallVectorImpl<GroupSpan> &spans) {
   GroupSpan current;
 
   auto flush = [&]() -> LogicalResult {
-    if (current.members.empty())
+    if (current.members.empty()) {
       return success();
+    }
 
     current.block = &block;
     auto [it, inserted] =
@@ -115,8 +117,9 @@ collectGroupSpansInBlock(Block &block, SmallVectorImpl<GroupSpan> &spans) {
     std::optional<int64_t> groupId =
         getRequiredI64Attr(&op, kFusionGroupIdAttr);
     if (!groupId) {
-      if (failed(flush()))
+      if (failed(flush())) {
         return failure();
+      }
       continue;
     }
 
@@ -133,8 +136,9 @@ collectGroupSpansInBlock(Block &block, SmallVectorImpl<GroupSpan> &spans) {
     }
 
     if (current.groupId != *groupId) {
-      if (failed(flush()))
+      if (failed(flush())) {
         return failure();
+      }
       current.groupId = *groupId;
     }
 
@@ -166,8 +170,9 @@ static bool isNestedInSpan(Operation *op, const DenseSet<Operation *> &spanOps) 
 
 static void appendUniqueValue(SmallVectorImpl<Value> &values,
                               DenseSet<Value> &seen, Value value) {
-  if (seen.insert(value).second)
+  if (seen.insert(value).second) {
     values.push_back(value);
+  }
 }
 
 static Operation *getTopLevelAncestorInBlock(Operation *op, Block *block) {
@@ -180,8 +185,9 @@ static Operation *getTopLevelAncestorInBlock(Operation *op, Block *block) {
 static bool canReplaceUseWithRegionResult(OpOperand &use, Operation *boundary) {
   Operation *topLevel =
       getTopLevelAncestorInBlock(use.getOwner(), boundary->getBlock());
-  if (!topLevel || topLevel == boundary)
+  if (!topLevel || topLevel == boundary) {
     return false;
+  }
   return boundary->isBeforeInBlock(topLevel);
 }
 
@@ -189,10 +195,12 @@ static bool hasReplaceableUseOutsideSpan(Value value,
                                          const DenseSet<Operation *> &spanOps,
                                          Operation *boundary) {
   for (OpOperand &use : value.getUses()) {
-    if (isNestedInSpan(use.getOwner(), spanOps))
+    if (isNestedInSpan(use.getOwner(), spanOps)) {
       continue;
-    if (canReplaceUseWithRegionResult(use, boundary))
+    }
+    if (canReplaceUseWithRegionResult(use, boundary)) {
       return true;
+    }
   }
   return false;
 }
@@ -207,30 +215,36 @@ static bool hasAnyUseOutsideSpan(Value value,
 
 static const FusionBlockAnalysisIndex *
 getBlockAnalysisIndex(const PreFusionAnalysisIndex *analysisIndex, Block *block) {
-  if (!analysisIndex)
+  if (!analysisIndex) {
     return nullptr;
+  }
   auto it = analysisIndex->blocks.find(block);
-  if (it == analysisIndex->blocks.end())
+  if (it == analysisIndex->blocks.end()) {
     return nullptr;
+  }
   return &it->second;
 }
 
 static const pto::FusionWriteInstanceLiveness *
 getProducedWriteInstance(const FusionBlockAnalysisIndex *blockAnalysis,
                          Operation *op, unsigned tileOutputIndex) {
-  if (!blockAnalysis)
+  if (!blockAnalysis) {
     return nullptr;
+  }
 
   auto nodeIt = blockAnalysis->nodeIdByOp.find(op);
-  if (nodeIt == blockAnalysis->nodeIdByOp.end())
+  if (nodeIt == blockAnalysis->nodeIdByOp.end()) {
     return nullptr;
+  }
 
   auto writeIt =
       blockAnalysis->writeInstancesByProducerNode.find(nodeIt->second);
-  if (writeIt == blockAnalysis->writeInstancesByProducerNode.end())
+  if (writeIt == blockAnalysis->writeInstancesByProducerNode.end()) {
     return nullptr;
-  if (tileOutputIndex >= writeIt->second.size())
+  }
+  if (tileOutputIndex >= writeIt->second.size()) {
     return nullptr;
+  }
   return writeIt->second[tileOutputIndex];
 }
 
@@ -251,18 +265,22 @@ writeInstanceEscapesSpan(const pto::FusionWriteInstanceLiveness &writeInstance,
 static bool canSinkAllocTileDefToRegion(Value value, const GroupSpan &span,
                                         const DenseSet<Operation *> &spanOps) {
   auto alloc = dyn_cast_or_null<pto::AllocTileOp>(value.getDefiningOp());
-  if (!alloc || alloc->getBlock() != span.block)
+  if (!alloc || alloc->getBlock() != span.block) {
     return false;
+  }
 
   Operation *firstOp = span.members.front().op;
-  if (!alloc->isBeforeInBlock(firstOp))
+  if (!alloc->isBeforeInBlock(firstOp)) {
     return false;
+  }
 
   for (OpOperand &use : value.getUses()) {
-    if (isNestedInSpan(use.getOwner(), spanOps))
+    if (isNestedInSpan(use.getOwner(), spanOps)) {
       continue;
-    if (!canReplaceUseWithRegionResult(use, firstOp))
+    }
+    if (!canReplaceUseWithRegionResult(use, firstOp)) {
       return false;
+    }
   }
 
   return true;
@@ -281,11 +299,13 @@ buildGroupSpanInterface(const GroupSpan &span,
 
   for (const GroupSpanMember &member : span.members) {
     spanOps.insert(member.op);
-    if (!blockAnalysis)
+    if (!blockAnalysis) {
       continue;
+    }
     auto nodeIt = blockAnalysis->nodeIdByOp.find(member.op);
-    if (nodeIt != blockAnalysis->nodeIdByOp.end())
+    if (nodeIt != blockAnalysis->nodeIdByOp.end()) {
       spanNodeIds.insert(nodeIt->second);
+    }
   }
 
   for (const GroupSpanMember &member : span.members) {
@@ -296,8 +316,9 @@ buildGroupSpanInterface(const GroupSpan &span,
     if (auto dpsIface = dyn_cast<pto::PTO_DpsInitOpInterface>(member.op)) {
       unsigned tileOutputIndex = 0;
       for (Value init : dpsIface.getDpsInits()) {
-        if (!isa<pto::TileBufType>(init.getType()))
+        if (!isa<pto::TileBufType>(init.getType())) {
           continue;
+        }
 
         const pto::FusionWriteInstanceLiveness *writeInstance =
             getProducedWriteInstance(blockAnalysis, member.op, tileOutputIndex);
@@ -305,12 +326,14 @@ buildGroupSpanInterface(const GroupSpan &span,
 
         bool escapesSpan =
             hasReplaceableUseOutsideSpan(init, spanOps, boundary);
-        if (writeInstance)
+        if (writeInstance) {
           escapesSpan =
               escapesSpan && writeInstanceEscapesSpan(*writeInstance, spanNodeIds);
+        }
 
-        if (escapesSpan)
+        if (escapesSpan) {
           appendUniqueValue(iface.externallyVisibleValues, seenOutputs, init);
+        }
       }
     }
   }
@@ -321,15 +344,19 @@ buildGroupSpanInterface(const GroupSpan &span,
   for (const GroupSpanMember &member : span.members) {
     if (auto dpsIface = dyn_cast<pto::PTO_DpsInitOpInterface>(member.op)) {
       for (Value init : dpsIface.getDpsInits()) {
-        if (!isa<pto::TileBufType>(init.getType()))
+        if (!isa<pto::TileBufType>(init.getType())) {
           continue;
-        if (!canSinkAllocTileDefToRegion(init, span, spanOps))
+        }
+        if (!canSinkAllocTileDefToRegion(init, span, spanOps)) {
           continue;
-        if (hasAnyUseOutsideSpan(init, spanOps) && !visibleValues.contains(init))
+        }
+        if (hasAnyUseOutsideSpan(init, spanOps) && !visibleValues.contains(init)) {
           continue;
+        }
         Operation *defOp = init.getDefiningOp();
-        if (seenLocalDefs.insert(defOp).second)
+        if (seenLocalDefs.insert(defOp).second) {
           iface.localDefs.push_back(defOp);
+        }
       }
     }
   }
@@ -395,23 +422,27 @@ getCommonSpanI64Attr(const GroupSpan &span, StringRef attrName) {
 static LogicalResult
 encapsulateGroupSpan(const GroupSpan &span,
                      const PreFusionAnalysisIndex *analysisIndex) {
-  if (span.members.empty())
+  if (span.members.empty()) {
     return success();
+  }
 
   GroupSpanInterface iface = buildGroupSpanInterface(span, analysisIndex);
   FailureOr<std::optional<int64_t>> commonRowUnroll =
       getCommonSpanI64Attr(span, kFusionRowUnrollAttr);
-  if (failed(commonRowUnroll))
+  if (failed(commonRowUnroll)) {
     return failure();
+  }
   FailureOr<std::optional<int64_t>> commonColUnroll =
       getCommonSpanI64Attr(span, kFusionColUnrollAttr);
-  if (failed(commonColUnroll))
+  if (failed(commonColUnroll)) {
     return failure();
+  }
 
   SmallVector<Type, 8> outputTypes;
   outputTypes.reserve(iface.externallyVisibleValues.size());
-  for (Value output : iface.externallyVisibleValues)
+  for (Value output : iface.externallyVisibleValues) {
     outputTypes.push_back(output.getType());
+  }
 
   Operation *firstOp = span.members.front().op;
   Location loc = firstOp->getLoc();
@@ -420,33 +451,39 @@ encapsulateGroupSpan(const GroupSpan &span,
       builder.create<pto::FusionRegionOp>(loc, TypeRange(outputTypes));
   fusionRegion->setAttr(kFusionGroupIdAttr,
                         builder.getI64IntegerAttr(span.groupId));
-  if (*commonRowUnroll)
+  if (*commonRowUnroll) {
     fusionRegion->setAttr(kFusionRowUnrollAttr,
                           builder.getI64IntegerAttr(**commonRowUnroll));
-  if (*commonColUnroll)
+  }
+  if (*commonColUnroll) {
     fusionRegion->setAttr(kFusionColUnrollAttr,
                           builder.getI64IntegerAttr(**commonColUnroll));
+  }
 
   Block *body = new Block();
   fusionRegion.getBody().push_back(body);
 
-  for (Operation *localDef : iface.localDefs)
+  for (Operation *localDef : iface.localDefs) {
     localDef->moveBefore(body, body->end());
-  for (const GroupSpanMember &member : span.members)
+  }
+  for (const GroupSpanMember &member : span.members) {
     member.op->moveBefore(body, body->end());
+  }
 
   clearSpanFusionMetadata(span);
 
   SmallVector<Value, 8> yieldValues;
   yieldValues.reserve(iface.externallyVisibleValues.size());
-  for (Value output : iface.externallyVisibleValues)
+  for (Value output : iface.externallyVisibleValues) {
     yieldValues.push_back(output);
+  }
 
   OpBuilder bodyBuilder = OpBuilder::atBlockEnd(body);
   bodyBuilder.create<pto::YieldOp>(loc, ValueRange(yieldValues));
 
-  if (failed(verify(fusionRegion.getOperation())))
+  if (failed(verify(fusionRegion.getOperation()))) {
     return failure();
+  }
 
   replaceEscapingUsesOutsideRegion(fusionRegion, iface.externallyVisibleValues);
   return success();
@@ -465,8 +502,9 @@ static LogicalResult processRegion(Region &region,
         return failure();
 
     SmallVector<GroupSpan, 8> spans;
-    if (failed(collectGroupSpansInBlock(block, spans)))
+    if (failed(collectGroupSpansInBlock(block, spans))) {
       return failure();
+    }
 
     for (const GroupSpan &span : spans)
       if (failed(encapsulateGroupSpan(span, analysisIndex)))
@@ -482,8 +520,9 @@ struct PTOFusionRegionGenPass
 
   void runOnOperation() override {
     func::FuncOp func = getOperation();
-    if (func.isExternal())
+    if (func.isExternal()) {
       return;
+    }
 
     // Reuse the shared pre-fusion dataflow graph cached by the analysis
     // manager (built once, by FusionPlan or lazily here).  FusionRegionGen
@@ -501,19 +540,22 @@ struct PTOFusionRegionGenPass
     PreFusionAnalysisIndex analysisIndex;
     for (const pto::FusionBlockAnalysis &blockAnalysis : analysis.blocks) {
       FusionBlockAnalysisIndex &index = analysisIndex.blocks[blockAnalysis.block];
-      for (const pto::FusionComputeNode &node : blockAnalysis.computeNodes)
+      for (const pto::FusionComputeNode &node : blockAnalysis.computeNodes) {
         index.nodeIdByOp.try_emplace(node.op, node.id);
+      }
       for (const pto::FusionWriteInstanceLiveness &writeInstance :
            blockAnalysis.writeInstances) {
-        if (!writeInstance.producerNode)
+        if (!writeInstance.producerNode) {
           continue;
+        }
         index.writeInstancesByProducerNode[*writeInstance.producerNode]
             .push_back(&writeInstance);
       }
     }
 
-    if (failed(processRegion(func.getRegion(), &analysisIndex)))
+    if (failed(processRegion(func.getRegion(), &analysisIndex))) {
       signalPassFailure();
+    }
   }
 };
 

@@ -60,8 +60,9 @@ struct SlotForm {
 
 static bool tryGetConstantInt(Value v, int64_t &out) {
   IntegerAttr attr;
-  if (!matchPattern(v, m_Constant(&attr)))
+  if (!matchPattern(v, m_Constant(&attr))) {
     return false;
+  }
   out = attr.getValue().getSExtValue();
   return true;
 }
@@ -71,8 +72,9 @@ static bool tryGetConstantInt(Value v, int64_t &out) {
 // neither side is a constant.
 static bool peelAddSubConst(Value v, Value &remaining, int64_t &offset) {
   Operation *op = v.getDefiningOp();
-  if (!op)
+  if (!op) {
     return false;
+  }
   Value lhs, rhs;
   bool isSub = false;
   if (auto add = dyn_cast<arith::AddIOp>(op)) {
@@ -106,8 +108,9 @@ static bool peelAddSubConst(Value v, Value &remaining, int64_t &offset) {
 // without a `remui`, treat N as the caller-supplied `expectN` and reduce.
 // Returns false if the form is not representable.
 static bool extractSlotForm(Value slot, uint32_t expectN, SlotForm &out) {
-  if (!slot)
+  if (!slot) {
     return false;
+  }
 
   out.innerSym = Value();
   out.innerOffset = 0;
@@ -118,8 +121,9 @@ static bool extractSlotForm(Value slot, uint32_t expectN, SlotForm &out) {
   // Case 1: `arith.remui inner, %const_N`.
   if (auto remOp = dyn_cast_if_present<arith::RemUIOp>(def)) {
     int64_t n;
-    if (!tryGetConstantInt(remOp.getRhs(), n) || n <= 0)
+    if (!tryGetConstantInt(remOp.getRhs(), n) || n <= 0) {
       return false;
+    }
     out.N = static_cast<uint32_t>(n);
     Value inner = remOp.getLhs();
     int64_t offset = 0;
@@ -161,8 +165,9 @@ static bool extractSlotForm(Value slot, uint32_t expectN, SlotForm &out) {
 
 static int64_t pyMod(int64_t a, int64_t n) {
   int64_t r = a % n;
-  if (r < 0)
+  if (r < 0) {
     r += n;
+  }
   return r;
 }
 
@@ -203,12 +208,14 @@ SlotRelation compareSlotSSA(Value a, Value b, uint32_t N) {
 
   // One side const, other symbolic: cannot prove disjoint without
   // assuming a value range on the symbol. Equality also unprovable.
-  if (!fa.innerSym || !fb.innerSym)
+  if (!fa.innerSym || !fb.innerSym) {
     return SlotRelation::kUnknown;
+  }
 
   // Both symbolic. Need same symbol to reason about (a - b) mod N.
-  if (fa.innerSym != fb.innerSym)
+  if (fa.innerSym != fb.innerSym) {
     return SlotRelation::kUnknown;
+  }
 
   int64_t diff = pyMod(fa.innerOffset - fb.innerOffset, N);
   return diff == 0 ? SlotRelation::kEqual : SlotRelation::kDisjoint;

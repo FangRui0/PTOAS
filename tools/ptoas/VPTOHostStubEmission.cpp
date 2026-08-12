@@ -26,16 +26,19 @@ struct VPTOKernelStubDecl {
 };
 
 static std::string getLogicalKernelName(llvm::StringRef symbol) {
-  if (symbol.ends_with("_mix_aiv"))
+  if (symbol.ends_with("_mix_aiv")) {
     return symbol.drop_back(strlen("_mix_aiv")).str();
-  if (symbol.ends_with("_mix_aic"))
+  }
+  if (symbol.ends_with("_mix_aic")) {
     return symbol.drop_back(strlen("_mix_aic")).str();
+  }
   return symbol.str();
 }
 
 static std::string getStubScalarCType(Type type) {
-  if (isa<IndexType>(type))
+  if (isa<IndexType>(type)) {
     return "long long";
+  }
   if (auto intType = dyn_cast<IntegerType>(type)) {
     switch (intType.getWidth()) {
     case 1:
@@ -52,18 +55,21 @@ static std::string getStubScalarCType(Type type) {
     }
   }
   if (auto floatType = dyn_cast<FloatType>(type)) {
-    if (floatType.isF32())
+    if (floatType.isF32()) {
       return "float";
-    if (floatType.isF64())
+    }
+    if (floatType.isF64()) {
       return "double";
+    }
     return "short";
   }
   return "long long";
 }
 
 static std::string getStubCType(Type type) {
-  if (isa<pto::PtrType, MemRefType>(type))
+  if (isa<pto::PtrType, MemRefType>(type)) {
     return "__gm__ void *";
+  }
   return getStubScalarCType(type);
 }
 
@@ -77,14 +83,16 @@ static LogicalResult collectVPTOKernelStubDecls(
 
   for (ModuleOp module : modules) {
     module.walk([&](func::FuncOp func) {
-      if (!pto::isPTOEntryFunction(func))
+      if (!pto::isPTOEntryFunction(func)) {
         return;
+      }
 
       std::string logicalName = getLogicalKernelName(func.getSymName());
       SmallVector<std::string> argTypes;
       argTypes.reserve(func.getNumArguments());
-      for (Type type : func.getArgumentTypes())
+      for (Type type : func.getArgumentTypes()) {
         argTypes.push_back(getStubCType(type));
+      }
 
       auto [it, inserted] =
           logicalNameToIndex.try_emplace(logicalName, decls.size());
@@ -115,8 +123,9 @@ LogicalResult mlir::pto::emitVPTOHostStubSource(ArrayRef<ModuleOp> modules,
                                                 std::string &stubSource,
                                                 llvm::raw_ostream &diagOS) {
   SmallVector<VPTOKernelStubDecl> stubDecls;
-  if (failed(collectVPTOKernelStubDecls(modules, stubDecls, diagOS)))
+  if (failed(collectVPTOKernelStubDecls(modules, stubDecls, diagOS))) {
     return failure();
+  }
 
   if (stubDecls.empty()) {
     diagOS << "Error: no PTO entry functions found for host stub emission.\n";
@@ -129,8 +138,9 @@ LogicalResult mlir::pto::emitVPTOHostStubSource(ArrayRef<ModuleOp> modules,
   for (const VPTOKernelStubDecl &decl : stubDecls) {
     os << "extern \"C\" __global__ AICORE void " << decl.logicalName << "(";
     for (size_t i = 0; i < decl.argTypes.size(); ++i) {
-      if (i)
+      if (i) {
         os << ", ";
+      }
       os << decl.argTypes[i] << " arg" << i;
     }
     os << ") {}\n";

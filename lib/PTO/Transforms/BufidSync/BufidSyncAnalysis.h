@@ -179,7 +179,6 @@ inline void printTileGroups(llvm::raw_ostream &os,
     for (unsigned j = 0; j < tileGroups[i].size(); ++j) {
       if (j > 0) os << " ; ";
       printTileValue(os, allTiles[tileGroups[i][j]].tileValue);
-      //printTileInfo(os, allTiles[tileGroups[i][j]]);
     }
     os << "]\n";
   }
@@ -195,7 +194,6 @@ inline void printVirtualBufIds(llvm::raw_ostream &os,
     for (unsigned i = 0; i < vbid.tiles.size(); ++i) {
       if (i > 0) os << " ; ";
       printTileValue(os, vbid.tiles[i].tileValue);
-      //printTileInfo(os, vbid.tiles[i]);
     }
     os << "]\n";
   }

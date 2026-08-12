@@ -120,8 +120,9 @@ struct OperandTypeInfo {
 
   /// Equality for SpecKey caching — only compares fields relevant to each kind.
   bool operator==(const OperandTypeInfo &rhs) const {
-    if (kind != rhs.kind || dtype != rhs.dtype)
+    if (kind != rhs.kind || dtype != rhs.dtype) {
       return false;
+    }
     if (kind == OperandKind::Tile)
       return tileShape == rhs.tileShape &&
              tileValidShape == rhs.tileValidShape &&
@@ -129,10 +130,12 @@ struct OperandTypeInfo {
              blayout == rhs.blayout && slayout == rhs.slayout &&
              fractal == rhs.fractal && pad == rhs.pad &&
              compact == rhs.compact;
-    if (kind == OperandKind::Vector)
+    if (kind == OperandKind::Vector) {
       return vectorShape == rhs.vectorShape;
-    if (kind == OperandKind::Scalar)
+    }
+    if (kind == OperandKind::Scalar) {
       return scalarValue == rhs.scalarValue;
+    }
     return viewShape == rhs.viewShape &&
            viewStrides == rhs.viewStrides &&
            viewMemorySpace == rhs.viewMemorySpace &&
@@ -167,31 +170,39 @@ struct SpecKeyInfo : public llvm::DenseMapInfo<SpecKey> {
       if (op.kind == OperandKind::Tile) {
         h = llvm::hash_combine(h, op.tileMemorySpace, op.blayout,
                                op.slayout, op.fractal, op.pad, op.compact);
-        for (int64_t d : op.tileShape)
+        for (int64_t d : op.tileShape) {
           h = llvm::hash_combine(h, d);
-        for (int64_t d : op.tileValidShape)
+        }
+        for (int64_t d : op.tileValidShape) {
           h = llvm::hash_combine(h, d);
+        }
       } else if (op.kind == OperandKind::Vector) {
-        for (int64_t d : op.vectorShape)
+        for (int64_t d : op.vectorShape) {
           h = llvm::hash_combine(h, d);
+        }
       } else if (op.kind == OperandKind::Scalar) {
         h = llvm::hash_combine(h, op.scalarValue.has_value());
-        if (op.scalarValue)
+        if (op.scalarValue) {
           h = llvm::hash_combine(h, *op.scalarValue);
+        }
       }
       if (op.kind == OperandKind::View) {
         h = llvm::hash_combine(h, op.viewMemorySpace);
-        for (int64_t d : op.viewShape)
+        for (int64_t d : op.viewShape) {
           h = llvm::hash_combine(h, d);
-        for (int64_t d : op.viewStrides)
+        }
+        for (int64_t d : op.viewStrides) {
           h = llvm::hash_combine(h, d);
+        }
         h = llvm::hash_combine(h, op.viewLayout.has_value());
-        if (op.viewLayout)
+        if (op.viewLayout) {
           h = llvm::hash_combine(h, static_cast<int>(*op.viewLayout));
+        }
       }
     }
-    for (const auto &[attrName, attrValue] : key.contextAttrs)
+    for (const auto &[attrName, attrValue] : key.contextAttrs) {
       h = llvm::hash_combine(h, attrName, attrValue);
+    }
     return h;
   }
   static bool isEqual(const SpecKey &lhs, const SpecKey &rhs) {
@@ -202,28 +213,72 @@ struct SpecKeyInfo : public llvm::DenseMapInfo<SpecKey> {
 // Helpers
 // ============================================================================
 static std::string getDtypeString(Type elemTy) {
-  if (elemTy.isIndex()) return "i32";
-  if (elemTy.isInteger(1)) return "i1";
-  if (elemTy.isF32()) return "f32";
-  if (elemTy.isF16()) return "f16";
-  if (elemTy.isBF16()) return "bf16";
-  if (isa<Float8E4M3FNType>(elemTy)) return "f8e4m3";
-  if (isa<Float8E5M2Type>(elemTy)) return "f8e5m2";
-  if (isa<pto::HiF8Type>(elemTy)) return "hif8";
-  if (isa<pto::F4E1M2x2Type>(elemTy)) return "f4e1m2x2";
-  if (isa<pto::F4E2M1x2Type>(elemTy)) return "f4e2m1x2";
-  if (elemTy.isUnsignedInteger(64)) return "ui64";
-  if (elemTy.isUnsignedInteger(32)) return "ui32";
-  if (elemTy.isUnsignedInteger(16)) return "ui16";
-  if (elemTy.isUnsignedInteger(8)) return "ui8";
-  if (elemTy.isSignedInteger(64)) return "si64";
-  if (elemTy.isSignedInteger(32)) return "si32";
-  if (elemTy.isSignedInteger(16)) return "si16";
-  if (elemTy.isSignedInteger(8)) return "si8";
-  if (elemTy.isSignlessInteger(64)) return "i64";
-  if (elemTy.isSignlessInteger(32)) return "i32";
-  if (elemTy.isSignlessInteger(16)) return "i16";
-  if (elemTy.isSignlessInteger(8)) return "i8";
+  if (elemTy.isIndex()) {
+    return "i32";
+  }
+  if (elemTy.isInteger(1)) {
+    return "i1";
+  }
+  if (elemTy.isF32()) {
+    return "f32";
+  }
+  if (elemTy.isF16()) {
+    return "f16";
+  }
+  if (elemTy.isBF16()) {
+    return "bf16";
+  }
+  if (isa<Float8E4M3FNType>(elemTy)) {
+    return "f8e4m3";
+  }
+  if (isa<Float8E5M2Type>(elemTy)) {
+    return "f8e5m2";
+  }
+  if (isa<pto::HiF8Type>(elemTy)) {
+    return "hif8";
+  }
+  if (isa<pto::F4E1M2x2Type>(elemTy)) {
+    return "f4e1m2x2";
+  }
+  if (isa<pto::F4E2M1x2Type>(elemTy)) {
+    return "f4e2m1x2";
+  }
+  if (elemTy.isUnsignedInteger(64)) {
+    return "ui64";
+  }
+  if (elemTy.isUnsignedInteger(32)) {
+    return "ui32";
+  }
+  if (elemTy.isUnsignedInteger(16)) {
+    return "ui16";
+  }
+  if (elemTy.isUnsignedInteger(8)) {
+    return "ui8";
+  }
+  if (elemTy.isSignedInteger(64)) {
+    return "si64";
+  }
+  if (elemTy.isSignedInteger(32)) {
+    return "si32";
+  }
+  if (elemTy.isSignedInteger(16)) {
+    return "si16";
+  }
+  if (elemTy.isSignedInteger(8)) {
+    return "si8";
+  }
+  if (elemTy.isSignlessInteger(64)) {
+    return "i64";
+  }
+  if (elemTy.isSignlessInteger(32)) {
+    return "i32";
+  }
+  if (elemTy.isSignlessInteger(16)) {
+    return "i16";
+  }
+  if (elemTy.isSignlessInteger(8)) {
+    return "i8";
+  }
   return "";
 }
 
@@ -232,10 +287,12 @@ static std::string getDtypeString(Type elemTy) {
 static Value bridgeOperandToType(OpBuilder &builder, Location loc,
                                  Value operand, Type dstTy) {
   Type srcTy = operand.getType();
-  if (srcTy == dstTy)
+  if (srcTy == dstTy) {
     return operand;
-  if (srcTy.isIndex() && isa<IntegerType>(dstTy))
+  }
+  if (srcTy.isIndex() && isa<IntegerType>(dstTy)) {
     return builder.create<arith::IndexCastOp>(loc, dstTy, operand);
+  }
   return builder.create<UnrealizedConversionCastOp>(loc, dstTy, operand)
       .getResult(0);
 }
@@ -245,12 +302,14 @@ static StringRef getTileOpName(Operation *op) {
 }
 
 static std::string getTargetArchString(Operation *op) {
-  if (!op)
+  if (!op) {
     return "";
+  }
   for (ModuleOp current = op->getParentOfType<ModuleOp>(); current;
        current = current->getParentOfType<ModuleOp>()) {
-    if (auto targetAttr = current->getAttrOfType<StringAttr>("pto.target_arch"))
+    if (auto targetAttr = current->getAttrOfType<StringAttr>("pto.target_arch")) {
       return targetAttr.getValue().str();
+    }
   }
   return "";
 }
@@ -289,37 +348,44 @@ static std::string getMemorySpaceString(MemRefType mrTy) {
 }
 
 static std::string getBLayoutString(int32_t blayout) {
-  if (blayout == static_cast<int32_t>(pto::BLayout::ColMajor))
+  if (blayout == static_cast<int32_t>(pto::BLayout::ColMajor)) {
     return "col_major";
+  }
   return "row_major";
 }
 
 static std::string getSLayoutString(int32_t slayout) {
-  if (slayout == static_cast<int32_t>(pto::SLayout::RowMajor))
+  if (slayout == static_cast<int32_t>(pto::SLayout::RowMajor)) {
     return "row_major";
-  if (slayout == static_cast<int32_t>(pto::SLayout::ColMajor))
+  }
+  if (slayout == static_cast<int32_t>(pto::SLayout::ColMajor)) {
     return "col_major";
+  }
   return "none_box";
 }
 
 static constexpr llvm::StringLiteral kLayoutAttrName = "layout";
 
 static std::optional<pto::Layout> getLayoutAttrFromOp(Operation *op) {
-  if (!op)
+  if (!op) {
     return std::nullopt;
-  if (auto attr = op->getAttrOfType<pto::LayoutAttr>(kLayoutAttrName))
+  }
+  if (auto attr = op->getAttrOfType<pto::LayoutAttr>(kLayoutAttrName)) {
     return attr.getLayout();
+  }
   return std::nullopt;
 }
 
 static std::optional<pto::Layout> resolveViewLayout(Value value) {
-  if (!value)
+  if (!value) {
     return std::nullopt;
+  }
 
   Operation *def = value.getDefiningOp();
   while (def) {
-    if (auto layout = getLayoutAttrFromOp(def))
+    if (auto layout = getLayoutAttrFromOp(def)) {
       return layout;
+    }
     if (auto subview = dyn_cast<memref::SubViewOp>(def)) {
       value = subview.getSource();
       def = value.getDefiningOp();
@@ -346,8 +412,9 @@ static std::optional<pto::Layout> resolveViewLayout(Value value) {
 }
 
 static std::optional<std::string> getViewLayoutString(std::optional<pto::Layout> layout) {
-  if (!layout)
+  if (!layout) {
     return std::nullopt;
+  }
   return stringifyLayout(*layout).str();
 }
 
@@ -454,8 +521,9 @@ static bool tryAppendPrecisionType(
     SmallVectorImpl<std::pair<std::string, std::string>> &attrs,
     PrecisionT highPrecision) {
   auto typed = dyn_cast<OpT>(op);
-  if (!typed)
+  if (!typed) {
     return false;
+  }
 
   PrecisionT precision = typed.getPrecisionType();
   attrs.emplace_back("precisionType", getPrecisionTypeString(precision).str());
@@ -479,11 +547,13 @@ static LogicalResult appendOpContextAttrs(
     SmallVectorImpl<std::pair<std::string, std::string>> &attrs) {
   if (auto tcvt = dyn_cast<pto::TCvtOp>(op)) {
     std::optional<std::string> roundMode = getTCvtRoundModeString(tcvt);
-    if (roundMode)
+    if (roundMode) {
       attrs.emplace_back("round_mode", *roundMode);
+    }
   }
-  if (auto trandom = dyn_cast<pto::TRandomOp>(op))
+  if (auto trandom = dyn_cast<pto::TRandomOp>(op)) {
     attrs.emplace_back("rounds", getTRandomRoundsString(trandom));
+  }
   if (auto tcmp = dyn_cast<pto::TCmpOp>(op)) {
     if (auto cmpModeAttr = tcmp.getCmpModeAttr()) {
       attrs.emplace_back("cmp_mode",
@@ -519,8 +589,9 @@ static LogicalResult appendOpContextAttrs(
   }
   if (auto thistogram = dyn_cast<pto::THistogramOp>(op)) {
     int byte = 1;
-    if (auto byteAttr = thistogram.getByteAttr())
+    if (auto byteAttr = thistogram.getByteAttr()) {
       byte = byteAttr.getInt();
+    }
     attrs.emplace_back("byte", std::to_string(byte));
   }
   if (auto tci = dyn_cast<pto::TCIOp>(op)) {
@@ -593,14 +664,16 @@ static bool getStaticIntFromValue(Value value, int64_t &out) {
 static int64_t getStaticIntOrDynamic(OpFoldResult ofr) {
   if (isa<Attribute>(ofr)) {
     Attribute attr = cast<Attribute>(ofr);
-    if (auto intAttr = dyn_cast<IntegerAttr>(attr))
+    if (auto intAttr = dyn_cast<IntegerAttr>(attr)) {
       return intAttr.getInt();
+    }
     return ShapedType::kDynamic;
   }
   Value value = cast<Value>(ofr);
   int64_t result = ShapedType::kDynamic;
-  if (getStaticIntFromValue(value, result))
+  if (getStaticIntFromValue(value, result)) {
     return result;
+  }
   return ShapedType::kDynamic;
 }
 
@@ -608,8 +681,9 @@ static void recordStaticSizes(ArrayRef<OpFoldResult> inputs,
                               SmallVectorImpl<int64_t> &out) {
   out.clear();
   out.reserve(inputs.size());
-  for (OpFoldResult ofr : inputs)
+  for (OpFoldResult ofr : inputs) {
     out.push_back(getStaticIntOrDynamic(ofr));
+  }
 }
 
 static SmallVector<int64_t> combineSubviewStrides(ArrayRef<int64_t> baseStrides,
@@ -631,8 +705,9 @@ static SmallVector<int64_t> combineSubviewStrides(ArrayRef<int64_t> baseStrides,
 static void populateViewShapeAndStrides(Value value,
                                         SmallVectorImpl<int64_t> &shape,
                                         SmallVectorImpl<int64_t> &strides) {
-  if (!value)
+  if (!value) {
     return;
+  }
 
   if (auto partition = value.getDefiningOp<pto::PartitionViewOp>()) {
     populateViewShapeAndStrides(partition.getSource(), shape, strides);
@@ -667,10 +742,12 @@ static void populateViewShapeAndStrides(Value value,
     populateViewShapeAndStrides(subview.getSource(), shape, strides);
     SmallVector<int64_t> subviewShape;
     recordStaticSizes(subview.getMixedSizes(), subviewShape);
-    if (!subviewShape.empty())
+    if (!subviewShape.empty()) {
       shape = subviewShape;
-    if (!strides.empty())
+    }
+    if (!strides.empty()) {
       strides = combineSubviewStrides(strides, subview.getMixedStrides());
+    }
     return;
   }
 
@@ -678,11 +755,13 @@ static void populateViewShapeAndStrides(Value value,
     if (shape.empty()) {
       SmallVector<int64_t> reinterpretShape;
       recordStaticSizes(reinterpret.getMixedSizes(), reinterpretShape);
-      if (!reinterpretShape.empty())
+      if (!reinterpretShape.empty()) {
         shape = reinterpretShape;
+      }
     }
-    if (strides.empty())
+    if (strides.empty()) {
       recordStaticSizes(reinterpret.getMixedStrides(), strides);
+    }
     return;
   }
 
@@ -692,8 +771,9 @@ static void populateViewShapeAndStrides(Value value,
   }
 
   if (auto memrefTy = dyn_cast<MemRefType>(value.getType())) {
-    if (shape.empty())
+    if (shape.empty()) {
       shape.assign(memrefTy.getShape().begin(), memrefTy.getShape().end());
+    }
     if (strides.empty()) {
       int64_t offset = ShapedType::kDynamic;
       if (succeeded(
@@ -711,12 +791,14 @@ static std::optional<OperandTypeInfo> buildOperandTypeInfo(Value value) {
     OperandTypeInfo info;
     info.kind = OperandKind::Tile;
     info.dtype = getDtypeString(tbTy.getElementType());
-    if (info.dtype.empty())
+    if (info.dtype.empty()) {
       return std::nullopt;
+    }
     info.tileShape.assign(tbTy.getShape().begin(), tbTy.getShape().end());
     auto validShape = tbTy.getValidShape();
-    if (validShape.empty())
+    if (validShape.empty()) {
       info.tileValidShape.assign(tbTy.getShape().begin(), tbTy.getShape().end());
+    }
     else
       info.tileValidShape.assign(validShape.begin(), validShape.end());
     info.tileMemorySpace = getMemorySpaceString(tbTy);
@@ -738,13 +820,15 @@ static std::optional<OperandTypeInfo> buildOperandTypeInfo(Value value) {
     OperandTypeInfo info;
     info.kind = OperandKind::View;
     info.dtype = getDtypeString(mrTy.getElementType());
-    if (info.dtype.empty())
+    if (info.dtype.empty()) {
       return std::nullopt;
+    }
     info.viewMemorySpace = getMemorySpaceString(mrTy);
     info.viewLayout = resolveViewLayout(value);
     populateViewShapeAndStrides(value, info.viewShape, info.viewStrides);
-    if (info.viewShape.empty())
+    if (info.viewShape.empty()) {
       info.viewShape.assign(mrTy.getShape().begin(), mrTy.getShape().end());
+    }
     if (info.viewStrides.empty()) {
       int64_t offset = ShapedType::kDynamic;
       if (succeeded(mlir::pto::getPTOMemRefStridesAndOffset(
@@ -759,15 +843,18 @@ static std::optional<OperandTypeInfo> buildOperandTypeInfo(Value value) {
     OperandTypeInfo info;
     info.kind = OperandKind::View;
     info.dtype = getDtypeString(viewTy.getElementType());
-    if (info.dtype.empty())
+    if (info.dtype.empty()) {
       return std::nullopt;
+    }
     info.viewMemorySpace = "gm";
     info.viewLayout = resolveViewLayout(value);
     populateViewShapeAndStrides(value, info.viewShape, info.viewStrides);
-    if (info.viewShape.empty())
+    if (info.viewShape.empty()) {
       info.viewShape.assign(viewTy.getShape().begin(), viewTy.getShape().end());
-    if (info.viewStrides.empty())
+    }
+    if (info.viewStrides.empty()) {
       info.viewStrides.assign(viewTy.getRank(), ShapedType::kDynamic);
+    }
     return info;
   }
 
@@ -776,8 +863,9 @@ static std::optional<OperandTypeInfo> buildOperandTypeInfo(Value value) {
     OperandTypeInfo info;
     info.kind = OperandKind::Vector;
     info.dtype = getDtypeString(vecTy.getElementType());
-    if (info.dtype.empty())
+    if (info.dtype.empty()) {
       return std::nullopt;
+    }
     info.vectorShape.assign(vecTy.getShape().begin(), vecTy.getShape().end());
     return info;
   }
@@ -786,11 +874,13 @@ static std::optional<OperandTypeInfo> buildOperandTypeInfo(Value value) {
   OperandTypeInfo info;
   info.kind = OperandKind::Scalar;
   info.dtype = getDtypeString(ty);
-  if (info.dtype.empty())
+  if (info.dtype.empty()) {
     return std::nullopt;
+  }
   int64_t scalarValue = 0;
-  if (getStaticIntFromValue(value, scalarValue))
+  if (getStaticIntFromValue(value, scalarValue)) {
     info.scalarValue = scalarValue;
+  }
   return info;
 }
 
@@ -814,8 +904,9 @@ static FailureOr<SpecKey> buildSpecKey(Operation *op) {
     return failure();
   }
 
-  if (failed(appendOpContextAttrs(op, key.contextAttrs)))
+  if (failed(appendOpContextAttrs(op, key.contextAttrs))) {
     return failure();
+  }
   return key;
 }
 
@@ -850,8 +941,9 @@ struct ExpandTileOpPass
 static void appendJsonIntArray(std::string &json, ArrayRef<int64_t> arr) {
   json += "[";
   for (size_t i = 0; i < arr.size(); ++i) {
-    if (i > 0)
+    if (i > 0) {
       json += ",";
+    }
     json += std::to_string(arr[i]);
   }
   json += "]";
@@ -862,8 +954,9 @@ static void appendJsonDimArray(std::string &json, ArrayRef<int64_t> arr,
                                bool negativeIsDynamic = false) {
   json += "[";
   for (size_t i = 0; i < arr.size(); ++i) {
-    if (i > 0)
+    if (i > 0) {
       json += ",";
+    }
     int64_t dim = arr[i];
     if (ShapedType::isDynamic(dim) || (negativeIsDynamic && dim < 0)) {
       json += "null";
@@ -878,8 +971,9 @@ static std::string buildOperandSpecsJson(const SpecKey &key) {
   std::string json = "[";
   for (size_t i = 0; i < key.operands.size(); ++i) {
     const auto &op = key.operands[i];
-    if (i > 0)
+    if (i > 0) {
       json += ",";
+    }
 
     if (op.kind == OperandKind::Tile) {
       json += "{\"kind\":\"tile\",\"dtype\":\"" + op.dtype + "\",\"shape\":";
@@ -909,10 +1003,12 @@ static std::string buildOperandSpecsJson(const SpecKey &key) {
       if (!op.viewStrides.empty()) {
         json += ",\"strides\":[";
         for (size_t dim = 0; dim < op.viewStrides.size(); ++dim) {
-          if (dim > 0)
+          if (dim > 0) {
             json += ",";
-          if (ShapedType::isDynamic(op.viewStrides[dim]))
+          }
+          if (ShapedType::isDynamic(op.viewStrides[dim])) {
             json += "null";
+          }
           else
             json += std::to_string(op.viewStrides[dim]);
         }
@@ -948,8 +1044,9 @@ static std::string buildOperandSpecsJson(const SpecKey &key) {
 }
 
 static std::string dimSuffix(int64_t dim) {
-  if (ShapedType::isDynamic(dim))
+  if (ShapedType::isDynamic(dim)) {
     return "d";
+  }
   return std::to_string(dim);
 }
 
@@ -962,10 +1059,12 @@ static std::string buildUniqueFunctionBaseName(const SpecKey &key) {
                                                   : "_scalar";
     uniqueName += "_" + op.dtype;
     if (op.kind == OperandKind::Tile) {
-      for (int64_t d : op.tileShape)
+      for (int64_t d : op.tileShape) {
         uniqueName += "_" + std::to_string(d);
-      for (int64_t d : op.tileValidShape)
+      }
+      for (int64_t d : op.tileValidShape) {
         uniqueName += "_v" + std::to_string(d);
+      }
       uniqueName += "_bl" + std::to_string(op.blayout);
       uniqueName += "_sl" + std::to_string(op.slayout);
       uniqueName += "_fr" + std::to_string(op.fractal);
@@ -974,30 +1073,36 @@ static std::string buildUniqueFunctionBaseName(const SpecKey &key) {
     } else if (op.kind == OperandKind::View) {
       uniqueName += "_ms_" + op.viewMemorySpace;
       uniqueName += "_shape";
-      for (int64_t d : op.viewShape)
+      for (int64_t d : op.viewShape) {
         uniqueName += "_" + dimSuffix(d);
+      }
       uniqueName += "_strides";
-      for (int64_t d : op.viewStrides)
+      for (int64_t d : op.viewStrides) {
         uniqueName += "_" + dimSuffix(d);
-      if (op.viewLayout)
+      }
+      if (op.viewLayout) {
         uniqueName += "_vl_" + stringifyLayout(*op.viewLayout).str();
+      }
     } else if (op.kind == OperandKind::Vector) {
-      for (int64_t d : op.vectorShape)
+      for (int64_t d : op.vectorShape) {
         uniqueName += "_" + std::to_string(d);
+      }
     } else if (op.kind == OperandKind::Scalar && op.scalarValue) {
       uniqueName += "_sv" + std::to_string(*op.scalarValue);
     }
   }
-  for (const auto &[attrName, attrValue] : key.contextAttrs)
+  for (const auto &[attrName, attrValue] : key.contextAttrs) {
     uniqueName += "_ctx_" + attrName + "_" + attrValue;
+  }
   return uniqueName;
 }
 
 static std::string buildUniqueFunctionName(const SpecKey &key,
                                            StringRef candidateId) {
   std::string uniqueName = buildUniqueFunctionBaseName(key);
-  if (!candidateId.empty())
+  if (!candidateId.empty()) {
     uniqueName += "__" + candidateId.str();
+  }
   return uniqueName;
 }
 
@@ -1005,8 +1110,9 @@ static std::string buildContextAttrsJson(const SpecKey &key) {
   std::string json = "{";
   for (size_t i = 0; i < key.contextAttrs.size(); ++i) {
     const auto &[attrName, attrValue] = key.contextAttrs[i];
-    if (i > 0)
+    if (i > 0) {
       json += ",";
+    }
     json += "\"";
     json += attrName;
     json += "\":\"";
@@ -1027,8 +1133,9 @@ func::FuncOp ExpandState::invokeInProcessTileLib(const SpecKey &key,
                                                  const std::string &uniqueName,
                                                  ModuleOp mod,
                                                  MLIRContext *ctx) {
-  if (!tileLibService)
+  if (!tileLibService) {
     return nullptr;
+  }
 
   pto::TileLibMaterializationRequest request;
   request.target = key.targetArch;
@@ -1054,8 +1161,9 @@ func::FuncOp ExpandState::invokeInProcessTileLib(const SpecKey &key,
     }
 
     SmallVector<func::FuncOp, 4> sourceFuncs;
-    for (func::FuncOp fn : sourceModule.getOps<func::FuncOp>())
+    for (func::FuncOp fn : sourceModule.getOps<func::FuncOp>()) {
       sourceFuncs.push_back(fn);
+    }
     if (sourceFuncs.empty()) {
       llvm::errs() << "ExpandTileOp: in-process PTODSL returned no func.func\n";
       return failure();
@@ -1094,8 +1202,9 @@ func::FuncOp ExpandState::invokeInProcessTileLib(const SpecKey &key,
           llvm::errs() << "ExpandTileOp: failed to rewrite imported symbol @"
                        << renamed.getKey() << " in @" << fn.getSymName()
                        << "\n";
-          for (func::FuncOp imported : clonedFuncs)
+          for (func::FuncOp imported : clonedFuncs) {
             imported.erase();
+          }
           return failure();
         }
       }
@@ -1151,8 +1260,9 @@ func::FuncOp ExpandState::invokeTileLib(const SpecKey &key,
 
   std::string uniqueName =
       buildUniqueFunctionName(key, selectedName.getValue());
-  if (auto existing = mod.lookupSymbol<func::FuncOp>(uniqueName))
+  if (auto existing = mod.lookupSymbol<func::FuncOp>(uniqueName)) {
     return existing;
+  }
 
   return invokeInProcessTileLib(key, selectedName.getValue(), uniqueName, mod,
                                 ctx);
@@ -1169,8 +1279,9 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
   // Collect tile ops first (avoid modifying while iterating).
   SmallVector<Operation *, 16> tileOps;
   func.walk([&](Operation *op) {
-    if (pto::isTileLibExpandableOp(op))
+    if (pto::isTileLibExpandableOp(op)) {
       tileOps.push_back(op);
+    }
   });
 
   for (auto *op : tileOps) {
@@ -1224,8 +1335,9 @@ void ExpandTileOpPass::runOnOperation() {
     }
     return WalkResult::advance();
   });
-  if (!hasExpandableOps)
+  if (!hasExpandableOps) {
     return;
+  }
 
   std::shared_ptr<pto::TileLibService> tileLibService =
       pto::TileLibRuntime::getService();
@@ -1239,10 +1351,12 @@ void ExpandTileOpPass::runOnOperation() {
   state.tileLibService = tileLibService;
 
   for (auto func : mod.getOps<func::FuncOp>()) {
-    if (func.isExternal())
+    if (func.isExternal()) {
       continue;
-    if (failed(state.expandTileOpsInFunction(func, mod, ctx)))
+    }
+    if (failed(state.expandTileOpsInFunction(func, mod, ctx))) {
       return signalPassFailure();
+    }
   }
 }
 

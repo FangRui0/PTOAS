@@ -6674,7 +6674,6 @@ def wait_flag(src: str, dst: str, *, event_id: int = 0):
 
 
 def reserve_buffer(name, *, size, location, auto=True, base=None):
-    """``pto.reserve_buffer(name, size, location, auto=True, base=None)``."""
     space = _normalize_address_space(location)
     if space not in (_pto.AddressSpace.VEC, _pto.AddressSpace.MAT):
         raise ValueError(
@@ -6691,7 +6690,6 @@ def reserve_buffer(name, *, size, location, auto=True, base=None):
 
 
 def import_reserved_buffer(name, *, peer_func):
-    """``pto.import_reserved_buffer(name, peer_func=...)``."""
     if not isinstance(peer_func, str):
         spec = getattr(peer_func, "spec", None)
         role = getattr(spec, "role", None)

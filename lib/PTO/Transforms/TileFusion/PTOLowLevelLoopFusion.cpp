@@ -85,20 +85,27 @@ static bool isInterstageSetupOp(Operation *op) {
 }
 
 static bool areEquivalentOperations(Operation *lhs, Operation *rhs) {
-  if (!lhs || !rhs)
+  if (!lhs || !rhs) {
     return false;
-  if (lhs->getName() != rhs->getName())
+  }
+  if (lhs->getName() != rhs->getName()) {
     return false;
-  if (lhs->getNumRegions() != 0 || rhs->getNumRegions() != 0)
+  }
+  if (lhs->getNumRegions() != 0 || rhs->getNumRegions() != 0) {
     return false;
-  if (lhs->getNumResults() != rhs->getNumResults())
+  }
+  if (lhs->getNumResults() != rhs->getNumResults()) {
     return false;
-  if (lhs->getNumOperands() != rhs->getNumOperands())
+  }
+  if (lhs->getNumOperands() != rhs->getNumOperands()) {
     return false;
-  if (lhs->getAttrDictionary() != rhs->getAttrDictionary())
+  }
+  if (lhs->getAttrDictionary() != rhs->getAttrDictionary()) {
     return false;
-  if (!llvm::equal(lhs->getResultTypes(), rhs->getResultTypes()))
+  }
+  if (!llvm::equal(lhs->getResultTypes(), rhs->getResultTypes())) {
     return false;
+  }
 
   if (auto lhsDim = dyn_cast<memref::DimOp>(lhs)) {
     auto rhsDim = cast<memref::DimOp>(rhs);
@@ -108,19 +115,23 @@ static bool areEquivalentOperations(Operation *lhs, Operation *rhs) {
 
   for (auto [lhsOperand, rhsOperand] :
        llvm::zip(lhs->getOperands(), rhs->getOperands())) {
-    if (!areEquivalentValues(lhsOperand, rhsOperand))
+    if (!areEquivalentValues(lhsOperand, rhsOperand)) {
       return false;
+    }
   }
   return true;
 }
 
 static bool areEquivalentValues(Value lhs, Value rhs) {
-  if (lhs == rhs)
+  if (lhs == rhs) {
     return true;
-  if (!lhs || !rhs)
+  }
+  if (!lhs || !rhs) {
     return false;
-  if (lhs.getType() != rhs.getType())
+  }
+  if (lhs.getType() != rhs.getType()) {
     return false;
+  }
 
   auto lhsArg = dyn_cast<BlockArgument>(lhs);
   auto rhsArg = dyn_cast<BlockArgument>(rhs);
@@ -143,8 +154,9 @@ static Value traceAliasRootOneStep(Value value) {
   }
 
   Operation *def = value.getDefiningOp();
-  if (!def)
+  if (!def) {
     return {};
+  }
 
   if (auto subview = dyn_cast<memref::SubViewOp>(def))
     return subview.getSource();
@@ -163,22 +175,26 @@ static Value traceAliasRootOneStep(Value value) {
   if (auto reshape = dyn_cast<pto::TReshapeOp>(def))
     return reshape.getSrc();
   if (auto cast = dyn_cast<UnrealizedConversionCastOp>(def)) {
-    if (cast.getInputs().empty())
+    if (cast.getInputs().empty()) {
       return {};
+    }
     if (auto result = dyn_cast<OpResult>(value)) {
       unsigned resultNumber = result.getResultNumber();
-      if (resultNumber < cast.getInputs().size())
+      if (resultNumber < cast.getInputs().size()) {
         return cast.getInputs()[resultNumber];
+      }
     }
-    if (cast.getInputs().size() == 1)
+    if (cast.getInputs().size() == 1) {
       return cast.getInputs().front();
+    }
     return {};
   }
   if (auto forOp = dyn_cast<scf::ForOp>(def)) {
     if (auto result = dyn_cast<OpResult>(value)) {
       unsigned resultNumber = result.getResultNumber();
-      if (resultNumber < forOp.getInitArgs().size())
+      if (resultNumber < forOp.getInitArgs().size()) {
         return forOp.getInitArgs()[resultNumber];
+      }
     }
   }
 
@@ -189,41 +205,48 @@ static Value traceAliasRoot(Value value) {
   int loopBound = 256;
   while (value) {
     Value upward = traceAliasRootOneStep(value);
-    if (!upward)
+    if (!upward) {
       break;
+    }
     value = upward;
-    if (loopBound-- <= 0)
+    if (loopBound-- <= 0) {
       break;
+    }
   }
   return value;
 }
 
 static LogicalResult collectAliasRelevantRoots(
     Operation *op, SmallVectorImpl<Value> &roots) {
-  if (isMemoryEffectFree(op))
+  if (isMemoryEffectFree(op)) {
     return success();
+  }
 
   auto effectsOp = dyn_cast<MemoryEffectOpInterface>(op);
-  if (!effectsOp)
+  if (!effectsOp) {
     return failure();
+  }
 
   SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>, 4> effects;
   effectsOp.getEffects(effects);
   for (const auto &effect : effects) {
     Value effectValue = effect.getValue();
-    if (!effectValue)
+    if (!effectValue) {
       return failure();
+    }
 
     Type effectType = effectValue.getType();
     if (!isa<BaseMemRefType, pto::PtrType>(effectType)) {
-      if (isa<MemoryEffects::Write>(effect.getEffect()))
+      if (isa<MemoryEffects::Write>(effect.getEffect())) {
         return failure();
+      }
       continue;
     }
 
     Value root = traceAliasRoot(effectValue);
-    if (!root)
+    if (!root) {
       return failure();
+    }
     roots.push_back(root);
   }
   return success();
@@ -343,16 +366,18 @@ static LogicalResult analyzeStage(scf::ForOp outerLoop, StageInfo &stage) {
     for (Operation &op : currentLoop.getBody()->without_terminator()) {
       bodyOps.push_back(&op);
       if (auto nestedLoop = dyn_cast<scf::ForOp>(op)) {
-        if (childLoop)
+        if (childLoop) {
           return failure();
+        }
         childLoop = nestedLoop;
       }
     }
 
     if (!childLoop) {
       for (Operation *op : bodyOps) {
-        if (!isSupportedLeafOp(op))
+        if (!isSupportedLeafOp(op)) {
           return failure();
+        }
         stage.leafOps.push_back(op);
       }
       return failure(stage.leafOps.empty());
@@ -366,16 +391,18 @@ static LogicalResult analyzeStage(scf::ForOp outerLoop, StageInfo &stage) {
       }
       if (!seenChildLoop) {
         // Ops before the child loop are prelude ops.
-        if (!isSupportedPreludeOp(op))
+        if (!isSupportedPreludeOp(op)) {
           return failure();
+        }
         currentLevel.preludeOps.push_back(op);
       } else {
         // Ops after the child loop are epilogue ops (e.g. row-reduction
         // result stores in trowmax/trowsum).  They must be supported
         // leaf-like ops (no regions) so we can clone them into the fused
         // loop after all inner body ops.
-        if (!isSupportedPreludeOp(op))
+        if (!isSupportedPreludeOp(op)) {
           return failure();
+        }
         currentLevel.epilogueOps.push_back(op);
       }
     }
@@ -392,9 +419,10 @@ static SmallVector<StageInfo, 8> collectStageRunFrom(scf::ForOp firstLoop,
 
   StageInfo firstStage;
   if (failed(analyzeStage(firstLoop, firstStage))) {
-    if (debugOS)
+    if (debugOS) {
       *debugOS << "[op-fusion] reject loop stage at " << firstLoop.getLoc()
                << ": stage analysis failed\n";
+    }
     return stages;
   }
   stages.push_back(std::move(firstStage));
@@ -406,9 +434,10 @@ static SmallVector<StageInfo, 8> collectStageRunFrom(scf::ForOp firstLoop,
       nextStage.setupOps = pendingSetup;
       pendingSetup.clear();
       if (failed(analyzeStage(nextLoop, nextStage))) {
-        if (debugOS)
+        if (debugOS) {
           *debugOS << "[op-fusion] stop stage run before " << nextLoop.getLoc()
                    << ": next stage analysis failed\n";
+        }
         break;
       }
       stages.push_back(std::move(nextStage));
@@ -416,9 +445,10 @@ static SmallVector<StageInfo, 8> collectStageRunFrom(scf::ForOp firstLoop,
     }
 
     if (!isInterstageSetupOp(op)) {
-      if (debugOS)
+      if (debugOS) {
         *debugOS << "[op-fusion] stop stage run at op " << op->getName()
                  << "\n";
+      }
       break;
     }
     pendingSetup.push_back(op);
@@ -428,8 +458,9 @@ static SmallVector<StageInfo, 8> collectStageRunFrom(scf::ForOp firstLoop,
 }
 
 static bool sameLoopNestShape(const StageInfo &lhs, const StageInfo &rhs) {
-  if (lhs.getDepth() != rhs.getDepth())
+  if (lhs.getDepth() != rhs.getDepth()) {
     return false;
+  }
   return llvm::all_of(llvm::zip(lhs.levels, rhs.levels), [](auto pair) {
     return sameForHeader(std::get<0>(pair).loop, std::get<1>(pair).loop);
   });
@@ -445,8 +476,9 @@ static void cloneOpAndMapResults(OpBuilder &builder, Operation *op,
 
 static void appendMappedValues(ValueRange values, IRMapping &mapping,
                                SmallVectorImpl<Value> &mappedValues) {
-  for (Value value : values)
+  for (Value value : values) {
     mappedValues.push_back(mapValueOrSelf(value, mapping));
+  }
 }
 
 static scf::ForOp buildFusedLoopNestAtLevel(OpBuilder &builder,
@@ -535,22 +567,25 @@ static scf::ForOp buildFusedLoopNestAtLevel(OpBuilder &builder,
 static bool fuseStageRun(SmallVectorImpl<StageInfo> &stages,
                          llvm::raw_ostream *debugOS) {
   if (stages.size() < 2) {
-    if (debugOS)
+    if (debugOS) {
       *debugOS << "[op-fusion] reject loop run: need at least 2 stages, got "
                << stages.size() << "\n";
+    }
     return false;
   }
 
   StageInfo &first = stages.front();
   for (StageInfo &stage : llvm::drop_begin(stages)) {
     if (!sameLoopNestShape(first, stage)) {
-      if (debugOS)
+      if (debugOS) {
         *debugOS << "[op-fusion] reject loop run: loop nest shape mismatch\n";
+      }
       return false;
     }
   }
-  if (!arePreludeReordersLegal(stages, debugOS))
+  if (!arePreludeReordersLegal(stages, debugOS)) {
     return false;
+  }
 
   OpBuilder blockBuilder(first.getOuterLoop());
   SmallVector<IRMapping, 8> stageMappings(stages.size());
@@ -561,8 +596,9 @@ static bool fuseStageRun(SmallVectorImpl<StageInfo> &stages,
     for (Operation *setupOp : stage.setupOps)
       setupOp->moveBefore(fusedOuterLoop);
 
-  for (StageInfo &stage : llvm::reverse(stages))
+  for (StageInfo &stage : llvm::reverse(stages)) {
     stage.getOuterLoop().erase();
+  }
 
   return true;
 }
@@ -575,13 +611,15 @@ static bool fuseStageRunsInBlock(Block &block, llvm::raw_ostream *debugOS) {
     localChange = false;
     for (Operation &op : block) {
       auto firstLoop = dyn_cast<scf::ForOp>(op);
-      if (!firstLoop)
+      if (!firstLoop) {
         continue;
+      }
 
       SmallVector<StageInfo, 8> stages =
           collectStageRunFrom(firstLoop, debugOS);
-      if (!fuseStageRun(stages, debugOS))
+      if (!fuseStageRun(stages, debugOS)) {
         continue;
+      }
 
       changed = true;
       localChange = true;
@@ -606,19 +644,23 @@ struct PTOLowLevelLoopFusionPass
 
     int fusedFuncs = 0;
     for (func::FuncOp func : module.getOps<func::FuncOp>()) {
-      if (func.isExternal())
+      if (func.isExternal()) {
         continue;
-      if (func.getSymName().starts_with("__pto_oplib_"))
+      }
+      if (func.getSymName().starts_with("__pto_oplib_")) {
         continue;
-      if (func.empty())
+      }
+      if (func.empty()) {
         continue;
+      }
 
       bool changed = false;
       func.walk([&](pto::FusionRegionOp fusionRegion) {
         changed |= fuseStageRunsInBlock(fusionRegion.getBody().front(), traceOS);
       });
-      if (changed)
+      if (changed) {
         ++fusedFuncs;
+      }
     }
 
     if (traceEnabled) {

@@ -19,9 +19,9 @@ namespace ptobc {
 
 namespace {
 constexpr unsigned kLeb128PayloadBits = 7;
-constexpr uint8_t kLeb128PayloadMask = 0x7fu;
-constexpr uint8_t kLeb128ContinuationBit = 0x80u;
-constexpr uint8_t kLeb128SignBit = 0x40u;
+constexpr uint8_t kLeb128PayloadMask = 0x7FU;
+constexpr uint8_t kLeb128ContinuationBit = 0x80U;
+constexpr uint8_t kLeb128SignBit = 0x40U;
 constexpr unsigned kInt64MaxShift = 63;
 constexpr unsigned kInt64BitWidth = 64;
 } // namespace

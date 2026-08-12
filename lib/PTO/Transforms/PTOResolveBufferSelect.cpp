@@ -42,20 +42,25 @@ using namespace mlir;
 namespace {
 
 static uint64_t alignUp(uint64_t value, uint64_t align) {
-  if (align == 0)
+  if (align == 0) {
     return value;
+  }
   return ((value + align - 1) / align) * align;
 }
 
 static Value ensureI64(Value value, IRRewriter &rewriter, Location loc) {
-  if (!value)
+  if (!value) {
     return {};
-  if (value.getType().isInteger(64))
+  }
+  if (value.getType().isInteger(64)) {
     return value;
-  if (value.getType().isIndex())
+  }
+  if (value.getType().isIndex()) {
     return rewriter.create<arith::IndexCastOp>(loc, rewriter.getI64Type(), value);
-  if (isa<IntegerType>(value.getType()))
+  }
+  if (isa<IntegerType>(value.getType())) {
     return rewriter.create<arith::ExtSIOp>(loc, rewriter.getI64Type(), value);
+  }
   return {};
 }
 
@@ -78,8 +83,9 @@ static bool getTilePointerStrides(pto::TileBufType type, int64_t &rowStride,
   }
 
   unsigned elemBytes = pto::getPTOStorageElemByteSize(type.getElementType());
-  if (elemBytes == 0)
+  if (elemBytes == 0) {
     return false;
+  }
   int64_t innerRows = 1;
   int64_t innerCols = 1;
   int32_t fractal = config.getSFractalSize().getInt();
@@ -100,8 +106,9 @@ static bool getTilePointerStrides(pto::TileBufType type, int64_t &rowStride,
   }
 
   if (bl == 1) {
-    if (sl != 1)
+    if (sl != 1) {
       return false;
+    }
     rowStride = innerCols;
     colStride =
         shape[0] +
@@ -167,8 +174,9 @@ static Value computeTileAddress(Value value, IRRewriter &rewriter,
     Value elements = rewriter.create<arith::AddIOp>(loc, row, col);
     int64_t elemBytes = static_cast<int64_t>(
         pto::getPTOStorageElemByteSize(sourceType.getElementType()));
-    if (elemBytes == 0)
+    if (elemBytes == 0) {
       return {};
+    }
     Value byteScale = rewriter.create<arith::ConstantIntOp>(loc, elemBytes, 64);
     Value bytes = rewriter.create<arith::MulIOp>(loc, elements, byteScale);
     return rewriter.create<arith::AddIOp>(loc, base, bytes);
@@ -231,8 +239,9 @@ static LogicalResult resolveTileNativeSubviews(ModuleOp module,
     // A tile function argument is a symbolic runtime-bound handle. Keep its
     // subview tile-native; only planned local roots can be normalized to an
     // addressed alloc_tile here.
-    if (!addr)
+    if (!addr) {
       continue;
+    }
     pto::TileBufType physicalType = getSubviewPhysicalType(op);
     auto alloc = rewriter.create<pto::AllocTileOp>(
         op.getLoc(), physicalType, addr,
@@ -246,12 +255,14 @@ static LogicalResult resolveTileNativeSubviews(ModuleOp module,
 
 static FailureOr<uint64_t> getStaticSlotBytes(pto::TileBufType slotType) {
   uint64_t elemBytes = pto::getPTOStorageElemByteSize(slotType.getElementType());
-  if (elemBytes == 0)
+  if (elemBytes == 0) {
     return failure();
+  }
   uint64_t bytes = elemBytes;
   for (int64_t dim : slotType.getShape()) {
-    if (dim == ShapedType::kDynamic)
+    if (dim == ShapedType::kDynamic) {
       return failure();
+    }
     bytes *= static_cast<uint64_t>(dim);
   }
   return bytes;
@@ -263,8 +274,9 @@ static LogicalResult getMultiTileAddresses(pto::AllocMultiTileOp alloc,
   uint32_t count = alloc.getResult().getType().getCount();
   if (auto planned = alloc->getAttrOfType<DenseI64ArrayAttr>(
           pto::kPtoMultiBufferAddrsAttrName)) {
-    if (planned.size() != count)
+    if (planned.size() != count) {
       return alloc.emitError("planned address count does not match slot count");
+    }
     for (int64_t address : planned.asArrayRef())
       addrs.push_back(rewriter.create<arith::ConstantIntOp>(
           alloc.getLoc(), address, 64));
@@ -272,13 +284,15 @@ static LogicalResult getMultiTileAddresses(pto::AllocMultiTileOp alloc,
   }
 
   Value base = alloc.getAddr();
-  if (!base)
+  if (!base) {
     return alloc.emitError(
         "has neither a level3 base address nor planner-assigned slot addresses");
+  }
   auto slotBytes = getStaticSlotBytes(alloc.getResult().getType().getSlotType());
-  if (failed(slotBytes))
+  if (failed(slotBytes)) {
     return alloc.emitError(
         "requires a static slot shape and known element byte size");
+  }
 
   uint64_t slotStride =
       alignUp(*slotBytes,
@@ -309,8 +323,9 @@ static LogicalResult resolveTileNativeMultiGets(ModuleOp module,
     IRRewriter rewriter(ctx);
     rewriter.setInsertionPoint(op);
     SmallVector<Value, 8> addrs;
-    if (failed(getMultiTileAddresses(alloc, rewriter, addrs)))
+    if (failed(getMultiTileAddresses(alloc, rewriter, addrs))) {
       return failure();
+    }
 
     Value selectedAddr;
     IntegerAttr constSlotAttr;
@@ -340,9 +355,10 @@ static LogicalResult resolveTileNativeMultiGets(ModuleOp module,
   SmallVector<pto::AllocMultiTileOp, 8> allocs;
   module.walk([&](pto::AllocMultiTileOp op) { allocs.push_back(op); });
   for (pto::AllocMultiTileOp alloc : allocs) {
-    if (!alloc.getResult().use_empty())
+    if (!alloc.getResult().use_empty()) {
       return alloc.emitError(
           "has unsupported uses after resolving pto.multi_tile_get");
+    }
     alloc.erase();
   }
   return success();

@@ -94,7 +94,7 @@ struct MaskGranularitySolver {
   unsigned addMaskValue(Value value) {
     auto type = dyn_cast<VMIMaskType>(value.getType());
     if (!type)
-      return ~0u;
+      return ~0U;
     auto [it, inserted] = maskIds.try_emplace(value, maskNodes.size());
     if (inserted) {
       std::string granularity;
@@ -115,7 +115,7 @@ struct MaskGranularitySolver {
   LogicalResult uniteMask(Value lhs, Value rhs, Operation *op) {
     unsigned lhsId = addMaskValue(lhs);
     unsigned rhsId = addMaskValue(rhs);
-    if (lhsId == ~0u || rhsId == ~0u)
+    if (lhsId == ~0U || rhsId == ~0U)
       return success();
     unsigned lhsRoot = findMask(lhsId);
     unsigned rhsRoot = findMask(rhsId);
@@ -139,7 +139,7 @@ struct MaskGranularitySolver {
 
   LogicalResult requestMask(Value mask, StringRef granularity, Operation *op) {
     unsigned id = addMaskValue(mask);
-    if (id == ~0u)
+    if (id == ~0U)
       return success();
     if (granularity.empty())
       return op->emitError() << kVMIDiagLayoutContractPrefix
