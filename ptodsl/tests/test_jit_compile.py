@@ -1277,6 +1277,49 @@ def ast_if_old_value_merge_probe():
 
 
 @pto.jit(target="a5")
+def ast_if_static_subscript_slot_merge_probe():
+    done = [None]
+    done[0] = pto.const(0, dtype=pto.i32)
+    condition = pto.const(1, dtype=pto.i1)
+
+    if condition:
+        done[0] = pto.const(1, dtype=pto.i32)
+
+    if done[0]:
+        pto.pipe_barrier(pto.Pipe.ALL)
+
+
+_AST_BRANCH_SLOT_INDEX = 1
+
+
+@pto.jit(target="a5")
+def ast_if_static_subscript_expression_merge_probe(*, SLOT: pto.const_expr = 1):
+    values = [
+        pto.const(0, dtype=pto.i1),
+        pto.const(0, dtype=pto.i1),
+    ]
+    condition = pto.const(1, dtype=pto.i1)
+
+    if condition:
+        values[_AST_BRANCH_SLOT_INDEX + (SLOT - SLOT)] = pto.const(1, dtype=pto.i1)
+
+    if values[SLOT]:
+        pto.pipe_barrier(pto.Pipe.ALL)
+
+
+@pto.jit(target="a5")
+def ast_if_static_subscript_negative_index_merge_probe():
+    values = [pto.const(0, dtype=pto.i1)]
+    condition = pto.const(1, dtype=pto.i1)
+
+    if condition:
+        values[-1] = pto.const(1, dtype=pto.i1)
+
+    if values[-1]:
+        pto.pipe_barrier(pto.Pipe.ALL)
+
+
+@pto.jit(target="a5")
 def ast_if_branch_local_temp_liveness_probe():
     c0 = pto.const(0, dtype=pto.i1)
     c1 = pto.const(1, dtype=pto.i1)
@@ -5768,6 +5811,48 @@ def main() -> None:
     expect(
         ast_if_old_value_merge_text.count("scf.yield") >= 2,
         "ast_rewrite=True old-value if merge should yield from both branches",
+    )
+
+    ast_if_static_subscript_slot_merge_text = ast_if_static_subscript_slot_merge_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ast_if_static_subscript_slot_merge_text,
+        "AST-rewritten static subscript slot if-merge specialization",
+    )
+    expect(
+        ast_if_static_subscript_slot_merge_text.count("scf.if") == 2,
+        "AST-rewritten static subscript slot branch merge should preserve both runtime conditionals",
+    )
+    expect(
+        "-> (i32)" in ast_if_static_subscript_slot_merge_text,
+        "AST-rewritten static subscript slot merge should return the merged slot value",
+    )
+    expect(
+        "pto.barrier <PIPE_ALL>" in ast_if_static_subscript_slot_merge_text,
+        "static subscript slot values should remain usable after the branch merge",
+    )
+
+    ast_if_static_subscript_expression_merge_text = (
+        ast_if_static_subscript_expression_merge_probe.compile(SLOT=1).mlir_text()
+    )
+    expect_parse_roundtrip_and_verify(
+        ast_if_static_subscript_expression_merge_text,
+        "AST-rewritten static subscript expression if-merge specialization",
+    )
+    expect(
+        ast_if_static_subscript_expression_merge_text.count("scf.if") == 2,
+        "static-expression and constexpr subscript indices should participate in branch merging",
+    )
+
+    ast_if_static_subscript_negative_index_merge_text = (
+        ast_if_static_subscript_negative_index_merge_probe.compile().mlir_text()
+    )
+    expect_parse_roundtrip_and_verify(
+        ast_if_static_subscript_negative_index_merge_text,
+        "AST-rewritten negative static subscript if-merge specialization",
+    )
+    expect(
+        ast_if_static_subscript_negative_index_merge_text.count("scf.if") == 2,
+        "negative static subscript indices should participate in branch merging",
     )
 
     ast_if_branch_local_temp_liveness_text = ast_if_branch_local_temp_liveness_probe.compile().mlir_text()

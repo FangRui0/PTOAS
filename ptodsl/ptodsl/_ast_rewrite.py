@@ -972,6 +972,42 @@ class _SlotCarryRewriter(ast.NodeTransformer):
         return self.generic_visit(node)
 
 
+class _SlotValueRewriter(ast.NodeTransformer):
+    """Replace selected static list slots with scalar branch state names."""
+
+    def __init__(self, slot_values, static_env, static_iters=None):
+        self._slot_values = dict(slot_values)
+        self._static_env = static_env
+        self._static_iters = dict(static_iters or {})
+
+    def visit_For(self, node):
+        if _is_pto_attr_call(node.iter, "static_range") and isinstance(node.target, ast.Name):
+            values = _try_eval_static_range(node.iter, self._static_env, self._static_iters)
+            old = self._static_iters.get(node.target.id)
+            if values is not None:
+                self._static_iters[node.target.id] = values
+            try:
+                node.body = [self.visit(stmt) for stmt in node.body]
+            finally:
+                if values is not None:
+                    if old is None:
+                        self._static_iters.pop(node.target.id, None)
+                    else:
+                        self._static_iters[node.target.id] = old
+            node.orelse = [self.visit(stmt) for stmt in node.orelse]
+            return node
+        return self.generic_visit(node)
+
+    def visit_Subscript(self, node):
+        slots = _resolve_subscript_slots(node, self._static_env, self._static_iters, require_static=False)
+        if len(slots) == 1:
+            slot = next(iter(slots))
+            value_name = self._slot_values.get(slot)
+            if value_name is not None:
+                return ast.copy_location(_name(value_name, node.ctx), node)
+        return self.generic_visit(node)
+
+
 class _ControlFlowRewriter:
     def __init__(self, static_env=None, *, section_entry_bindings=None, section_uninitialized_aliases=None):
         self._static_env = dict(static_env or {})
@@ -1118,16 +1154,13 @@ class _ControlFlowRewriter:
         cond_name = self._fresh("cond")
         then_info = _name_info(stmt.body)
         else_info = _name_info(stmt.orelse)
+        then_slot_info = _slot_info(stmt.body, self._static_env, static_iters)
+        else_slot_info = _slot_info(stmt.orelse, self._static_env, static_iters)
         assigned_slots = (
-            _slot_info(stmt.body, self._static_env, static_iters).stores
-            | _slot_info(stmt.orelse, self._static_env, static_iters).stores
+            then_slot_info.stores
+            | else_slot_info.stores
         )
-        if live_after_slots & assigned_slots:
-            slots = ", ".join(slot.display for slot in sorted(live_after_slots & assigned_slots))
-            raise PTODSLAstRewriteError(
-                "ast_rewrite=True does not support automatic branch merges for static subscript slots yet; "
-                f"rewrite {slots} with explicit scalar temporaries"
-            )
+        merge_slots = tuple(sorted(live_after_slots & assigned_slots))
         assigned_any = then_info.stores | else_info.stores
         merge_names = tuple(sorted(live_after & assigned_any))
         old_value_names = {
@@ -1137,17 +1170,18 @@ class _ControlFlowRewriter:
         }
 
         branch_live_after = set(live_after) | set(merge_names)
+        branch_live_after_slots = set(live_after_slots) | set(merge_slots)
         then_body = self.rewrite_block(
             stmt.body,
             live_after=branch_live_after,
-            live_after_slots=live_after_slots,
+            live_after_slots=branch_live_after_slots,
             allow_loop_control=False,
             static_iters=static_iters,
         )
         else_body = self.rewrite_block(
             stmt.orelse,
             live_after=branch_live_after,
-            live_after_slots=live_after_slots,
+            live_after_slots=branch_live_after_slots,
             allow_loop_control=False,
             static_iters=static_iters,
         )
@@ -1158,15 +1192,45 @@ class _ControlFlowRewriter:
         )
         branch_name = self._fresh("br")
 
+        slot_value_names = {
+            # BranchHandle deliberately rejects private attribute names. Keep
+            # the generated branch field public while retaining a unique
+            # compiler-generated local name for the rewritten slot value.
+            slot: (
+                f"pto_ast_slot_{slot.base}_"
+                f"{'neg' if slot.index < 0 else ''}{abs(slot.index)}_{self._counter}"
+            )
+            for slot in merge_slots
+        }
+        self._counter += len(slot_value_names)
+        old_slot_value_names = {
+            slot: self._fresh(
+                f"old_slot_{slot.base}_"
+                f"{'neg' if slot.index < 0 else ''}{abs(slot.index)}"
+            )
+            for slot in merge_slots
+        }
         dynamic_then_body = copy.deepcopy(then_body)
         dynamic_else_body = copy.deepcopy(else_body)
-        if merge_names:
+        if slot_value_names:
+            dynamic_then_body = [
+                _SlotValueRewriter(slot_value_names, self._static_env, static_iters).visit(stmt)
+                for stmt in dynamic_then_body
+            ]
+            dynamic_else_body = [
+                _SlotValueRewriter(slot_value_names, self._static_env, static_iters).visit(stmt)
+                for stmt in dynamic_else_body
+            ]
+        if merge_names or slot_value_names:
             dynamic_then_body.append(
                 self._branch_assign(
                     branch_name,
                     merge_names,
                     old_value_names=old_value_names,
                     assigned_names=then_info.stores,
+                    slot_value_names=slot_value_names,
+                    old_slot_value_names=old_slot_value_names,
+                    assigned_slots=then_slot_info.stores,
                 )
             )
             dynamic_else_body.append(
@@ -1175,6 +1239,9 @@ class _ControlFlowRewriter:
                     merge_names,
                     old_value_names=old_value_names,
                     assigned_names=else_info.stores,
+                    slot_value_names=slot_value_names,
+                    old_slot_value_names=old_slot_value_names,
+                    assigned_slots=else_slot_info.stores,
                 )
             )
 
@@ -1236,6 +1303,17 @@ class _ControlFlowRewriter:
             )
             for name in merge_names
         )
+        dynamic_body.extend(
+            ast.Assign(
+                targets=[_slot_subscript(slot, ast.Store())],
+                value=ast.Attribute(
+                    value=_name(branch_name),
+                    attr=slot_value_names[slot],
+                    ctx=ast.Load(),
+                ),
+            )
+            for slot in merge_slots
+        )
 
         result = [
             ast.Assign(
@@ -1249,6 +1327,20 @@ class _ControlFlowRewriter:
                 value=self._current_value(name),
             )
             for name, old_name in old_value_names.items()
+        )
+        result.extend(
+            ast.Assign(
+                targets=[_name(value_name, ast.Store())],
+                value=_slot_subscript(slot),
+            )
+            for slot, value_name in slot_value_names.items()
+        )
+        result.extend(
+            ast.Assign(
+                targets=[_name(old_value_name, ast.Store())],
+                value=_name(slot_value_names[slot]),
+            )
+            for slot, old_value_name in old_slot_value_names.items()
         )
         result.append(
             ast.copy_location(
@@ -1266,18 +1358,36 @@ class _ControlFlowRewriter:
         )
         return result
 
-    def _branch_assign(self, branch_name, names, *, old_value_names, assigned_names):
+    def _branch_assign(
+        self,
+        branch_name,
+        names,
+        *,
+        old_value_names,
+        assigned_names,
+        slot_value_names=(),
+        old_slot_value_names=(),
+        assigned_slots=(),
+    ):
+        keywords = [
+            ast.keyword(
+                arg=name,
+                value=_name(name if name in assigned_names else old_value_names[name]),
+            )
+            for name in names
+        ]
+        keywords.extend(
+            ast.keyword(
+                arg=value_name,
+                value=_name(value_name if slot in assigned_slots else old_slot_value_names[slot]),
+            )
+            for slot, value_name in slot_value_names.items()
+        )
         return ast.Expr(
             value=ast.Call(
                 func=ast.Attribute(value=_name(branch_name), attr="assign", ctx=ast.Load()),
                 args=[],
-                keywords=[
-                    ast.keyword(
-                        arg=name,
-                        value=_name(name if name in assigned_names else old_value_names[name]),
-                    )
-                    for name in names
-                ],
+                keywords=keywords,
             )
         )
 

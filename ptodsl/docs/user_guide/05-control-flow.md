@@ -213,6 +213,11 @@ conditional closes, `br.val` is the SSA-merged result seen by downstream code.
 This surface avoids explicit result-type declarations and explicit
 `pto.yield_(...)` in user code while still keeping the merge contract explicit.
 
+When one branch yields `pto.i1` and the other yields an integer-like scalar,
+the integer value is normalized to `i1` with nonzero truthiness (`0` is false;
+any nonzero value is true). Other incompatible branch result types still
+require an explicit conversion.
+
 ## 5.4 `pto.const_expr` and tracing
 
 `pto.const_expr` parameters (Section 3.6) are compile-time constants. They are fixed at `.compile()` time and cannot change between launches of the same compiled kernel. Because their values are known during tracing, they interact naturally with Python control flow:
@@ -276,6 +281,27 @@ def ast_rewrite_branch_kernel():
 
 The assigned value `total` is live after the branch, so PTODSL rewrites the
 branch into a `pto.if_` with automatic merge.
+
+Static list slots can also be live across a rewritten branch. The subscript
+index must be an integer that can be resolved during AST rewriting, including
+compile-time constants and `pto.const_expr` values:
+
+```python
+@pto.jit(target="a5")
+def ast_rewrite_static_slot_kernel(*, SLOT: pto.const_expr = 0):
+    values = [pto.const(0, dtype=pto.i32)]
+
+    if pto.const(1, dtype=pto.i1):
+        values[SLOT] = pto.const(1, dtype=pto.i32)
+
+    if values[SLOT]:
+        pto.pipe_barrier(pto.Pipe.ALL)
+```
+
+The rewritten slot is merged as an `scf.if` result, just like a named scalar
+value. Dynamic indices and container aliases remain unsupported; use an
+explicit `pto.if_`/`pto.for_` state value or a real buffer load/store for those
+cases.
 
 If a live-out value is assigned in only one branch, PTODSL keeps the old value
 on the missing branch:
