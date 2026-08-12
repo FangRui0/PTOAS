@@ -8431,39 +8431,37 @@ static LogicalResult verifyCubeBridgeLoadStart(OpTy op) {
 }
 
 template <typename OpTy>
-static void setMxLoadOperandSegmentSizes(OperationState &result,
-                                         ArrayRef<int32_t> segmentSizes) {
+static void setCubeBridgeLoadOperandSegmentSizes(
+    OperationState &result, ArrayRef<int32_t> segmentSizes) {
   auto &segments = result.getOrAddProperties<typename OpTy::Properties>()
                        .operandSegmentSizes;
   llvm::copy(segmentSizes, segments.begin());
 }
 
-struct MxLoadAsmOperand {
+struct CubeBridgeLoadAsmOperand {
   OpAsmParser::UnresolvedOperand operand;
   Type type;
   bool present = false;
 };
 
-static std::optional<unsigned>
-getMxLoadOperandIndex(StringRef keyword, ArrayRef<StringRef> shapeNames) {
+static std::optional<unsigned> getCubeBridgeLoadOperandIndex(
+    StringRef keyword, ArrayRef<StringRef> shapeNames,
+    ArrayRef<StringRef> fullNames) {
   for (auto [index, name] : llvm::enumerate(shapeNames))
     if (keyword == name) {
       return index;
     }
 
-  static constexpr StringRef kFullNames[] = {
-      "x_start", "y_start", "x_step", "y_step", "src_stride", "dst_stride"};
-  for (auto [index, name] : llvm::enumerate(kFullNames))
-    if (keyword == name) {
+  for (auto [index, name] : llvm::enumerate(fullNames))
+    if (keyword == name)
       return shapeNames.size() + index;
-    }
   return std::nullopt;
 }
 
 template <typename OpTy>
-static ParseResult parseMteL1L0MxOp(OpAsmParser &parser,
-                                    OperationState &result,
-                                    ArrayRef<StringRef> shapeNames) {
+static ParseResult parseMteL1L0OptionalOperandsOp(
+    OpAsmParser &parser, OperationState &result, ArrayRef<StringRef> shapeNames,
+    ArrayRef<StringRef> fullNames, StringRef operandDescription = "operands") {
   OpAsmParser::UnresolvedOperand source;
   OpAsmParser::UnresolvedOperand destination;
   if (parser.parseOperand(source) || parser.parseComma() ||
@@ -8471,19 +8469,20 @@ static ParseResult parseMteL1L0MxOp(OpAsmParser &parser,
     return failure();
 
   SmallVector<OpAsmParser::UnresolvedOperand, 6> legacyOperands;
-  SmallVector<MxLoadAsmOperand, 10> namedOperands(10);
+  SmallVector<CubeBridgeLoadAsmOperand, 10> namedOperands(10);
   SmallVector<unsigned, 10> namedOperandOrder;
   bool usesNamedOperands = false;
 
   auto parseNamedOperand = [&](StringRef keyword) -> ParseResult {
-    std::optional<unsigned> index = getMxLoadOperandIndex(keyword, shapeNames);
+    std::optional<unsigned> index =
+        getCubeBridgeLoadOperandIndex(keyword, shapeNames, fullNames);
     if (!index)
       return parser.emitError(parser.getCurrentLocation(),
-                              "unknown MX load operand '")
+                              "unknown cube bridge load operand '")
              << keyword << "'";
     if (namedOperands[*index].present)
       return parser.emitError(parser.getCurrentLocation(),
-                              "duplicate MX load operand '")
+                              "duplicate cube bridge load operand '")
              << keyword << "'";
     if (parser.parseLParen() || parser.parseOperand(namedOperands[*index].operand) ||
         parser.parseRParen())
@@ -8522,9 +8521,10 @@ static ParseResult parseMteL1L0MxOp(OpAsmParser &parser,
 
   if (!usesNamedOperands && legacyOperands.size() != 4 &&
       legacyOperands.size() != 6)
-    return parser.emitError(parser.getCurrentLocation(),
-                            "expects either four shape-derived or six full "
-                            "positional MX operands");
+    return parser.emitError(
+               parser.getCurrentLocation(),
+               "expects either four shape-derived or six full positional ")
+           << operandDescription;
 
   if (parser.parseOptionalAttrDict(result.attributes) || parser.parseColon()) {
     return failure();
@@ -8583,17 +8583,14 @@ static ParseResult parseMteL1L0MxOp(OpAsmParser &parser,
         return failure();
     }
   }
-  setMxLoadOperandSegmentSizes<OpTy>(result, segmentSizes);
+  setCubeBridgeLoadOperandSegmentSizes<OpTy>(result, segmentSizes);
   return success();
 }
 
-static void printMteL1L0MxOp(OpAsmPrinter &printer, Operation *operation,
-                             Value source, Value destination,
-                             ArrayRef<Value> shapeOperands,
-                             ArrayRef<StringRef> shapeNames,
-                             ArrayRef<Value> fullOperands) {
-  SmallVector<StringRef, 6> fullNames = {
-      "x_start", "y_start", "x_step", "y_step", "src_stride", "dst_stride"};
+static void printMteL1L0OptionalOperandsOp(
+    OpAsmPrinter &printer, Operation *operation, Value source, Value destination,
+    ArrayRef<Value> shapeOperands, ArrayRef<StringRef> shapeNames,
+    ArrayRef<Value> fullOperands, ArrayRef<StringRef> fullNames) {
 
   const bool hasShape = llvm::any_of(shapeOperands, [](Value value) {
     return static_cast<bool>(value);
@@ -8726,35 +8723,129 @@ static LogicalResult verifyMxLoadAlignment(Operation *op, Value source,
                                   kMxDestinationAddressUnitBytes);
 }
 
+static LogicalResult verifyStaticControlRange(Operation *op, Value value,
+                                              StringRef name, int64_t min,
+                                              int64_t max) {
+  APInt intValue;
+  if (!matchPattern(value, m_ConstantInt(&intValue)))
+    return success();
+  int64_t signedValue = intValue.getSExtValue();
+  if (signedValue < min)
+    return op->emitOpError() << name
+                             << (min == 0 ? " must be non-negative"
+                                          : " must be greater than zero");
+  if (signedValue > max)
+    return op->emitOpError() << name << " must be <= " << max
+                             << " to fit the hardware control field";
+  return success();
+}
+
 template <typename OpTy>
 static LogicalResult verifyExplicitCubeBridgeLoadControls(OpTy op) {
-  auto checkConstRange = [&](Value value, StringRef name, int64_t min,
-                             int64_t max) -> LogicalResult {
-    APInt intValue;
-    if (!matchPattern(value, m_ConstantInt(&intValue))) {
-      return success();
-    }
-    int64_t signedValue = intValue.getSExtValue();
-    if (signedValue < min)
-      return op.emitOpError()
-             << name
-             << (min == 0 ? " must be non-negative"
-                          : " must be greater than zero");
-    if (signedValue > max)
-      return op.emitOpError()
-             << name << " must be <= " << max
-             << " to fit the hardware control field";
-    return success();
-  };
+  constexpr int64_t kU16Max = 65535;
+  constexpr int64_t kU8Max = 255;
+  Operation *operation = op.getOperation();
+  if (failed(verifyStaticControlRange(operation, op.getMStart(), "m_start", 0,
+                                      kU16Max)) ||
+      failed(verifyStaticControlRange(operation, op.getKStart(), "k_start", 0,
+                                      kU16Max)) ||
+      failed(verifyStaticControlRange(operation, op.getMStep(), "m_step", 1,
+                                      kU8Max)) ||
+      failed(verifyStaticControlRange(operation, op.getKStep(), "k_step", 1,
+                                      kU8Max)) ||
+      failed(verifyStaticControlRange(operation, op.getSrcStride(),
+                                      "src_stride", 1, kU16Max)) ||
+      failed(verifyStaticControlRange(operation, op.getDstStride(),
+                                      "dst_stride", 1, kU16Max)))
+    return failure();
+  return success();
+}
+
+template <typename OpTy>
+static LogicalResult verifyS4CubeBridgeLoad(OpTy op,
+                                            AddressSpace expectedDstSpace,
+                                            StringRef dstName) {
+  if (failed(verifyCubeBridgeLoadLikeOp(op, expectedDstSpace, dstName)))
+    return failure();
+
+  Type sourceElem = getBufferElementType(op.getSource().getType());
+  Type destinationElem = getBufferElementType(op.getDestination().getType());
+  if (!pto::isPTOFloat4PackedType(sourceElem))
+    return op.emitOpError(
+        "requires packed FP4 source element type f4e1m2x2 or f4e2m1x2");
+  if (!pto::isPTOFloat4PackedType(destinationElem))
+    return op.emitOpError(
+        "requires packed FP4 destination element type f4e1m2x2 or f4e2m1x2");
+  if (sourceElem != destinationElem)
+    return op.emitOpError(
+        "requires source and destination packed FP4 element types to match");
+  if (failed(verifyExplicitCubeBridgeLoadControls(op)))
+    return failure();
+  return verifyStaticControlRange(op.getOperation(), op.getTranspose(),
+                                  "transpose", 0, 1);
+}
+
+template <typename OpTy>
+static LogicalResult verifyRegularCubeBridgeLoad(OpTy op,
+                                                 AddressSpace expectedDstSpace,
+                                                 StringRef dstName) {
+  if (failed(verifyCubeBridgeLoadLikeOp(op, expectedDstSpace, dstName)))
+    return failure();
+  Type sourceElem = getBufferElementType(op.getSource().getType());
+  Type destinationElem = getBufferElementType(op.getDestination().getType());
+  if (pto::isPTOFloat4PackedType(sourceElem))
+    return op.emitOpError("packed FP4 source requires the S4 load operation");
+  if (pto::isPTOFloat4PackedType(destinationElem))
+    return op.emitOpError(
+        "packed FP4 destination requires the S4 load operation");
+  return verifyExplicitCubeBridgeLoadControls(op);
+}
+
+static LogicalResult verifyMteL1L0LoadOperands(
+    Operation *op, ArrayRef<Value> shapeOperands,
+    ArrayRef<StringRef> shapeNames, ArrayRef<Value> fullOperands) {
+  const bool hasShape = llvm::any_of(shapeOperands, [](Value value) {
+    return static_cast<bool>(value);
+  });
+  const bool hasFull = llvm::any_of(fullOperands, [](Value value) {
+    return static_cast<bool>(value);
+  });
+  if (hasShape && hasFull)
+    return op->emitOpError(
+        "cannot mix shape-derived operands with full control operands");
+  if (!hasShape && !hasFull)
+    return op->emitOpError(
+        "requires either all shape-derived operands or all full control operands");
+
+  if (hasShape) {
+    for (auto [value, name] : llvm::zip(shapeOperands, shapeNames))
+      if (!value)
+        return op->emitOpError()
+               << "shape-derived form requires " << name;
+    return verifyCubeBridgeLoadStart(op, shapeOperands[2], shapeNames[2],
+                                     shapeOperands[3], shapeNames[3]);
+  }
+
+  static constexpr StringRef kFullNames[] = {
+      "m_start", "k_start", "m_step", "k_step", "src_stride", "dst_stride"};
+  for (auto [value, name] : llvm::zip(fullOperands, kFullNames))
+    if (!value)
+      return op->emitOpError() << "full control form requires " << name;
 
   constexpr int64_t kU16Max = 65535;
   constexpr int64_t kU8Max = 255;
-  if (failed(checkConstRange(op.getMStart(), "m_start", 0, kU16Max)) ||
-      failed(checkConstRange(op.getKStart(), "k_start", 0, kU16Max)) ||
-      failed(checkConstRange(op.getMStep(), "m_step", 1, kU8Max)) ||
-      failed(checkConstRange(op.getKStep(), "k_step", 1, kU8Max)) ||
-      failed(checkConstRange(op.getSrcStride(), "src_stride", 1, kU16Max)) ||
-      failed(checkConstRange(op.getDstStride(), "dst_stride", 1, kU16Max)))
+  if (failed(verifyStaticControlRange(op, fullOperands[0], "m_start", 0,
+                                      kU16Max)) ||
+      failed(verifyStaticControlRange(op, fullOperands[1], "k_start", 0,
+                                      kU16Max)) ||
+      failed(verifyStaticControlRange(op, fullOperands[2], "m_step", 1,
+                                      kU8Max)) ||
+      failed(verifyStaticControlRange(op, fullOperands[3], "k_step", 1,
+                                      kU8Max)) ||
+      failed(verifyStaticControlRange(op, fullOperands[4], "src_stride", 1,
+                                      kU16Max)) ||
+      failed(verifyStaticControlRange(op, fullOperands[5], "dst_stride", 1,
+                                      kU16Max)))
     return failure();
   return success();
 }
@@ -8782,29 +8873,88 @@ LogicalResult MteL1L0aOp::verify() {
   if (failed(verifyCubeBridgeLoadLikeOp(*this, AddressSpace::LEFT, "LEFT"))) {
     return failure();
   }
-  return verifyCubeBridgeLoadStart(*this);
+  return verifyMteL1L0LoadOperands(
+      getOperation(), {getM(), getK(), getStartRow(), getStartCol()},
+      {"m", "k", "start_row", "start_col"},
+      {getMStart(), getKStart(), getMStep(), getKStep(), getSrcStride(),
+       getDstStride()});
 }
 
 LogicalResult MteL1L0bOp::verify() {
   if (failed(verifyCubeBridgeLoadLikeOp(*this, AddressSpace::RIGHT, "RIGHT"))) {
     return failure();
   }
-  return verifyCubeBridgeLoadStart(*this);
+  return verifyMteL1L0LoadOperands(
+      getOperation(), {getK(), getN(), getStartRow(), getStartCol()},
+      {"k", "n", "start_row", "start_col"},
+      {getMStart(), getKStart(), getMStep(), getKStep(), getSrcStride(),
+       getDstStride()});
+}
+
+ParseResult MteL1L0aOp::parse(OpAsmParser &parser, OperationState &result) {
+  static constexpr StringRef kShapeNames[] = {
+      "m", "k", "start_row", "start_col"};
+  static constexpr StringRef kFullNames[] = {
+      "m_start", "k_start", "m_step", "k_step", "src_stride", "dst_stride"};
+  return parseMteL1L0OptionalOperandsOp<MteL1L0aOp>(
+      parser, result, kShapeNames, kFullNames);
+}
+
+void MteL1L0aOp::print(OpAsmPrinter &printer) {
+  static constexpr StringRef kShapeNames[] = {
+      "m", "k", "start_row", "start_col"};
+  static constexpr StringRef kFullNames[] = {
+      "m_start", "k_start", "m_step", "k_step", "src_stride", "dst_stride"};
+  printMteL1L0OptionalOperandsOp(
+      printer, getOperation(), getSource(), getDestination(),
+      {getM(), getK(), getStartRow(), getStartCol()}, kShapeNames,
+      {getMStart(), getKStart(), getMStep(), getKStep(), getSrcStride(),
+       getDstStride()},
+      kFullNames);
+}
+
+ParseResult MteL1L0bOp::parse(OpAsmParser &parser, OperationState &result) {
+  static constexpr StringRef kShapeNames[] = {
+      "k", "n", "start_row", "start_col"};
+  static constexpr StringRef kFullNames[] = {
+      "m_start", "k_start", "m_step", "k_step", "src_stride", "dst_stride"};
+  return parseMteL1L0OptionalOperandsOp<MteL1L0bOp>(
+      parser, result, kShapeNames, kFullNames);
+}
+
+void MteL1L0bOp::print(OpAsmPrinter &printer) {
+  static constexpr StringRef kShapeNames[] = {
+      "k", "n", "start_row", "start_col"};
+  static constexpr StringRef kFullNames[] = {
+      "m_start", "k_start", "m_step", "k_step", "src_stride", "dst_stride"};
+  printMteL1L0OptionalOperandsOp(
+      printer, getOperation(), getSource(), getDestination(),
+      {getK(), getN(), getStartRow(), getStartCol()}, kShapeNames,
+      {getMStart(), getKStart(), getMStep(), getKStep(), getSrcStride(),
+       getDstStride()},
+      kFullNames);
 }
 
 ParseResult MteL1L0aMxOp::parse(OpAsmParser &parser, OperationState &result) {
   static constexpr StringRef kShapeNames[] = {
       "m", "k", "start_row", "start_col"};
-  return parseMteL1L0MxOp<MteL1L0aMxOp>(parser, result, kShapeNames);
+  static constexpr StringRef kFullNames[] = {
+      "x_start", "y_start", "x_step", "y_step", "src_stride", "dst_stride"};
+  return parseMteL1L0OptionalOperandsOp<MteL1L0aMxOp>(
+      parser, result, kShapeNames, kFullNames, "MX operands");
 }
 
 void MteL1L0aMxOp::print(OpAsmPrinter &printer) {
   static constexpr StringRef kShapeNames[] = {
       "m", "k", "start_row", "start_col"};
-  printMteL1L0MxOp(printer, getOperation(), getSource(), getDestination(),
-                    {getM(), getK(), getStartRow(), getStartCol()}, kShapeNames,
-                    {getXStart(), getYStart(), getXStep(), getYStep(),
-                     getSrcStride(), getDstStride()});
+  static constexpr StringRef kFullNames[] = {
+      "x_start", "y_start", "x_step", "y_step", "src_stride", "dst_stride"};
+  printMteL1L0OptionalOperandsOp(
+      printer, getOperation(), getSource(), getDestination(),
+      {getM(), getK(), getStartRow(), getStartCol()}, kShapeNames,
+      {getXStart(), getYStart(), getXStep(), getYStep(), getSrcStride(),
+       getDstStride()},
+      kFullNames);
 }
 
 LogicalResult MteL1L0aMxOp::verify() {
@@ -8823,16 +8973,23 @@ LogicalResult MteL1L0aMxOp::verify() {
 ParseResult MteL1L0bMxOp::parse(OpAsmParser &parser, OperationState &result) {
   static constexpr StringRef kShapeNames[] = {
       "k", "n", "start_row", "start_col"};
-  return parseMteL1L0MxOp<MteL1L0bMxOp>(parser, result, kShapeNames);
+  static constexpr StringRef kFullNames[] = {
+      "x_start", "y_start", "x_step", "y_step", "src_stride", "dst_stride"};
+  return parseMteL1L0OptionalOperandsOp<MteL1L0bMxOp>(
+      parser, result, kShapeNames, kFullNames, "MX operands");
 }
 
 void MteL1L0bMxOp::print(OpAsmPrinter &printer) {
   static constexpr StringRef kShapeNames[] = {
       "k", "n", "start_row", "start_col"};
-  printMteL1L0MxOp(printer, getOperation(), getSource(), getDestination(),
-                    {getK(), getN(), getStartRow(), getStartCol()}, kShapeNames,
-                    {getXStart(), getYStart(), getXStep(), getYStep(),
-                     getSrcStride(), getDstStride()});
+  static constexpr StringRef kFullNames[] = {
+      "x_start", "y_start", "x_step", "y_step", "src_stride", "dst_stride"};
+  printMteL1L0OptionalOperandsOp(
+      printer, getOperation(), getSource(), getDestination(),
+      {getK(), getN(), getStartRow(), getStartCol()}, kShapeNames,
+      {getXStart(), getYStart(), getXStep(), getYStep(), getSrcStride(),
+       getDstStride()},
+      kFullNames);
 }
 
 LogicalResult MteL1L0bMxOp::verify() {
@@ -8867,17 +9024,19 @@ LogicalResult LoadCbufToCbMxOp::verify() {
 }
 
 LogicalResult LoadCbufToCaOp::verify() {
-  if (failed(verifyCubeBridgeLoadLikeOp(*this, AddressSpace::LEFT, "LEFT"))) {
-    return failure();
-  }
-  return verifyExplicitCubeBridgeLoadControls(*this);
+  return verifyRegularCubeBridgeLoad(*this, AddressSpace::LEFT, "LEFT");
 }
 
 LogicalResult LoadCbufToCbOp::verify() {
-  if (failed(verifyCubeBridgeLoadLikeOp(*this, AddressSpace::RIGHT, "RIGHT"))) {
-    return failure();
-  }
-  return verifyExplicitCubeBridgeLoadControls(*this);
+  return verifyRegularCubeBridgeLoad(*this, AddressSpace::RIGHT, "RIGHT");
+}
+
+LogicalResult LoadCbufToCaS4Op::verify() {
+  return verifyS4CubeBridgeLoad(*this, AddressSpace::LEFT, "LEFT");
+}
+
+LogicalResult LoadCbufToCbS4Op::verify() {
+  return verifyS4CubeBridgeLoad(*this, AddressSpace::RIGHT, "RIGHT");
 }
 
 void MteL1L0aOp::getEffects(
