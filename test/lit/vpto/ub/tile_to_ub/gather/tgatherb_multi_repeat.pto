@@ -6,20 +6,29 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the software repository for the full text of the License.
 
-// Multi-row tgatherb: 2×64 f32 tile. Each row uses 8 compact 32B block
-// addresses, not 64 scalar offsets.
+// Multi-row tgatherb with padded physical rows. The second destination row
+// starts at 128 elements and the second offset row starts at 24 entries,
+// independently of their 96/16 valid widths.
 
 // RUN: ptoas --pto-arch=a3 --pto-backend=vpto --emit-vpto-llvm-ir %s -o %t --mlir-print-ir-after=pto-lower-to-ubuf-ops 2>&1 | FileCheck %s
+// RUN: ptoas --pto-arch=a3 --pto-backend=vpto --emit-vpto-llvm-ir %s -o %t --mlir-print-ir-after=pto-lower-to-ubuf-ops 2>&1 | FileCheck %s --check-prefix=COUNT
 
 module attributes {pto.target_arch = "a3", pto.kernel_kind = #pto.kernel_kind<vector>} {
   // CHECK-LABEL: func.func @tgatherb_multi_repeat
+  // COUNT-LABEL: func.func @tgatherb_multi_repeat
+  // COUNT-COUNT-4: pto.ub.vgatherb
   func.func @tgatherb_multi_repeat() attributes {pto.aicore} {
-    %src = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=2, cols=64, v_row=2, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    %off = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=i32, rows=2, cols=8, v_row=2, v_col=8, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    %dst = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=2, cols=64, v_row=2, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    // CHECK: pto.ub.vgatherb
+    %src = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=2, cols=128, v_row=2, v_col=96, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %off = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=i32, rows=2, cols=24, v_row=2, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %dst = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=2, cols=128, v_row=2, v_col=96, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    // CHECK: arith.constant 128 : index
+    // CHECK: arith.constant 24 : index
+    // CHECK: arith.constant 64 : index
+    // CHECK: arith.constant 8 : index
+    // CHECK: arith.constant 192 : index
+    // CHECK: arith.constant 32 : index
     // CHECK-NOT: pto.tgatherb
-    pto.tgatherb ins(%src, %off : !pto.tile_buf<loc=vec, dtype=f32, rows=2, cols=64, v_row=2, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=i32, rows=2, cols=8, v_row=2, v_col=8, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=2, cols=64, v_row=2, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tgatherb ins(%src, %off : !pto.tile_buf<loc=vec, dtype=f32, rows=2, cols=128, v_row=2, v_col=96, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=i32, rows=2, cols=24, v_row=2, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=2, cols=128, v_row=2, v_col=96, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     return
   }
 }

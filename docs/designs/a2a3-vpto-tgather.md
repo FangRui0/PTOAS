@@ -238,11 +238,11 @@ job for these today.
 ## E2E investigation (NPU hardware)
 
 ### Sync fix
-InsertSync did not insert MTE2→V sync around TGatherBOp because it lacked a
-sync macro model. Fixed by adding `getTGatherBSyncMacroModel` declaring
-tgatherb as a single-phase PIPE_V op reading src+offsets and writing dst.
-After the fix, InsertSync correctly inserts set_flag/wait_flag between the
-DMA loads and the gather.
+`TGatherBOp` is a single-phase PIPE_V operation. InsertSync derives its reads
+of src+offsets and write of dst from the existing `OpPipeInterface` and
+`MemoryEffectsOpInterface`; no dedicated sync macro model is required. The
+generic path inserts the MTE2→V set_flag/wait_flag between DMA loads and the
+gather.
 
 ### Correct `vgatherb` semantics
 The NPU result initially looked wrong because the test used scalar-gather
@@ -266,7 +266,7 @@ dstBlockStride[47:40], repeat[63:56]).
 ## E2e NPU debugging session (devices 6,7)
 
 ### Key findings
-1. **InsertSync fix**: resolved (sync macro model added for TGatherBOp).
+1. **InsertSync**: the generic pipe/effects path models TGatherBOp directly.
 2. **vgatherb reads compact block addresses**: repeat=255 crashes if the
    compact address buffer is too small, because 255 repeats read 255×8 u32
    addresses and then follow stale address values.

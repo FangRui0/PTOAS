@@ -4112,7 +4112,7 @@ def tthistogram(src, idx, dst, *, byte=None):
     )
 
 def tgatherb(src, offsets, dst):
-    """``pto.tgatherb`` – tile gather using byte offsets (DPS)."""
+    """``pto.tgatherb`` - gather 32-byte blocks using byte addresses (DPS)."""
     _pto.tgatherb(
         unwrap_surface_value(src),
         unwrap_surface_value(offsets),

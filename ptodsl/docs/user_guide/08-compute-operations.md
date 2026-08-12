@@ -252,26 +252,31 @@ pto.tile.gather(tmp_sort_tile, top_indices, mask_pattern="P1010", axis="row")
 
 #### `pto.tile.gatherb(src: Tile, offsets: Tile, dst: Tile) -> None`
 
-**Description**: Gathers elements from a source tile into a destination tile
-using byte offsets. Each element of `offsets` is a byte address into the flat
-byte representation of `src`; the element (or block of elements starting at that
-byte position) is written into the corresponding position of `dst`.
+**Description**: Gathers 32-byte source blocks into a destination tile. Each
+element of `offsets` is a 32-byte-aligned byte address relative to the source UB
+base and selects one complete block. Use `pto.tile.gather` for arbitrary scalar
+element indices.
 
 **Parameters**:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `src` | `Tile` | Source tile containing the data to gather from |
-| `offsets` | `Tile` | Byte offset tile (`ui32` dtype) specifying byte positions in `src` |
-| `dst` | `Tile` | Destination tile (must use row-major layout; element size 1, 2, or 4 bytes) |
+| `offsets` | `Tile` | Compact 32-bit integer tile containing source block addresses |
+| `dst` | `Tile` | Destination tile |
 
 **Returns**: None
 
 **Constraints**:
 
-- `offsets` must have `ui32` dtype.
-- `dst` must use row-major layout.
-- `dst` element size must be 1, 2, or 4 bytes.
+- On A2/A3, `src` and `dst` must have the same valid shape.
+- On A2/A3, `dst` and `offsets` must use row-major layout and `dst` elements
+  must be 2 or 4 bytes.
+- `offsets` must have a 32-bit integer dtype.
+- On A2/A3, `offsets.v_row` equals `dst.v_row`. Its valid column count is
+  `ceil(dst.v_col / (32 / sizeof(dst element)))`, rounded up to a multiple of
+  eight addresses.
+- Allocated row widths are physical strides and may exceed valid widths.
 
 **Example**:
 

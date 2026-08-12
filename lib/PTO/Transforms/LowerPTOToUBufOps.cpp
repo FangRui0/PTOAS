@@ -901,16 +901,18 @@ struct LowerPTOToUBufOpsPass
       SmallVector<pto::TGatherBOp> ops;
       func.walk([&](pto::TGatherBOp op) { ops.push_back(op); });
       for (auto op : ops) {
-        if (!canLower(op, tileShapes))
-          continue;
-        auto info = extractTileShapeInfo(op, tileShapes);
-        if (!info)
+        auto dstInfo = extractTileShapeInfoFromValue(op.getDst(), tileShapes);
+        auto offsetInfo =
+            extractTileShapeInfoFromValue(op.getOffsets(), tileShapes);
+        if (!dstInfo || !offsetInfo)
           continue;
 
-        unsigned bse = info->blockSizeElem;
-        unsigned epr = info->elementsPerRepeat;
-        int64_t validRow = info->vRows;
-        int64_t validCol = info->vCols;
+        unsigned bse = dstInfo->blockSizeElem;
+        unsigned epr = dstInfo->elementsPerRepeat;
+        int64_t validRow = dstInfo->vRows;
+        int64_t validCol = dstInfo->vCols;
+        int64_t dstRowStride = dstInfo->cols;
+        int64_t offsetRowStride = offsetInfo->cols;
         if (bse == 0 || epr == 0 || validCol == 0)
           continue;
 
@@ -921,13 +923,6 @@ struct LowerPTOToUBufOpsPass
         int64_t numRemainPerLine = validCol % epr;
         constexpr int64_t REPEAT_MAX = 255;
         constexpr int64_t ADDRS_PER_REPEAT = 8;
-
-        // Compact offset tile layout: one i32 address per 32B output block,
-        // padded to 8 entries because even a tail repeat reads 8 addresses.
-        int64_t blocksPerRow = (validCol + bse - 1) / bse;
-        int64_t offsetStridePerRow =
-            ((blocksPerRow + ADDRS_PER_REPEAT - 1) / ADDRS_PER_REPEAT) *
-            ADDRS_PER_REPEAT;
 
         Location loc = op.getLoc();
         builder.setInsertionPoint(op);
@@ -961,8 +956,8 @@ struct LowerPTOToUBufOpsPass
           int64_t remainAfterLoop = numRepeatPerLine % REPEAT_MAX;
 
           for (int64_t i = 0; i < validRow; ++i) {
-            int64_t rowOff = i * validCol;
-            int64_t offRowOff = i * offsetStridePerRow;
+            int64_t rowOff = i * dstRowStride;
+            int64_t offRowOff = i * offsetRowStride;
 
             for (int64_t j = 0; j < numLoop; ++j) {
               int64_t elemOff = rowOff + j * epr * REPEAT_MAX;
@@ -989,13 +984,13 @@ struct LowerPTOToUBufOpsPass
         // ---- GatherBlockTail: process remaining elements ----
         if (numRemainPerLine > 0) {
           int64_t tailElemOff = numRepeatPerLine * epr;
-          int64_t tailRepStride = validCol / bse;
+          int64_t tailRepStride = dstRowStride / bse;
           if (tailRepStride == 0)
             tailRepStride = 1;
 
           for (int64_t i = 0; i < validRow; ++i) {
-            int64_t elemOff = i * validCol + tailElemOff;
-            int64_t offOff = i * offsetStridePerRow + tailElemOff / bse;
+            int64_t elemOff = i * dstRowStride + tailElemOff;
+            int64_t offOff = i * offsetRowStride + tailElemOff / bse;
             Value dstAdv = addPtr(loc, builder, dstBase, dstPtrType,
                                   idxc(elemOff, loc, builder));
             Value offAdv = addPtr(loc, builder, offBase, offPtrType,
@@ -1018,12 +1013,13 @@ struct LowerPTOToUBufOpsPass
       for (auto op : ops) {
         if (!op.hasIndexForm())
           continue;
-        if (!canLower(op, tileShapes))
+        auto dstInfo = extractTileShapeInfoFromValue(op.getDst(), tileShapes);
+        auto indexInfo =
+            extractTileShapeInfoFromValue(op.getIndices(), tileShapes);
+        auto tmpInfo = extractTileShapeInfoFromValue(op.getTmp(), tileShapes);
+        if (!dstInfo || !indexInfo || !tmpInfo)
           continue;
-        auto info = extractTileShapeInfo(op, tileShapes);
-        if (!info)
-          continue;
-        int64_t epr = info->elementsPerRepeat;
+        int64_t epr = dstInfo->elementsPerRepeat;
         if (epr == 0)
           continue;
 
@@ -1061,13 +1057,19 @@ struct LowerPTOToUBufOpsPass
         Value dstPtr = emitAddr(op.getDst(), dstPtrType);
 
         auto pipeV = pto::PipeAttr::get(ctx, pto::PIPE::PIPE_V);
-        for (int64_t i = 0; i < info->vRows; ++i) {
-          for (int64_t col = 0; col < info->vCols; col += epr) {
-            int64_t chunkElems = std::min<int64_t>(epr, info->vCols - col);
-            Value rowOff = idxc(i * info->cols + col, loc, builder);
-            Value tmpRow = addPtr(loc, builder, tmpPtr, i32PtrType, rowOff);
-            Value idxRow = addPtr(loc, builder, indicesPtr, i32PtrType, rowOff);
-            Value dstRow = addPtr(loc, builder, dstPtr, dstPtrType, rowOff);
+        for (int64_t i = 0; i < dstInfo->vRows; ++i) {
+          for (int64_t col = 0; col < dstInfo->vCols; col += epr) {
+            int64_t chunkElems =
+                std::min<int64_t>(epr, dstInfo->vCols - col);
+            Value tmpOff =
+                idxc(i * tmpInfo->cols + col, loc, builder);
+            Value indexOff =
+                idxc(i * indexInfo->cols + col, loc, builder);
+            Value dstOff = idxc(i * dstInfo->cols + col, loc, builder);
+            Value tmpRow = addPtr(loc, builder, tmpPtr, i32PtrType, tmpOff);
+            Value idxRow =
+                addPtr(loc, builder, indicesPtr, i32PtrType, indexOff);
+            Value dstRow = addPtr(loc, builder, dstPtr, dstPtrType, dstOff);
 
             builder.create<pto::UBSetMaskCountOp>(loc);
             builder.create<pto::UBSetMaskOp>(loc,

@@ -8859,6 +8859,15 @@ llvm::LogicalResult mlir::pto::TGatherOp::verify() {
     }
 
     if (!allowA5ElemTypes) {
+      if (failed(verifyTileBufSameValidShape(*this, dstTy, idxTy, "dst",
+                                             "indices"))) {
+        return failure();
+      }
+      if (!isRowMajorTileBuf(dstTy) || !isRowMajorTileBuf(idxTy) ||
+          !isRowMajorTileBuf(getTmp().getType())) {
+        return emitOpError(
+            "expects A2/A3 index-form dst, indices, and tmp to use row-major layout");
+      }
       Type tmpElem = getElemTy(getTmp().getType());
       if (tmpElem != idxElem) {
         return emitOpError("expects tmp and indices to have the same element type");
@@ -9019,12 +9028,14 @@ mlir::LogicalResult mlir::pto::TGatherBOp::verify() {
             verifyTileBufSameValidShape(*this, srcTy, dstTy, "src", "dst"))) {
       return failure();
     }
-    if (!isRowMajorTileBuf(dstTy)) {
-      return emitOpError() << "expects dst to use row-major layout";
+    if (!isRowMajorTileBuf(dstTy) || !isRowMajorTileBuf(offTy)) {
+      return emitOpError()
+             << "expects dst and offsets to use row-major layout";
     }
     auto dstBytes = getElemBytes(dstElemTy);
-    if (!dstBytes || (*dstBytes != 1 && *dstBytes != 2 && *dstBytes != 4)) {
-      return emitOpError() << "expects dst element size to be 1, 2, or 4 bytes";
+    if (!dstBytes || (*dstBytes != 2 && *dstBytes != 4)) {
+      return emitOpError()
+             << "expects A2/A3 dst element size to be 2 or 4 bytes";
     }
     Type offElemTy = getElemTy(offTy);
     if (!offElemTy.isInteger(32)) {
