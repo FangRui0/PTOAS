@@ -18,6 +18,18 @@
 // RUN: not ptoas --pto-arch=a5 --pto-level=level3 --plan-memory-impl=modern \
 // RUN:   %t/explicit_overlap.pto -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=OVERLAP
+// RUN: not ptoas --pto-arch=a5 --pto-level=level3 \
+// RUN:   %t/src_tmp_overlap.pto -o /dev/null 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=SRC-TMP-OVERLAP
+// RUN: not ptoas --pto-arch=a5 --pto-level=level3 --plan-memory-impl=modern \
+// RUN:   %t/src_tmp_overlap.pto -o /dev/null 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=SRC-TMP-OVERLAP
+// RUN: not ptoas --pto-arch=a5 --pto-level=level3 \
+// RUN:   %t/tmp_dst_overlap.pto -o /dev/null 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=TMP-DST-OVERLAP
+// RUN: not ptoas --pto-arch=a5 --pto-level=level3 --plan-memory-impl=modern \
+// RUN:   %t/tmp_dst_overlap.pto -o /dev/null 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=TMP-DST-OVERLAP
 // RUN: not ptoas --pto-arch=a5 --pto-level=level2 %t/view_alias.pto -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=VIEW
 // RUN: not ptoas --pto-arch=a5 --pto-level=level2 --plan-memory-impl=modern \
@@ -106,6 +118,8 @@
 // MODERN: pto.alloc_tile addr = %[[PLAIN0]] : !pto.tile_buf<vec, 16x32xf32>
 
 // OVERLAP: PlanMemory semantic no-alias violation: operand byte ranges overlap
+// SRC-TMP-OVERLAP: PlanMemory semantic no-alias violation: operand byte ranges overlap
+// TMP-DST-OVERLAP: PlanMemory semantic no-alias violation: operand byte ranges overlap
 // VIEW: PlanMemory semantic no-alias violation: operand byte ranges overlap
 // STRIDED: PlanMemory semantic no-alias violation: operand byte ranges overlap
 
@@ -205,6 +219,36 @@ module attributes {pto.target_arch = "a5"} {
     pto.tquant.mx ins(%src : !pto.tile_buf<vec, 16x32xf32>)
       outs(%dst, %exp, %max, %scaling : !pto.tile_buf<vec, 16x32xui8>, !pto.tile_buf<vec, 1x32xui8, valid=1x16>, !pto.tile_buf<vec, 1x16xf32>, !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
       {quant_type = #pto<quant_type MXFP8>}
+    return
+  }
+}
+
+//--- src_tmp_overlap.pto
+module attributes {pto.target_arch = "a5"} {
+  func.func @x2zz_src_tmp_explicit_overlap() {
+    %c0 = arith.constant 0 : i64
+    %c256 = arith.constant 256 : i64
+    %c768 = arith.constant 768 : i64
+    %src = pto.alloc_tile addr = %c0 : !pto.tile_buf<vec, 16x32xui8>
+    %tmp = pto.alloc_tile addr = %c256 : !pto.tile_buf<vec, 1x96xui8, valid=1x32>
+    %dst = pto.alloc_tile addr = %c768 : !pto.tile_buf<vec, 16x32xui8, slayout=row_major>
+    pto.tmov ins(%src : !pto.tile_buf<vec, 16x32xui8>, %tmp : !pto.tile_buf<vec, 1x96xui8, valid=1x32>)
+      outs(%dst : !pto.tile_buf<vec, 16x32xui8, slayout=row_major>)
+    return
+  }
+}
+
+//--- tmp_dst_overlap.pto
+module attributes {pto.target_arch = "a5"} {
+  func.func @x2zz_tmp_dst_explicit_overlap() {
+    %c0 = arith.constant 0 : i64
+    %c512 = arith.constant 512 : i64
+    %c768 = arith.constant 768 : i64
+    %src = pto.alloc_tile addr = %c0 : !pto.tile_buf<vec, 16x32xui8>
+    %tmp = pto.alloc_tile addr = %c768 : !pto.tile_buf<vec, 1x96xui8, valid=1x32>
+    %dst = pto.alloc_tile addr = %c512 : !pto.tile_buf<vec, 16x32xui8, slayout=row_major>
+    pto.tmov ins(%src : !pto.tile_buf<vec, 16x32xui8>, %tmp : !pto.tile_buf<vec, 1x96xui8, valid=1x32>)
+      outs(%dst : !pto.tile_buf<vec, 16x32xui8, slayout=row_major>)
     return
   }
 }

@@ -83,8 +83,7 @@ def main():
     ok = True
     # dst: fp8 e4m3fn packed as int8 — exact byte match.
     ok = compare_file(f"golden_{dst_name}.bin", f"{dst_name}.bin", np.int8, atol=0.0) and ok
-    # exp/max/scaling are logically 16 group values even though A5 remote
-    # validation allocates 32-element Vec-backed buffers for the lowered TSTORE.
+    # exp/max/scaling contain the 32 canonical [M, N/32] group values.
     ok = compare_file_prefix(f"golden_{exp_name}.bin", f"{exp_name}.bin", np.uint8, GROUP_COUNT, atol=0.0) and ok
     ok = compare_file_prefix(f"golden_{max_name}.bin", f"{max_name}.bin", np.float32, GROUP_COUNT, atol=1e-5) and ok
     ok = compare_file_prefix(

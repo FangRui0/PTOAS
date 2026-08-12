@@ -7924,6 +7924,8 @@ mlir::LogicalResult mlir::pto::TMovOp::verify() {
     if (movForm == TMovForm::XToZz) {
       if (!isA5)
         return emitOpError("X-to-ZZ tmov is only supported on A5");
+      if (getNumResults() != 0)
+        return emitOpError("expects X-to-ZZ tmov not to have results");
       if (hasPreQuantScalar || accToVecModeAttr ||
           reluMode != pto::ReluPreMode::NoRelu)
         return emitOpError("expects the X-to-ZZ tmov form not to use preQuantScalar, accToVecMode, or reluPreMode");
@@ -7939,6 +7941,8 @@ mlir::LogicalResult mlir::pto::TMovOp::verify() {
           *dstSpace != pto::AddressSpace::VEC ||
           *tmpSpace != pto::AddressSpace::VEC)
         return emitOpError("expects X-to-ZZ src/dst/tmp to be vec tiles");
+      if (getSrc() == getDst() || getSrc() == fp || getDst() == fp)
+        return emitOpError("expects X-to-ZZ src, dst, and tmp to be distinct tile values");
       if (srcTb.getRank() != 2 || dstTb.getRank() != 2 || tmpTb.getRank() != 2)
         return emitOpError("expects rank-2 valid_shape for src/dst/tmp");
       auto hasDynamic = [](ArrayRef<int64_t> shape) {

@@ -168,10 +168,9 @@ def main():
     dst_bytes = fp32_to_fp8e4m3fn_bytes(scaled)
     golden_outputs[dst_name] = dst_bytes.reshape(-1)
 
-    # The logical MX aux outputs have 16 groups, but the lowered A5 TSTORE path
-    # uses 1x32 Vec-backed buffers. Pad the physical golden buffers to the
-    # generated element counts while keeping only the first 16 elements semantic.
-    # exp: ui8 [groups] = e8m0 per group.
+    # Canonical axis1 auxiliary outputs are [M, N/32].  The output buffers are
+    # therefore exactly the logical group count; no legacy-flat padding is used.
+    # exp: ui8 [M, N/32] = e8m0 per group.
     golden_outputs[exp_name] = pack_output_buffer(meta, exp_name, e8m0.reshape(GROUP_COUNT))
 
     # max: f32 [groups] = per-group absmax.

@@ -181,6 +181,16 @@ class PinUpdaterTest(unittest.TestCase):
         self.assertIn(self.child, ci_sim.read_text(encoding="utf-8"))
         self.assertIn(self.base, dev.read_text(encoding="utf-8"))
 
+        dev_result = self.invoke(
+            "cann90-dev",
+            self.repo_a,
+            self.child,
+            ["--ci-sim-workflow", str(ci_sim), "--dev-dockerfile", str(dev)],
+        )
+        self.assertEqual(dev_result.returncode, 0, dev_result.stderr)
+        self.assertIn(self.child, ci_sim.read_text(encoding="utf-8"))
+        self.assertIn(self.child, dev.read_text(encoding="utf-8"))
+
     def test_cross_remote_revision_is_rejected_without_writes(self) -> None:
         ci_sim = self.fixture_dir / "ci_sim.yml"
         ci_sim.write_text(

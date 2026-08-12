@@ -335,8 +335,11 @@ SmallVector<std::pair<Value, Value>, 5>
 getSemanticNoAliasPairs(Operation *op) {
   SmallVector<std::pair<Value, Value>, 5> pairs;
   if (auto tmov = dyn_cast<TMovOp>(op)) {
-    if (classifyTMovForm(tmov.getFp()) == TMovForm::XToZz)
+    if (classifyTMovForm(tmov.getFp()) == TMovForm::XToZz) {
       pairs.emplace_back(tmov.getSrc(), tmov.getDst());
+      pairs.emplace_back(tmov.getSrc(), tmov.getFp());
+      pairs.emplace_back(tmov.getFp(), tmov.getDst());
+    }
     return pairs;
   }
 

@@ -72,6 +72,17 @@ permissions:
   pull-requests: read
 
 jobs:
+  pin-updater-test:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Test repo-aware pto-isa pin updates
+        run: python3 .github/scripts/update_pto_isa_pin_test.py
+
   license-header-check:
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-22.04

@@ -19,9 +19,9 @@ TQuant.hpp (AbsReduceMax -> ExtractB8ExponentAndScaling -> CalcQuantizedFP8Value
     -> fp8 e4m3 output = clamp(src * scaling, -448, 448)
 
 Auxiliary tiles:
-  exp     : ui8  [groups]          (e8m0 exponent per group)
-  max     : f32  [groups]          (per-group absmax)
-  scaling : f32  [M, K]            (broadcast reciprocal scale)
+  exp     : ui8  [M, K/32]         (e8m0 exponent per group)
+  max     : f32  [M, K/32]         (per-group absmax)
+  scaling : f32  [M, K/32]         (reciprocal scale per group)
 """
 
 import numpy as np
