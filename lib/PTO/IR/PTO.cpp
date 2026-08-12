@@ -1797,18 +1797,23 @@ static LogicalResult verifyTileBufLayoutConstraints(Operation *op,
     return op->emitOpError() << "expects " << name
                              << " to have concrete tile layout attributes";
   constexpr int64_t kAlignedBytes = 32;
+  constexpr int64_t kPackedFp4AlignedBytes = 16;
+  const int64_t requiredAlignment = isPTOFloat4PackedType(tb.getElementType())
+                                        ? kPackedFp4AlignedBytes
+                                        : kAlignedBytes;
 
   auto checkByteAlignment = [&](int64_t dim, StringRef layoutName,
                                 StringRef byteExpr) -> LogicalResult {
     if (dim == ShapedType::kDynamic)
       return success();
     int64_t bytes = dim * static_cast<int64_t>(elemBytes);
-    if (bytes % kAlignedBytes == 0)
+    if (bytes % requiredAlignment == 0)
       return success();
     return op->emitOpError()
            << "expects " << name << " " << layoutName
            << " none_box tile " << byteExpr
-           << " to be 32-byte aligned, but got " << bytes << " bytes";
+           << " to be " << requiredAlignment << "-byte aligned, but got "
+           << bytes << " bytes";
   };
 
   if (slayout == static_cast<int32_t>(SLayout::NoneBox)) {
@@ -4213,6 +4218,16 @@ static std::optional<pto::AddressSpace> getPTOMemorySpaceEnum(Type ty) {
     return std::nullopt;
   }
   return std::nullopt;
+}
+
+TMovForm mlir::pto::classifyTMovForm(Value fp) {
+  if (!fp)
+    return TMovForm::NoTileAux;
+  auto space = getPTOMemorySpaceEnum(fp.getType());
+  if (!space)
+    return TMovForm::XToZz;
+  return *space == pto::AddressSpace::SCALING ? TMovForm::Fp
+                                              : TMovForm::XToZz;
 }
 
 [[maybe_unused]] static bool isRank2TileBuf(Type ty) {
@@ -7892,6 +7907,143 @@ mlir::LogicalResult mlir::pto::TMovOp::verify() {
     const bool hasFp = static_cast<bool>(fp);
     const bool hasPreQuantScalar = static_cast<bool>(preQuantScalar);
 
+    if (hasFp && !getPTOMemorySpaceEnum(fp.getType()))
+      return emitOpError(
+          "expects the third tile to have an explicit address space");
+
+    const TMovForm movForm = classifyTMovForm(fp);
+    if (movForm == TMovForm::XToZz) {
+      if (!isA5)
+        return emitOpError("X-to-ZZ tmov is only supported on A5");
+      if (hasPreQuantScalar || accToVecModeAttr ||
+          reluMode != pto::ReluPreMode::NoRelu)
+        return emitOpError("expects the X-to-ZZ tmov form not to use preQuantScalar, accToVecMode, or reluPreMode");
+
+      auto srcTb = dyn_cast<pto::TileBufType>(srcTy);
+      auto dstTb = dyn_cast<pto::TileBufType>(dstTy);
+      auto tmpTb = dyn_cast<pto::TileBufType>(fp.getType());
+      auto srcSpace = getPTOMemorySpaceEnum(srcTy);
+      auto dstSpace = getPTOMemorySpaceEnum(dstTy);
+      auto tmpSpace = getPTOMemorySpaceEnum(fp.getType());
+      if (!srcTb || !dstTb || !tmpTb || !srcSpace || !dstSpace ||
+          *srcSpace != pto::AddressSpace::VEC ||
+          *dstSpace != pto::AddressSpace::VEC ||
+          *tmpSpace != pto::AddressSpace::VEC)
+        return emitOpError("expects X-to-ZZ src/dst/tmp to be vec tiles");
+      if (srcTb.getRank() != 2 || dstTb.getRank() != 2 || tmpTb.getRank() != 2)
+        return emitOpError("expects rank-2 valid_shape for src/dst/tmp");
+      auto hasDynamic = [](ArrayRef<int64_t> shape) {
+        return llvm::is_contained(shape, ShapedType::kDynamic);
+      };
+      if (hasDynamic(getValidShapeVec(srcTy)) ||
+          hasDynamic(getShapeVec(srcTy)) ||
+          hasDynamic(getValidShapeVec(dstTy)) ||
+          hasDynamic(getShapeVec(dstTy)) ||
+          hasDynamic(getShapeVec(fp.getType())))
+        return emitOpError("expects static valid and physical shapes for src/dst and a static tmp physical shape for X-to-ZZ");
+      Type srcElem = getElemTy(srcTy);
+      Type dstElem = getElemTy(dstTy);
+      Type tmpElem = getElemTy(fp.getType());
+      if (srcElem != dstElem || srcElem != tmpElem)
+        return emitOpError("expects src, dst, and tmp to share one element type");
+      bool validElem = isPTOHiFloat8Type(srcElem) || isPTOF8E8M0Type(srcElem);
+      if (auto integer = dyn_cast<IntegerType>(srcElem))
+        validElem = integer.getWidth() == 8 &&
+                    integer.getSignedness() == IntegerType::Unsigned;
+      if (!validElem)
+        return emitOpError("expects element type to be one of ui8, !pto.hif8, !pto.f8E8M0 (i8 lowers to int8_t, which PTO-ISA CommonCheckZZ rejects)");
+      if (srcTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor) ||
+          srcTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::NoneBox))
+        return emitOpError("expects src to use blayout=row_major, slayout=none_box");
+      if (dstTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor) ||
+          dstTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::RowMajor))
+        return emitOpError("expects dst to use blayout=row_major, slayout=row_major (ZZ box)");
+
+      auto srcValid = getValidShapeVec(srcTy);
+      auto dstValid = getValidShapeVec(dstTy);
+      auto srcPhysical = getShapeVec(srcTy);
+      auto capacity = [&](Type type) { return getStaticByteSize(type); };
+      auto checkedElements = [](ArrayRef<int64_t> shape) -> std::optional<int64_t> {
+        if (shape.size() != 2 || shape[0] < 0 || shape[1] < 0 ||
+            (shape[1] != 0 && shape[0] > std::numeric_limits<int64_t>::max() / shape[1]))
+          return std::nullopt;
+        return shape[0] * shape[1];
+      };
+      auto srcElements = checkedElements(srcValid);
+      auto dstElements = checkedElements(dstValid);
+      if (!srcElements || !dstElements || *srcElements != *dstElements)
+        return emitOpError("expects src and dst to hold the same exponent count");
+
+      auto checkedAdd = [](int64_t lhs,
+                           int64_t rhs) -> std::optional<int64_t> {
+        if (lhs < 0 || rhs < 0 ||
+            lhs > std::numeric_limits<int64_t>::max() - rhs)
+          return std::nullopt;
+        return lhs + rhs;
+      };
+      auto checkedMul = [](int64_t lhs,
+                           int64_t rhs) -> std::optional<int64_t> {
+        if (lhs < 0 || rhs < 0 ||
+            (rhs != 0 && lhs > std::numeric_limits<int64_t>::max() / rhs))
+          return std::nullopt;
+        return lhs * rhs;
+      };
+      auto align16 = [&](int64_t value) -> std::optional<int64_t> {
+        auto biased = checkedAdd(value, 15);
+        return biased ? checkedMul(*biased / 16, 16) : std::nullopt;
+      };
+
+      const MxGroupAxis axis = getGrpAxisAttr()
+                                   ? getGrpAxisAttr().getValue()
+                                   : MxGroupAxis::Axis1;
+      if (axis == MxGroupAxis::Axis1) {
+        if (dstValid[1] % 2 != 0)
+          return emitOpError("expects ND-to-ZZ dst valid_shape[1] (the grouped exponent column count) to be even");
+        if (srcValid[0] != 1 && srcPhysical[1] != srcValid[1])
+          return emitOpError("expects ND-to-ZZ src valid elements to form a compact prefix (single-row legacy flat or physical row stride equal to valid cols)");
+        auto paddedRows = align16(dstValid[0]);
+        auto required = paddedRows ? checkedMul(*paddedRows, dstValid[1])
+                                   : std::nullopt;
+        if (!required)
+          return emitOpError("cannot compute ND-to-ZZ padded capacity without overflow");
+        auto srcBytes = capacity(srcTy);
+        auto dstBytes = capacity(dstTy);
+        if (!srcBytes || *srcBytes < static_cast<uint64_t>(*required))
+          return emitOpError("expects ND-to-ZZ src physical capacity to cover align16(dst rows) * dst cols because source padding is zeroed in place");
+        if (!dstBytes || *dstBytes < static_cast<uint64_t>(*required))
+          return emitOpError("expects ND-to-ZZ dst physical capacity to cover align16(dst rows) * dst cols");
+        auto rowBlocksBias = checkedAdd(dstValid[0], 15);
+        auto offsetBytes = rowBlocksBias
+                               ? checkedMul(*rowBlocksBias / 16, dstValid[1])
+                               : std::nullopt;
+        auto tmpRequired = offsetBytes ? checkedAdd(64, *offsetBytes)
+                                       : std::nullopt;
+        if (!tmpRequired)
+          return emitOpError("cannot compute ND-to-ZZ tmp capacity without overflow");
+        auto tmpBytes = capacity(fp.getType());
+        if (!tmpBytes || *tmpBytes < static_cast<uint64_t>(*tmpRequired))
+          return emitOpError() << "expects tmp to provide at least " << *tmpRequired
+                               << " bytes for ND-to-ZZ (64 + ceil(dst rows / 16) * dst cols)";
+      } else {
+        if (srcValid[0] < 2 || srcValid[0] % 2 != 0)
+          return emitOpError("expects DN-to-ZZ src valid_shape[0] to be an even count >= 2; a single row-group produces no output in PTO-ISA");
+        if (srcValid[1] % 16 != 0)
+          return emitOpError("expects DN-to-ZZ src valid_shape[1] to be a multiple of 16");
+        if (srcPhysical[1] != srcValid[1])
+          return emitOpError("expects DN-to-ZZ src physical row stride to equal src valid_shape[1]");
+        auto srcBytes = capacity(srcTy);
+        auto dstBytes = capacity(dstTy);
+        auto required = checkedMul(srcValid[0], srcValid[1]);
+        if (!required || !srcBytes || !dstBytes ||
+            *srcBytes < static_cast<uint64_t>(*required) ||
+            *dstBytes < static_cast<uint64_t>(*required))
+          return emitOpError("expects DN-to-ZZ src/dst physical capacity to cover src valid rows * src valid cols");
+      }
+      return success();
+    }
+    if (getGrpAxisAttr())
+      return emitOpError("expects grpAxis only on the X-to-ZZ form with a non-scaling third tile");
+
     if (failed(verifyTileBufCommon(*this, srcTy, "src", /*allowLowPrecision=*/isA5)) ||
         failed(verifyTileBufCommon(*this, dstTy, "dst", /*allowLowPrecision=*/isA5)))
       return failure();
@@ -10617,6 +10769,13 @@ mlir::LogicalResult mlir::pto::TQuantMxOp::verify() {
         failed(verifyNDStyleVecTile(*this, getExpZz().getType(), "exp_zz")))
       return failure();
 
+    const bool isDn = getGrpAxis() == pto::MxGroupAxis::Axis0;
+    if (getInterleave() && !isDn)
+      return emitOpError(
+          "expects interleave to be used only with grpAxis=axis0");
+    if (getExpZz() && isDn)
+      return emitOpError("expects the deprecated exp_zz form to use grpAxis=axis1; use pto.tmov with a non-scaling tmp for axis0 exponents");
+
     auto quantType = getQuantType();
     if (quantType != mlir::pto::QuantType::MXFP8 &&
         quantType != mlir::pto::QuantType::MXFP4_E2M1)
@@ -10661,59 +10820,302 @@ mlir::LogicalResult mlir::pto::TQuantMxOp::verify() {
     auto expValid = getValidShapeVec(expTy);
     auto maxValid = getValidShapeVec(maxTy);
     auto scalingValid = getValidShapeVec(scalingTy);
+    auto srcPhysical = getShapeVec(srcTy);
+    auto dstPhysical = getShapeVec(dstTy);
+    auto expPhysical = getShapeVec(expTy);
+    auto maxPhysical = getShapeVec(maxTy);
+    auto scalingPhysical = getShapeVec(scalingTy);
     if (srcValid.size() != 2 || dstValid.size() != 2 || expValid.size() != 2 ||
-        maxValid.size() != 2 || scalingValid.size() != 2)
-      return emitOpError("expects rank-2 valid_shape for src/dst/exp/max/scaling");
-    if (getExpZz() && getValidShapeVec(getExpZz().getType()).size() != 2)
-      return emitOpError("expects rank-2 valid_shape for exp_zz");
-    // scaling is a per-group tile (like exp/max), NOT per-element: the ISA
-    // flattens it to 1D and writes one reciprocal scale per 32-element group.
-    // Only enforce element type match with src here; the element-count constraint
-    // is checked below alongside exp/max.
+        maxValid.size() != 2 || scalingValid.size() != 2 ||
+        srcPhysical.size() != 2 || dstPhysical.size() != 2 ||
+        expPhysical.size() != 2 || maxPhysical.size() != 2 ||
+        scalingPhysical.size() != 2)
+      return emitOpError("expects rank-2 valid and physical shapes for MX quantization");
+    if (getExpZz() && (getValidShapeVec(getExpZz().getType()).size() != 2 ||
+                       getShapeVec(getExpZz().getType()).size() != 2))
+      return emitOpError("expects rank-2 valid and physical shapes for exp_zz");
+
+    auto requireStaticShape = [&](StringRef name, Type type) -> LogicalResult {
+      for (int64_t dim : getValidShapeVec(type))
+        if (dim == ShapedType::kDynamic)
+          return emitOpError() << "expects static valid and physical shapes for "
+                              << name << " in MX quantization";
+      for (int64_t dim : getShapeVec(type))
+        if (dim == ShapedType::kDynamic)
+          return emitOpError() << "expects static valid and physical shapes for "
+                              << name << " in MX quantization";
+      return success();
+    };
+    for (auto [name, type] : {std::pair<StringRef, Type>("src", srcTy),
+                              {"dst", dstTy}, {"exp", expTy}, {"max", maxTy},
+                              {"scaling", scalingTy}})
+      if (failed(requireStaticShape(name, type)))
+        return failure();
+    if (getExpZz()) {
+      Type expZzTy = getExpZz().getType();
+      if (llvm::is_contained(getValidShapeVec(expZzTy),
+                             ShapedType::kDynamic) ||
+          llvm::is_contained(getShapeVec(expZzTy), ShapedType::kDynamic))
+        return emitOpError("expects static valid and physical shapes for exp_zz in the deprecated fused MX quantization form");
+    }
+
     if (failed(verifyTileBufSameElemType(*this, srcTy, maxTy, "src", "max")) ||
-        failed(verifyTileBufSameElemType(*this, srcTy, scalingTy, "src", "scaling")))
-      return failure();
-    // dst must carry the same logical element count as src. For MXFP8 this is a
-    // plain valid_shape match; for MXFP4_E2M1 the packed dst (f4E2M1x2, 2 elems
-    // per byte) is handled by verifyTileBufSameLogicalExtent.
-    if (failed(verifyTileBufSameLogicalExtent(*this, srcTy, dstTy, "src", "dst",
+        failed(verifyTileBufSameElemType(*this, srcTy, scalingTy, "src", "scaling")) ||
+        failed(verifyTileBufSameLogicalExtent(*this, srcTy, dstTy, "src", "dst",
                                               /*compareValidShape=*/true)))
       return failure();
 
-    int64_t srcRows = srcValid[0];
-    int64_t srcCols = srcValid[1];
-    if (srcCols != ShapedType::kDynamic && srcCols % 32 != 0)
-      return emitOpError("expects src valid_shape[1] to be a multiple of 32 for tquant.mx");
-    if (srcRows != ShapedType::kDynamic && srcCols != ShapedType::kDynamic) {
-      int64_t groups = (srcRows * srcCols) / 32;
-      int64_t expElems = expValid[0] == ShapedType::kDynamic || expValid[1] == ShapedType::kDynamic
-                             ? ShapedType::kDynamic
-                             : expValid[0] * expValid[1];
-      int64_t maxElems = maxValid[0] == ShapedType::kDynamic || maxValid[1] == ShapedType::kDynamic
-                             ? ShapedType::kDynamic
-                             : maxValid[0] * maxValid[1];
-      int64_t scalingElems = scalingValid[0] == ShapedType::kDynamic ||
-                                     scalingValid[1] == ShapedType::kDynamic
-                                 ? ShapedType::kDynamic
-                                 : scalingValid[0] * scalingValid[1];
-      int64_t expZzElems = ShapedType::kDynamic;
-      if (auto expZz = getExpZz()) {
-        auto expZzValid = getValidShapeVec(expZz.getType());
-        expZzElems = expZzValid[0] == ShapedType::kDynamic ||
-                             expZzValid[1] == ShapedType::kDynamic
-                         ? ShapedType::kDynamic
-                         : expZzValid[0] * expZzValid[1];
+    const int64_t srcRows = srcValid[0];
+    const int64_t srcCols = srcValid[1];
+    const int64_t srcPhysicalRows = srcPhysical[0];
+    const int64_t srcPhysicalCols = srcPhysical[1];
+    if (srcRows <= 0 || srcCols <= 0 || srcPhysicalRows < srcRows ||
+        srcPhysicalCols < srcCols)
+      return emitOpError("expects positive source valid shape within physical shape");
+    if ((isDn ? srcRows : srcCols) % 32 != 0)
+      return emitOpError() << "expects src valid_shape[" << (isDn ? 0 : 1)
+                          << "] to be a multiple of 32 when grpAxis is "
+                          << (isDn ? "axis0" : "axis1");
+
+    auto checkedMul = [](int64_t lhs, int64_t rhs) -> std::optional<int64_t> {
+      if (lhs < 0 || rhs < 0 ||
+          (rhs != 0 && lhs > std::numeric_limits<int64_t>::max() / rhs))
+        return std::nullopt;
+      return lhs * rhs;
+    };
+    auto checkedAdd = [](int64_t lhs, int64_t rhs) -> std::optional<int64_t> {
+      if (lhs < 0 || rhs < 0 || lhs > std::numeric_limits<int64_t>::max() - rhs)
+        return std::nullopt;
+      return lhs + rhs;
+    };
+    auto ceilDiv = [&](int64_t value, int64_t divisor) -> std::optional<int64_t> {
+      if (value < 0 || divisor <= 0)
+        return std::nullopt;
+      auto plus = checkedAdd(value, divisor - 1);
+      return plus ? std::optional<int64_t>(*plus / divisor) : std::nullopt;
+    };
+    auto alignTo = [&](int64_t value, int64_t alignment) -> std::optional<int64_t> {
+      auto quotient = ceilDiv(value, alignment);
+      if (!quotient || *quotient > std::numeric_limits<int64_t>::max() / alignment)
+        return std::nullopt;
+      return *quotient * alignment;
+    };
+    auto capacityElems = [&](Type type) -> std::optional<int64_t> {
+      auto shape = getShapeVec(type);
+      return checkedMul(shape[0], shape[1]);
+    };
+    auto capacityBytes = [&](Type type) -> std::optional<int64_t> {
+      auto elems = capacityElems(type);
+      unsigned bytes = getElemByteSize(getElemTy(type));
+      if (!elems || bytes == 0 ||
+          *elems > std::numeric_limits<int64_t>::max() /
+                         static_cast<int64_t>(bytes))
+        return std::nullopt;
+      return *elems * static_cast<int64_t>(bytes);
+    };
+    auto requireCapacity = [&](StringRef name, Type type,
+                               int64_t required) -> LogicalResult {
+      auto actual = capacityElems(type);
+      if (!actual || *actual < required)
+        return emitOpError() << "expects " << name << " physical capacity to cover "
+                             << required << " elements";
+      return success();
+    };
+    auto requireCapacityBytes = [&](StringRef name, Type type,
+                                    int64_t required) -> LogicalResult {
+      auto actual = capacityBytes(type);
+      if (!actual || *actual < required)
+        return emitOpError() << "expects " << name << " physical capacity to cover "
+                             << required << " bytes";
+      return success();
+    };
+    auto requireCompact = [&](StringRef name, Type type) -> LogicalResult {
+      auto valid = getValidShapeVec(type);
+      auto physical = getShapeVec(type);
+      if (valid[0] != 1 && physical[1] != valid[1])
+        return emitOpError() << "expects " << name
+                             << " valid elements to form a compact physical prefix";
+      return success();
+    };
+    auto groupsOr = checkedMul(srcRows, srcCols / 32);
+    if (!groupsOr)
+      return emitOpError("cannot compute MX quantization group count without overflow");
+    const int64_t groups = *groupsOr;
+    if (getExpZz()) {
+      auto expZzElements = checkedMul(getValidShapeVec(getExpZz().getType())[0],
+                                      getValidShapeVec(getExpZz().getType())[1]);
+      if (!expZzElements || *expZzElements != groups)
+        return emitOpError(
+            "expects exp_zz valid element count to equal MX group count");
+    }
+    auto requireGroupedShape = [&](StringRef name, Type type,
+                                   bool allowLegacy) -> LogicalResult {
+      auto valid = getValidShapeVec(type);
+      SmallVector<int64_t, 2> canonical = {isDn ? srcRows / 32 : srcRows,
+                                           isDn ? srcCols : srcCols / 32};
+      if (llvm::equal(valid, canonical))
+        return success();
+      if (!isDn && allowLegacy && valid[0] == 1 && valid[1] == groups)
+        return success();
+      return emitOpError() << "expects " << name
+                           << " valid_shape to match "
+                           << (isDn ? "canonical [M/32, N] for grpAxis=axis0"
+                                    : "canonical [M, N/32] or legacy flat [1, M*N/32] for grpAxis=axis1");
+    };
+
+    if (failed(requireGroupedShape("max", maxTy, /*allowLegacy=*/true)) ||
+        failed(requireGroupedShape("scaling", scalingTy,
+                                   /*allowLegacy=*/true)))
+      return failure();
+    if (!getInterleave()) {
+      if (failed(requireGroupedShape("exp", expTy, /*allowLegacy=*/true)))
+        return failure();
+    } else {
+      if (srcRows % 64 != 0)
+        return emitOpError(
+            "expects src valid rows to be a multiple of 64 when interleave is true");
+      if (srcPhysicalRows % 64 != 0)
+        return emitOpError(
+            "expects src physical rows to be a multiple of 64 when interleave is true");
+      auto doubledValidCols = checkedMul(srcCols, 2);
+      if (!doubledValidCols)
+        return emitOpError(
+            "cannot compute interleaved exp valid shape without overflow");
+      if (expValid[0] != srcRows / 64 || expValid[1] != *doubledValidCols)
+        return emitOpError("expects exp valid_shape to match [M/64, 2N] for grpAxis=axis0 with interleave=true");
+    }
+
+    const bool isMxFp4 = quantType == mlir::pto::QuantType::MXFP4_E2M1;
+    const int64_t pack = isMxFp4 ? 2 : 1;
+    if (isMxFp4 && srcPhysicalCols % 2 != 0)
+      return emitOpError("expects MXFP4 src physical cols to be even for packed destination addressing");
+    const int64_t dstValidCols = isMxFp4 ? srcCols / 2 : srcCols;
+    if (dstValid[0] != srcRows || dstValid[1] != dstValidCols)
+      return emitOpError() << "expects dst valid_shape to be [" << srcRows << ", "
+                           << dstValidCols << "] for MX quantization";
+    if (dstPhysical[0] < srcRows)
+      return emitOpError("expects dst physical rows to cover src valid rows");
+
+    if (isDn) {
+      if (isMxFp4) {
+        if (dstPhysical[1] != srcPhysicalCols / pack)
+          return emitOpError("expects MXFP4 axis0 dst physical cols to equal src physical cols / 2");
+        auto dstPrefix = checkedMul(srcRows - 1, srcPhysicalCols / pack);
+        auto required = dstPrefix ? checkedAdd(*dstPrefix, dstValidCols)
+                                  : std::nullopt;
+        if (!required || failed(requireCapacity("dst", dstTy, *required)))
+          return failure();
+        if ((srcPhysicalCols / pack) % 32 != 0 && srcElem.isF16())
+          return emitOpError("does not support FP16 MXFP4 axis0 when packed source stride is not a multiple of 32 bytes");
+      } else {
+        auto dstPrefix = checkedMul(srcRows - 1, dstPhysical[1]);
+        auto required = dstPrefix ? checkedAdd(*dstPrefix, dstValidCols)
+                                  : std::nullopt;
+        if (!required || failed(requireCapacity("dst", dstTy, *required)))
+          return failure();
       }
-      if (expElems != ShapedType::kDynamic && expElems != groups)
-        return emitOpError("expects exp valid element count to equal src valid elements / 32");
-      if (maxElems != ShapedType::kDynamic && maxElems != groups)
-        return emitOpError("expects max valid element count to equal src valid elements / 32");
-      if (scalingElems != ShapedType::kDynamic && scalingElems != groups)
+      if (maxPhysical[1] != srcPhysicalCols)
+        return emitOpError("expects max physical cols to equal src physical cols for grpAxis=axis0");
+      if (scalingPhysical[1] != srcPhysicalCols)
+        return emitOpError("expects scaling physical cols to equal src physical cols for grpAxis=axis0");
+      auto auxRequired = checkedMul(srcRows / 32, srcPhysicalCols);
+      if (!auxRequired || failed(requireCapacity("max", maxTy, *auxRequired)) ||
+          failed(requireCapacity("scaling", scalingTy, *auxRequired)))
+        return failure();
+      if (!getInterleave()) {
+        if (expPhysical[1] != srcPhysicalCols)
+          return emitOpError("expects exp physical cols to equal src physical cols for grpAxis=axis0");
+        if (failed(requireCapacity("exp", expTy, *auxRequired)))
+          return failure();
+      } else {
+        auto doubledPhysicalCols = checkedMul(srcPhysicalCols, 2);
+        auto alignedPhysicalCols =
+            doubledPhysicalCols ? alignTo(*doubledPhysicalCols, 32)
+                                : std::nullopt;
+        if (!alignedPhysicalCols)
+          return emitOpError(
+              "cannot compute interleaved exp physical cols without overflow");
+        if (expPhysical[0] != srcPhysicalRows / 64)
+          return emitOpError("expects interleaved exp physical rows to be src physical rows / 64");
+        if (expPhysical[1] != *alignedPhysicalCols)
+          return emitOpError("expects interleaved exp physical cols to be align32(2 * src physical cols)");
+      }
+      if (srcElem.isF32() && getInterleave())
+        return emitOpError("does not support FP32 interleave with the pinned pto-isa revision");
+    } else {
+      if (dstPhysical[1] != srcPhysicalCols / pack) {
+        if (isMxFp4)
+          return emitOpError("expects MXFP4 axis1 dst physical cols to equal src physical cols / 2");
+        return emitOpError("expects MXFP8 axis1 dst physical cols to equal src physical cols");
+      }
+      auto dstPrefix = checkedMul(srcRows - 1, srcPhysicalCols / pack);
+      auto dstRequired = dstPrefix ? checkedAdd(*dstPrefix, dstValidCols)
+                                   : std::nullopt;
+      if (!dstRequired || failed(requireCapacity("dst", dstTy, *dstRequired)))
+        return failure();
+      if (failed(requireCompact("max", maxTy)) || failed(requireCompact("scaling", scalingTy)) ||
+          failed(requireCapacity("max", maxTy, groups)))
+        return failure();
+      const bool flat = expPhysical[0] == 1;
+      if (flat) {
+        if (srcPhysicalCols != srcCols)
+          return emitOpError("expects axis1 flat exp to use a tight source with physical cols equal to valid cols");
+        if (expValid[0] != 1 || expValid[1] != groups)
+          return emitOpError("expects axis1 flat exp valid_shape to match legacy flat [1, M*N/32]");
+        if (failed(requireCapacity("exp", expTy, groups)))
+          return failure();
+        auto srcElems = checkedMul(srcPhysicalRows, srcPhysicalCols);
+        auto validElems = checkedMul(srcRows, srcPhysicalCols);
+        bool unroll = srcElems && validElems && *srcElems > 1024 &&
+                      *srcElems % 256 == 0 && *validElems % 256 == 0;
+        if (srcElem.isF32()) {
+          auto scaleGroups = unroll ? checkedMul(groups, 2) : groups;
+          auto aligned = scaleGroups ? alignTo(*scaleGroups, 64) : std::nullopt;
+          auto requiredBytes = aligned ? checkedMul(*aligned, 4) : std::nullopt;
+          StringRef scalingName = unroll ? "axis1 flat unrolled f32 scaling"
+                                         : "axis1 flat f32 scaling";
+          if (!requiredBytes ||
+              failed(requireCapacityBytes(scalingName, scalingTy,
+                                          *requiredBytes)))
+            return failure();
+        } else if (getQuantScaleAlg() == pto::QuantScaleAlg::OCP) {
+          auto aligned = alignTo(groups, 128);
+          auto requiredBytes = aligned ? checkedMul(*aligned, 2) : std::nullopt;
+          if (!requiredBytes ||
+              failed(requireCapacityBytes("axis1 flat B16 OCP scaling",
+                                          scalingTy, *requiredBytes)))
+            return failure();
+        } else {
+          return emitOpError("does not support axis1 flat B16 NV quantization with the pinned pto-isa revisions");
+        }
+      } else {
+        if (expValid[0] == 1)
+          return emitOpError(
+              "expects legacy flat exp to use physical rows == 1");
+        if (srcElem.isF16() || srcElem.isBF16())
+          return emitOpError("does not support axis1 canonical 2D B16 quantization with the pinned pto-isa revision");
+        SmallVector<int64_t, 2> canonicalShape = {srcRows, srcCols / 32};
+        if (!llvm::equal(expValid, canonicalShape))
+          return emitOpError("expects exp valid_shape to match canonical [M, N/32] for grpAxis=axis1");
+        if (expPhysical[0] < srcRows || expPhysical[1] < srcCols / 32)
+          return emitOpError("expects axis1 canonical exp physical shape to cover [M, N/32]");
+        auto expPrefix = checkedMul(srcRows - 1, expPhysical[1]);
+        auto expRequired = expPrefix ? checkedAdd(*expPrefix, srcCols / 32)
+                                     : std::nullopt;
+        if (!expRequired || failed(requireCapacity("exp", expTy, *expRequired)) ||
+            failed(requireCapacity("scaling", scalingTy, groups)))
+          return failure();
+      }
+    }
+
+    if ((srcElem.isF16() || srcElem.isBF16()) &&
+        srcCols < srcPhysicalCols && 128 % srcPhysicalCols == 0) {
+      auto validPhysicalElems = checkedMul(srcRows, srcPhysicalCols);
+      if (!validPhysicalElems)
         return emitOpError(
-            "expects scaling valid element count to equal src valid elements / 32");
-      if (expZzElems != ShapedType::kDynamic && expZzElems != groups)
-        return emitOpError(
-            "expects exp_zz valid element count to equal src valid elements / 32");
+            "cannot compute B16 source padding extent without overflow");
+      if (*validPhysicalElems % 128 != 0)
+        return emitOpError("does not support padded B16 source whose VL-aligned padding store has an incomplete final VL");
     }
     return success();
   };
@@ -14594,6 +14996,24 @@ void TStoreOp::getEffects(SmallVectorImpl<SideEffects::EffectInstance<MemoryEffe
 // === TMovOp ===
 // Read: src, Write: dst
 void TMovOp::getEffects(SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  if (classifyTMovForm(getFp()) == TMovForm::XToZz) {
+    const MxGroupAxis axis = getGrpAxisAttr()
+                                 ? getGrpAxisAttr().getValue()
+                                 : MxGroupAxis::Axis1;
+    if (axis == MxGroupAxis::Axis1) {
+      addEffect(effects, &getSrcMutable(), MemoryEffects::Read::get());
+      addEffect(effects, &getSrcMutable(), MemoryEffects::Write::get());
+    } else {
+      addEffect(effects, &getSrcMutable(), MemoryEffects::Read::get());
+    }
+    addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
+    auto fp = getFpMutable();
+    if (axis == MxGroupAxis::Axis1 && !fp.empty()) {
+      addEffect(effects, &fp[0], MemoryEffects::Read::get());
+      addEffect(effects, &fp[0], MemoryEffects::Write::get());
+    }
+    return;
+  }
   addEffect(effects, &getSrcMutable(), MemoryEffects::Read::get());
   auto fpRange = getFpMutable();
   if (!fpRange.empty())
@@ -14953,7 +15373,17 @@ void TQuantOp::getEffects(
 
 void TQuantMxOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
-  PTO_ADD_READ(getSrcMutable());
+  Type srcTy = getSrc().getType();
+  auto valid = getValidShapeVec(srcTy);
+  auto physical = getShapeVec(srcTy);
+  Type elem = getElemTy(srcTy);
+  if ((elem.isF16() || elem.isBF16()) && valid.size() == 2 && physical.size() == 2 &&
+      valid[1] < physical[1]) {
+    addEffect(effects, &getSrcMutable(), MemoryEffects::Read::get());
+    addEffect(effects, &getSrcMutable(), MemoryEffects::Write::get());
+  } else {
+    addEffect(effects, &getSrcMutable(), MemoryEffects::Read::get());
+  }
   PTO_ADD_WRITE(getDstMutable());
   PTO_ADD_WRITE(getExpMutable());
   PTO_ADD_WRITE(getMaxMutable());

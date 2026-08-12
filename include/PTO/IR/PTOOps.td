@@ -1324,7 +1324,8 @@ def TMovOp  : PTO_TOp<"tmov", [
     Optional<PTODpsType>:$fp,
     Optional<I64>:$preQuantScalar,
     OptionalAttr<PTO_AccToVecModeAttr>:$accToVecMode,
-    DefaultValuedAttr<PTO_ReluPreModeAttr, "::mlir::pto::ReluPreMode::NoRelu">:$reluPreMode
+    DefaultValuedAttr<PTO_ReluPreModeAttr, "::mlir::pto::ReluPreMode::NoRelu">:$reluPreMode,
+    OptionalAttr<PTO_MxGroupAxisAttr>:$grpAxis
   );
 
   let results = (outs
@@ -5499,6 +5500,10 @@ def TQuantMxOp : PTO_TOp<"tquant.mx", [
     materializes the auxiliary `exp`, `max`, and `scaling` tiles required by
     PTO-ISA MX quantization.
 
+    The legacy fused form with `exp_zz` and `storeMode` is deprecated. Use a
+    separate `pto.tmov` with a non-scaling X-to-ZZ temporary tile when an
+    exponent layout conversion is required.
+
     DPS form:
       pto.tquant.mx ins(%src : <src_type>)
                     outs(%dst, %exp, %max, %scaling : <dst_type>, <exp_type>, <max_type>, <scaling_type>)
@@ -5517,7 +5522,9 @@ def TQuantMxOp : PTO_TOp<"tquant.mx", [
     Optional<PTODpsType>:$exp_zz,
     PTO_QuantTypeAttr:$quant_type,
     DefaultValuedAttr<PTO_QuantScaleAlgAttr, "::mlir::pto::QuantScaleAlg::OCP">:$quantScaleAlg,
-    OptionalAttr<PTO_VecStoreModeAttr>:$storeMode
+    OptionalAttr<PTO_VecStoreModeAttr>:$storeMode,
+    DefaultValuedAttr<PTO_MxGroupAxisAttr, "::mlir::pto::MxGroupAxis::Axis1">:$grpAxis,
+    DefaultValuedAttr<BoolAttr, "false">:$interleave
   );
 
   let results = (outs);

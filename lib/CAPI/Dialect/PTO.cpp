@@ -538,6 +538,21 @@ int32_t mlirPTOQuantScaleAlgAttrGetValue(MlirAttribute attr) {
   return static_cast<int32_t>(a.getValue());
 }
 
+MlirAttribute mlirPTOMxGroupAxisAttrGet(MlirContext ctx, int32_t value) {
+  auto *c = unwrap(ctx);
+  auto v = static_cast<mlir::pto::MxGroupAxis>(value);
+  return wrap(mlir::pto::MxGroupAxisAttr::get(c, v));
+}
+
+bool mlirPTOAttrIsAMxGroupAxisAttr(MlirAttribute attr) {
+  return mlir::isa<mlir::pto::MxGroupAxisAttr>(unwrap(attr));
+}
+
+int32_t mlirPTOMxGroupAxisAttrGetValue(MlirAttribute attr) {
+  auto a = mlir::cast<mlir::pto::MxGroupAxisAttr>(unwrap(attr));
+  return static_cast<int32_t>(a.getValue());
+}
+
 MlirAttribute mlirPTOVecStoreModeAttrGet(MlirContext ctx, int32_t value) {
   auto *c = unwrap(ctx);
   auto v = static_cast<mlir::pto::VecStoreMode>(value);

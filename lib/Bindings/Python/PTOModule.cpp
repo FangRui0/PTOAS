@@ -764,6 +764,11 @@ void mlir::pto::python::populatePTODialectBindings(pybind11::module_ &m) {
       .value("NV", mlir::pto::QuantScaleAlg::NV)
       .export_values();
 
+    py::enum_<mlir::pto::MxGroupAxis>(m, "MxGroupAxis")
+      .value("Axis0", mlir::pto::MxGroupAxis::Axis0)
+      .value("Axis1", mlir::pto::MxGroupAxis::Axis1)
+      .export_values();
+
     py::enum_<mlir::pto::VecStoreMode>(m, "VecStoreMode")
       .value("ND", mlir::pto::VecStoreMode::ND)
       .value("NZ", mlir::pto::VecStoreMode::NZ)
@@ -817,6 +822,31 @@ void mlir::pto::python::populatePTODialectBindings(pybind11::module_ &m) {
           "value",
           [](MlirAttribute self) -> int32_t {
             return mlirPTOQuantScaleAlgAttrGetValue(self);
+          });
+
+    mlir_attribute_subclass(
+        m, "MxGroupAxisAttr",
+        [](MlirAttribute a) { return mlirPTOAttrIsAMxGroupAxisAttr(a); })
+      .def_classmethod(
+          "get",
+          [](py::object cls, py::object value, MlirContext ctx) -> py::object {
+            int32_t v = 0;
+            if (py::isinstance<py::int_>(value)) {
+              v = py::cast<int32_t>(value);
+            } else if (py::hasattr(value, "value")) {
+              v = value.attr("value").cast<int32_t>();
+            } else {
+              throw std::runtime_error("MxGroupAxisAttr.get expects int or MxGroupAxis enum");
+            }
+            MlirAttribute a = mlirPTOMxGroupAxisAttrGet(ctx, v);
+            if (mlirAttributeIsNull(a)) return py::none();
+            return cls.attr("__call__")(a);
+          },
+          py::arg("cls"), py::arg("value"), py::arg("context") = py::none())
+      .def_property_readonly(
+          "value",
+          [](MlirAttribute self) -> int32_t {
+            return mlirPTOMxGroupAxisAttrGetValue(self);
           });
 
     mlir_attribute_subclass(

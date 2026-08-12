@@ -606,6 +606,8 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
                                               stableValueOrder)) {
         RecordSemanticConflict(conflictPair.first, conflictPair.second);
       }
+      for (const auto &[lhs, rhs] : getSemanticNoAliasPairs(op))
+        RecordSemanticConflict(lhs, rhs);
       OpKillHandle(curOpInfo, live, op->getBlock());
     } else if (auto dstStyleOp = dyn_cast<DestinationStyleOpInterface>(op)) {
       // Preserve generic destination-style aliasing for non-tile tensors.
@@ -2697,6 +2699,8 @@ void PlanMemoryPass::runOnOperation() {
     if (failed(applyPatternsGreedily(funcOp, std::move(patterns)))) {
       return signalPassFailure();
     }
+    if (failed(verifySemanticNoAliasRanges(funcOp)))
+      return signalPassFailure();
 
     bool hasUnplannedAllocTile = false;
     funcOp.walk([&](pto::AllocTileOp op) {

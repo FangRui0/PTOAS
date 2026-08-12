@@ -125,6 +125,8 @@ QuantType = _pto_mod.QuantType
 QuantTypeAttr = _pto_mod.QuantTypeAttr
 QuantScaleAlg = _pto_mod.QuantScaleAlg
 QuantScaleAlgAttr = _pto_mod.QuantScaleAlgAttr
+MxGroupAxis = _pto_mod.MxGroupAxis
+MxGroupAxisAttr = _pto_mod.MxGroupAxisAttr
 VecStoreMode = _pto_mod.VecStoreMode
 VecStoreModeAttr = _pto_mod.VecStoreModeAttr
 
@@ -304,6 +306,8 @@ __all__ = [
     "QuantTypeAttr",
     "QuantScaleAlg",
     "QuantScaleAlgAttr",
+    "MxGroupAxis",
+    "MxGroupAxisAttr",
     "VecStoreMode",
     "VecStoreModeAttr",
     "TileBufConfigAttr",

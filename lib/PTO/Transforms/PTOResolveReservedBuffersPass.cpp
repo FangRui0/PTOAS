@@ -8,6 +8,7 @@
 
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
+#include "Utils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -534,7 +535,16 @@ struct PTOResolveReservedBuffersPass
     if (failed(assignPeerAwareFlagBases(moduleOp)) ||
         failed(materializeResolvedAddresses(moduleOp))) {
       signalPassFailure();
+      return;
     }
+
+    LogicalResult noAliasStatus = success();
+    moduleOp.walk([&](func::FuncOp func) {
+      if (succeeded(noAliasStatus) && failed(verifySemanticNoAliasRanges(func)))
+        noAliasStatus = failure();
+    });
+    if (failed(noAliasStatus))
+      signalPassFailure();
   }
 };
 
