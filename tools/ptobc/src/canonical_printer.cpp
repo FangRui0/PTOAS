@@ -62,7 +62,9 @@ static std::string joinLines(const std::vector<std::string> &lines) {
   std::string out;
   for (size_t i = 0; i < lines.size(); ++i) {
     out += lines[i];
-    if (i + 1 < lines.size()) out.push_back('\n');
+    if (i + 1 < lines.size()) {
+      out.push_back('\n');
+    }
   }
   return out;
 }
@@ -93,7 +95,9 @@ static std::string hexFloatLiteral(mlir::FloatAttr a) {
 static void sortAttributesLexicographically(mlir::ModuleOp module) {
   module.walk([&](mlir::Operation *op) {
     auto attrs = op->getAttrs();
-    if (attrs.size() <= 1) return;
+    if (attrs.size() <= 1) {
+      return;
+    }
 
     NamedAttributeVector sorted(attrs.begin(), attrs.end());
     llvm::sort(sorted, [](const mlir::NamedAttribute &a, const mlir::NamedAttribute &b) {
@@ -157,15 +161,23 @@ static void collectSSADefsFromSignature(const std::string &line,
   // Collect `%name:` occurrences within (...) in `func.func` or `^bb` lines.
   // This is a lightweight heuristic but works for standard MLIR assembly.
   size_t lpar = line.find('(');
-  if (lpar == std::string::npos) return;
+  if (lpar == std::string::npos) {
+    return;
+  }
   size_t rpar = line.find(')', lpar + 1);
-  if (rpar == std::string::npos) return;
+  if (rpar == std::string::npos) {
+    return;
+  }
 
   for (size_t i = lpar + 1; i < rpar; ++i) {
-    if (line[i] != '%') continue;
+    if (line[i] != '%') {
+      continue;
+    }
     size_t j = i + 1;
     while (j < rpar && isSSAIdentChar(line[j])) ++j;
-    if (j == i + 1) continue;
+    if (j == i + 1) {
+      continue;
+    }
     // Must be followed by ':' to be an arg/blkarg.
     if (j < rpar && line[j] == ':') {
       out.push_back(line.substr(i + 1, j - (i + 1)));
@@ -204,18 +216,22 @@ static bool findConstantDefinition(const std::vector<std::string> &lines,
                                    const std::string &name, std::string &imm,
                                    std::string &ty) {
   for (const auto &line : lines) {
-    if (line.find('%' + name) == std::string::npos)
+    if (line.find('%' + name) == std::string::npos) {
       continue;
-    if (line.find("= arith.constant") == std::string::npos)
+    }
+    if (line.find("= arith.constant") == std::string::npos) {
       continue;
+    }
     size_t pos = line.find('%');
-    if (pos == std::string::npos)
+    if (pos == std::string::npos) {
       continue;
+    }
     size_t end = pos + 1;
     while (end < line.size() && isSSAIdentChar(line[end]))
       ++end;
-    if (line.substr(pos + 1, end - (pos + 1)) != name)
+    if (line.substr(pos + 1, end - (pos + 1)) != name) {
       continue;
+    }
     return parseConstantLine(line, imm, ty);
   }
   return false;

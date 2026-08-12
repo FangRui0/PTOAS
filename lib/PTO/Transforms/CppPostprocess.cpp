@@ -30,8 +30,9 @@ struct ParsedMarkerCall {
 static bool parseMarkerArgs(llvm::StringRef argsRef,
                             llvm::SmallVectorImpl<llvm::StringRef> &args) {
   args.clear();
-  if (argsRef.empty())
+  if (argsRef.empty()) {
     return true;
+  }
 
   int parenDepth = 0;
   size_t partBegin = 0;
@@ -42,8 +43,9 @@ static bool parseMarkerArgs(llvm::StringRef argsRef,
       continue;
     }
     if (c == ')') {
-      if (parenDepth > 0)
+      if (parenDepth > 0) {
         --parenDepth;
+      }
       continue;
     }
     if (c == ',' && parenDepth == 0) {
@@ -51,8 +53,9 @@ static bool parseMarkerArgs(llvm::StringRef argsRef,
       partBegin = i + 1;
     }
   }
-  if (partBegin > argsRef.size())
+  if (partBegin > argsRef.size()) {
     return false;
+  }
   args.push_back(argsRef.drop_front(partBegin).trim());
   return true;
 }
@@ -61,18 +64,21 @@ static bool parseLastUseMarkerName(llvm::StringRef markerName,
                                    std::string &callee,
                                    std::string &lastUseArgs) {
   static constexpr llvm::StringLiteral kPrefix = "PTOAS__LAST_USE__";
-  if (!markerName.starts_with(kPrefix))
+  if (!markerName.starts_with(kPrefix)) {
     return false;
+  }
 
   llvm::StringRef payload = markerName.drop_front(kPrefix.size());
   size_t split = payload.find("__");
-  if (split == llvm::StringRef::npos)
+  if (split == llvm::StringRef::npos) {
     return false;
+  }
 
   callee = payload.take_front(split).str();
   llvm::StringRef encoded = payload.drop_front(split + 2);
-  if (callee.empty() || encoded.empty())
+  if (callee.empty() || encoded.empty()) {
     return false;
+  }
 
   lastUseArgs.clear();
   size_t pos = 0;
@@ -81,8 +87,9 @@ static bool parseLastUseMarkerName(llvm::StringRef markerName,
     llvm::StringRef token =
         next == llvm::StringRef::npos ? encoded.drop_front(pos)
                                       : encoded.slice(pos, next);
-    if (token.empty())
+    if (token.empty()) {
       return false;
+    }
     if (!llvm::all_of(token, [](char c) { return std::isdigit(c); }))
       return false;
     if (!lastUseArgs.empty())
@@ -103,8 +110,9 @@ bool rewriteLastUseMarkersInCpp(std::string &cpp) {
   static constexpr llvm::StringLiteral kPrefix = "PTOAS__LAST_USE__";
   while (true) {
     size_t markerPos = cpp.find(kPrefix.str(), searchPos);
-    if (markerPos == std::string::npos)
+    if (markerPos == std::string::npos) {
       break;
+    }
 
     size_t lparenPos = markerPos + kPrefix.size();
     while (lparenPos < cpp.size() && cpp[lparenPos] != '(')
@@ -159,8 +167,9 @@ bool rewriteLastUseMarkersInCpp(std::string &cpp) {
     replacement.append(callee);
     replacement.push_back('(');
     for (size_t i = 0; i < call.args.size(); ++i) {
-      if (i)
+      if (i) {
         replacement.append(", ");
+      }
       replacement.append(call.args[i].str());
     }
     replacement.push_back(')');

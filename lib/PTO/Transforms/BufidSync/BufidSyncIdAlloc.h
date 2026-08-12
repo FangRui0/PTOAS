@@ -27,7 +27,7 @@ public:
 
   void computeLifeIntervals();
   void linearScanAllocate();
-  bool needsReuse() const { return maxPhysicalIdUsed_ >= (int)physicalBufIdCount_; }
+  bool needsReuse() const { return maxPhysicalIdUsed_ >= static_cast<int>(physicalBufIdCount_); }
   void reuseIds();
   void compactPhysicalIds();
   bool validateNoSamePhysicalIdNesting(std::string *error = nullptr) const;

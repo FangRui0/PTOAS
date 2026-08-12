@@ -877,23 +877,23 @@ class VectorCubeSurfaceTest(unittest.TestCase):
                  patch.object(_ops._pto, "tsel") as tsel_op:
                 _ops.tsel(mask, src0, src1, dst)
             resolve_tmp.assert_called_once_with(dst, None, context="tsel")
-            self.assertEqual(tsel_op.call_args.args, (mask, src0, src1, synthesized_tmp, dst))
+            tsel_op.assert_called_once_with(mask, src0, src1, dst, tmp=synthesized_tmp)
 
             with patch.object(_ops, "_resolve_selection_tmp", side_effect=AssertionError("should not synthesize")), \
                  patch.object(_ops._pto, "tsel") as tsel_op:
                 _ops.tsel(mask, src0, src1, dst, tmp=tmp)
-            self.assertEqual(tsel_op.call_args.args, (mask, src0, src1, tmp, dst))
+            tsel_op.assert_called_once_with(mask, src0, src1, dst, tmp=tmp)
 
             with patch.object(_ops, "_resolve_selection_tmp", return_value=synthesized_tmp) as resolve_tmp, \
                  patch.object(_ops._pto, "tsels") as tsels_op:
                 _ops.tsels(mask, src, scalar, dst)
             resolve_tmp.assert_called_once_with(dst, None, context="tsels")
-            self.assertEqual(tsels_op.call_args.args, (mask, src, synthesized_tmp, coerced_scalar, dst))
+            tsels_op.assert_called_once_with(mask, src, coerced_scalar, dst, tmp=synthesized_tmp)
 
             with patch.object(_ops, "_resolve_selection_tmp", side_effect=AssertionError("should not synthesize")), \
                  patch.object(_ops._pto, "tsels") as tsels_op:
                 _ops.tsels(mask, src, scalar, dst, tmp=tmp)
-            self.assertEqual(tsels_op.call_args.args, (mask, src, tmp, coerced_scalar, dst))
+            tsels_op.assert_called_once_with(mask, src, coerced_scalar, dst, tmp=tmp)
 
     def test_tile_row_reductions_expose_optional_tmp_and_synthesize_one(self):
         src = SimpleNamespace(type="src_ty")

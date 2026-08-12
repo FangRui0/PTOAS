@@ -125,8 +125,9 @@ inferTFillPadLoweringKindAfterMemoryPlanning(TFillPadOp op) {
 std::optional<PhysicalSectionKind>
 inferPhysicalSectionKindFromPipe(Operation *op) {
   auto pipeOp = dyn_cast_or_null<OpPipeInterface>(op);
-  if (!pipeOp)
+  if (!pipeOp) {
     return std::nullopt;
+  }
 
   switch (pipeOp.getPipe()) {
   case PIPE::PIPE_M:
@@ -145,8 +146,9 @@ func::ReturnOp getAssumedUniqueReturnOp(func::FuncOp funcOp) {
   func::ReturnOp returnOp;
   for (Block &b : funcOp.getBody()) {
     if (auto candidateOp = dyn_cast<func::ReturnOp>(b.getTerminator())) {
-      if (returnOp)
+      if (returnOp) {
         return nullptr;
+      }
       returnOp = candidateOp;
     }
   }
@@ -233,8 +235,9 @@ void setBaseMemRefTypeScope(Value val, AddressSpaceAttr targetMemScope) {
 
   if (auto curMemScope = dyn_cast_if_present<AddressSpaceAttr>(
           dyn_cast<BaseMemRefType>(type).getMemorySpace())) {
-    if (curMemScope != targetMemScope)
+    if (curMemScope != targetMemScope) {
       llvm::report_fatal_error("memref scope mismatch while propagating PTO address space");
+    }
     return;
   }
 
@@ -668,7 +671,7 @@ LogicalResult verifySemanticNoAliasRanges(func::FuncOp func) {
   return result;
 }
 
-Value tracebackImpl(Value memrefVal) {
+static Value tracebackImpl(Value memrefVal) {
   // case 1: v is the iter_arg of a scf.for
   if (auto arg = dyn_cast<BlockArgument>(memrefVal)) {
     if (auto forOp =
@@ -732,13 +735,14 @@ Value tracebackImpl(Value memrefVal) {
   return result;
 }
 
-bool isAllocLikeOp(Operation *op) {
-  if (!op)
+static bool isAllocLikeOp(Operation *op) {
+  if (!op) {
     return false;
+  }
   return isa<memref::AllocOp>(op) || isa<memref::AllocaOp>(op);
 }
 
-bool isAllocLikeOp(Value val) {
+static bool isAllocLikeOp(Value val) {
   return isAllocLikeOp(val.getDefiningOp());
 }
 
@@ -754,8 +758,9 @@ std::optional<int64_t> getStaticTotalSize(const ArrayRef<int64_t> &shapes) {
 }
 
 uint64_t AlignUp(uint64_t lhs, uint64_t rhs) {
-  if (rhs == 0)
+  if (rhs == 0) {
     return lhs;
+  }
   if (lhs % rhs != 0) {
     lhs += rhs - (lhs % rhs);
   }
@@ -809,7 +814,7 @@ bool isLocalBuffer(std::optional<AddressSpaceAttr> memorySpaceAttr) {
   llvm_unreachable("Currently only support (UB | L1 | L0C) allocation");
 }
 
-SmallVector<Value> getOpTouchBuffer(Operation *op) {
+static SmallVector<Value> getOpTouchBuffer(Operation *op) {
   SmallVector<Value> touchBuffer;
   touchBuffer.insert(touchBuffer.end(), op->getResults().begin(),
                      op->getResults().end());
@@ -839,7 +844,7 @@ ModuleOp getTopLevelModuleOp(Operation *op) {
 }
 
 /// Index of yielded value where is alias of targetVal.
-std::optional<int> getYieldValueIdx(Value targetVal, ValueRange yieldedValues) {
+static std::optional<int> getYieldValueIdx(Value targetVal, ValueRange yieldedValues) {
   auto it = std::find(yieldedValues.begin(), yieldedValues.end(), targetVal);
   if (it != yieldedValues.end()) {
     return it - yieldedValues.begin();
@@ -849,8 +854,9 @@ std::optional<int> getYieldValueIdx(Value targetVal, ValueRange yieldedValues) {
 }
 
 LoopLikeOpInterface getParentLoop(Value val) {
-  if (!val.getDefiningOp())
+  if (!val.getDefiningOp()) {
     return nullptr;
+  }
 
   // Firstly, get parent loop
   LoopLikeOpInterface parentLoop =
@@ -861,8 +867,9 @@ LoopLikeOpInterface getParentLoop(Value val) {
 
   // Need to determine whether val is yielded by the loop.
   auto yieldedValues = parentLoop.getYieldedValues();
-  if (yieldedValues.empty())
+  if (yieldedValues.empty()) {
     return parentLoop;
+  }
 
   auto idxLoopRes = getYieldValueIdx(val, yieldedValues);
   if (idxLoopRes.has_value()) {
@@ -873,8 +880,9 @@ LoopLikeOpInterface getParentLoop(Value val) {
 
   // Need to determine whether val is yielded by if/else.
   auto parentIf = val.getDefiningOp()->getParentOfType<scf::IfOp>();
-  if (!parentIf || parentIf.getResults().empty())
+  if (!parentIf || parentIf.getResults().empty()) {
     return parentLoop;
+  }
 
   auto thenYieldOp = parentIf.thenYield();
   auto thenYieldOpers = thenYieldOp.getOperands();

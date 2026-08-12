@@ -891,6 +891,7 @@ def simt_collective_math_probe():
     pto.mul_i32toi64(lane, lane, signedness="unsigned")
 
     as_f32 = pto.convert(lane, pto.f32, rounding="r", saturation="nosat", signedness="signed")
+    as_f16 = pto.const(1.0, dtype=pto.f16)
     pto.convert(as_f32, pto.i32, rounding="z", saturation="sat", signedness="signed")
     pto.absf(as_f32)
     pto.sqrt(as_f32)
@@ -903,6 +904,8 @@ def simt_collective_math_probe():
     pto.round(as_f32)
     pto.fmin(as_f32, as_f32)
     pto.fmax(as_f32, as_f32)
+    pto.fmin(as_f16, as_f16)
+    pto.fmax(as_f16, as_f16)
     pto.fma(as_f32, as_f32, as_f32)
 
 
@@ -2679,6 +2682,8 @@ def vmi_wrapper_dispatch_probe():
     int_rhs = pto.vmi.vload(int_other_ptr, offset, size=64)
     hist_mask = pto.vmi.create_mask(pto.const(256, dtype=pto.index), size=256)
     added = pto.vmi.vadd(lhs, rhs, mask)
+    carry_sum, carry = pto.vmi.vaddc(int_lhs, int_rhs, mask)
+    carry_next, carry_out = pto.vmi.vaddcs(carry_sum, int_rhs, carry, mask)
     subtracted = pto.vmi.vsub(lhs, rhs, mask)
     multiplied = pto.vmi.vmul(lhs, rhs, mask)
     divided = pto.vmi.vdiv(lhs, rhs, mask)
@@ -2742,6 +2747,8 @@ def vmi_wrapper_dispatch_probe():
     pto.vmi.vsstb(hi, dst_ptr, offset, pto.i16(8), mask)
 
     _ = group_mask
+    _ = carry_next
+    _ = carry_out
     _ = total
     _ = explicit_total
     _ = peak
@@ -5635,6 +5642,14 @@ def main() -> None:
         "pto.resume",
     ):
         expect(op_name in simt_full_text, f"full SIMT surface should contain {op_name}")
+    expect(
+        re.search(r"pto\.fmin .* : f16, f16 -> f16", simt_full_text) is not None,
+        "full SIMT surface should accept scalar f16 pto.fmin",
+    )
+    expect(
+        re.search(r"pto\.fmax .* : f16, f16 -> f16", simt_full_text) is not None,
+        "full SIMT surface should accept scalar f16 pto.fmax",
+    )
     for fp8_vec in (
         "vector<4xf8E4M3FN>",
         "vector<8xf8E4M3FN>",
@@ -6594,6 +6609,8 @@ def main() -> None:
         "pto.vmi.vsstb",
         "pto.vmi.vci",
         "pto.vmi.vadd",
+        "pto.vmi.vaddc",
+        "pto.vmi.vaddcs",
         "pto.vmi.vsub",
         "pto.vmi.vmul",
         "pto.vmi.vdiv",

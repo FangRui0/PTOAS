@@ -1212,7 +1212,6 @@ void mlir::pto::TScatterOp::print(OpAsmPrinter &p) {
 }
 
 namespace {
-
 struct CommRecvClause {
   OpAsmParser::UnresolvedOperand ping;
   std::optional<OpAsmParser::UnresolvedOperand> pong;
@@ -1946,7 +1945,7 @@ inferLayout(ArrayRef<int64_t> shape, ArrayRef<int64_t> strides,
 
   // ND: row-major contiguous
   bool isRowMajor = true;
-  for (int i = 0, e = (int)shape.size() - 1; i < e; ++i) {
+  for (int i = 0, e = static_cast<int>(shape.size()) - 1; i < e; ++i) {
     auto expectedStride = multiplyLayoutInts(strides[i + 1], shape[i + 1]);
     if (!expectedStride || strides[i] != *expectedStride) {
       isRowMajor = false;
@@ -1958,7 +1957,7 @@ inferLayout(ArrayRef<int64_t> shape, ArrayRef<int64_t> strides,
 
   // DN: col-major
   bool isColMajor = true;
-  for (int i = 0, e = (int)shape.size() - 1; i < e; ++i) {
+  for (int i = 0, e = static_cast<int>(shape.size()) - 1; i < e; ++i) {
     auto expectedStride = multiplyLayoutInts(strides[i], shape[i]);
     if (!expectedStride || strides[i + 1] != *expectedStride) {
       isColMajor = false;
@@ -3963,10 +3962,18 @@ static bool isTileLikeType(Type ty) {
 }
 
 static Type getElemTy(Type ty) {
-  if (auto tt = mlir::dyn_cast<RankedTensorType>(ty)) return tt.getElementType();
-  if (auto tv = mlir::dyn_cast<pto::TensorViewType>(ty)) return tv.getElementType();
-  if (auto tb = mlir::dyn_cast<pto::TileBufType>(ty)) return tb.getElementType();
-  if (auto tv = mlir::dyn_cast<pto::PartitionTensorViewType>(ty)) return tv.getElementType();
+  if (auto tt = mlir::dyn_cast<RankedTensorType>(ty)) {
+    return tt.getElementType();
+  }
+  if (auto tv = mlir::dyn_cast<pto::TensorViewType>(ty)) {
+    return tv.getElementType();
+  }
+  if (auto tb = mlir::dyn_cast<pto::TileBufType>(ty)) {
+    return tb.getElementType();
+  }
+  if (auto tv = mlir::dyn_cast<pto::PartitionTensorViewType>(ty)) {
+    return tv.getElementType();
+  }
   return Type();
 }
 
@@ -4062,8 +4069,9 @@ static LogicalResult verifyAsyncFlatContiguous1DGMViewLike(Operation *op,
   }
 
   bool logical1D = true;
-  for (int i = 0, e = static_cast<int>(shape.size()) - 1; i < e; ++i)
+  for (int i = 0, e = static_cast<int>(shape.size()) - 1; i < e; ++i) {
     logical1D &= shape[i] == 1;
+  }
   if (!logical1D)
     return op->emitOpError()
            << "expects " << name
@@ -5980,7 +5988,6 @@ LogicalResult pto::TCIOp::verify() {
 }
 
 LogicalResult pto::TTriOp::verify() {
-
   Type dstTy = getDst().getType();
   if (failed(verifyVecTileCommon(*this, dstTy, "dst")))
     return failure();
@@ -6604,7 +6611,6 @@ llvm::LogicalResult mlir::pto::TRandomOp::verify() {
     return emitOpError("trandom is only supported for A5 targets");
   };
   auto verifyA5 = [&]() -> LogicalResult {
-
     Type dstTy = getDst().getType();
     if (failed(verifyTileBufCommon(*this, dstTy, "dst")))
       return failure();
@@ -7130,10 +7136,13 @@ mlir::LogicalResult mlir::pto::TInsertOp::verify() {
         return emitOpError("fp is only valid with src loc=acc");
       auto fpTy = getFp().getType();
       auto fpTb = dyn_cast<pto::TileBufType>(fpTy);
-      if (!fpTb) return emitOpError("expects fp to be !pto.tile_buf");
+      if (!fpTb) {
+        return emitOpError("expects fp to be !pto.tile_buf");
+      }
       if (failed(verifyTileBufCommon(*this, fpTy, "fp",
-                                     /*allowLowPrecision=*/isA5)))
+                                     /*allowLowPrecision=*/isA5))) {
         return failure();
+      }
       auto fpSpace = getSpace(fpTy);
       if (!fpSpace || *fpSpace != pto::AddressSpace::SCALING)
         return emitOpError("expects fp to be loc=scaling");
@@ -8158,9 +8167,15 @@ mlir::LogicalResult mlir::pto::TMovOp::verify() {
 
 // 辅助函数：获取 Rank，支持 ShapedType 和 PTO TileTypes
 static int64_t getRankHelper(Type t) {
-  if (auto s = dyn_cast<RankedTensorType>(t)) return s.getRank();
-  if (auto tile = dyn_cast<pto::TileBufType>(t)) return tile.getRank();
-  if (auto view = dyn_cast<pto::PartitionTensorViewType>(t)) return view.getRank();
+  if (auto s = dyn_cast<RankedTensorType>(t)) {
+    return s.getRank();
+  }
+  if (auto tile = dyn_cast<pto::TileBufType>(t)) {
+    return tile.getRank();
+  }
+  if (auto view = dyn_cast<pto::PartitionTensorViewType>(t)) {
+    return view.getRank();
+  }
   return -1;
 }
 
@@ -9288,7 +9303,6 @@ void mlir::pto::MScatterOp::print(OpAsmPrinter &p) {
 }
 
 LogicalResult MScatterOp::verify() {
-
   Type srcTy = getSrc().getType();
   Type idxTy = getIdx().getType();
   Type memTy = getMem().getType();
@@ -9515,7 +9529,6 @@ void mlir::pto::MGatherOp::print(OpAsmPrinter &p) {
 }
 
 LogicalResult MGatherOp::verify() {
-
   Type memTy = getMem().getType();
   Type idxTy = getIdx().getType();
   Type dstTy = getDst().getType();
@@ -10753,7 +10766,6 @@ mlir::LogicalResult mlir::pto::TQuantMxOp::verify() {
   };
 
   auto verifyA5 = [&]() -> LogicalResult {
-
     Type srcTy = getSrc().getType();
     Type dstTy = getDst().getType();
     Type expTy = getExp().getType();
@@ -11210,7 +11222,6 @@ mlir::LogicalResult mlir::pto::TReluOp::verify() {
 
 
 mlir::LogicalResult mlir::pto::TRemOp::verify() {
-
   Type src0Ty = getSrc0().getType();
   Type src1Ty = getSrc1().getType();
   Type dstTy = getDst().getType();
@@ -11365,7 +11376,6 @@ mlir::LogicalResult mlir::pto::TRemSOp::verify() {
 }
 
 mlir::LogicalResult mlir::pto::TFModSOp::verify() {
-
   Type srcTy = getSrc().getType();
   Type dstTy = getDst().getType();
   Type scalarTy = getScalar().getType();
@@ -11404,7 +11414,6 @@ static LogicalResult verifyTPowTmpShape(Operation *op, Type tmpTy, Type dstTy) {
 }
 
 mlir::LogicalResult mlir::pto::TPowOp::verify() {
-
   Type baseTy = getBase().getType();
   Type expTy = getExp().getType();
   Type dstTy = getDst().getType();
@@ -11471,7 +11480,6 @@ mlir::LogicalResult mlir::pto::TPowOp::verify() {
 }
 
 mlir::LogicalResult mlir::pto::TPowSOp::verify() {
-
   Type srcTy = getSrc().getType();
   Type dstTy = getDst().getType();
   Type scalarTy = getScalar().getType();
@@ -13043,7 +13051,9 @@ mlir::LogicalResult mlir::pto::TScatterOp::verify() {
   }
 
   auto isAllowedDataElem = [&](mlir::Type t) -> bool {
-    if (t.isF16() || t.isF32() || t.isBF16()) return true;
+    if (t.isF16() || t.isF32() || t.isBF16()) {
+      return true;
+    }
     if (auto it = mlir::dyn_cast<mlir::IntegerType>(t))
       return (it.getWidth() == 8 || it.getWidth() == 16 || it.getWidth() == 32);
     return false;
@@ -14092,7 +14102,6 @@ LogicalResult mlir::pto::TGemvAccOp::verify() {
 
 namespace mlir {
 namespace pto {
-
 static LogicalResult parseShapeAndElem(AsmParser &parser,
                                        SmallVectorImpl<int64_t> &shape,
                                        Type &elementType,
@@ -14292,7 +14301,9 @@ static void decomposeStridedLayout(AffineMap map, SmallVectorImpl<int64_t> &stri
   // 1. 初始化
   strides.assign(map.getNumDims(), 0);
   
-  if (map.getNumResults() != 1) return;
+  if (map.getNumResults() != 1) {
+    return;
+  }
   
   // 2. 摊平表达式
   SmallVector<AffineExpr, 4> terms;
@@ -14377,46 +14388,64 @@ static AffineMap buildStrictBitwiseAffineMap(MLIRContext *ctx,
 
 // Helper for parsing [64, 1]
 static ParseResult parseStrideList(AsmParser &parser, SmallVectorImpl<int64_t> &strides) {
-  if (parser.parseLSquare()) return failure();
+  if (parser.parseLSquare()) {
+    return failure();
+  }
   do {
     int64_t stride;
-    if (parser.parseInteger(stride)) return failure();
+    if (parser.parseInteger(stride)) {
+      return failure();
+    }
     strides.push_back(stride);
   } while (succeeded(parser.parseOptionalComma()));
-  if (parser.parseRSquare()) return failure();
+  if (parser.parseRSquare()) {
+    return failure();
+  }
   return success();
 }
 
 // The custom attribute parser for: strided<[64, 1], offset: [?, ?]>
 [[maybe_unused]] static ParseResult parseStridedLayout(AsmParser &parser, Attribute &layout) {
-  if (parser.parseLess()) return failure();
+  if (parser.parseLess()) {
+    return failure();
+  }
   
   // 1. Parse Strides
   SmallVector<int64_t> strides;
-  if (parseStrideList(parser, strides)) return failure();
+  if (parseStrideList(parser, strides)) {
+    return failure();
+  }
   
   bool isMultiDim = false;
   unsigned numSymbols = 0;
 
   // 2. Parse Offset
   if (succeeded(parser.parseOptionalComma())) {
-    if (parser.parseKeyword("offset") || parser.parseColon()) return failure();
+    if (parser.parseKeyword("offset") || parser.parseColon()) {
+      return failure();
+    }
     
     // Check for multi-dim syntax: [?, ?]
     if (succeeded(parser.parseOptionalLSquare())) {
       isMultiDim = true;
       do {
-        if (parser.parseQuestion()) return failure();
+        if (parser.parseQuestion()) {
+          return failure();
+        }
         numSymbols++;
       } while (succeeded(parser.parseOptionalComma()));
-      if (parser.parseRSquare()) return failure();
+      if (parser.parseRSquare()) {
+        return failure();
+      }
     } else {
       // Fallback for old scalar syntax '?'
       if (parser.parseOptionalQuestion()) { /* handle single scalar */ }
     }
   }
   
-  if (parser.parseGreater()) return failure();
+  if (parser.parseGreater()) {
+    return failure();
+  }
 
   // 3. Validation
   if (isMultiDim && numSymbols != strides.size()) {
@@ -14438,12 +14467,16 @@ static ParseResult parseStrideList(AsmParser &parser, SmallVectorImpl<int64_t> &
 // =============================================================================
 
 [[maybe_unused]] static void printLayout(AsmPrinter &printer, Attribute layoutAttr) {
-  if (!layoutAttr) return;
+  if (!layoutAttr) {
+    return;
+  }
   auto mapAttr = llvm::dyn_cast<AffineMapAttr>(layoutAttr);
   if (!mapAttr) { printer << ", " << layoutAttr; return; }
 
   AffineMap map = mapAttr.getValue();
-  if (map.isIdentity()) return; 
+  if (map.isIdentity()) {
+    return;
+  }
 
   // 1. [核心修改] 反解 Strides
   SmallVector<int64_t> strides;
@@ -14460,7 +14493,9 @@ static ParseResult parseStrideList(AsmParser &parser, SmallVectorImpl<int64_t> &
     printer << ", offset: [";
     for (unsigned i = 0; i < numSyms; ++i) {
       printer << "?";
-      if (i < numSyms - 1) printer << ", ";
+      if (i < numSyms - 1) {
+        printer << ", ";
+      }
     }
     printer << "]";
   }
@@ -14601,22 +14636,29 @@ LogicalResult SubViewOp::inferReturnTypes(
     MLIRContext *context, std::optional<Location> location, ValueRange operands,
     DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
-
   // 1. 获取 Source Type
-  if (operands.empty()) return failure();
+  if (operands.empty()) {
+    return failure();
+  }
   auto sourceType = llvm::dyn_cast<TileBufType>(operands[0].getType());
-  if (!sourceType) return failure();
+  if (!sourceType) {
+    return failure();
+  }
 
   // 2. 获取 subview 逻辑窗口（sizes）
   ArrayAttr sizeAttr;
   if (properties) {
     const auto *prop = properties.as<SubViewOp::Properties *>();
-    if (prop) sizeAttr = prop->sizes;
+    if (prop) {
+      sizeAttr = prop->sizes;
+    }
   }
   if (!sizeAttr && attributes) {
     sizeAttr = attributes.getAs<ArrayAttr>("sizes");
   }
-  if (!sizeAttr) return failure();
+  if (!sizeAttr) {
+    return failure();
+  }
 
   SmallVector<int64_t> subviewShape;
   for (auto attr : sizeAttr) {
@@ -14681,7 +14723,9 @@ LogicalResult SubViewOp::inferReturnTypes(
 
   // 3. 继承 Config (若为空使用默认)
   auto cfg = sourceType.getConfigAttr();
-  if (!cfg) cfg = TileBufConfigAttr::getDefault(context);
+  if (!cfg) {
+    cfg = TileBufConfigAttr::getDefault(context);
+  }
 
   // 4. 构建 Result Type
   auto canonicalValidShape = canonicalizeTileBufValidShape(validShape);
@@ -14727,22 +14771,22 @@ static LogicalResult computeInnerShape(TileBufConfigAttr cfg, Type elemTy,
                                        bool &boxed, int32_t &bl, int32_t &sl) {
   auto readBLayoutI32 = [](Attribute attr, int32_t &out) -> bool {
     if (auto a = dyn_cast<BLayoutAttr>(attr)) {
-      out = (int32_t)a.getValue();
+      out = static_cast<int32_t>(a.getValue());
       return true;
     }
     if (auto a = dyn_cast<IntegerAttr>(attr)) {
-      out = (int32_t)a.getInt();
+      out = static_cast<int32_t>(a.getInt());
       return true;
     }
     return false;
   };
   auto readSLayoutI32 = [](Attribute attr, int32_t &out) -> bool {
     if (auto a = dyn_cast<SLayoutAttr>(attr)) {
-      out = (int32_t)a.getValue();
+      out = static_cast<int32_t>(a.getValue());
       return true;
     }
     if (auto a = dyn_cast<IntegerAttr>(attr)) {
-      out = (int32_t)a.getInt();
+      out = static_cast<int32_t>(a.getInt());
       return true;
     }
     return false;
@@ -14752,7 +14796,9 @@ static LogicalResult computeInnerShape(TileBufConfigAttr cfg, Type elemTy,
   int32_t fr = 512;
   (void)readBLayoutI32(cfg.getBLayout(), bl);
   (void)readSLayoutI32(cfg.getSLayout(), sl);
-  if (auto attr = dyn_cast<IntegerAttr>(cfg.getSFractalSize())) fr = (int32_t)attr.getInt();
+  if (auto attr = dyn_cast<IntegerAttr>(cfg.getSFractalSize())) {
+    fr = static_cast<int32_t>(attr.getInt());
+  }
 
   boxed = (sl != 0);
   if (!boxed) {
@@ -14762,7 +14808,9 @@ static LogicalResult computeInnerShape(TileBufConfigAttr cfg, Type elemTy,
   }
 
   int64_t elemBytes = static_cast<int64_t>(getElemByteSize(elemTy));
-  if (elemBytes <= 0) return failure();
+  if (elemBytes <= 0) {
+    return failure();
+  }
 
   if (fr == 1024) {
     innerRows = 16;
@@ -14851,9 +14899,13 @@ mlir::LogicalResult mlir::pto::SubViewOp::verify() {
   if (dstTy.getMemorySpace() != srcTy.getMemorySpace())
     return emitOpError("expects result address space to match source");
   auto srcCfg = srcTy.getConfigAttr();
-  if (!srcCfg) srcCfg = TileBufConfigAttr::getDefault(getContext());
+  if (!srcCfg) {
+    srcCfg = TileBufConfigAttr::getDefault(getContext());
+  }
   auto dstCfg = dstTy.getConfigAttr();
-  if (!dstCfg) dstCfg = TileBufConfigAttr::getDefault(getContext());
+  if (!dstCfg) {
+    dstCfg = TileBufConfigAttr::getDefault(getContext());
+  }
   if (dstCfg != srcCfg)
     return emitOpError("expects result tile config to match source");
 
@@ -14889,7 +14941,9 @@ mlir::LogicalResult mlir::pto::SubViewOp::verify() {
     return emitOpError("expects result valid_shape[1] to match inferred/explicit valid_col");
 
   auto cfg = srcTy.getConfigAttr();
-  if (!cfg) cfg = TileBufConfigAttr::getDefault(getContext());
+  if (!cfg) {
+    cfg = TileBufConfigAttr::getDefault(getContext());
+  }
 
   int64_t innerRows = 1, innerCols = 1;
   bool boxed = false;
@@ -18613,35 +18667,42 @@ static func::FuncOp getParentFunc(Operation *op) {
 static constexpr int64_t kSimtKeepResumeSlotLimit = 123;
 
 static Operation *getFirstNonConstantLikeOp(Block *block) {
-  if (!block)
+  if (!block) {
     return nullptr;
+  }
   for (Operation &op : *block) {
-    if (!op.hasTrait<OpTrait::ConstantLike>())
+    if (!op.hasTrait<OpTrait::ConstantLike>()) {
       return &op;
+    }
   }
   return nullptr;
 }
 
 static bool isOpInRange(Operation *op, Operation *first, Operation *last) {
   for (Operation *cur = first; cur; cur = cur->getNextNode()) {
-    if (cur == op)
+    if (cur == op) {
       return true;
-    if (cur == last)
+    }
+    if (cur == last) {
       return false;
+    }
   }
   return false;
 }
 
 static std::optional<unsigned> getSimtKeepResumeRegisterCount(Type type) {
   if (auto intType = dyn_cast<IntegerType>(type)) {
-    if (intType.getWidth() <= 32)
+    if (intType.getWidth() <= 32) {
       return 1;
-    if (intType.getWidth() == 64)
+    }
+    if (intType.getWidth() == 64) {
       return 2;
+    }
     return std::nullopt;
   }
-  if (type.isF16() || type.isBF16() || type.isF32())
+  if (type.isF16() || type.isBF16() || type.isF32()) {
     return 1;
+  }
   return std::nullopt;
 }
 
@@ -18662,22 +18723,26 @@ template <typename OpT>
 static LogicalResult verifySimtKeepResumeSlotRange(OpT op) {
   std::optional<unsigned> registerCount =
       getSimtKeepResumeRegisterCount(getSimtKeepResumeValueType(op));
-  if (!registerCount)
+  if (!registerCount) {
     return success();
+  }
   int64_t slot = op.getSlot();
-  if (slot < 0 || slot >= kSimtKeepResumeSlotLimit)
+  if (slot < 0 || slot >= kSimtKeepResumeSlotLimit) {
     return op.emitOpError()
            << "requires slot in range [0, "
            << (kSimtKeepResumeSlotLimit - 1) << "]";
+  }
   if (*registerCount == 2) {
-    if ((slot % 2) != 0)
+    if ((slot % 2) != 0) {
       return op.emitOpError()
              << "requires an even slot for 64-bit keep/resume values";
-    if (slot + 1 >= kSimtKeepResumeSlotLimit)
+    }
+    if (slot + 1 >= kSimtKeepResumeSlotLimit) {
       return op.emitOpError()
              << "requires slot in range [0, "
              << (kSimtKeepResumeSlotLimit - 2)
              << "] for 64-bit keep/resume values";
+    }
   }
   return success();
 }
@@ -18687,15 +18752,18 @@ static bool overlapsEarlierSimtKeepResumeSlotUse(OpT op,
                                                  SmallVectorImpl<int64_t> &used) {
   std::optional<unsigned> registerCount =
       getSimtKeepResumeRegisterCount(getSimtKeepResumeValueType(op));
-  if (!registerCount)
+  if (!registerCount) {
     return false;
+  }
   int64_t slot = op.getSlot();
   for (int64_t word = slot; word < slot + *registerCount; ++word) {
-    if (llvm::is_contained(used, word))
+    if (llvm::is_contained(used, word)) {
       return true;
+    }
   }
-  for (int64_t word = slot; word < slot + *registerCount; ++word)
+  for (int64_t word = slot; word < slot + *registerCount; ++word) {
     used.push_back(word);
+  }
   return false;
 }
 
@@ -18704,13 +18772,15 @@ static LogicalResult verifyUniqueResumeGroupSlots(ResumeOp current,
   SmallVector<int64_t, 4> slots;
   for (Operation *cur = first; cur; cur = cur->getNextNode()) {
     auto resume = dyn_cast<ResumeOp>(cur);
-    if (!resume)
+    if (!resume) {
       break;
+    }
     if (overlapsEarlierSimtKeepResumeSlotUse(resume, slots) &&
-        resume.getOperation() == current.getOperation())
+        resume.getOperation() == current.getOperation()) {
       return current.emitOpError()
              << "duplicates an earlier slot " << resume.getSlot()
              << " in the SIMT resume prologue group";
+    }
   }
   return success();
 }
@@ -18721,22 +18791,26 @@ static LogicalResult verifyUniqueKeepGroupSlots(KeepOp current,
   SmallVector<int64_t, 4> slots;
   for (Operation *cur = first; cur; cur = cur->getNextNode()) {
     auto keep = dyn_cast<KeepOp>(cur);
-    if (!keep)
+    if (!keep) {
       break;
+    }
     if (overlapsEarlierSimtKeepResumeSlotUse(keep, slots) &&
-        keep.getOperation() == current.getOperation())
+        keep.getOperation() == current.getOperation()) {
       return current.emitOpError()
              << "duplicates an earlier slot " << keep.getSlot()
              << " in the SIMT keep epilogue group";
-    if (cur == last)
+    }
+    if (cur == last) {
       break;
+    }
   }
   return success();
 }
 
 static bool isSupportedSimtKeepResumeType(Type type) {
-  if (auto intType = dyn_cast<IntegerType>(type))
+  if (auto intType = dyn_cast<IntegerType>(type)) {
     return intType.getWidth() <= 64;
+  }
   return type.isF16() || type.isBF16() || type.isF32();
 }
 

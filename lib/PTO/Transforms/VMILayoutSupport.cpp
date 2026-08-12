@@ -142,9 +142,9 @@ template <int64_t... Counts> static constexpr ElementCountPattern G() {
 static constexpr ElementCountPattern anyN() { return {{}, 0, true}; }
 static constexpr ElementCountPattern anyG() { return anyN(); }
 
-static constexpr MaskGranularityPattern mb8() { return {1u << 0}; }
-static constexpr MaskGranularityPattern mb16() { return {1u << 1}; }
-static constexpr MaskGranularityPattern mb32() { return {1u << 2}; }
+static constexpr MaskGranularityPattern mb8() { return {1U << 0}; }
+static constexpr MaskGranularityPattern mb16() { return {1U << 1}; }
+static constexpr MaskGranularityPattern mb32() { return {1U << 2}; }
 
 static bool matchesElementBitsPattern(ElementBitsPattern pattern,
                                       int64_t bits) {
@@ -180,9 +180,9 @@ static bool matchesPhysicalChunkCountPattern(
 
 static bool matchesMaskGranularityPattern(MaskGranularityPattern pattern,
                                           StringRef granularity) {
-  uint8_t mask = granularity == "b8"    ? 1u << 0
-                 : granularity == "b16" ? 1u << 1
-                 : granularity == "b32" ? 1u << 2
+  uint8_t mask = granularity == "b8"    ? 1U << 0
+                 : granularity == "b16" ? 1U << 1
+                 : granularity == "b32" ? 1U << 2
                                         : 0;
   return mask != 0 && (pattern.mask & mask) != 0;
 }
@@ -2804,11 +2804,11 @@ VMILayoutSupport::getHighPriorityGroupStoreLayoutFact(
               "high-priority group_store table row");
 }
 
-LogicalResult getGroupReduceAddSupportImpl(VMIVRegType sourceType,
-                                           VMIMaskType maskType,
-                                           VMIVRegType resultType,
-                                           int64_t numGroups,
-                                           std::string *reason) {
+static LogicalResult getGroupReduceAddSupportImpl(VMIVRegType sourceType,
+                                                  VMIMaskType maskType,
+                                                  VMIVRegType resultType,
+                                                  int64_t numGroups,
+                                                  std::string *reason) {
   FailureOr<VMIGroupReduceLayoutFact> fact =
       VMILayoutSupport().getGroupReduceLayoutFactForLayouts(
           sourceType, maskType, resultType, numGroups, reason);

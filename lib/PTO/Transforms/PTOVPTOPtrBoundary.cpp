@@ -30,12 +30,14 @@ namespace {
 
 static Type convertVPTOBoundaryMemRefType(Type type) {
   auto memrefType = dyn_cast<BaseMemRefType>(type);
-  if (!memrefType)
+  if (!memrefType) {
     return type;
+  }
   auto memorySpace =
       dyn_cast_or_null<pto::AddressSpaceAttr>(memrefType.getMemorySpace());
-  if (!memorySpace)
+  if (!memorySpace) {
     return {};
+  }
   return pto::PtrType::get(type.getContext(), memrefType.getElementType(),
                            memorySpace);
 }
@@ -56,29 +58,33 @@ static LogicalResult eraseDeadVPTOMemRefScaffold(ModuleOp module) {
           trivialCasts.push_back(castOp);
           return;
         }
-        if (castOp->use_empty())
+        if (castOp->use_empty()) {
           deadOps.push_back(op);
+        }
         return;
       }
 
-      if (!op->use_empty())
+      if (!op->use_empty()) {
         return;
+      }
       if (isa<memref::ReinterpretCastOp, memref::SubViewOp,
               memref::MemorySpaceCastOp>(op))
         deadOps.push_back(op);
     });
 
     for (pto::CastPtrOp castOp : trivialCasts) {
-      if (!castOp->getBlock())
+      if (!castOp->getBlock()) {
         continue;
+      }
       castOp.getResult().replaceAllUsesWith(castOp.getInput());
       castOp.erase();
       erasedAny = true;
     }
 
     for (Operation *op : deadOps) {
-      if (!op->getBlock())
+      if (!op->getBlock()) {
         continue;
+      }
       op->erase();
       erasedAny = true;
     }
@@ -88,23 +94,29 @@ static LogicalResult eraseDeadVPTOMemRefScaffold(ModuleOp module) {
 
 static Type getVPTOBufferElementType(Value value) {
   Type type = value.getType();
-  if (auto tileType = dyn_cast<pto::TileBufType>(type))
+  if (auto tileType = dyn_cast<pto::TileBufType>(type)) {
     return tileType.getElementType();
-  if (auto memrefType = dyn_cast<BaseMemRefType>(type))
+  }
+  if (auto memrefType = dyn_cast<BaseMemRefType>(type)) {
     return memrefType.getElementType();
-  if (auto ptrType = dyn_cast<pto::PtrType>(type))
+  }
+  if (auto ptrType = dyn_cast<pto::PtrType>(type)) {
     return ptrType.getElementType();
+  }
   return {};
 }
 
 static Attribute getVPTOBufferMemorySpace(Value value) {
   Type type = value.getType();
-  if (auto tileType = dyn_cast<pto::TileBufType>(type))
+  if (auto tileType = dyn_cast<pto::TileBufType>(type)) {
     return tileType.getMemorySpace();
-  if (auto memrefType = dyn_cast<BaseMemRefType>(type))
+  }
+  if (auto memrefType = dyn_cast<BaseMemRefType>(type)) {
     return memrefType.getMemorySpace();
-  if (auto ptrType = dyn_cast<pto::PtrType>(type))
+  }
+  if (auto ptrType = dyn_cast<pto::PtrType>(type)) {
     return ptrType.getMemorySpace();
+  }
   return {};
 }
 
@@ -125,21 +137,25 @@ static LogicalResult canonicalizeBoundaryCastPtrOps(ModuleOp module,
                                                     llvm::raw_ostream *diagOS) {
   SmallVector<pto::CastPtrOp> castsToRewrite;
   module.walk([&](pto::CastPtrOp castOp) {
-    if (!isa<BaseMemRefType, pto::TileBufType>(castOp.getInput().getType()))
+    if (!isa<BaseMemRefType, pto::TileBufType>(castOp.getInput().getType())) {
       return;
-    if (!isa<pto::PtrType>(castOp.getResult().getType()))
+    }
+    if (!isa<pto::PtrType>(castOp.getResult().getType())) {
       return;
+    }
     castsToRewrite.push_back(castOp);
   });
 
   PatternRewriter rewriter(module.getContext());
   for (pto::CastPtrOp castOp : castsToRewrite) {
-    if (!castOp->getBlock())
+    if (!castOp->getBlock()) {
       continue;
+    }
 
     auto resultType = dyn_cast<pto::PtrType>(castOp.getResult().getType());
-    if (!resultType)
+    if (!resultType) {
       continue;
+    }
 
     rewriter.setInsertionPoint(castOp);
     Value ptrValue = pto::materializeBufferPointer(
@@ -166,8 +182,9 @@ static LogicalResult canonicalizeSupportedVPTOBufferLikeOps(
     ModuleOp module, llvm::raw_ostream *diagOS) {
   SmallVector<Operation *> opsToRewrite;
   module.walk([&](Operation *op) {
-    if (isSupportedVPTOBufferLikeBoundaryOp(op))
+    if (isSupportedVPTOBufferLikeBoundaryOp(op)) {
       opsToRewrite.push_back(op);
+    }
   });
 
   PatternRewriter rewriter(module.getContext());
@@ -213,8 +230,9 @@ static LogicalResult canonicalizeSupportedVPTOBufferLikeOps(
       newOperands.push_back(ptrValue);
     }
 
-    if (!changed)
+    if (!changed) {
       continue;
+    }
 
     OperationState state(op->getLoc(), op->getName().getStringRef());
     state.addOperands(newOperands);
@@ -235,8 +253,9 @@ struct PTOVPTOPtrBoundaryPass
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
-    if (failed(pto::convertVPTOEmissionBoundaryToPtr(module, &llvm::errs())))
+    if (failed(pto::convertVPTOEmissionBoundaryToPtr(module, &llvm::errs()))) {
       signalPassFailure();
+    }
   }
 };
 
@@ -248,13 +267,15 @@ LogicalResult mlir::pto::convertVPTOEmissionBoundaryToPtr(
   // function ABI keeps only the same-space base pointer, while shape/stride
   // state remains in SSA. Body-level op canonicalization is added on top of
   // this entry rewrite in follow-up tasks.
-  if (failed(eraseDeadVPTOMemRefScaffold(module)))
+  if (failed(eraseDeadVPTOMemRefScaffold(module))) {
     return failure();
+  }
 
   bool sawFailure = false;
   for (func::FuncOp func : module.getOps<func::FuncOp>()) {
-    if (func.isExternal())
+    if (func.isExternal()) {
       continue;
+    }
 
     FunctionType functionType = func.getFunctionType();
     SmallVector<Type> newInputs(functionType.getInputs().begin(),
@@ -263,8 +284,9 @@ LogicalResult mlir::pto::convertVPTOEmissionBoundaryToPtr(
 
     for (auto [idx, inputType] : llvm::enumerate(functionType.getInputs())) {
       auto memrefType = dyn_cast<BaseMemRefType>(inputType);
-      if (!memrefType)
+      if (!memrefType) {
         continue;
+      }
 
       Type newType = convertVPTOBoundaryMemRefType(inputType);
       if (!newType) {
@@ -284,8 +306,9 @@ LogicalResult mlir::pto::convertVPTOEmissionBoundaryToPtr(
 
       for (Operation *user : users) {
         if (auto cast = dyn_cast<CastPtrOp>(user)) {
-          if (cast.getInput() != arg)
+          if (cast.getInput() != arg) {
             continue;
+          }
           if (cast.getResult().getType() == newType) {
             cast.getResult().replaceAllUsesWith(arg);
             cast.erase();
@@ -300,8 +323,9 @@ LogicalResult mlir::pto::convertVPTOEmissionBoundaryToPtr(
           continue;
         }
 
-        if (isSupportedVPTOBufferLikeBoundaryOp(user))
+        if (isSupportedVPTOBufferLikeBoundaryOp(user)) {
           continue;
+        }
 
         if (diagOS) {
           *diagOS << "VPTO emission-boundary ptr rewrite failed: argument "
@@ -315,8 +339,9 @@ LogicalResult mlir::pto::convertVPTOEmissionBoundaryToPtr(
     }
 
     for (Type resultType : functionType.getResults()) {
-      if (!isa<BaseMemRefType>(resultType))
+      if (!isa<BaseMemRefType>(resultType)) {
         continue;
+      }
       if (diagOS)
         *diagOS << "VPTO emission-boundary ptr rewrite failed: memref result "
                    "is unsupported for "
@@ -330,14 +355,17 @@ LogicalResult mlir::pto::convertVPTOEmissionBoundaryToPtr(
     }
   }
 
-  if (sawFailure)
+  if (sawFailure) {
     return failure();
+  }
 
-  if (failed(canonicalizeBoundaryCastPtrOps(module, diagOS)))
+  if (failed(canonicalizeBoundaryCastPtrOps(module, diagOS))) {
     return failure();
+  }
 
-  if (failed(canonicalizeSupportedVPTOBufferLikeOps(module, diagOS)))
+  if (failed(canonicalizeSupportedVPTOBufferLikeOps(module, diagOS))) {
     return failure();
+  }
 
   return eraseDeadVPTOMemRefScaffold(module);
 }

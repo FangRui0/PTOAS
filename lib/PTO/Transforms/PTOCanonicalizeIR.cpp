@@ -129,8 +129,9 @@ buildCanonicalStrides(MakeTensorViewOp op, IRRewriter &rewriter) {
   Value leadingStride = rewriter.create<arith::MulIOp>(
       loc, op.getShape().front(), op.getStrides().front());
 
-  for (unsigned i = 0; i < shift; ++i)
+  for (unsigned i = 0; i < shift; ++i) {
     result[i] = leadingStride;
+  }
   return result;
 }
 
@@ -177,8 +178,9 @@ static Type canonicalViewType(Type type) {
 static bool canonicalizeValueType(Value value) {
   Type oldType = value.getType();
   Type newType = canonicalViewType(oldType);
-  if (newType == oldType)
+  if (newType == oldType) {
     return false;
+  }
   value.setType(newType);
   return true;
 }
@@ -277,8 +279,9 @@ static void canonicalizeFunctionType(func::FuncOp func) {
     results.push_back(newType);
   }
 
-  if (changed)
+  if (changed) {
     func.setFunctionType(FunctionType::get(func.getContext(), inputs, results));
+  }
 }
 
 static void canonicalizeValueTypes(func::FuncOp func) {
@@ -362,8 +365,9 @@ struct PTOCanonicalizeIRPass
         return;
       }
     }
-    for (auto [op, dimIndex, rank] : dimIndexOps)
+    for (auto [op, dimIndex, rank] : dimIndexOps) {
       rewriteTensorViewDimOperand(op, dimIndex, rank, rewriter);
+    }
     canonicalizeValueTypes(func);
     for (PartitionViewOp op : partitionViews) {
       if (failed(rewritePartitionView(op, rewriter))) {

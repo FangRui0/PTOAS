@@ -131,8 +131,9 @@ static std::optional<PipePeerKey> getPipePeerKey(Value localAddr,
     auto peerFunc =
         lookupPeerFuncAcrossContainer(importOp.getOperation(),
                                       importOp.getPeerFuncAttr());
-    if (!peerFunc)
+    if (!peerFunc) {
       return std::nullopt;
+    }
     return PipePeerKey{getFuncSymbol(peerFunc), importOp.getName().str(), 0};
   }
 
@@ -177,11 +178,13 @@ static LogicalResult collectPeerAwareInit(InitOpT initOp,
   }
 
   auto recordAddr = [&](Value addr, int8_t effectiveDirMask) {
-    if (!addr)
+    if (!addr) {
       return false;
+    }
     auto key = getPipePeerKey(addr, info.funcOp);
-    if (!key)
+    if (!key) {
       return false;
+    }
     key->dirMask = effectiveDirMask;
     keyedInits[*key].push_back(info.op);
     return true;
@@ -196,10 +199,12 @@ static LogicalResult collectPeerAwareInit(InitOpT initOp,
     recorded = recordAddr(getLocalAddrOperand(initOp), info.dirMask);
   }
 
-  if (recorded)
+  if (recorded) {
     initInfos.push_back(info);
-  if (recorded || getFlagBaseAttr(initOp))
+  }
+  if (recorded || getFlagBaseAttr(initOp)) {
     return success();
+  }
 
   return initOp.emitOpError(
       "requires local_addr to come from pto.reserve_buffer or "
@@ -250,8 +255,9 @@ buildPeerAwareComponents(const SmallVectorImpl<PipeInitInfo> &initInfos,
   for (const auto &it : keyedInits) {
     SmallVector<Operation *> uniqueOps;
     for (Operation *op : it.second) {
-      if (std::find(uniqueOps.begin(), uniqueOps.end(), op) == uniqueOps.end())
+      if (std::find(uniqueOps.begin(), uniqueOps.end(), op) == uniqueOps.end()) {
         uniqueOps.push_back(op);
+      }
     }
     for (size_t i = 0; i < uniqueOps.size(); ++i) {
       for (size_t j = i + 1; j < uniqueOps.size(); ++j) {
@@ -264,8 +270,9 @@ buildPeerAwareComponents(const SmallVectorImpl<PipeInitInfo> &initInfos,
   SmallVector<PipeComponent> components;
   llvm::SmallPtrSet<Operation *, kVisitedInitReserveSize> visited;
   for (const PipeInitInfo &rootInfo : initInfos) {
-    if (!visited.insert(rootInfo.op).second)
+    if (!visited.insert(rootInfo.op).second) {
       continue;
+    }
 
     SmallVector<Operation *> stack{rootInfo.op};
     PipeComponent component;
@@ -273,8 +280,9 @@ buildPeerAwareComponents(const SmallVectorImpl<PipeInitInfo> &initInfos,
       Operation *current = stack.pop_back_val();
       component.ops.push_back(current);
       for (Operation *neighbor : adjacency[current]) {
-        if (visited.insert(neighbor).second)
+        if (visited.insert(neighbor).second) {
           stack.push_back(neighbor);
+        }
       }
     }
 
@@ -328,10 +336,11 @@ buildPeerAwareComponents(const SmallVectorImpl<PipeInitInfo> &initInfos,
         // producer/consumer functions. Keep the smallest observed id only as a
         // stable component sort key; cross-function pairing is determined by
         // the peer buffer contract instead of frontend id equality.
-        if (component.frontendId)
+        if (component.frontendId) {
           component.frontendId = std::min(*component.frontendId, *frontendId);
-        else
+        } else {
           component.frontendId = *frontendId;
+        }
       }
     }
 
@@ -409,8 +418,9 @@ static FailureOr<int32_t> chooseFlagBaseForComponent(const PipeComponent &compon
         nextCandidate = std::max(nextCandidate, alignToEven(used.end));
       }
     }
-    if (!conflict)
+    if (!conflict) {
       break;
+    }
     candidateBase = nextCandidate;
   }
 
@@ -452,8 +462,9 @@ struct PTOResolveReservedBuffersPass
       if (failed(chosenBaseOr))
         return failure();
       auto flagBaseAttr = builder.getI32IntegerAttr(*chosenBaseOr);
-      for (Operation *op : component.ops)
+      for (Operation *op : component.ops) {
         setFlagBaseAttr(op, flagBaseAttr);
+      }
     }
 
     return success();
@@ -524,8 +535,9 @@ struct PTOResolveReservedBuffersPass
       }
     }
 
-    for (Operation *op : eraseOps)
+    for (Operation *op : eraseOps) {
       op->erase();
+    }
 
     return success();
   }

@@ -4049,8 +4049,8 @@ def tsel(mask, src0, src1, dst, *, tmp=None):
         unwrap_surface_value(mask),
         unwrap_surface_value(src0),
         unwrap_surface_value(src1),
-        unwrap_surface_value(resolved_tmp),
         unwrap_surface_value(dst),
+        tmp=unwrap_surface_value(resolved_tmp),
     )
 
 
@@ -4060,9 +4060,9 @@ def tsels(mask, src, scalar, dst, *, tmp=None):
     _pto.tsels(
         unwrap_surface_value(mask),
         unwrap_surface_value(src),
-        unwrap_surface_value(resolved_tmp),
         _coerce_tile_scalar_operand(src, scalar, context="tsels"),
         unwrap_surface_value(dst),
+        tmp=unwrap_surface_value(resolved_tmp),
     )
 
 
@@ -6674,7 +6674,6 @@ def wait_flag(src: str, dst: str, *, event_id: int = 0):
 
 
 def reserve_buffer(name, *, size, location, auto=True, base=None):
-    """``pto.reserve_buffer(name, size, location, auto=True, base=None)``."""
     space = _normalize_address_space(location)
     if space not in (_pto.AddressSpace.VEC, _pto.AddressSpace.MAT):
         raise ValueError(
@@ -6691,7 +6690,6 @@ def reserve_buffer(name, *, size, location, auto=True, base=None):
 
 
 def import_reserved_buffer(name, *, peer_func):
-    """``pto.import_reserved_buffer(name, peer_func=...)``."""
     if not isinstance(peer_func, str):
         spec = getattr(peer_func, "spec", None)
         role = getattr(spec, "role", None)

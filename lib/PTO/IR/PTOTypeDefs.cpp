@@ -33,8 +33,9 @@ using TileBufValidShapeVector =
 
 void mlir::pto::setPTOParserTargetArch(MLIRContext *context,
                                        PTOParserTargetArch arch) {
-  if (!context)
+  if (!context) {
     return;
+  }
 
   std::lock_guard<std::mutex> lock(parserTargetArchMutex);
   if (arch == PTOParserTargetArch::Unspecified) {
@@ -45,13 +46,15 @@ void mlir::pto::setPTOParserTargetArch(MLIRContext *context,
 }
 
 PTOParserTargetArch mlir::pto::getPTOParserTargetArch(MLIRContext *context) {
-  if (!context)
+  if (!context) {
     return PTOParserTargetArch::Unspecified;
+  }
 
   std::lock_guard<std::mutex> lock(parserTargetArchMutex);
   auto it = parserTargetArchByContext.find(context);
-  if (it == parserTargetArchByContext.end())
+  if (it == parserTargetArchByContext.end()) {
     return PTOParserTargetArch::Unspecified;
+  }
   return it->second;
 }
 
@@ -69,8 +72,9 @@ static TileBufValidShapeVector
 canonicalizeTileBufValidShape(ArrayRef<int64_t> validShape) {
   TileBufValidShapeVector canonical;
   canonical.reserve(validShape.size());
-  for (int64_t dim : validShape)
+  for (int64_t dim : validShape) {
     canonical.push_back(dim < 0 ? ShapedType::kDynamic : dim);
+  }
   return canonical;
 }
 
@@ -174,8 +178,9 @@ static std::optional<AddressSpace> resolveTileBufMemorySpace(StringRef locStr) {
 static BLayout resolveTileBufBLayout(MLIRContext *context,
                                      AddressSpace memorySpace,
                                      BLayout parsedLayout) {
-  if (memorySpace != AddressSpace::LEFT)
+  if (memorySpace != AddressSpace::LEFT) {
     return parsedLayout;
+  }
 
   switch (getPTOParserTargetArch(context)) {
   case PTOParserTargetArch::A3:
@@ -192,12 +197,16 @@ TileBufConfigAttr TileBufType::getConfigAttr() const {
   // 情况 A：getConfig() 已经是 TileBufConfigAttr
   if constexpr (std::is_same_v<decltype(getConfig()), TileBufConfigAttr>) {
     auto cfg = getConfig();
-    if (!cfg) cfg = TileBufConfigAttr::getDefault(getContext());
+    if (!cfg) {
+      cfg = TileBufConfigAttr::getDefault(getContext());
+    }
     return cfg;
   } else {
     // 情况 B：getConfig() 是 Attribute
     auto cfg = llvm::dyn_cast_or_null<TileBufConfigAttr>(getConfig());
-    if (!cfg) cfg = TileBufConfigAttr::getDefault(getContext());
+    if (!cfg) {
+      cfg = TileBufConfigAttr::getDefault(getContext());
+    }
     return cfg;
   }
 }
@@ -214,7 +223,7 @@ mlir::Attribute TileBufType::getCompactModeAttr() const {
 
 // ✅ numeric getters（可选）
 int32_t TileBufType::getSFractalSizeI32() const {
-  return (int32_t)getConfigAttr().getSFractalSize().getInt();
+  return static_cast<int32_t>(getConfigAttr().getSFractalSize().getInt());
 }
 
 int32_t TileBufType::getBLayoutValueI32() const {
@@ -637,8 +646,9 @@ void mlir::pto::TileBufType::print(mlir::AsmPrinter &printer) const {
   int64_t cols = shape.size() > 1 ? shape[1] : ShapedType::kDynamic;
 
   auto cfg = getConfigAttr();
-  if (!cfg)
+  if (!cfg) {
     cfg = mlir::pto::TileBufConfigAttr::getDefault(getContext());
+  }
   auto defaultCfg = TileBufConfigAttr::getDefault(getContext());
 
   llvm::StringRef locStr = stringifyLocFromMemorySpace(getMemorySpace());
@@ -701,18 +711,6 @@ void mlir::pto::TileBufType::print(mlir::AsmPrinter &printer) const {
 }
 
 // ---- MultiTileBufType custom asm ----
-//
-// Syntax:
-//
-//   Verbose form:
-//     !pto.multi_tile_buf<!pto.tile_buf<...>, count=N>
-//
-//   Compact (sugar) form:
-//     !pto.multi_tile_buf<vec, 16x16xf16, count=N>
-//
-// In the compact form the per-slot tile_buf is built from the same compact
-// syntax as `!pto.tile_buf<vec, ...>`, followed by a mandatory `count=N`.
-
 LogicalResult MultiTileBufType::verify(
     function_ref<InFlightDiagnostic()> emitError,
     mlir::pto::TileBufType slotType, uint32_t count) {

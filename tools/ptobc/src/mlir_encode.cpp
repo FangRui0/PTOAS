@@ -308,7 +308,7 @@ static void appendAPIntBytesLE(Buffer &buffer, const llvm::APInt &bits) {
   for (unsigned i = 0; i < byteLen; ++i) {
     unsigned word = i / 8;
     unsigned off = (i % 8) * 8;
-    uint8_t byte = uint8_t((words[word] >> off) & 0xFFu);
+    uint8_t byte = uint8_t((words[word] >> off) & 0xFFU);
     buffer.bytes.push_back(byte);
   }
 }

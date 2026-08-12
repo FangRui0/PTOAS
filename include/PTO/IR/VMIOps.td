@@ -417,64 +417,58 @@ def VMICompressStoreOp : VMI_Op<"compress_store", [DeclareOpInterfaceMethods<Mem
 }
 
 def VMIReduceAddIOp : VMI_Op<"reduce_addi"> {
-  let summary = "VMI masked integer add reduction with a 1-lane vector init";
+  let summary = "VMI masked integer add reduction";
   let arguments = (ins VMI_VRegTypeConstraint:$source,
-                       VMI_VRegTypeConstraint:$init,
                        VMI_MaskTypeConstraint:$mask);
   let results = (outs VMI_VRegTypeConstraint:$result);
   let hasVerifier = 1;
-  let assemblyFormat = "$source `,` $init `,` $mask attr-dict `:` type($source) `,` type($init) `,` type($mask) `->` type($result)";
+  let assemblyFormat = "$source `,` $mask attr-dict `:` type($source) `,` type($mask) `->` type($result)";
 }
 
 def VMIReduceAddFOp : VMI_Op<"reduce_addf"> {
   let summary = "VMI masked floating-point add reduction with explicit reassociation permission";
   let arguments = (ins VMI_VRegTypeConstraint:$source,
-                       VMI_VRegTypeConstraint:$init,
                        VMI_MaskTypeConstraint:$mask,
                        OptionalAttr<UnitAttr>:$reassoc);
   let results = (outs VMI_VRegTypeConstraint:$result);
   let hasVerifier = 1;
-  let assemblyFormat = "$source `,` $init `,` $mask attr-dict `:` type($source) `,` type($init) `,` type($mask) `->` type($result)";
+  let assemblyFormat = "$source `,` $mask attr-dict `:` type($source) `,` type($mask) `->` type($result)";
 }
 
 def VMIReduceMaxFOp : VMI_Op<"reduce_maxf"> {
-  let summary = "VMI masked floating-point maximum reduction with a 1-lane vector init";
+  let summary = "VMI masked floating-point maximum reduction";
   let arguments = (ins VMI_VRegTypeConstraint:$source,
-                       VMI_VRegTypeConstraint:$init,
                        VMI_MaskTypeConstraint:$mask);
   let results = (outs VMI_VRegTypeConstraint:$result);
   let hasVerifier = 1;
-  let assemblyFormat = "$source `,` $init `,` $mask attr-dict `:` type($source) `,` type($init) `,` type($mask) `->` type($result)";
+  let assemblyFormat = "$source `,` $mask attr-dict `:` type($source) `,` type($mask) `->` type($result)";
 }
 
 def VMIReduceMinFOp : VMI_Op<"reduce_minf"> {
-  let summary = "VMI masked floating-point minimum reduction with a 1-lane vector init";
+  let summary = "VMI masked floating-point minimum reduction";
   let arguments = (ins VMI_VRegTypeConstraint:$source,
-                       VMI_VRegTypeConstraint:$init,
                        VMI_MaskTypeConstraint:$mask);
   let results = (outs VMI_VRegTypeConstraint:$result);
   let hasVerifier = 1;
-  let assemblyFormat = "$source `,` $init `,` $mask attr-dict `:` type($source) `,` type($init) `,` type($mask) `->` type($result)";
+  let assemblyFormat = "$source `,` $mask attr-dict `:` type($source) `,` type($mask) `->` type($result)";
 }
 
 def VMIReduceMaxIOp : VMI_Op<"reduce_maxi"> {
-  let summary = "VMI masked integer maximum reduction with a 1-lane vector init";
+  let summary = "VMI masked integer maximum reduction";
   let arguments = (ins VMI_VRegTypeConstraint:$source,
-                       VMI_VRegTypeConstraint:$init,
                        VMI_MaskTypeConstraint:$mask);
   let results = (outs VMI_VRegTypeConstraint:$result);
   let hasVerifier = 1;
-  let assemblyFormat = "$source `,` $init `,` $mask attr-dict `:` type($source) `,` type($init) `,` type($mask) `->` type($result)";
+  let assemblyFormat = "$source `,` $mask attr-dict `:` type($source) `,` type($mask) `->` type($result)";
 }
 
 def VMIReduceMinIOp : VMI_Op<"reduce_mini"> {
-  let summary = "VMI masked integer minimum reduction with a 1-lane vector init";
+  let summary = "VMI masked integer minimum reduction";
   let arguments = (ins VMI_VRegTypeConstraint:$source,
-                       VMI_VRegTypeConstraint:$init,
                        VMI_MaskTypeConstraint:$mask);
   let results = (outs VMI_VRegTypeConstraint:$result);
   let hasVerifier = 1;
-  let assemblyFormat = "$source `,` $init `,` $mask attr-dict `:` type($source) `,` type($init) `,` type($mask) `->` type($result)";
+  let assemblyFormat = "$source `,` $mask attr-dict `:` type($source) `,` type($mask) `->` type($result)";
 }
 
 def VMIGroupReduceAddFOp : VMI_Op<"group_reduce_addf"> {
@@ -951,6 +945,48 @@ def VMIVaddOp : VMI_Op<"vadd", [Pure]> {
   let results = (outs VMI_VRegTypeConstraint:$result);
   let hasVerifier = 1;
   let assemblyFormat = "$lhs `,` $rhs (`,` $mask^)? attr-dict `:` type($lhs) `,` type($rhs) (`,` type($mask)^)? `->` type($result)";
+}
+
+def VMIVaddcOp : VMI_Op<"vaddc", [Pure]> {
+  let summary = "VMI integer add with per-lane carry output";
+  let description = [{
+    Adds two integer vectors and returns both the truncated result and the
+    per-lane carry predicate.  The operation is restricted to the 32-bit
+    integer forms supported by the underlying VPTO carry instruction.
+  }];
+  let arguments = (ins
+    VMI_VRegTypeConstraint:$lhs,
+    VMI_VRegTypeConstraint:$rhs,
+    VMI_MaskTypeConstraint:$mask
+  );
+  let results = (outs
+    VMI_VRegTypeConstraint:$result,
+    VMI_MaskTypeConstraint:$carry
+  );
+  let hasVerifier = 1;
+  let assemblyFormat = "$lhs `,` $rhs `,` $mask attr-dict `:` type($lhs) `,` type($rhs) `,` type($mask) `->` type($result) `,` type($carry)";
+}
+
+def VMIVaddcsOp : VMI_Op<"vaddcs", [Pure]> {
+  let summary = "VMI integer add with carry-in and carry-out";
+  let description = [{
+    Adds two integer vectors and a per-lane carry-in predicate, returning both
+    the truncated result and the per-lane carry-out predicate.  The operation
+    is restricted to the 32-bit integer forms supported by the underlying VPTO
+    carry instruction.
+  }];
+  let arguments = (ins
+    VMI_VRegTypeConstraint:$lhs,
+    VMI_VRegTypeConstraint:$rhs,
+    VMI_MaskTypeConstraint:$carry_in,
+    VMI_MaskTypeConstraint:$mask
+  );
+  let results = (outs
+    VMI_VRegTypeConstraint:$result,
+    VMI_MaskTypeConstraint:$carry
+  );
+  let hasVerifier = 1;
+  let assemblyFormat = "$lhs `,` $rhs `,` $carry_in `,` $mask attr-dict `:` type($lhs) `,` type($rhs) `,` type($carry_in) `,` type($mask) `->` type($result) `,` type($carry)";
 }
 
 def VMIVsubOp : VMI_Op<"vsub", [Pure]> {

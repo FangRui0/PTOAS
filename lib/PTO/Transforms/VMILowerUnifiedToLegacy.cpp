@@ -77,9 +77,9 @@
 //   vprelu  → maxf + minf + mulf + addf
 //   Category C7/C8/C9 bypass mask/pmode synthesis here and skip pmode="merge".
 //
-// Category D — no legacy equivalent (explicitly skipped, 11 ops):
+// Category D — no legacy equivalent (explicitly skipped, 13 ops):
 //   vadds/vmuls/vmaxs/vmins/vshls/vshrs
-//   vintlv vdintlv vselr vgatherb vmull
+//   vaddc vaddcs vintlv vdintlv vselr vgatherb vmull
 //
 //===----------------------------------------------------------------------===//
 
@@ -143,48 +143,6 @@ static Value createZeroConstant(OpBuilder &builder, Location loc,
   return builder.create<VMIConstantOp>(loc, vmiType, zeroAttr).getResult();
 }
 
-
-/// Create a 1-lane VMIConstantOp with the neutral element for reduction:
-///   add:  0    (int and float)
-///   max: -INF  (float), INT_MIN (int)
-///   min: +INF  (float), INT_MAX (int)
-static Value createReduceNeutralInit(OpBuilder &builder, Location loc,
-                                     Type elemType, bool isAdd, bool isMax,
-                                     Attribute layout = Attribute()) {
-  auto oneLaneType =
-      VMIVRegType::get(builder.getContext(), 1, elemType, layout);
-  auto shapedType = RankedTensorType::get({1}, elemType);
-  DenseElementsAttr attr;
-  if (auto floatTy = dyn_cast<FloatType>(elemType)) {
-    if (isAdd)
-      attr = DenseElementsAttr::get(
-          shapedType, APFloat::getZero(floatTy.getFloatSemantics()));
-    else if (isMax)
-      attr = DenseElementsAttr::get(
-          shapedType,
-          APFloat::getInf(floatTy.getFloatSemantics(), /*Negative=*/true));
-    else
-      attr = DenseElementsAttr::get(
-          shapedType,
-          APFloat::getInf(floatTy.getFloatSemantics(), /*Negative=*/false));
-  } else {
-    auto intTy = cast<IntegerType>(elemType);
-    if (isAdd)
-      attr = DenseElementsAttr::get(shapedType,
-                                    APInt::getZero(intTy.getWidth()));
-    else if (isMax)
-      attr = DenseElementsAttr::get(
-          shapedType, intTy.isUnsigned()
-                          ? APInt::getZero(intTy.getWidth())
-                          : APInt::getSignedMinValue(intTy.getWidth()));
-    else
-      attr = DenseElementsAttr::get(
-          shapedType, intTy.isUnsigned()
-                          ? APInt::getMaxValue(intTy.getWidth())
-                          : APInt::getSignedMaxValue(intTy.getWidth()));
-  }
-  return builder.create<VMIConstantOp>(loc, oneLaneType, attr).getResult();
-}
 
 /// Map a unified vcmp `cmp` mode to the predicate string for legacy
 /// cmpf/cmpi. Float operands use ordered predicates (olt, oeq, ...);
@@ -826,20 +784,17 @@ static LogicalResult lowerVCadd(VMIvcaddOp op, OpBuilder &builder) {
     op.getResult().replaceAllUsesWith(result);
   } else {
     // Full reduce path
-    Value init = createReduceNeutralInit(builder, loc, elemType,
-                                         /*isAdd=*/true, /*isMax=*/false,
-                                         sourceType.getLayout());
     Value result;
     if (isFloat)
       result =
           builder
-              .create<VMIReduceAddFOp>(loc, resultType, source, init, mask,
+              .create<VMIReduceAddFOp>(loc, resultType, source, mask,
                                        op.getReassocAttr())
               .getResult();
     else
       result =
           builder
-              .create<VMIReduceAddIOp>(loc, resultType, source, init, mask)
+              .create<VMIReduceAddIOp>(loc, resultType, source, mask)
               .getResult();
     op.getResult().replaceAllUsesWith(result);
   }
@@ -880,17 +835,14 @@ static LogicalResult lowerVcmax(VMIvcmaxOp op, OpBuilder &builder) {
     return success();
   }
 
-  Value init = createReduceNeutralInit(builder, loc, elemType,
-                                       /*isAdd=*/false, /*isMax=*/true,
-                                       sourceType.getLayout());
   Value result;
   if (isFloat)
     result = builder
-                 .create<VMIReduceMaxFOp>(loc, resultType, source, init, mask)
+                 .create<VMIReduceMaxFOp>(loc, resultType, source, mask)
                  .getResult();
   else
     result = builder
-                 .create<VMIReduceMaxIOp>(loc, resultType, source, init, mask)
+                 .create<VMIReduceMaxIOp>(loc, resultType, source, mask)
                  .getResult();
   op.getResult().replaceAllUsesWith(result);
   op->erase();
@@ -929,17 +881,14 @@ static LogicalResult lowerVcmin(VMIvcminOp op, OpBuilder &builder) {
     return success();
   }
 
-  Value init = createReduceNeutralInit(builder, loc, elemType,
-                                       /*isAdd=*/false, /*isMax=*/false,
-                                       sourceType.getLayout());
   Value result;
   if (isFloat)
     result = builder
-                 .create<VMIReduceMinFOp>(loc, resultType, source, init, mask)
+                 .create<VMIReduceMinFOp>(loc, resultType, source, mask)
                  .getResult();
   else
     result = builder
-                 .create<VMIReduceMinIOp>(loc, resultType, source, init, mask)
+                 .create<VMIReduceMinIOp>(loc, resultType, source, mask)
                  .getResult();
   op.getResult().replaceAllUsesWith(result);
   op->erase();
@@ -1176,10 +1125,12 @@ void VMILowerUnifiedToLegacyPass::runOnOperation() {
       worklist.push_back(op);
 
     // Category D — no legacy equivalent (require direct VMIToVPTO lowering):
-    //   plt, vector-scalar ops, vintlv, vdintlv, vselr, vgatherb, vmull
+    //   plt, vector-scalar ops, vaddc/vaddcs, vintlv, vdintlv, vselr,
+    //   vgatherb, vmull
     // These are intentionally NOT added to the worklist — they flow through
     // to VMIToVPTO which must provide direct 1:N lowering patterns.
     if (isa<VMIAddSOp, VMIMulSOp, VMIMaxSOp, VMIMinSOp, VMIShlSOp, VMIShrSOp,
+            VMIVaddcOp, VMIVaddcsOp,
             VMIVintlvOp, VMIVdintlvOp, VMIVselrOp, VMIVgatherbOp, VMIVmullOp>(
             op)) {
       op->emitRemark("VMI unified op has no legacy equivalent — "
@@ -1647,7 +1598,6 @@ void VMILowerUnifiedToLegacyPass::runOnOperation() {
       continue;
     }
   }
-
 }
 
 std::unique_ptr<Pass> mlir::pto::createVMILowerUnifiedToLegacyPass() {
