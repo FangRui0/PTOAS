@@ -3492,6 +3492,64 @@ def tdequant(src, scale, offset, dst):
     )
 
 
+_PRINT_FORMAT_ALIASES = {
+    None: None,
+    "width8_precision4": ("Width8_Precision4", "width8_precision4"),
+    "Width8_Precision4": ("Width8_Precision4", "width8_precision4"),
+    "width8_precision2": ("Width8_Precision2", "width8_precision2"),
+    "Width8_Precision2": ("Width8_Precision2", "width8_precision2"),
+    "width10_precision6": ("Width10_Precision6", "width10_precision6"),
+    "Width10_Precision6": ("Width10_Precision6", "width10_precision6"),
+}
+
+
+def _normalize_print_format(value, *, context: str):
+    if value is None:
+        return None
+    if hasattr(value, "type"):
+        return value
+    names = _PRINT_FORMAT_ALIASES.get(value)
+    if names is None:
+        allowed = ", ".join(sorted(k for k in _PRINT_FORMAT_ALIASES if isinstance(k, str)))
+        raise ValueError(f"{context} expects one of {allowed}, got {value!r}")
+    enum_name, asm_name = names
+    if hasattr(_pto, "PrintFormat") and hasattr(_pto, "PrintFormatAttr"):
+        enum_value = getattr(_pto.PrintFormat, enum_name)
+        return _pto.PrintFormatAttr.get(enum_value)
+    return Attribute.parse(f"#pto<print_format {asm_name}>")
+
+
+def _require_emitc_tprint_backend():
+    from ._tracing.active import current_runtime
+
+    runtime = current_runtime()
+    module_spec = getattr(runtime, "module_spec", None)
+    backend = getattr(module_spec, "backend", None)
+    if backend == "vpto":
+        raise ValueError("pto.tprint is supported only by the EmitC backend; got backend='vpto'")
+
+
+def print(fmt, scalar):
+    """``pto.print ins(fmt, scalar)``."""
+    raw_scalar = unwrap_surface_value(scalar)
+    if IndexType.isinstance(raw_scalar.type):
+        raw_scalar = arith.IndexCastOp(IntegerType.get_signless(32), raw_scalar).result
+    _pto.PrintOp(str(fmt), raw_scalar)
+
+
+def tprint(src, tmp=None, *, print_format=None):
+    """``pto.tprint ins(src[, tmp])``."""
+    _require_emitc_tprint_backend()
+    kwargs = {}
+    fmt_attr = _normalize_print_format(print_format, context="tprint(..., print_format=...)")
+    if fmt_attr is not None:
+        kwargs["printFormat"] = fmt_attr
+    if tmp is None:
+        _pto.TPrintOp(unwrap_surface_value(src), **kwargs)
+    else:
+        _pto.TPrintOp(unwrap_surface_value(src), tmp=unwrap_surface_value(tmp), **kwargs)
+
+
 def trelu(src, dst):
     """``pto.trelu ins(src) outs(dst)``."""
     _pto.trelu(
@@ -6743,7 +6801,7 @@ __all__ = [
     "tgemv_mx", "tgemv_mx_acc", "tgemv_mx_bias",
     "tadd", "taddrelu", "tsub", "tmul", "tdiv", "tmax", "tmin",
     "tadds", "tsubs", "tmuls", "tdivs", "tmaxs", "tmins",
-    "texp", "tlog", "tsqrt", "trsqrt", "trecip", "tabs", "tneg", "tdequant",
+    "texp", "tlog", "tsqrt", "trsqrt", "trecip", "tabs", "tneg", "tdequant", "tprint", "print",
     "trelu", "tlrelu",
     "trowsum", "trowmax", "trowmin", "trowprod", "trowargmax", "trowargmin",
     "tcolsum", "tcolmax", "tcolmin", "tcolprod", "tcolargmax", "tcolargmin",

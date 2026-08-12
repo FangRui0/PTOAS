@@ -51,6 +51,9 @@ def PtrOrMemRef :
 def ScalarType :
   AnyTypeOf<[AnySignlessInteger, AnyFloat], "numeric (integer/float)">;
 
+def PrintScalarType :
+  AnyTypeOf<[AnyInteger, AnyFloat], "integer/float printable scalar">;
+
 //===----------------------------------------------------------------------===//
 // Op Class
 //===----------------------------------------------------------------------===//
@@ -3029,7 +3032,7 @@ def PrintOp : PTO_Op<"print", [MemoryEffects<[MemRead, MemWrite]>]> {
     Debug print op. First argument is the format string (string attribute), second is a scalar value.
     Format in IR: `pto.print ins("format", %scalar : type(%scalar))`
   }];
-  let arguments = (ins StrAttr:$format, ScalarType:$scalar);
+  let arguments = (ins StrAttr:$format, PrintScalarType:$scalar);
   let results = (outs);
   let assemblyFormat = [{
     `ins` `(` $format `,` $scalar `:` type($scalar) `)`
