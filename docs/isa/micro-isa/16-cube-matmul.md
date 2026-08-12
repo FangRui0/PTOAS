@@ -366,6 +366,51 @@ pto.mte_gm_l1 %bias_gm, %l1_bias, %c32_i64
 
 ---
 
+### `pto.raw_fill_l1`
+
+- **syntax:**
+```mlir
+pto.raw_fill_l1 %dst, %byte_offset, %raw_value, %repeat_times,
+  %block_num_32b, %dst_gap_32b, %fill_word_bits
+  : !pto.ptr<T, mat>, i64, i32, i64, i64, i64, i64
+```
+- **semantics:** Fill a strided L1 matrix region beginning at `%dst +
+  %byte_offset` with the selected raw word pattern. Each repetition writes
+  `%block_num_32b` contiguous 32-byte blocks, and `%dst_gap_32b` gives the
+  destination gap between repetitions in 32-bit blocks. No fill range is
+  omitted when the final repetition is a tail region.
+
+**Parameter Table:**
+
+| Parameter | Width | Description |
+|-----------|-------|-------------|
+| `%dst` | ptr | Destination base pointer in the `mat` L1 address space |
+| `%byte_offset` | i64 | Non-negative byte offset from `%dst` to the first filled word |
+| `%raw_value` | i32 | Raw bit pattern repeated through the selected fill-word view |
+| `%repeat_times` | i64 | Number of strided fill repetitions |
+| `%block_num_32b` | i64 | Number of 32-byte blocks written by each repetition |
+| `%dst_gap_32b` | i64 | Destination gap between repetitions, measured in 32-bit blocks |
+| `%fill_word_bits` | i64 | Compile-time fill-word width: exactly `16` or `32` |
+
+**Constraints:**
+
+- `%dst` must have the `mat` L1 address space.
+- `%byte_offset`, `%repeat_times`, `%block_num_32b`, and `%dst_gap_32b` must
+  be non-negative when constant.
+- `%repeat_times`, `%block_num_32b`, and `%dst_gap_32b` must not exceed
+  `32767` when constant.
+- `%fill_word_bits` must be a compile-time `16` or `32` value.
+
+**Example:**
+
+```mlir
+pto.raw_fill_l1 %l1_dst, %c32_i64, %zero_i32, %c4_i64, %c2_i64,
+  %c6_i64, %c16_i64
+  : !pto.ptr<ui16, mat>, i64, i32, i64, i64, i64, i64
+```
+
+---
+
 ### `pto.mte_l1_ub`
 
 - **syntax:**

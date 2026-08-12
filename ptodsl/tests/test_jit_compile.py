@@ -3239,6 +3239,15 @@ def public_data_movement_surface_probe():
     pto.mte_ub_ub(ub_src, ub_dst, 8, nburst=(16, 0, 4))
     pto.mte_ub_l1(ub_src, l1_dst, 8, nburst=(16, 0, 4))
     pto.mte_gm_l1(gm_src, l1_dst, 256, nburst=(8, 256, 256), loops=[(2, 2048, 2048)])
+    pto.raw_fill_l1(
+        l1_dst,
+        byte_offset=32,
+        raw_value=0,
+        repeat_times=4,
+        block_num_32b=2,
+        dst_gap_32b=6,
+        fill_word_bits=16,
+    )
     pto.mte_l1_ub(l1_dst, ub_dst, 256, nburst=(8, 256, 256), loops=[(2, 2048, 2048)])
     pto.mte_gm_l1_frac(
         gm_src,
@@ -3811,6 +3820,7 @@ def main() -> None:
         "mte_ub_ub",
         "mte_ub_l1",
         "mte_gm_l1",
+        "raw_fill_l1",
         "mte_l1_ub",
         "mte_gm_l1_frac",
         "mte_l1_bt",
@@ -6852,6 +6862,10 @@ def main() -> None:
     expect("pto.mte_ub_ub" in data_movement_surface_text, "public grouped UB->UB wrapper should lower to pto.mte_ub_ub")
     expect("pto.mte_ub_l1" in data_movement_surface_text, "public grouped UB->L1 wrapper should lower to pto.mte_ub_l1")
     expect("pto.mte_gm_l1" in data_movement_surface_text, "public grouped GM->L1 wrapper should lower to pto.mte_gm_l1")
+    expect(
+        "pto.raw_fill_l1" in data_movement_surface_text,
+        "public L1 raw-fill wrapper should lower to pto.raw_fill_l1",
+    )
     expect("pto.mte_l1_ub" in data_movement_surface_text, "public grouped L1->UB wrapper should lower to pto.mte_l1_ub")
     expect("pto.mte_gm_l1_frac" in data_movement_surface_text, "public GM->L1 frac wrapper should lower to pto.mte_gm_l1_frac")
     expect("pto.mte_l1_bt" in data_movement_surface_text, "public L1->BT wrapper should lower to pto.mte_l1_bt")

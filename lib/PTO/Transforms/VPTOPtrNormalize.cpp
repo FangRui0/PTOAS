@@ -596,6 +596,35 @@ struct ConvertCubeLoadOperandPattern
   }
 };
 
+struct ConvertRawFillL1OperandPattern
+    : public OpConversionPattern<pto::RawFillL1Op> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(pto::RawFillL1Op op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Value dst =
+        materializeBoundaryOperandPtr(adaptor.getDst(), rewriter, op.getLoc());
+    if (!dst)
+      return rewriter.notifyMatchFailure(op, "failed to materialize dst ptr");
+    if (!isa<pto::PtrType>(dst.getType()))
+      return rewriter.notifyMatchFailure(op, "expected ptr-form dst");
+
+    SmallVector<Value> operands(adaptor.getOperands().begin(),
+                                adaptor.getOperands().end());
+    operands[0] = dst;
+
+    OperationState state(op.getLoc(), op->getName().getStringRef());
+    state.addOperands(operands);
+    state.addTypes(op->getResultTypes());
+    state.addAttributes(op->getAttrs());
+    state.propertiesAttr = op->getPropertiesAsAttribute();
+    Operation *newOp = rewriter.create(state);
+    rewriter.replaceOp(op, newOp->getResults());
+    return success();
+  }
+};
+
 struct ConvertCubeStoreOperandPattern
     : public OpConversionPattern<pto::MteL1UbOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -949,6 +978,9 @@ struct VPTOPtrNormalizePass
       return isa<pto::PtrType>(op.getSource().getType()) &&
              isa<pto::PtrType>(op.getDestination().getType());
     });
+    target.addDynamicallyLegalOp<pto::RawFillL1Op>([](pto::RawFillL1Op op) {
+      return isa<pto::PtrType>(op.getDst().getType());
+    });
     target.addDynamicallyLegalOp<pto::MteUbL1Op>([](pto::MteUbL1Op op) {
       return isa<pto::PtrType>(op.getSource().getType()) &&
              isa<pto::PtrType>(op.getDestination().getType());
@@ -1031,6 +1063,7 @@ struct VPTOPtrNormalizePass
                  ConvertMteUbUbOperandPattern,
                  ConvertMteUbL1OperandPattern,
                  ConvertCubeLoadOperandPattern,
+                 ConvertRawFillL1OperandPattern,
                  ConvertCubeStoreOperandPattern,
                  ConvertBiasLoadOperandPattern,
                  ConvertCubeLoadFracOperandPattern,

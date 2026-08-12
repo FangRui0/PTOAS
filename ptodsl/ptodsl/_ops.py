@@ -5264,6 +5264,21 @@ def mte_gm_l1(source, destination, len_burst, *, nburst, loops=None):
     )
 
 
+@_explicit_mode_only("pto.raw_fill_l1(...)")
+def raw_fill_l1(dst, byte_offset, raw_value, repeat_times, block_num_32b,
+                dst_gap_32b, fill_word_bits):
+    """Fill a strided L1/MAT region with a raw 16-bit or 32-bit pattern."""
+    _pto.RawFillL1Op(
+        unwrap_surface_value(dst),
+        _coerce_i64(byte_offset, context="raw_fill_l1 byte_offset"),
+        _coerce_i32(raw_value, context="raw_fill_l1 raw_value"),
+        _coerce_i64(repeat_times, context="raw_fill_l1 repeat_times"),
+        _coerce_i64(block_num_32b, context="raw_fill_l1 block_num_32b"),
+        _coerce_i64(dst_gap_32b, context="raw_fill_l1 dst_gap_32b"),
+        _coerce_i64(fill_word_bits, context="raw_fill_l1 fill_word_bits"),
+    )
+
+
 @_explicit_mode_only("pto.mte_l1_ub(...)")
 def mte_l1_ub(source, destination, len_burst, *, nburst, loops=None):
     """``pto.mte_l1_ub`` – grouped L1/CBUF-to-UB DMA surface."""
@@ -6760,7 +6775,7 @@ __all__ = [
     "chistv2",
     "as_ptr",
     "mte_load", "mte_store", "mte_gm_ub", "mte_ub_gm", "mte_ub_ub", "mte_ub_l1",
-    "mte_gm_l1", "mte_l1_ub", "mte_gm_l1_frac", "mte_l1_bt", "mte_l1_fb", "mem_bar",
+    "mte_gm_l1", "raw_fill_l1", "mte_l1_ub", "mte_gm_l1_frac", "mte_l1_bt", "mte_l1_fb", "mem_bar",
     "set_store_atomic_cfg",
     "set_atomic_add", "set_atomic_max", "set_atomic_min", "set_atomic_none",
     "set_atomic_f32", "set_atomic_f16", "set_atomic_bf16",

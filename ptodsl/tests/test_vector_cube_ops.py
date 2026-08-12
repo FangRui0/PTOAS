@@ -235,13 +235,36 @@ class VectorCubeSurfaceTest(unittest.TestCase):
             "vcmin", "vcgmin", "vcpadd",
             "vadds", "vmuls", "vmaxs", "vmins", "vlrelu", "vshls", "vshrs", "vands", "vors", "vxors",
             "vaxpy", "vmula", "vci", "vaddrelu", "vsubrelu", "vsel",
-            "mte_gm_l1", "mte_l1_ub", "mte_gm_l1_frac", "mte_l1_bt", "mte_l1_fb",
+            "mte_gm_l1", "raw_fill_l1", "mte_l1_ub", "mte_gm_l1_frac", "mte_l1_bt", "mte_l1_fb",
             "mad_acc", "mad_bias", "mad_mx", "mad_mx_acc", "mad_mx_bias",
             "FractalMode", "AccStoreUnitFlagCtrl", "MadUnitFlagMode", "SatMode", "Tf32Mode", "SplitMode",
         ]
 
         for name in names:
             self.assertTrue(hasattr(pto, name), name)
+
+    def test_raw_fill_l1_preserves_all_control_fields(self):
+        destination = object()
+
+        def coerce(value, *, context):
+            return f"{context}:{value}"
+
+        with patch.object(_ops, "_require_explicit_mode"), \
+             patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_ops, "_coerce_i64", side_effect=coerce), \
+             patch.object(_ops, "_coerce_i32", side_effect=coerce), \
+             patch.object(_ops._pto, "RawFillL1Op") as raw_fill:
+            pto.raw_fill_l1(destination, 32, 0x12345678, 3, 7, 11, 16)
+
+        raw_fill.assert_called_once_with(
+            destination,
+            "raw_fill_l1 byte_offset:32",
+            "raw_fill_l1 raw_value:305419896",
+            "raw_fill_l1 repeat_times:3",
+            "raw_fill_l1 block_num_32b:7",
+            "raw_fill_l1 dst_gap_32b:11",
+            "raw_fill_l1 fill_word_bits:16",
+        )
 
     def test_tile_bitwise_aliases_are_exposed_without_legacy_names(self):
         preferred_names = [

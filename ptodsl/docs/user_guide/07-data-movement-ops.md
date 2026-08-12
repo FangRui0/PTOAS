@@ -899,6 +899,44 @@ Cube compute step; it does not issue those transfers itself.
 
 ---
 
+#### `pto.raw_fill_l1(dst: PtrType, byte_offset: int, raw_value: int, repeat_times: int, block_num_32b: int, dst_gap_32b: int, fill_word_bits: int) -> None`
+
+**Description**: Fill a strided region in the L1 (MAT) buffer with one raw
+16-bit or 32-bit word pattern. This is the explicit PTO surface used for
+padding and tail regions, including the final strided repetition.
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `dst` | `PtrType` (L1/MAT) | Destination L1 buffer |
+| `byte_offset` | `int` | Non-negative byte offset to the first filled word |
+| `raw_value` | `int` | Raw 32-bit bit pattern; the selected view determines the word width |
+| `repeat_times` | `int` | Number of fill repetitions; constant values must be at most `32767` |
+| `block_num_32b` | `int` | Number of contiguous 32-byte blocks per repetition; constant values must be at most `32767` |
+| `dst_gap_32b` | `int` | Gap between repetitions in 32-bit blocks; constant values must be at most `32767` |
+| `fill_word_bits` | `int` | Compile-time view width, exactly `16` or `32` |
+
+**Constraints**: `dst` must be in the L1/MAT address space. Constant offsets and
+geometry values must be non-negative. `fill_word_bits` must be a compile-time
+`16` or `32` value.
+
+**Example**:
+
+```python
+pto.raw_fill_l1(
+    l1_dst,
+    byte_offset=32,
+    raw_value=0,
+    repeat_times=4,
+    block_num_32b=2,
+    dst_gap_32b=6,
+    fill_word_bits=16,
+)
+```
+
+---
+
 #### `pto.mte_gm_l1_frac(src: PtrType, dst: PtrType, mode: pto.FractalMode, *, shape: tuple[int, int], src_layout: tuple[int] | tuple[int, int], dst_group: tuple[int, int, int, int], ctrl: tuple[int, bool]) -> None`
 
 **Description**: Fractal GM-to-L1 load for specialized layouts (`ND2NZ`, `DN2NZ`).
@@ -1202,6 +1240,7 @@ pto.mte_l0c_gm(
 | Data Flow | Operation | Src Space | Dst Space |
 |-----------|-----------|-----------|-----------|
 | GM → L1 | `mte_gm_l1` | gm | l1 |
+| L1 raw fill | `raw_fill_l1` | l1 | l1 |
 | GM → L1 (fractal) | `mte_gm_l1_frac` | gm | l1 |
 | L1 → UB | `mte_l1_ub` | l1 | ub |
 | L1 → L0A (explicit control) | `mte_l1_l0a` | l1 | l0a |

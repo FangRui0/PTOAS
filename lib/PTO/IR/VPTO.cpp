@@ -7530,6 +7530,150 @@ void MteGmL1FracOp::print(OpAsmPrinter &printer) {
           << getL2CacheCtrl().getType() << ", " << getSmallc0En().getType();
 }
 
+static constexpr uint64_t kRawFillControlFieldMax = 32767;
+
+static StringRef getAddressSpaceDiagnosticName(pto::AddressSpace space) {
+  switch (space) {
+  case pto::AddressSpace::GM:
+    return "gm";
+  case pto::AddressSpace::MAT:
+    return "mat/l1";
+  case pto::AddressSpace::LEFT:
+    return "left/l0a";
+  case pto::AddressSpace::RIGHT:
+    return "right/l0b";
+  case pto::AddressSpace::ACC:
+    return "acc/l0c";
+  case pto::AddressSpace::VEC:
+    return "vec/ub";
+  case pto::AddressSpace::BIAS:
+    return "bt/bias";
+  case pto::AddressSpace::SCALING:
+    return "fb/scaling";
+  case pto::AddressSpace::Zero:
+    return "zero";
+  }
+  return "unknown";
+}
+
+static LogicalResult verifyRawFillGeometry(Operation *op, Value byteOffset,
+                                           Value repeatTimes,
+                                           Value blockNum32b, Value dstGap32b) {
+  auto checkNonNegativeConst = [&](Value value, StringRef name) -> LogicalResult {
+    if (!value)
+      return success();
+    APInt intValue;
+    if (matchPattern(value, m_ConstantInt(&intValue)) && intValue.isNegative())
+      return op->emitOpError() << name << " must be non-negative";
+    return success();
+  };
+  auto checkConstMax = [&](Value value, StringRef name,
+                           uint64_t max) -> LogicalResult {
+    if (!value)
+      return success();
+    APInt intValue;
+    if (matchPattern(value, m_ConstantInt(&intValue)) &&
+        intValue.getZExtValue() > max)
+      return op->emitOpError() << name << " must be <= " << max;
+    return success();
+  };
+  if (failed(checkNonNegativeConst(byteOffset, "byte_offset")) ||
+      failed(checkNonNegativeConst(repeatTimes, "repeat_times")) ||
+      failed(checkNonNegativeConst(blockNum32b, "block_num_32b")) ||
+      failed(checkNonNegativeConst(dstGap32b, "dst_gap_32b")))
+    return failure();
+  if (failed(checkConstMax(repeatTimes, "repeat_times",
+                           kRawFillControlFieldMax)) ||
+      failed(checkConstMax(blockNum32b, "block_num_32b",
+                           kRawFillControlFieldMax)) ||
+      failed(checkConstMax(dstGap32b, "dst_gap_32b",
+                           kRawFillControlFieldMax)))
+    return failure();
+  return success();
+}
+
+static LogicalResult verifyRawFillWordBits(Operation *op, Value fillWordBits) {
+  if (!fillWordBits)
+    return op->emitOpError("missing fill_word_bits");
+  APInt wordBits;
+  if (!matchPattern(fillWordBits, m_ConstantInt(&wordBits)))
+    return op->emitOpError(
+        "fill_word_bits must be a compile-time constant 16 or 32");
+  if (wordBits.getZExtValue() != 16 && wordBits.getZExtValue() != 32)
+    return op->emitOpError()
+           << "fill_word_bits must be 16 or 32, got "
+           << wordBits.getZExtValue();
+  return success();
+}
+
+static LogicalResult verifyRawFillDestination(Operation *op, Type dstType,
+                                              StringRef dstName) {
+  auto addressSpace = getBufferAddressSpace(dstType);
+  if (!addressSpace)
+    return op->emitOpError()
+           << "requires " << dstName
+           << " with an explicit PTO address space for L1 raw fill";
+  if (*addressSpace != pto::AddressSpace::MAT)
+    return op->emitOpError()
+           << "requires " << dstName << " in the mat/l1 address space, got "
+           << getAddressSpaceDiagnosticName(*addressSpace);
+  return success();
+}
+
+LogicalResult RawFillL1Op::verify() {
+  if (failed(verifyRawFillDestination(getOperation(), getDst().getType(), "dst")))
+    return failure();
+  if (failed(verifyRawFillWordBits(getOperation(), getFillWordBits())))
+    return failure();
+  return verifyRawFillGeometry(getOperation(), getByteOffset(),
+                               getRepeatTimes(), getBlockNum_32b(),
+                               getDstGap_32b());
+}
+
+LogicalResult CreateCbufMatrixOp::verify() {
+  auto ptrType = dyn_cast<pto::PtrType>(getDst().getType());
+  if (!ptrType)
+    return emitOpError("requires a typed !pto.ptr destination");
+  if (ptrType.getMemorySpace().getAddressSpace() != pto::AddressSpace::MAT) {
+    return emitOpError()
+           << "requires a mat/l1 destination, got "
+           << getAddressSpaceDiagnosticName(
+                  ptrType.getMemorySpace().getAddressSpace());
+  }
+  Type elementType = ptrType.getElementType();
+  auto integerType = dyn_cast<IntegerType>(elementType);
+  if (!integerType ||
+      (integerType.getWidth() != 16 && integerType.getWidth() != 32))
+    return emitOpError()
+           << "requires a 16-bit or 32-bit integer destination view, got "
+              "element type "
+           << elementType;
+  if (failed(verifyRawFillWordBits(getOperation(), getFillWordBits())))
+    return failure();
+  APInt wordBits;
+  if (matchPattern(getFillWordBits(), m_ConstantInt(&wordBits)) &&
+      wordBits.getZExtValue() != integerType.getWidth())
+    return emitOpError()
+           << "fill_word_bits " << wordBits.getZExtValue()
+           << " does not match the " << integerType.getWidth()
+           << "-bit destination view";
+  return verifyRawFillGeometry(getOperation(), /*byteOffset=*/{},
+                               getRepeatTimes(), getBlockNum_32b(),
+                               getDstGap_32b());
+}
+
+void RawFillL1Op::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Write::get(), &getDstMutable());
+}
+
+void CreateCbufMatrixOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Write::get(), &getDstMutable());
+}
+
 LogicalResult MteGmL1Op::verify() {
   if (failed(verifyCopyGmToUbufOp(*this, true)))
     return failure();

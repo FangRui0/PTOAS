@@ -1367,6 +1367,43 @@ struct ExpandCubeLoadPattern : public OpRewritePattern<pto::MteGmL1Op> {
   }
 };
 
+struct ExpandRawFillL1Pattern : public OpRewritePattern<pto::RawFillL1Op> {
+  using OpRewritePattern<pto::RawFillL1Op>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(pto::RawFillL1Op op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    APInt wordBits;
+    if (!matchPattern(op.getFillWordBits(), m_ConstantInt(&wordBits)))
+      return rewriter.notifyMatchFailure(op, "fill_word_bits not constant");
+    unsigned viewWidth = wordBits.getZExtValue() == 16 ? 16 : 32;
+
+    Value basePtr = materializeBufferPointer(op.getDst(), rewriter, loc);
+    if (!basePtr || !isa<pto::PtrType>(basePtr.getType()))
+      return rewriter.notifyMatchFailure(op, "failed to materialize dst ptr");
+
+    Value targetPtr =
+        offsetPointerByBytes(basePtr, op.getByteOffset(), rewriter, loc);
+    if (!targetPtr)
+      return rewriter.notifyMatchFailure(op, "failed to apply byte offset");
+
+    auto dstPtrType = cast<pto::PtrType>(targetPtr.getType());
+    Type viewElement =
+        viewWidth == 16 ? rewriter.getI16Type() : rewriter.getI32Type();
+    auto viewType = pto::PtrType::get(rewriter.getContext(), viewElement,
+                                      dstPtrType.getMemorySpace());
+    Value viewPtr =
+        rewriter.create<pto::CastPtrOp>(loc, viewType, targetPtr);
+
+    rewriter.create<pto::CreateCbufMatrixOp>(
+        loc, viewPtr, op.getRawValue(), op.getRepeatTimes(),
+        op.getBlockNum_32b(), op.getDstGap_32b(), op.getFillWordBits());
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct ExpandCubeStorePattern : public OpRewritePattern<pto::MteL1UbOp> {
   using OpRewritePattern<pto::MteL1UbOp>::OpRewritePattern;
 
@@ -2037,6 +2074,7 @@ struct VPTOExpandWrapperOpsPass
                  ExpandRightLoadMxPattern, ExpandAccStorePattern,
                  ExpandAccStoreGmPattern,
                  ExpandAccStoreUbPattern,
+                 ExpandRawFillL1Pattern,
                  ExpandSimtLaunchPattern,
                  ExpandAtomicConfigPattern<pto::SetAtomicAddOp>,
                  ExpandAtomicConfigPattern<pto::SetAtomicMaxOp>,
