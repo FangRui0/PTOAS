@@ -10225,9 +10225,6 @@ public:
   LogicalResult
   matchAndRewrite(arith::SelectOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (!hasVPTOConvertibleType(op->getOperandTypes()) &&
-        !hasVPTOConvertibleType(op->getResultTypes()))
-      return failure();
     if (!op.getCondition().getType().isInteger(1))
       return rewriter.notifyMatchFailure(
           op, "only scalar i1 conditions supported for VPTO arith.select");
@@ -11307,6 +11304,10 @@ static LogicalResult lowerVPTOTypes(ModuleOp module, llvm::raw_ostream &diagOS) 
         return isLegalForBranchOpInterfaceTypeConversionPattern(op,
                                                                 typeConverter);
       });
+  target.addDynamicallyLegalOp<arith::SelectOp>([&](arith::SelectOp op) {
+    return typeConverter.isLegal(op->getOperandTypes()) &&
+           typeConverter.isLegal(op->getResultTypes());
+  });
   target.addIllegalOp<pto::AddPtrOp, pto::CastPtrOp, pto::LoadScalarOp,
                       pto::StoreScalarOp, pto::PTOLoadOp, pto::PTOStoreOp,
                       pto::PTOLdgOp, pto::PTOStgOp, pto::PTOLdDevOp,
