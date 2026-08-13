@@ -112,8 +112,9 @@ template <typename T>
 static std::optional<T> takeExpected(llvm::Expected<T> value,
                                      llvm::raw_ostream &diagOS,
                                      const llvm::Twine &context) {
-  if (value)
+  if (value) {
     return std::move(*value);
+  }
   diagOS << "Error: VF_SIMT size patch: " << context << ": "
          << llvm::toString(value.takeError()) << "\n";
   return std::nullopt;
@@ -123,8 +124,9 @@ static bool functionContainsInlineAsm(const llvm::Function &function) {
   for (const llvm::BasicBlock &block : function) {
     for (const llvm::Instruction &instruction : block) {
       const auto *call = llvm::dyn_cast<llvm::CallBase>(&instruction);
-      if (call && call->isInlineAsm())
+      if (call && call->isInlineAsm()) {
         return true;
+      }
     }
   }
   return false;
@@ -147,8 +149,9 @@ collectManifest(llvm::Module &module, llvm::raw_ostream &diagOS) {
     for (llvm::BasicBlock &block : caller) {
       for (llvm::Instruction &instruction : block) {
         auto *call = llvm::dyn_cast<llvm::CallBase>(&instruction);
-        if (!call || call->getCallingConv() != llvm::CallingConv::SimtEntry)
+        if (!call || call->getCallingConv() != llvm::CallingConv::SimtEntry) {
           continue;
+        }
         llvm::Function *callee = call->getCalledFunction();
         if (!callee || callee->isDeclaration()) {
           emitError(diagOS,
@@ -188,10 +191,12 @@ readFunctions(const llvm::object::ELFObjectFileBase &object,
   unsigned symbolTables = 0;
   for (const llvm::object::SectionRef &section : object.sections()) {
     llvm::object::ELFSectionRef elfSection(section);
-    if (elfSection.getType() == llvm::ELF::SHT_SYMTAB)
+    if (elfSection.getType() == llvm::ELF::SHT_SYMTAB) {
       ++symbolTables;
-    if ((elfSection.getFlags() & llvm::ELF::SHF_EXECINSTR) == 0)
+    }
+    if ((elfSection.getFlags() & llvm::ELF::SHF_EXECINSTR) == 0) {
       continue;
+    }
     ++executableSections;
   }
   if (symbolTables != 1) {
@@ -207,22 +212,26 @@ readFunctions(const llvm::object::ELFObjectFileBase &object,
   }
 
   for (const llvm::object::ELFSymbolRef symbol : object.symbols()) {
-    if (symbol.getELFType() != llvm::ELF::STT_FUNC)
+    if (symbol.getELFType() != llvm::ELF::STT_FUNC) {
       continue;
+    }
     auto name =
         takeExpected(symbol.getName(), diagOS, "failed to read symbol name");
-    if (!name)
+    if (!name) {
       return failure();
-    if (!requiredFunctions.contains(*name))
+    }
+    if (!requiredFunctions.contains(*name)) {
       continue;
+    }
     auto address =
         takeExpected(symbol.getAddress(), diagOS,
                      llvm::Twine("failed to read address for '") + *name + "'");
     auto sectionIt =
         takeExpected(symbol.getSection(), diagOS,
                      llvm::Twine("failed to read section for '") + *name + "'");
-    if (!address || !sectionIt)
+    if (!address || !sectionIt) {
       return failure();
+    }
     if (*sectionIt == object.section_end()) {
       emitError(diagOS, llvm::Twine("function '") + *name + "' is undefined");
       return failure();
@@ -263,8 +272,9 @@ static bool isVFSIMT(uint64_t instruction) {
 static std::optional<uint16_t>
 decodeMOVKChunk(uint32_t instruction, unsigned chunk, unsigned targetRegister) {
   constexpr uint32_t kNop = 0x41400000;
-  if (instruction == kNop)
+  if (instruction == kNop) {
     return 0;
+  }
 
   constexpr uint32_t kMOVKFixedMask = 0xffc10000;
   const uint32_t expected = chunk == 1 ? 0x07410000 : 0x07810000;
@@ -292,8 +302,9 @@ static std::optional<uint64_t> decodeTargetAddress(StringRef bytes,
   // targetRegister comes from the VF_SIMT encoding. The sequence computes:
   //   target PC = address of MOV PC + sign_extend(relativeWords) * 4.
   // Reject any other sequence instead of guessing its target.
-  if (instructionOffset < 24)
+  if (instructionOffset < 24) {
     return std::nullopt;
+  }
   // Follow the register named by VF_SIMT back through MOVI/MOVK/SHLI/ADD.
   const unsigned targetRegister =
       (instruction >> kVFSIMTRegisterShift) & kScalarRegisterMask;
@@ -327,13 +338,15 @@ static std::optional<uint64_t> decodeTargetAddress(StringRef bytes,
   const unsigned pcRegister =
       (movPc >> kScalarDestinationShift) & kScalarRegisterMask;
   const unsigned addSourceRegister = (add >> 7) & kScalarRegisterMask;
-  if (pcRegister != addSourceRegister)
+  if (pcRegister != addSourceRegister) {
     return std::nullopt;
+  }
 
   std::optional<uint16_t> upper1 = decodeMOVKChunk(movk1, 1, targetRegister);
   std::optional<uint16_t> upper2 = decodeMOVKChunk(movk2, 2, targetRegister);
-  if (!upper1 || !upper2)
+  if (!upper1 || !upper2) {
     return std::nullopt;
+  }
 
   // MOVI and the optional MOVK instructions form a signed 48-bit word offset.
   const uint64_t encodedRelativeWords = (movi & 0xffff) |
@@ -346,8 +359,9 @@ static std::optional<uint64_t> decodeTargetAddress(StringRef bytes,
   const int64_t byteOffset = relativeWords * kInstructionBytes;
   if (byteOffset < 0) {
     const uint64_t magnitude = static_cast<uint64_t>(-byteOffset);
-    if (magnitude > pcAddress)
+    if (magnitude > pcAddress) {
       return std::nullopt;
+    }
     return pcAddress - magnitude;
   }
   if (static_cast<uint64_t>(byteOffset) >
@@ -375,8 +389,9 @@ decodeCallSites(const ELFFunction &caller, StringRef objectBytes,
        offset += kInstructionBytes) {
     uint64_t instruction = llvm::support::endian::read64le(
         reinterpret_cast<const uint8_t *>(bytes.data() + offset));
-    if (!isVFSIMT(instruction))
+    if (!isVFSIMT(instruction)) {
       continue;
+    }
     std::optional<uint64_t> target =
         decodeTargetAddress(bytes, caller.address, offset, instruction);
     if (!target) {
@@ -423,8 +438,9 @@ buildPatchPlan(llvm::ArrayRef<SimtCallSite> manifest,
   // address. Call order alone is not sufficient proof that a patch is safe.
   llvm::DenseMap<StringRef, llvm::SmallVector<const SimtCallSite *, 4>>
       callsByCaller;
-  for (const SimtCallSite &call : manifest)
+  for (const SimtCallSite &call : manifest) {
     callsByCaller[call.callerName].push_back(&call);
+  }
 
   llvm::SmallVector<PatchRecord, 4> plan;
   for (auto &entry : callsByCaller) {
@@ -435,8 +451,9 @@ buildPatchPlan(llvm::ArrayRef<SimtCallSite> manifest,
       return failure();
     }
     auto decoded = decodeCallSites(callerIt->second, objectBytes, diagOS);
-    if (failed(decoded))
+    if (failed(decoded)) {
       return failure();
+    }
     auto &calls = entry.second;
     struct ResolvedCall {
       const SimtCallSite *manifest = nullptr;
@@ -478,8 +495,9 @@ buildPatchPlan(llvm::ArrayRef<SimtCallSite> manifest,
     for (const DecodedCallSite &decodedCall : *decoded) {
       ResolvedCall *matched = nullptr;
       for (ResolvedCall &candidate : resolvedCalls) {
-        if (candidate.callee->address != decodedCall.targetAddress)
+        if (candidate.callee->address != decodedCall.targetAddress) {
           continue;
+        }
         if (matched && matched->callee->name != candidate.callee->name) {
           emitError(diagOS,
                     llvm::Twine("caller '") + entry.first +
@@ -487,8 +505,9 @@ buildPatchPlan(llvm::ArrayRef<SimtCallSite> manifest,
                         llvm::Twine::utohexstr(decodedCall.targetAddress));
           return failure();
         }
-        if (!matched)
+        if (!matched) {
           matched = &candidate;
+        }
       }
       if (!matched) {
         emitError(diagOS,
@@ -504,8 +523,9 @@ buildPatchPlan(llvm::ArrayRef<SimtCallSite> manifest,
            static_cast<uint16_t>(matched->callee->size / kInstructionBytes)});
     }
     for (const ResolvedCall &call : resolvedCalls) {
-      if (call.observed)
+      if (call.observed) {
         continue;
+      }
       emitError(diagOS, llvm::Twine("caller '") + entry.first +
                             "' has no decoded VF_SIMT callsite for callee '" +
                             call.callee->name + "'");
@@ -532,13 +552,15 @@ validateNoRelocationOverlap(const llvm::object::ELFObjectFileBase &object,
   // Reject a VF_SIMT covered by a relocation: the linker could overwrite the
   // patched instruction and invalidate the checks performed on the raw object.
   for (const llvm::object::SectionRef &section : object.sections()) {
-    if (section.relocation_begin() == section.relocation_end())
+    if (section.relocation_begin() == section.relocation_end()) {
       continue;
+    }
     auto relocatedSection =
         takeExpected(section.getRelocatedSection(), diagOS,
                      "failed to identify the section targeted by relocations");
-    if (!relocatedSection)
+    if (!relocatedSection) {
       return failure();
+    }
     if (*relocatedSection == object.section_end()) {
       emitError(diagOS, "relocation section has no target section");
       return failure();
@@ -592,11 +614,13 @@ analyzeObject(llvm::ArrayRef<SimtCallSite> manifest, StringRef objectPath,
     emitError(diagOS, "input is not an ELF object");
     return failure();
   }
-  if (failed(validateObjectHeader(*object, diagOS)))
+  if (failed(validateObjectHeader(*object, diagOS))) {
     return failure();
+  }
   auto functions = readFunctions(*object, manifest, diagOS);
-  if (failed(functions))
+  if (failed(functions)) {
     return failure();
+  }
   auto plan = buildPatchPlan(manifest, *functions, buffer->getBuffer(), diagOS);
   if (failed(plan) ||
       failed(validateNoRelocationOverlap(*object, *plan, diagOS)))
@@ -627,8 +651,9 @@ static LogicalResult validatePatchedBytes(StringRef rawBytes,
     }
   }
   for (size_t offset = 0; offset < rawBytes.size(); ++offset) {
-    if (rawBytes[offset] == patchedBytes[offset])
+    if (rawBytes[offset] == patchedBytes[offset]) {
       continue;
+    }
     if (!llvm::any_of(plan, [offset](const PatchRecord &record) {
           return offset >= record.decoded.fileOffset &&
                  offset < record.decoded.fileOffset + sizeof(uint64_t);
@@ -674,20 +699,23 @@ FailureOr<VFSIMTSizePatchResult> mlir::pto::verifyAndPatchVFSIMTSize(
   // output when any callsite is unsafe or inconsistent.
   VFSIMTSizePatchResult result;
   result.objectPath = rawObjectPath.str();
-  if (mode == VFSIMTSizeFixMode::Off)
+  if (mode == VFSIMTSizeFixMode::Off) {
     return result;
+  }
 
   auto manifest = collectManifest(module, diagOS);
-  if (failed(manifest))
+  if (failed(manifest)) {
     return failure();
+  }
   if (manifest->empty()) {
     diagOS << "PTOAS: VF_SIMT size verification passed; no patch required\n";
     return result;
   }
 
   auto analysis = analyzeObject(*manifest, rawObjectPath, diagOS);
-  if (failed(analysis))
+  if (failed(analysis)) {
     return failure();
+  }
 
   std::string patchedBytes = analysis->buffer->getBuffer().str();
   for (const PatchRecord &record : analysis->plan) {
@@ -749,8 +777,9 @@ FailureOr<VFSIMTSizePatchResult> mlir::pto::verifyAndPatchVFSIMTSize(
   if (failed(validatePatchedBytes(analysis->buffer->getBuffer(), patchedBytes,
                                   analysis->plan, diagOS)))
     return failure();
-  if (failed(writePatchedObject(patchedObjectPath, patchedBytes, diagOS)))
+  if (failed(writePatchedObject(patchedObjectPath, patchedBytes, diagOS))) {
     return failure();
+  }
 
   auto writtenBuffer = llvm::MemoryBuffer::getFile(patchedObjectPath);
   if (!writtenBuffer || writtenBuffer.get()->getBuffer() != patchedBytes) {
@@ -787,8 +816,9 @@ FailureOr<VFSIMTSizePatchResult> mlir::pto::verifyAndPatchVFSIMTSize(
   }
 
   for (const PatchRecord &record : analysis->plan) {
-    if (record.decoded.codeSize != kInvalidVFSIMTSize)
+    if (record.decoded.codeSize != kInvalidVFSIMTSize) {
       continue;
+    }
     diagOS << "PTOAS: patched VF_SIMT size\n"
            << "  caller: " << record.manifest->callerName << "\n"
            << "  callee: " << record.manifest->calleeName << "\n"

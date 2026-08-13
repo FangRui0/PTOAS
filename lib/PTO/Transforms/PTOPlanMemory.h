@@ -37,7 +37,7 @@ struct ValueComparator {
 using StableValueOrderMap = DenseMap<Value, uint32_t>;
 
 /// Various states when collecting gen-kill.
-enum BufferStatus { UNDEFFINED = 0, DEFFINED, GENED, KILLED };
+enum class BufferStatus { UNDEFFINED = 0, DEFFINED, GENED, KILLED };
 
 /// Pair of inplace Value.
 using ValuePair = std::pair<Value, Value>;
@@ -48,7 +48,7 @@ enum class MemPlanMode {
 };
 
 /// Result status after plan memory.
-enum PlanStatus {
+enum class PlanStatus {
   PLAN_SUCCESS = 0,
   RESTART_NEW_PLAN,
   CONTINUE_PLAN,
@@ -116,7 +116,7 @@ struct GenKillEntry {
 struct BufferLife {
   BufferLife(Value buffer, int64_t start, int64_t end)
       : buffer(buffer), allocTime(start), freeTime(end) {}
-  BufferLife(Value buffer) : buffer(buffer) {}
+  explicit BufferLife(Value buffer) : buffer(buffer) {}
   /// buffer value.
   Value buffer;
   /// the buffer allocate time.
@@ -805,7 +805,6 @@ private:
 
   /// The device's SCALING storage size
   int scalingSpaceSize{0};
-
 };
 } // namespace pto
 } // namespace mlir

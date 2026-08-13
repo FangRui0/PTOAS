@@ -72,6 +72,24 @@ permissions:
   pull-requests: read
 
 jobs:
+  vmi-source-patch-check:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate VMI source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 packaging/ptoas-vmi/prepare_source.py \
+            --output-dir .work/ptoas-vmi-source-check \
+            --revision HEAD
+
   license-header-check:
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-22.04

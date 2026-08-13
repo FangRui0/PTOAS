@@ -41,6 +41,8 @@ static bool isColMajorNoneBox(pto::TileBufType type) {
 }
 
 static bool isA5RiskyVecVecColMajorTMov(pto::TMovOp op) {
+  if (pto::classifyTMovForm(op.getFp()) == pto::TMovForm::XToZz)
+    return false;
   auto srcTb = dyn_cast<pto::TileBufType>(op.getSrc().getType());
   auto dstTb = dyn_cast<pto::TileBufType>(op.getDst().getType());
   if (!srcTb || !dstTb)
@@ -128,11 +130,13 @@ static pto::TileBufConfigAttr buildRowMajorConfig(MLIRContext *ctx,
 static FailureOr<pto::TileBufType>
 buildRowMajorReinterpretType(MLIRContext *ctx, pto::TileBufType srcType) {
   ArrayRef<int64_t> shape = srcType.getShape();
-  if (shape.size() != kTileRank2D)
+  if (shape.size() != kTileRank2D) {
     return failure();
+  }
   if (shape[kFirstTileDim] == ShapedType::kDynamic ||
-      shape[kSecondTileDim] == ShapedType::kDynamic)
+      shape[kSecondTileDim] == ShapedType::kDynamic) {
     return failure();
+  }
 
   SmallVector<int64_t, kTileRank2D> swappedShape{shape[kSecondTileDim],
                                                  shape[kFirstTileDim]};
@@ -160,8 +164,9 @@ buildRowMajorReinterpretType(MLIRContext *ctx, pto::TileBufType srcType) {
 static void setSwappedDynamicValidShapeIfNeeded(
     IRRewriter &rewriter, Location loc, Value sourceTile, Value reshapedTile,
     pto::TileBufType reshapedType) {
-  if (!reshapedType.hasDynamicValid())
+  if (!reshapedType.hasDynamicValid()) {
     return;
+  }
 
   auto validShape = rewriter.create<pto::GetValidShapeOp>(loc, sourceTile);
   rewriter.create<pto::SetValidShapeOp>(
@@ -179,15 +184,17 @@ struct PTOA5NormalizeTMovPass
     func.walk([&](pto::TGetScaleAddrOp op) { scaleAddrOps.push_back(op); });
     for (pto::TGetScaleAddrOp op : scaleAddrOps) {
       auto matchingTMov = findMatchingScaleTileTMov(op);
-      if (!matchingTMov)
+      if (!matchingTMov) {
         continue;
+      }
       op->moveBefore(matchingTMov);
     }
 
     SmallVector<pto::TMovOp, kRiskyOpReserveSize> riskyOps;
     func.walk([&](pto::TMovOp op) {
-      if (isA5RiskyVecVecColMajorTMov(op))
+      if (isA5RiskyVecVecColMajorTMov(op)) {
         riskyOps.push_back(op);
+      }
     });
 
     IRRewriter rewriter(func.getContext());
@@ -238,16 +245,18 @@ struct PTOA5NormalizeTMovPass
 
     bool hasResidualRisk = false;
     func.walk([&](pto::TMovOp op) {
-      if (!isA5RiskyVecVecColMajorTMov(op))
+      if (!isA5RiskyVecVecColMajorTMov(op)) {
         return WalkResult::advance();
+      }
       op.emitOpError(
           "A5 vec->vec TMOV on col_major/none_box tile is unsupported; "
           "expected normalization to row_major via pto.treshape");
       hasResidualRisk = true;
       return WalkResult::interrupt();
     });
-    if (hasResidualRisk)
+    if (hasResidualRisk) {
       signalPassFailure();
+    }
   }
 };
 

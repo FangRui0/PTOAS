@@ -35,7 +35,7 @@ if((NOT DEFINED MLIR_DIR OR MLIR_DIR STREQUAL "")
       "MLIR package directory derived from LLVM_BUILD_DIR")
 endif()
 
-project(ptoas VERSION 0.58)
+project(ptoas VERSION 0.59)
 
 # Wheel builds carry the same Linux hardening policy as release CMake builds.
 # Including the cache settings here keeps the policy backend-independent.
@@ -234,6 +234,15 @@ if(BUILD_TESTING)
               "${CMAKE_CURRENT_SOURCE_DIR}/test/python/low_precision_types.py"
     )
     set_tests_properties(pto_low_precision_types PROPERTIES
+      LABELS "PTO"
+      ENVIRONMENT "${_pto_python_test_env}"
+    )
+    add_test(
+      NAME pto_mx_grp_axis_bindings
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/test/python/mx_grp_axis_bindings.py"
+    )
+    set_tests_properties(pto_mx_grp_axis_bindings PROPERTIES
       LABELS "PTO"
       ENVIRONMENT "${_pto_python_test_env}"
     )

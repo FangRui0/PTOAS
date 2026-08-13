@@ -27,8 +27,9 @@ using namespace mlir::pto;
 
 static bool isAllowedIntToPtrUse(Value ptr, OpOperand &use) {
   Operation *user = use.getOwner();
-  if (isa<LoadScalarOp, StoreScalarOp>(user))
+  if (isa<LoadScalarOp, StoreScalarOp>(user)) {
     return use.getOperandNumber() == 0 && user->getOperand(0) == ptr;
+  }
   return false;
 }
 

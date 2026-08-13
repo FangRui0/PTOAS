@@ -129,7 +129,7 @@ struct LayoutSolver {
   unsigned addDataValue(Value value) {
     auto type = dyn_cast<VMIVRegType>(value.getType());
     if (!type)
-      return ~0u;
+      return ~0U;
     auto [it, inserted] = dataIds.try_emplace(value, dataNodes.size());
     if (inserted) {
       dataNodes.push_back(
@@ -144,7 +144,7 @@ struct LayoutSolver {
   unsigned addMaskValue(Value value) {
     auto type = dyn_cast<VMIMaskType>(value.getType());
     if (!type)
-      return ~0u;
+      return ~0U;
     auto [it, inserted] = maskIds.try_emplace(value, maskNodes.size());
     if (inserted)
       maskNodes.push_back(
@@ -176,7 +176,7 @@ struct LayoutSolver {
   LogicalResult uniteDataEquivalent(Value lhs, Value rhs, Operation *op) {
     unsigned lhsId = addDataValue(lhs);
     unsigned rhsId = addDataValue(rhs);
-    if (lhsId == ~0u || rhsId == ~0u)
+    if (lhsId == ~0U || rhsId == ~0U)
       return success();
     unsigned lhsRoot = find(lhsId);
     unsigned rhsRoot = find(rhsId);
@@ -207,7 +207,7 @@ struct LayoutSolver {
   LogicalResult uniteMask(Value lhs, Value rhs, Operation *op) {
     unsigned lhsId = addMaskValue(lhs);
     unsigned rhsId = addMaskValue(rhs);
-    if (lhsId == ~0u || rhsId == ~0u)
+    if (lhsId == ~0U || rhsId == ~0U)
       return success();
     unsigned lhsRoot = findMask(lhsId);
     unsigned rhsRoot = findMask(rhsId);
@@ -231,7 +231,7 @@ struct LayoutSolver {
   setNaturalLayout(Value value, VMILayoutAttr layout, Operation *op,
                    DataLayoutSeedPhase phase = DataLayoutSeedPhase::Other) {
     unsigned id = addDataValue(value);
-    if (id == ~0u || !layout)
+    if (id == ~0U || !layout)
       return success();
     unsigned root = find(id);
     VMILayoutAttr existing = dataNodes[root].naturalLayout;
@@ -248,7 +248,7 @@ struct LayoutSolver {
   setPreferredLayout(Value value, VMILayoutAttr layout, Operation *op,
                      DataLayoutSeedPhase phase = DataLayoutSeedPhase::Other) {
     unsigned id = addDataValue(value);
-    if (id == ~0u || !layout)
+    if (id == ~0U || !layout)
       return success();
     unsigned root = find(id);
     VMILayoutAttr existing = dataNodes[root].preferredLayout;
@@ -284,7 +284,7 @@ struct LayoutSolver {
 
   bool hasDataLayoutSeed(Value value) {
     unsigned id = addDataValue(value);
-    if (id == ~0u)
+    if (id == ~0U)
       return false;
     DataNode &node = dataNodes[find(id)];
     return static_cast<bool>(node.naturalLayout || node.preferredLayout);
@@ -481,7 +481,7 @@ struct LayoutSolver {
 
   VMILayoutAttr getDataLayout(Value value) {
     unsigned id = addDataValue(value);
-    if (id == ~0u)
+    if (id == ~0U)
       return {};
     unsigned root = find(id);
     if (dataNodes[root].naturalLayout)
@@ -655,6 +655,20 @@ struct LayoutSolver {
           return WalkResult::interrupt();
         return WalkResult::advance();
       }
+      if (auto addc = dyn_cast<VMIVaddcOp>(op)) {
+        if (failed(constrainElementwiseBinary(addc.getLhsMutable(),
+                                              addc.getRhsMutable(),
+                                              addc.getResult(), op)))
+          return WalkResult::interrupt();
+        return WalkResult::advance();
+      }
+      if (auto addcs = dyn_cast<VMIVaddcsOp>(op)) {
+        if (failed(constrainElementwiseBinary(addcs.getLhsMutable(),
+                                              addcs.getRhsMutable(),
+                                              addcs.getResult(), op)))
+          return WalkResult::interrupt();
+        return WalkResult::advance();
+      }
       if (auto fma = dyn_cast<VMIFmaOp>(op)) {
         if (failed(unite(fma.getLhs(), fma.getRhs(), op)) ||
             failed(unite(fma.getLhs(), fma.getAcc(), op)) ||
@@ -700,6 +714,12 @@ struct LayoutSolver {
       if (auto negf = dyn_cast<VMINegFOp>(op)) {
         if (failed(unite(negf.getSource(), negf.getResult(), op)))
           return WalkResult::interrupt();
+        return WalkResult::advance();
+      }
+      if (auto negi = dyn_cast<VMINegIOp>(op)) {
+        if (failed(unite(negi.getSource(), negi.getResult(), op))) {
+          return WalkResult::interrupt();
+        }
         return WalkResult::advance();
       }
       if (auto absf = dyn_cast<VMIAbsFOp>(op)) {
@@ -864,8 +884,6 @@ struct LayoutSolver {
       if (auto reduce = dyn_cast<VMIReduceAddIOp>(op)) {
         requestDataUse(reduce.getSourceMutable(), getContiguousLayout(),
                        /*late=*/false, DataLayoutSeedPhase::Reduce);
-        requestDataUse(reduce.getInitMutable(), getContiguousLayout(),
-                       /*late=*/false, DataLayoutSeedPhase::Reduce);
         if (failed(requestMaskUse(reduce.getMaskMutable(),
                                   getContiguousLayout(), op)))
           return WalkResult::interrupt();
@@ -876,8 +894,6 @@ struct LayoutSolver {
       }
       if (auto reduce = dyn_cast<VMIReduceAddFOp>(op)) {
         requestDataUse(reduce.getSourceMutable(), getContiguousLayout(),
-                       /*late=*/false, DataLayoutSeedPhase::Reduce);
-        requestDataUse(reduce.getInitMutable(), getContiguousLayout(),
                        /*late=*/false, DataLayoutSeedPhase::Reduce);
         if (failed(requestMaskUse(reduce.getMaskMutable(),
                                   getContiguousLayout(), op)))
@@ -890,8 +906,6 @@ struct LayoutSolver {
       if (auto reduce = dyn_cast<VMIReduceMaxFOp>(op)) {
         requestDataUse(reduce.getSourceMutable(), getContiguousLayout(),
                        /*late=*/false, DataLayoutSeedPhase::Reduce);
-        requestDataUse(reduce.getInitMutable(), getContiguousLayout(),
-                       /*late=*/false, DataLayoutSeedPhase::Reduce);
         if (failed(requestMaskUse(reduce.getMaskMutable(),
                                   getContiguousLayout(), op)))
           return WalkResult::interrupt();
@@ -902,8 +916,6 @@ struct LayoutSolver {
       }
       if (auto reduce = dyn_cast<VMIReduceMinFOp>(op)) {
         requestDataUse(reduce.getSourceMutable(), getContiguousLayout(),
-                       /*late=*/false, DataLayoutSeedPhase::Reduce);
-        requestDataUse(reduce.getInitMutable(), getContiguousLayout(),
                        /*late=*/false, DataLayoutSeedPhase::Reduce);
         if (failed(requestMaskUse(reduce.getMaskMutable(),
                                   getContiguousLayout(), op)))
@@ -916,8 +928,6 @@ struct LayoutSolver {
       if (auto reduce = dyn_cast<VMIReduceMaxIOp>(op)) {
         requestDataUse(reduce.getSourceMutable(), getContiguousLayout(),
                        /*late=*/false, DataLayoutSeedPhase::Reduce);
-        requestDataUse(reduce.getInitMutable(), getContiguousLayout(),
-                       /*late=*/false, DataLayoutSeedPhase::Reduce);
         if (failed(requestMaskUse(reduce.getMaskMutable(),
                                   getContiguousLayout(), op)))
           return WalkResult::interrupt();
@@ -928,8 +938,6 @@ struct LayoutSolver {
       }
       if (auto reduce = dyn_cast<VMIReduceMinIOp>(op)) {
         requestDataUse(reduce.getSourceMutable(), getContiguousLayout(),
-                       /*late=*/false, DataLayoutSeedPhase::Reduce);
-        requestDataUse(reduce.getInitMutable(), getContiguousLayout(),
                        /*late=*/false, DataLayoutSeedPhase::Reduce);
         if (failed(requestMaskUse(reduce.getMaskMutable(),
                                   getContiguousLayout(), op)))
@@ -1138,6 +1146,29 @@ struct LayoutSolver {
         if (failed(setNaturalLayout(hist.getResult(), getContiguousLayout(), op,
                                     DataLayoutSeedPhase::Reduce)))
           return WalkResult::interrupt();
+        return WalkResult::advance();
+      }
+      if (auto vexpdif = dyn_cast<VMIVexpdifOp>(op)) {
+        auto sourceType = cast<VMIVRegType>(vexpdif.getX().getType());
+        auto resultType = cast<VMIVRegType>(vexpdif.getResult().getType());
+        if (failed(unite(vexpdif.getX(), vexpdif.getMax(), op))) {
+          return WalkResult::interrupt();
+        }
+        if (sourceType.getElementType().isF32()) {
+          if (failed(unite(vexpdif.getX(), vexpdif.getResult(), op))) {
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        VMILayoutSupport supports;
+        FailureOr<VMICastLayoutFact> fact =
+            supports.getPreferredCastLayoutFact(sourceType, resultType);
+        if (succeeded(fact) &&
+            failed(setPreferredLayout(vexpdif.getResult(), fact->resultLayout,
+                                      op, getCastSeedPhase(*fact)))) {
+          return WalkResult::interrupt();
+        }
         return WalkResult::advance();
       }
       if (auto extf = dyn_cast<VMIExtFOp>(op)) {

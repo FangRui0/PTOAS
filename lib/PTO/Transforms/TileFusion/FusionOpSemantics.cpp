@@ -42,8 +42,9 @@ static SmallVector<Value, 2> collectNormalizedTileOutputs(Operation *op) {
 
   if (auto dpsIface = dyn_cast<pto::PTO_DpsInitOpInterface>(op)) {
     for (Value init : dpsIface.getDpsInits()) {
-      if (isTileFusionTileValue(init))
+      if (isTileFusionTileValue(init)) {
         outputs.push_back(init);
+      }
     }
     if (!outputs.empty())
       return outputs;
@@ -103,10 +104,11 @@ FailureOr<FusionOpSemantics> getFusionOpSemantics(Operation *op) {
       continue;
 
     Value value = operand.get();
-    if (isTileFusionTileValue(value))
+    if (isTileFusionTileValue(value)) {
       semantics.tileInputs.push_back(value);
-    else
+    } else {
       semantics.scalarInputs.push_back(value);
+    }
   }
 
   if (semantics.tileInputs.empty()) {

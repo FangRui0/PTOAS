@@ -39,15 +39,17 @@ namespace {
 //===---------------------------------------------------------------------===//
 
 std::optional<Value> getPadValue(std::optional<memref::AllocOp> maybeAlloc) {
-  if (!maybeAlloc.has_value())
+  if (!maybeAlloc.has_value()) {
     return std::nullopt;
+  }
   return std::nullopt;
 }
 
 std::optional<Value> getLeftPadNum(PatternRewriter &rewriter,
                                    std::optional<memref::AllocOp> maybeAlloc) {
-  if (!maybeAlloc.has_value())
+  if (!maybeAlloc.has_value()) {
     return std::nullopt;
+  }
 
   for (auto *user : maybeAlloc.value()->getUsers()) {
     if (auto subviewOp = llvm::dyn_cast<memref::SubViewOp>(user)) {
@@ -75,14 +77,16 @@ std::pair<std::optional<Operation *>, std::optional<Value>>
 getUniqueInitInfo(PatternRewriter &rewriter,
                   std::optional<memref::AllocOp> maybeAlloc,
                   pto::TLoadOp loadOp) {
-  if (!maybeAlloc.has_value())
+  if (!maybeAlloc.has_value()) {
     return {std::nullopt, std::nullopt};
+  }
 
   std::optional<Operation *> initOp = std::nullopt;
   std::optional<Value> initCondition = std::nullopt;
   for (auto *user : (*maybeAlloc)->getUsers()) {
-    if (llvm::isa<pto::TLoadOp>(user))
+    if (llvm::isa<pto::TLoadOp>(user)) {
       continue;
+    }
     auto maybeInitOp = getInitInfo(user, loadOp).first;
     if (maybeInitOp.has_value() && !initOp.has_value()) {
       std::tie(initOp, initCondition) = getInitInfo(user, loadOp);
@@ -156,7 +160,8 @@ struct MemrefCopyOpLowering : public OpRewritePattern<memref::CopyOp> {
     rewriter.replaceOpWithNewOp<pto::TMovOp>(
         copyOp, TypeRange(), src, dst, Value{}, Value{}, pto::AccToVecModeAttr{},
         pto::ReluPreModeAttr::get(rewriter.getContext(),
-                                  pto::ReluPreMode::NoRelu));
+                                  pto::ReluPreMode::NoRelu),
+        pto::MxGroupAxisAttr{});
     return success();
   }
 };

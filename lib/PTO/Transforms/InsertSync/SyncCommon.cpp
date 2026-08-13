@@ -267,8 +267,8 @@ UNIT_FLAG CompoundInstanceElement::getUnitFlagMode() const {
   return it->second;
 }
 
-Value getIsNotDeadLoopValue(scf::ForOp forOp, Location loc,
-                            OpBuilder &rewriter) {
+static Value getIsNotDeadLoopValue(scf::ForOp forOp, Location loc,
+                                   OpBuilder &rewriter) {
   Value upperBound = forOp.getUpperBound();
   Value lowerBound = forOp.getLowerBound();
   return rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt,

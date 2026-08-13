@@ -87,8 +87,9 @@ static StringRef stringifyWriteInstanceEscapeClass(
 static void appendIndexList(llvm::raw_ostream &os, ArrayRef<unsigned> values) {
   os << "[";
   for (auto [idx, value] : llvm::enumerate(values)) {
-    if (idx)
+    if (idx) {
       os << ", ";
+    }
     os << value;
   }
   os << "]";
@@ -105,11 +106,12 @@ static void appendOptionalIndex(llvm::raw_ostream &os,
 
 static void appendDomain(llvm::raw_ostream &os,
                          const pto::IterationDomainInfo &info) {
-  auto printDim = [&](int64_t dim) {
-    if (dim == ShapedType::kDynamic)
+  auto printDim = [&os](int64_t dim) {
+    if (dim == ShapedType::kDynamic) {
       os << "?";
-    else
+    } else {
       os << dim;
+    }
   };
 
   os << "(";
@@ -145,8 +147,9 @@ buildValueLabels(Block &block, const pto::FusionBlockAnalysis &analysis) {
   for (Operation &op : block) {
     FailureOr<pto::FusionOpSemantics> semanticsOr =
         pto::getFusionOpSemantics(&op);
-    if (failed(semanticsOr))
+    if (failed(semanticsOr)) {
       continue;
+    }
 
     if (semanticsOr->kind == pto::FusionOpKind::LocalBoundary) {
       for (Value input : semanticsOr->tileInputs)
@@ -201,8 +204,9 @@ struct PrintPreFusionAnalysisPass
 
   void runOnOperation() override {
     func::FuncOp func = getOperation();
-    if (func.isExternal())
+    if (func.isExternal()) {
       return;
+    }
 
     const auto &analysis = getAnalysis<pto::PreFusionAnalysis>();
     if (!analysis.isValid()) {

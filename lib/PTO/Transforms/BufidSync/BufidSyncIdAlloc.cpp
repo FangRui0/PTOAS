@@ -308,7 +308,7 @@ void BufidSyncIdAlloc::reuseIds() {
   };
 
   int iteration = 0;
-  while (maxPhysicalIdUsed_ >= (int)physicalBufIdCount_) {
+  while (maxPhysicalIdUsed_ >= static_cast<int>(physicalBufIdCount_)) {
     ++iteration;
 
     DenseMap<int, SmallVector<PipelineType>> logicIdPipes;

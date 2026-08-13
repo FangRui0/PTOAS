@@ -75,7 +75,9 @@ using FunctionVector = llvm::SmallVector<mlir::func::FuncOp,
 } // namespace
 
 static bool canUseLegacyTMovFpWireOpcode(mlir::pto::TMovOp op) {
-  return op->getNumResults() == 0 && !op.getAccToVecModeAttr() &&
+  return mlir::pto::classifyTMovForm(op.getFp()) ==
+             mlir::pto::TMovForm::Fp &&
+         op->getNumResults() == 0 && !op.getAccToVecModeAttr() &&
          op.getReluPreMode() == mlir::pto::ReluPreMode::NoRelu;
 }
 
@@ -94,6 +96,11 @@ static bool shouldEncodeViaGenericV0CompatibilityShim(mlir::Operation &op) {
     return static_cast<bool>(tci.getTmp());
   if (auto trowexpandadd = llvm::dyn_cast<mlir::pto::TRowExpandAddOp>(&op))
     return static_cast<bool>(trowexpandadd.getTmp());
+  // tquant.mx intentionally has no v0 known-op schema. Preserve its complete
+  // operand and attribute dictionary through the existing generic record even
+  // when PTOBC_ALLOW_GENERIC is not enabled globally.
+  if (llvm::isa<mlir::pto::TQuantMxOp>(&op))
+    return true;
   // The compact v0 schemas for these ops predate their optional pre-quant
   // operands. Keep the shipped fixed payloads unchanged and use the generic
   // opcode for forms that cannot be represented by those schemas.
@@ -102,6 +109,9 @@ static bool shouldEncodeViaGenericV0CompatibilityShim(mlir::Operation &op) {
   if (auto tinsert = llvm::dyn_cast<mlir::pto::TInsertOp>(&op))
     return static_cast<bool>(tinsert.getPreQuantScalar());
   if (auto tmov = llvm::dyn_cast<mlir::pto::TMovOp>(&op)) {
+    if (mlir::pto::classifyTMovForm(tmov.getFp()) ==
+        mlir::pto::TMovForm::XToZz)
+      return true;
     if (tmov.getPreQuantScalar())
       return true;
     // The removed pto.tmov.fp op carried only src/fp/dst. Its legacy opcode
@@ -154,7 +164,9 @@ static std::optional<uint16_t> getLegacyFpWireOpcode(mlir::Operation &op) {
 static std::optional<std::string>
 getUnsupportedV0EncodingReason(mlir::Operation &op) {
   if (auto tmov = llvm::dyn_cast<mlir::pto::TMovOp>(&op);
-      tmov && tmov.getFp() && tmov->getNumResults() != 0)
+      tmov && mlir::pto::classifyTMovForm(tmov.getFp()) ==
+                  mlir::pto::TMovForm::Fp &&
+      tmov->getNumResults() != 0)
     return "pto.tmov fp with a result cannot be represented safely in "
            "PTO-BC v0; legacy opcode 0x1039 would silently drop the result, "
            "and PTOAS backends do not lower the generic result-bearing form";
@@ -296,7 +308,7 @@ static void appendAPIntBytesLE(Buffer &buffer, const llvm::APInt &bits) {
   for (unsigned i = 0; i < byteLen; ++i) {
     unsigned word = i / 8;
     unsigned off = (i % 8) * 8;
-    uint8_t byte = uint8_t((words[word] >> off) & 0xFFu);
+    uint8_t byte = uint8_t((words[word] >> off) & 0xFFU);
     buffer.bytes.push_back(byte);
   }
 }

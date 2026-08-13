@@ -79,16 +79,18 @@ static bool isTileInputOperand(OpOperand &operand) {
 static SmallVector<OpOperand *, 4> collectTileOperands(Operation *op) {
   SmallVector<OpOperand *, 4> tileOperands;
   for (OpOperand &operand : op->getOpOperands()) {
-    if (isTileOperand(operand))
+    if (isTileOperand(operand)) {
       tileOperands.push_back(&operand);
+    }
   }
   return tileOperands;
 }
 
 static std::optional<int64_t> getRequiredI64Attr(Operation *op,
                                                  StringRef attrName) {
-  if (auto attr = op->getAttrOfType<IntegerAttr>(attrName))
+  if (auto attr = op->getAttrOfType<IntegerAttr>(attrName)) {
     return attr.getInt();
+  }
   return std::nullopt;
 }
 
@@ -138,8 +140,9 @@ collectGroupSpansInBlock(Block &block, SmallVectorImpl<GroupSpan> &spans) {
         // different group.
         continue;
       }
-      if (failed(flush()))
+      if (failed(flush())) {
         return failure();
+      }
       continue;
     }
 
@@ -175,17 +178,21 @@ collectGroupSpansInBlock(Block &block, SmallVectorImpl<GroupSpan> &spans) {
 
 static bool isSpanLocalLastUseCandidate(Value value, Operation *currentOp,
                                         Block *block) {
-  if (!value)
+  if (!value) {
     return false;
+  }
 
   for (OpOperand &use : value.getUses()) {
     Operation *user = use.getOwner();
-    if (user == currentOp)
+    if (user == currentOp) {
       continue;
-    if (user->getBlock() != block)
+    }
+    if (user->getBlock() != block) {
       return false;
-    if (currentOp->isBeforeInBlock(user))
+    }
+    if (currentOp->isBeforeInBlock(user)) {
       return false;
+    }
   }
   return true;
 }
@@ -193,43 +200,51 @@ static bool isSpanLocalLastUseCandidate(Value value, Operation *currentOp,
 static bool hasLaterUseAfterSpan(Value value, Operation *spanEnd, Block *block) {
   for (OpOperand &use : value.getUses()) {
     Operation *user = use.getOwner();
-    if (user->getBlock() != block)
+    if (user->getBlock() != block) {
       return true;
-    if (spanEnd->isBeforeInBlock(user))
+    }
+    if (spanEnd->isBeforeInBlock(user)) {
       return true;
+    }
   }
   return false;
 }
 
 static bool isHardSpanBarrier(Operation *op) {
-  if (op->hasTrait<OpTrait::IsTerminator>() || !op->getRegions().empty())
+  if (op->hasTrait<OpTrait::IsTerminator>() || !op->getRegions().empty()) {
     return true;
-  if (isa<CallOpInterface>(op))
+  }
+  if (isa<CallOpInterface>(op)) {
     return true;
+  }
   return false;
 }
 
 static bool hasHardBarrierInSpan(const GroupSpan &span) {
-  if (span.members.size() < 2)
+  if (span.members.size() < 2) {
     return false;
+  }
   for (size_t i = 0; i + 1 < span.members.size(); ++i) {
     Operation *cur = span.members[i].op;
     Operation *next = span.members[i + 1].op;
     for (Operation *cursor = cur->getNextNode(); cursor && cursor != next;
          cursor = cursor->getNextNode()) {
-      if (isHardSpanBarrier(cursor))
+      if (isHardSpanBarrier(cursor)) {
         return true;
+      }
     }
   }
   return false;
 }
 
 static void markGroupSpanLastUse(const GroupSpan &span) {
-  if (span.members.empty())
+  if (span.members.empty()) {
     return;
+  }
 
-  if (hasHardBarrierInSpan(span))
+  if (hasHardBarrierInSpan(span)) {
     return;
+  }
 
   Block &block = *span.block;
   Operation *spanEnd = span.members.back().op;
@@ -265,15 +280,18 @@ static void markGroupSpanLastUse(const GroupSpan &span) {
 static LogicalResult markRegionLastUse(Region &region) {
   for (Block &block : region.getBlocks()) {
     SmallVector<GroupSpan, 8> spans;
-    if (failed(collectGroupSpansInBlock(block, spans)))
+    if (failed(collectGroupSpansInBlock(block, spans))) {
       return failure();
-    for (const GroupSpan &span : spans)
+    }
+    for (const GroupSpan &span : spans) {
       markGroupSpanLastUse(span);
+    }
 
     for (Operation &op : block)
       for (Region &nestedRegion : op.getRegions())
-        if (failed(markRegionLastUse(nestedRegion)))
+        if (failed(markRegionLastUse(nestedRegion))) {
           return failure();
+        }
   }
   return success();
 }
@@ -285,8 +303,9 @@ struct PTOMarkLastUsePass
 
   void runOnOperation() override {
     func::FuncOp func = getOperation();
-    if (func.isExternal())
+    if (func.isExternal()) {
       return;
+    }
 
     if (failed(markRegionLastUse(func.getRegion()))) {
       signalPassFailure();

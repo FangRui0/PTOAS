@@ -262,6 +262,14 @@ def VMINegFOp : VMI_Op<"negf", [Pure]> {
   let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";
 }
 
+def VMINegIOp : VMI_Op<"negi", [Pure]> {
+  let summary = "VMI integer elementwise negate";
+  let arguments = (ins VMI_VRegTypeConstraint:$source);
+  let results = (outs VMI_VRegTypeConstraint:$result);
+  let hasVerifier = 1;
+  let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";
+}
+
 def VMIAbsFOp : VMI_Op<"absf", [Pure]> {
   let summary = "VMI floating-point elementwise absolute value";
   let arguments = (ins VMI_VRegTypeConstraint:$source);
@@ -303,7 +311,7 @@ def VMILnOp : VMI_Op<"ln", [Pure]> {
 }
 
 def VMIReluOp : VMI_Op<"relu", [Pure]> {
-  let summary = "VMI floating-point elementwise ReLU";
+  let summary = "VMI floating-point or signed 32-bit integer elementwise ReLU";
   let arguments = (ins VMI_VRegTypeConstraint:$source);
   let results = (outs VMI_VRegTypeConstraint:$result);
   let hasVerifier = 1;
@@ -417,64 +425,58 @@ def VMICompressStoreOp : VMI_Op<"compress_store", [DeclareOpInterfaceMethods<Mem
 }
 
 def VMIReduceAddIOp : VMI_Op<"reduce_addi"> {
-  let summary = "VMI masked integer add reduction with a 1-lane vector init";
+  let summary = "VMI masked integer add reduction";
   let arguments = (ins VMI_VRegTypeConstraint:$source,
-                       VMI_VRegTypeConstraint:$init,
                        VMI_MaskTypeConstraint:$mask);
   let results = (outs VMI_VRegTypeConstraint:$result);
   let hasVerifier = 1;
-  let assemblyFormat = "$source `,` $init `,` $mask attr-dict `:` type($source) `,` type($init) `,` type($mask) `->` type($result)";
+  let assemblyFormat = "$source `,` $mask attr-dict `:` type($source) `,` type($mask) `->` type($result)";
 }
 
 def VMIReduceAddFOp : VMI_Op<"reduce_addf"> {
   let summary = "VMI masked floating-point add reduction with explicit reassociation permission";
   let arguments = (ins VMI_VRegTypeConstraint:$source,
-                       VMI_VRegTypeConstraint:$init,
                        VMI_MaskTypeConstraint:$mask,
                        OptionalAttr<UnitAttr>:$reassoc);
   let results = (outs VMI_VRegTypeConstraint:$result);
   let hasVerifier = 1;
-  let assemblyFormat = "$source `,` $init `,` $mask attr-dict `:` type($source) `,` type($init) `,` type($mask) `->` type($result)";
+  let assemblyFormat = "$source `,` $mask attr-dict `:` type($source) `,` type($mask) `->` type($result)";
 }
 
 def VMIReduceMaxFOp : VMI_Op<"reduce_maxf"> {
-  let summary = "VMI masked floating-point maximum reduction with a 1-lane vector init";
+  let summary = "VMI masked floating-point maximum reduction";
   let arguments = (ins VMI_VRegTypeConstraint:$source,
-                       VMI_VRegTypeConstraint:$init,
                        VMI_MaskTypeConstraint:$mask);
   let results = (outs VMI_VRegTypeConstraint:$result);
   let hasVerifier = 1;
-  let assemblyFormat = "$source `,` $init `,` $mask attr-dict `:` type($source) `,` type($init) `,` type($mask) `->` type($result)";
+  let assemblyFormat = "$source `,` $mask attr-dict `:` type($source) `,` type($mask) `->` type($result)";
 }
 
 def VMIReduceMinFOp : VMI_Op<"reduce_minf"> {
-  let summary = "VMI masked floating-point minimum reduction with a 1-lane vector init";
+  let summary = "VMI masked floating-point minimum reduction";
   let arguments = (ins VMI_VRegTypeConstraint:$source,
-                       VMI_VRegTypeConstraint:$init,
                        VMI_MaskTypeConstraint:$mask);
   let results = (outs VMI_VRegTypeConstraint:$result);
   let hasVerifier = 1;
-  let assemblyFormat = "$source `,` $init `,` $mask attr-dict `:` type($source) `,` type($init) `,` type($mask) `->` type($result)";
+  let assemblyFormat = "$source `,` $mask attr-dict `:` type($source) `,` type($mask) `->` type($result)";
 }
 
 def VMIReduceMaxIOp : VMI_Op<"reduce_maxi"> {
-  let summary = "VMI masked integer maximum reduction with a 1-lane vector init";
+  let summary = "VMI masked integer maximum reduction";
   let arguments = (ins VMI_VRegTypeConstraint:$source,
-                       VMI_VRegTypeConstraint:$init,
                        VMI_MaskTypeConstraint:$mask);
   let results = (outs VMI_VRegTypeConstraint:$result);
   let hasVerifier = 1;
-  let assemblyFormat = "$source `,` $init `,` $mask attr-dict `:` type($source) `,` type($init) `,` type($mask) `->` type($result)";
+  let assemblyFormat = "$source `,` $mask attr-dict `:` type($source) `,` type($mask) `->` type($result)";
 }
 
 def VMIReduceMinIOp : VMI_Op<"reduce_mini"> {
-  let summary = "VMI masked integer minimum reduction with a 1-lane vector init";
+  let summary = "VMI masked integer minimum reduction";
   let arguments = (ins VMI_VRegTypeConstraint:$source,
-                       VMI_VRegTypeConstraint:$init,
                        VMI_MaskTypeConstraint:$mask);
   let results = (outs VMI_VRegTypeConstraint:$result);
   let hasVerifier = 1;
-  let assemblyFormat = "$source `,` $init `,` $mask attr-dict `:` type($source) `,` type($init) `,` type($mask) `->` type($result)";
+  let assemblyFormat = "$source `,` $mask attr-dict `:` type($source) `,` type($mask) `->` type($result)";
 }
 
 def VMIGroupReduceAddFOp : VMI_Op<"group_reduce_addf"> {
@@ -585,6 +587,7 @@ def VMITruncFOp : VMI_Op<"truncf", [Pure]> {
 def VMIFPToSIOp : VMI_Op<"fptosi", [Pure]> {
   let summary = "VMI floating-point to signed integer elementwise conversion";
   let arguments = (ins VMI_VRegTypeConstraint:$source,
+                   OptionalAttr<StrAttr>:$rounding,
                    OptionalAttr<StrAttr>:$saturate);
   let results = (outs VMI_VRegTypeConstraint:$result);
   let hasVerifier = 1;
@@ -594,6 +597,7 @@ def VMIFPToSIOp : VMI_Op<"fptosi", [Pure]> {
 def VMIFPToUIOp : VMI_Op<"fptoui", [Pure]> {
   let summary = "VMI floating-point to unsigned integer elementwise conversion";
   let arguments = (ins VMI_VRegTypeConstraint:$source,
+                   OptionalAttr<StrAttr>:$rounding,
                    OptionalAttr<StrAttr>:$saturate);
   let results = (outs VMI_VRegTypeConstraint:$result);
   let hasVerifier = 1;
@@ -953,6 +957,48 @@ def VMIVaddOp : VMI_Op<"vadd", [Pure]> {
   let assemblyFormat = "$lhs `,` $rhs (`,` $mask^)? attr-dict `:` type($lhs) `,` type($rhs) (`,` type($mask)^)? `->` type($result)";
 }
 
+def VMIVaddcOp : VMI_Op<"vaddc", [Pure]> {
+  let summary = "VMI integer add with per-lane carry output";
+  let description = [{
+    Adds two integer vectors and returns both the truncated result and the
+    per-lane carry predicate.  The operation is restricted to the 32-bit
+    integer forms supported by the underlying VPTO carry instruction.
+  }];
+  let arguments = (ins
+    VMI_VRegTypeConstraint:$lhs,
+    VMI_VRegTypeConstraint:$rhs,
+    VMI_MaskTypeConstraint:$mask
+  );
+  let results = (outs
+    VMI_VRegTypeConstraint:$result,
+    VMI_MaskTypeConstraint:$carry
+  );
+  let hasVerifier = 1;
+  let assemblyFormat = "$lhs `,` $rhs `,` $mask attr-dict `:` type($lhs) `,` type($rhs) `,` type($mask) `->` type($result) `,` type($carry)";
+}
+
+def VMIVaddcsOp : VMI_Op<"vaddcs", [Pure]> {
+  let summary = "VMI integer add with carry-in and carry-out";
+  let description = [{
+    Adds two integer vectors and a per-lane carry-in predicate, returning both
+    the truncated result and the per-lane carry-out predicate.  The operation
+    is restricted to the 32-bit integer forms supported by the underlying VPTO
+    carry instruction.
+  }];
+  let arguments = (ins
+    VMI_VRegTypeConstraint:$lhs,
+    VMI_VRegTypeConstraint:$rhs,
+    VMI_MaskTypeConstraint:$carry_in,
+    VMI_MaskTypeConstraint:$mask
+  );
+  let results = (outs
+    VMI_VRegTypeConstraint:$result,
+    VMI_MaskTypeConstraint:$carry
+  );
+  let hasVerifier = 1;
+  let assemblyFormat = "$lhs `,` $rhs `,` $carry_in `,` $mask attr-dict `:` type($lhs) `,` type($rhs) `,` type($carry_in) `,` type($mask) `->` type($result) `,` type($carry)";
+}
+
 def VMIVsubOp : VMI_Op<"vsub", [Pure]> {
   let summary = "VMI elementwise subtract (unified fp/int)";
   let arguments = (ins VMI_VRegTypeConstraint:$lhs, VMI_VRegTypeConstraint:$rhs,
@@ -1017,7 +1063,7 @@ def VMIVabsOp : VMI_Op<"vabs", [Pure]> {
   let summary = "VMI elementwise absolute value (float/int unified)";
   let description = [{
     Computes the elementwise absolute value of a logical vector.
-    Supports both floating-point and integer element types.
+    Supports floating-point and explicitly signed integer element types.
 
     pmode governs inactive-lane behavior:
     - "merge" (default): inactive lanes pass through the source value.
@@ -1026,7 +1072,7 @@ def VMIVabsOp : VMI_Op<"vabs", [Pure]> {
     Example:
     ```
     %r = pto.vmi.vabs %v, %m {pmode = "zero"}
-      : !pto.vmi.vreg<128xi32>, !pto.vmi.mask<128xpred> -> !pto.vmi.vreg<128xi32>
+      : !pto.vmi.vreg<128xsi32>, !pto.vmi.mask<128xpred> -> !pto.vmi.vreg<128xsi32>
     ```
   }];
   let arguments = (ins
@@ -1148,8 +1194,8 @@ def VMIVcmpOp : VMI_Op<"vcmp", [Pure]> {
     lane is zero (pmode="zeroing", default), and where seed[i]=1 the comparison
     result is written. Floating-point comparisons support eq/ne/lt/le/gt/ge
     and ordered forms oeq/one/olt/ole/ogt/oge. Integer comparisons use
-    eq/ne/lt/le/gt/ge; signedness is selected by the integer element type
-    (signed/signless versus unsigned).
+    eq/ne/lt/le/gt/ge; signedness is selected by the integer element type.
+    Signless integers use unsigned semantics (signless/unsigned versus signed).
 
     Example:
     ```
@@ -1339,21 +1385,23 @@ def VMICvtOp : VMI_Op<"vcvt", [Pure]> {
 
     - fp → fp, |dst| > |src|:  floating-point widening   (replaces extf)
     - fp → fp, |dst| < |src|:  floating-point narrowing   (replaces truncf)
-    - fp → int:                 float to signed integer    (replaces fptosi)
-    - int → fp:                 signed integer to float    (replaces sitofp)
+    - fp → int:                 signedness follows the result type
+    - int → fp:                 currently requires an explicitly signed source
     - int → int, |dst| > |src|: integer extension          (replaces extsi/extui)
     - int → int, |dst| < |src|: integer truncation         (replaces trunci)
 
     Attributes:
-    - `rounding`: rounding mode for fp narrowing (R=nearest-even,
-      A=away-from-zero, H=half-up, Z=toward-zero). Valid only when dst
-      bit-width < src bit-width for fp types.
+    - `rounding`: rounding mode for fp narrowing and fp-to-integer
+      conversions. Narrowing accepts R=nearest-even, A=away-from-zero,
+      H=half-up, Z=toward-zero; fp-to-integer accepts the hardware modes
+      R/A/F/C/Z.
     - `saturate`: "SAT" or "NOSAT"; required for fp narrowing, integer
       narrowing, and fp-to-int conversion.
     - `pmode`: predication mode ("merge" | "zero").
 
-    For int→int widening, the source element type must carry signedness
-    (e.g. si8/ui8/si16/ui16); signless integers are rejected.
+    Signless integer element types use unsigned semantics. Thus fp→signless
+    follows the unsigned conversion path, and signless int→int widening uses
+    zero extension. Signed conversion semantics require explicit `siN` types.
 
     Example:
     ```mlir
@@ -1612,8 +1660,8 @@ def VMIVscatterOp : VMI_Op<"vscatter", [DeclareOpInterfaceMethods<MemoryEffectsO
 def VMIVexpdifOp : VMI_Op<"vexpdif", [Pure]> {
   let summary = "VMI fused exp(x - max) for softmax numerical stability";
   let description = [{
-    Computes exp(x - max) in a single hardware instruction.
-    x may be f16 or f32; max and result are always f32 (hardware constraint).
+    Computes exp(x - max). x and max use the same f16 or f32 element type.
+    The result preserves the logical lane count and always uses f32 elements.
 
     Example:
     ```
