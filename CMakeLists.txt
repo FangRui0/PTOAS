@@ -238,6 +238,15 @@ if(BUILD_TESTING)
       ENVIRONMENT "${_pto_python_test_env}"
     )
     add_test(
+      NAME pto_mx_grp_axis_bindings
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/test/python/mx_grp_axis_bindings.py"
+    )
+    set_tests_properties(pto_mx_grp_axis_bindings PROPERTIES
+      LABELS "PTO"
+      ENVIRONMENT "${_pto_python_test_env}"
+    )
+    add_test(
       NAME pto_install_nightly_wheel
       COMMAND "${Python3_EXECUTABLE}"
               "${CMAKE_CURRENT_SOURCE_DIR}/test/python/test_install_nightly_wheel.py"

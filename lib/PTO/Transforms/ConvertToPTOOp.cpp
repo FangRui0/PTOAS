@@ -160,7 +160,8 @@ struct MemrefCopyOpLowering : public OpRewritePattern<memref::CopyOp> {
     rewriter.replaceOpWithNewOp<pto::TMovOp>(
         copyOp, TypeRange(), src, dst, Value{}, Value{}, pto::AccToVecModeAttr{},
         pto::ReluPreModeAttr::get(rewriter.getContext(),
-                                  pto::ReluPreMode::NoRelu));
+                                  pto::ReluPreMode::NoRelu),
+        pto::MxGroupAxisAttr{});
     return success();
   }
 };

@@ -8,6 +8,8 @@
 
 #include "Utils.h"
 #include "PTO/IR/PTO.h"
+#include "PTO/IR/PTOMultiBuffer.h"
+#include "PTO/IR/PTOTypeUtils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -17,6 +19,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/ErrorHandling.h"
+#include <limits>
 
 #define DEBUG_TYPE "pto-utils"
 #define DBGS() (llvm::dbgs() << '[' << DEBUG_TYPE << "] ")
@@ -326,6 +329,350 @@ std::optional<std::pair<Value, Value>> getOperationAliasInfo(Operation *op) {
     return std::make_pair(toTensorOp.getResult(), toTensorOp.getOperand());
   }
   return std::nullopt;
+}
+
+SmallVector<std::pair<Value, Value>, 15>
+getSemanticNoAliasPairs(Operation *op) {
+  SmallVector<std::pair<Value, Value>, 15> pairs;
+  if (auto tmov = dyn_cast<TMovOp>(op)) {
+    if (classifyTMovForm(tmov.getFp()) == TMovForm::XToZz) {
+      pairs.emplace_back(tmov.getSrc(), tmov.getDst());
+      pairs.emplace_back(tmov.getSrc(), tmov.getFp());
+      pairs.emplace_back(tmov.getFp(), tmov.getDst());
+    }
+    return pairs;
+  }
+
+  if (auto tquant = dyn_cast<TQuantMxOp>(op)) {
+    SmallVector<Value, 6> tiles{tquant.getSrc(), tquant.getDst(),
+                                tquant.getExp(), tquant.getMax(),
+                                tquant.getScaling()};
+    if (Value expZz = tquant.getExpZz())
+      tiles.push_back(expZz);
+    for (unsigned lhs = 0; lhs < tiles.size(); ++lhs)
+      for (unsigned rhs = lhs + 1; rhs < tiles.size(); ++rhs)
+        pairs.emplace_back(tiles[lhs], tiles[rhs]);
+  }
+  return pairs;
+}
+
+namespace {
+
+struct SemanticRange {
+  Value root;
+  uint64_t relativeBegin = 0;
+  uint64_t bytes = 0;
+  std::optional<uint64_t> absoluteBegin;
+  std::optional<AddressSpace> addressSpace;
+  std::optional<uint64_t> rowStrideBytes;
+  std::optional<uint64_t> colStrideBytes;
+  uint64_t elemBytes = 0;
+};
+
+struct StaticTileStrides {
+  uint64_t rowBytes;
+  uint64_t colBytes;
+  uint64_t elemBytes;
+};
+
+static std::optional<uint64_t> getStaticTileBytes(TileBufType type) {
+  unsigned elemBytes = getPTOStorageElemByteSize(type.getElementType());
+  if (elemBytes == 0)
+    return std::nullopt;
+  ArrayRef<int64_t> shape = type.getShape();
+  uint64_t elements = 1;
+  if (type.getCompactModeI32() ==
+      static_cast<int32_t>(CompactMode::RowPlusOne)) {
+    if (shape.size() != 2 || llvm::is_contained(shape, ShapedType::kDynamic))
+      return std::nullopt;
+    bool rowMajor = type.getBLayoutValueI32() ==
+                    static_cast<int32_t>(BLayout::RowMajor);
+    uint64_t major = static_cast<uint64_t>(rowMajor ? shape[0] : shape[1]);
+    uint64_t minor = static_cast<uint64_t>(rowMajor ? shape[1] : shape[0]);
+    if (major == 0 || minor == 0)
+      return uint64_t{0};
+    if (minor == std::numeric_limits<uint64_t>::max() ||
+        major - 1 > std::numeric_limits<uint64_t>::max() / (minor + 1))
+      return std::nullopt;
+    elements = (major - 1) * (minor + 1);
+    if (minor > std::numeric_limits<uint64_t>::max() - elements)
+      return std::nullopt;
+    elements += minor;
+  } else {
+    for (int64_t dim : shape) {
+      if (dim < 0 || elements > std::numeric_limits<uint64_t>::max() /
+                                  static_cast<uint64_t>(dim))
+        return std::nullopt;
+      elements *= static_cast<uint64_t>(dim);
+    }
+  }
+  if (elements > std::numeric_limits<uint64_t>::max() / elemBytes)
+    return std::nullopt;
+  return elements * elemBytes;
+}
+
+static std::optional<uint64_t> getConstantAddress(Value value) {
+  IntegerAttr attr;
+  if (!value || !matchPattern(value, m_Constant(&attr)) || attr.getInt() < 0)
+    return std::nullopt;
+  return static_cast<uint64_t>(attr.getInt());
+}
+
+static std::optional<StaticTileStrides>
+getStaticTileStrides(TileBufType type) {
+  ArrayRef<int64_t> shape = type.getShape();
+  unsigned elemBytes = getPTOStorageElemByteSize(type.getElementType());
+  if (shape.size() != 2 || elemBytes == 0 ||
+      llvm::is_contained(shape, ShapedType::kDynamic) || shape[0] < 0 ||
+      shape[1] < 0)
+    return std::nullopt;
+
+  // Boxed layouts are not affine rank-2 row/column views. Callers preserve the
+  // complete parent range for them instead of guessing an offset envelope.
+  if (type.getSLayoutValueI32() != static_cast<int32_t>(SLayout::NoneBox))
+    return std::nullopt;
+
+  bool rowMajor = type.getBLayoutValueI32() ==
+                  static_cast<int32_t>(BLayout::RowMajor);
+  uint64_t rows = static_cast<uint64_t>(shape[0]);
+  uint64_t cols = static_cast<uint64_t>(shape[1]);
+  uint64_t rowElems = rowMajor ? cols : 1;
+  uint64_t colElems = rowMajor ? 1 : rows;
+  if (type.getCompactModeI32() ==
+      static_cast<int32_t>(CompactMode::RowPlusOne)) {
+    if (rowMajor) {
+      if (cols == std::numeric_limits<uint64_t>::max())
+        return std::nullopt;
+      rowElems = cols + 1;
+    } else {
+      if (rows == std::numeric_limits<uint64_t>::max())
+        return std::nullopt;
+      colElems = rows + 1;
+    }
+  }
+  if (rowElems > std::numeric_limits<uint64_t>::max() / elemBytes ||
+      colElems > std::numeric_limits<uint64_t>::max() / elemBytes)
+    return std::nullopt;
+  return StaticTileStrides{rowElems * elemBytes, colElems * elemBytes,
+                           elemBytes};
+}
+
+static std::optional<AddressSpace> getTileAddressSpace(TileBufType type) {
+  auto attr = dyn_cast_or_null<AddressSpaceAttr>(type.getMemorySpace());
+  if (!attr)
+    return std::nullopt;
+  return attr.getAddressSpace();
+}
+
+static std::optional<uint64_t>
+getSubviewByteOffset(SubViewOp op, const SemanticRange &source) {
+  if (op.getOffsets().size() != 2)
+    return std::nullopt;
+  IntegerAttr rowAttr;
+  IntegerAttr colAttr;
+  if (!matchPattern(op.getOffsets()[0], m_Constant(&rowAttr)) ||
+      !matchPattern(op.getOffsets()[1], m_Constant(&colAttr)) ||
+      rowAttr.getInt() < 0 || colAttr.getInt() < 0)
+    return std::nullopt;
+  if (!source.rowStrideBytes || !source.colStrideBytes)
+    return std::nullopt;
+  uint64_t row = static_cast<uint64_t>(rowAttr.getInt());
+  uint64_t col = static_cast<uint64_t>(colAttr.getInt());
+  if (row > std::numeric_limits<uint64_t>::max() /
+                *source.rowStrideBytes)
+    return std::nullopt;
+  uint64_t bytes = row * *source.rowStrideBytes;
+  if (col > std::numeric_limits<uint64_t>::max() /
+                *source.colStrideBytes)
+    return std::nullopt;
+  uint64_t colBytes = col * *source.colStrideBytes;
+  if (colBytes > std::numeric_limits<uint64_t>::max() - bytes)
+    return std::nullopt;
+  return bytes + colBytes;
+}
+
+static std::optional<uint64_t>
+getSubviewByteSpan(SubViewOp op, const SemanticRange &source) {
+  if (!source.rowStrideBytes || !source.colStrideBytes ||
+      source.elemBytes == 0)
+    return std::nullopt;
+  ArrayAttr sizes = op.getSizes();
+  if (!sizes || sizes.size() != 2)
+    return std::nullopt;
+  int64_t rowsValue = cast<IntegerAttr>(sizes[0]).getInt();
+  int64_t colsValue = cast<IntegerAttr>(sizes[1]).getInt();
+  if (rowsValue < 0 || colsValue < 0)
+    return std::nullopt;
+  uint64_t rows = static_cast<uint64_t>(rowsValue);
+  uint64_t cols = static_cast<uint64_t>(colsValue);
+  if (rows == 0 || cols == 0)
+    return uint64_t{0};
+  if (rows - 1 > std::numeric_limits<uint64_t>::max() /
+                     *source.rowStrideBytes ||
+      cols - 1 > std::numeric_limits<uint64_t>::max() /
+                     *source.colStrideBytes)
+    return std::nullopt;
+  uint64_t span = (rows - 1) * *source.rowStrideBytes;
+  uint64_t colSpan = (cols - 1) * *source.colStrideBytes;
+  if (colSpan > std::numeric_limits<uint64_t>::max() - span)
+    return std::nullopt;
+  span += colSpan;
+  if (source.elemBytes > std::numeric_limits<uint64_t>::max() - span)
+    return std::nullopt;
+  return span + source.elemBytes;
+}
+
+static std::optional<SemanticRange> resolveSemanticRange(Value value) {
+  if (!value)
+    return std::nullopt;
+  if (auto alloc = value.getDefiningOp<AllocTileOp>()) {
+    auto tileType = dyn_cast<TileBufType>(alloc.getResult().getType());
+    auto bytes = tileType ? getStaticTileBytes(tileType) : std::nullopt;
+    if (!tileType || !bytes)
+      return std::nullopt;
+    auto strides = getStaticTileStrides(tileType);
+    return SemanticRange{
+        alloc.getResult(), 0, *bytes, getConstantAddress(alloc.getAddr()),
+        getTileAddressSpace(tileType),
+        strides ? std::optional<uint64_t>(strides->rowBytes) : std::nullopt,
+        strides ? std::optional<uint64_t>(strides->colBytes) : std::nullopt,
+        strides ? strides->elemBytes : uint64_t{0}};
+  }
+  if (auto multiGet = value.getDefiningOp<MultiTileGetOp>()) {
+    auto alloc = multiGet.getSource().getDefiningOp<AllocMultiTileOp>();
+    auto slotType = dyn_cast<TileBufType>(multiGet.getResult().getType());
+    IntegerAttr slotAttr;
+    if (!alloc || !slotType ||
+        !matchPattern(multiGet.getSlot(), m_Constant(&slotAttr)) ||
+        slotAttr.getInt() < 0)
+      return std::nullopt;
+    auto slotBytes = getStaticTileBytes(slotType);
+    if (!slotBytes)
+      return std::nullopt;
+    std::optional<uint64_t> base = getConstantAddress(alloc.getAddr());
+    if (!base) {
+      if (auto addresses = alloc->getAttrOfType<DenseI64ArrayAttr>(
+              kPtoMultiBufferAddrsAttrName)) {
+        if (slotAttr.getInt() >= static_cast<int64_t>(addresses.size()) ||
+            addresses[slotAttr.getInt()] < 0)
+          return std::nullopt;
+        base = static_cast<uint64_t>(addresses[slotAttr.getInt()]);
+      }
+    } else {
+      uint64_t slot = static_cast<uint64_t>(slotAttr.getInt());
+      if (slot > std::numeric_limits<uint64_t>::max() / *slotBytes ||
+          *base > std::numeric_limits<uint64_t>::max() - slot * *slotBytes)
+        return std::nullopt;
+      *base += slot * *slotBytes;
+    }
+    auto strides = getStaticTileStrides(slotType);
+    return SemanticRange{
+        alloc.getResult(), 0, *slotBytes, base, getTileAddressSpace(slotType),
+        strides ? std::optional<uint64_t>(strides->rowBytes) : std::nullopt,
+        strides ? std::optional<uint64_t>(strides->colBytes) : std::nullopt,
+        strides ? strides->elemBytes : uint64_t{0}};
+  }
+  if (auto subview = value.getDefiningOp<SubViewOp>()) {
+    auto source = resolveSemanticRange(subview.getSource());
+    if (!source)
+      return std::nullopt;
+    auto offset = getSubviewByteOffset(subview, *source);
+    auto bytes = getSubviewByteSpan(subview, *source);
+    // A boxed view has no simple affine row/column stride. Preserve the full
+    // parent range so semantic no-alias checking remains conservative.
+    if (!offset || !bytes)
+      return source;
+    if (*offset > source->bytes || *bytes > source->bytes - *offset)
+      return std::nullopt;
+    if (*offset > std::numeric_limits<uint64_t>::max() -
+                      source->relativeBegin)
+      return std::nullopt;
+    source->relativeBegin += *offset;
+    source->bytes = *bytes;
+    if (source->absoluteBegin) {
+      if (*offset > std::numeric_limits<uint64_t>::max() -
+                        *source->absoluteBegin)
+        return std::nullopt;
+      *source->absoluteBegin += *offset;
+    }
+    return source;
+  }
+  if (auto bitcast = value.getDefiningOp<BitcastOp>()) {
+    auto source = resolveSemanticRange(bitcast.getSrc());
+    auto viewType = dyn_cast<TileBufType>(bitcast.getResult().getType());
+    if (!source || !viewType)
+      return std::nullopt;
+    if (auto strides = getStaticTileStrides(viewType)) {
+      source->rowStrideBytes = strides->rowBytes;
+      source->colStrideBytes = strides->colBytes;
+      source->elemBytes = strides->elemBytes;
+    } else {
+      source->rowStrideBytes.reset();
+      source->colStrideBytes.reset();
+      source->elemBytes = 0;
+    }
+    return source;
+  }
+  if (auto reshape = value.getDefiningOp<TReshapeOp>()) {
+    auto source = resolveSemanticRange(reshape.getSrc());
+    auto viewType = dyn_cast<TileBufType>(reshape.getResult().getType());
+    if (!source || !viewType)
+      return std::nullopt;
+    if (auto strides = getStaticTileStrides(viewType)) {
+      source->rowStrideBytes = strides->rowBytes;
+      source->colStrideBytes = strides->colBytes;
+      source->elemBytes = strides->elemBytes;
+    } else {
+      source->rowStrideBytes.reset();
+      source->colStrideBytes.reset();
+      source->elemBytes = 0;
+    }
+    return source;
+  }
+  if (auto cast = value.getDefiningOp<UnrealizedConversionCastOp>()) {
+    if (cast.getNumOperands() == 1)
+      return resolveSemanticRange(cast.getOperand(0));
+  }
+  return std::nullopt;
+}
+
+static bool rangesOverlap(const SemanticRange &lhs, const SemanticRange &rhs) {
+  auto halfOpenRangesOverlap = [](uint64_t lhsBegin, uint64_t lhsBytes,
+                                  uint64_t rhsBegin, uint64_t rhsBytes) {
+    if (lhsBytes == 0 || rhsBytes == 0)
+      return false;
+    if (lhsBegin <= rhsBegin)
+      return rhsBegin - lhsBegin < lhsBytes;
+    return lhsBegin - rhsBegin < rhsBytes;
+  };
+  if (lhs.root == rhs.root)
+    return halfOpenRangesOverlap(lhs.relativeBegin, lhs.bytes,
+                                 rhs.relativeBegin, rhs.bytes);
+  if (!lhs.absoluteBegin || !rhs.absoluteBegin ||
+      lhs.addressSpace != rhs.addressSpace)
+    return false;
+  return halfOpenRangesOverlap(*lhs.absoluteBegin, lhs.bytes,
+                               *rhs.absoluteBegin, rhs.bytes);
+}
+
+} // namespace
+
+LogicalResult verifySemanticNoAliasRanges(func::FuncOp func) {
+  LogicalResult result = success();
+  func.walk([&](Operation *op) {
+    if (failed(result))
+      return;
+    for (auto [lhs, rhs] : getSemanticNoAliasPairs(op)) {
+      auto lhsRange = resolveSemanticRange(lhs);
+      auto rhsRange = resolveSemanticRange(rhs);
+      if (!lhsRange || !rhsRange || !rangesOverlap(*lhsRange, *rhsRange))
+        continue;
+      op->emitError("PlanMemory semantic no-alias violation: operand byte ranges overlap");
+      result = failure();
+      return;
+    }
+  });
+  return result;
 }
 
 static Value tracebackImpl(Value memrefVal) {
