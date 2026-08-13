@@ -306,7 +306,8 @@ board_runtime_skip_reason() {
 
   if [[ "${stage}" == "run" && "${sample_name}" == "DeepseekV4DecodeA3" ]]; then
     case "${testcase}" in
-      rope_interleave | rmsnorm_rope_cache_write | rmsnorm_rope | rope_cs)
+      qr_hadamard_quant | rope_interleave | rmsnorm_rope_cache_write | rmsnorm_rope | rope_cs | \
+        swa_cache_insert_valid_bias)
         printf '%s\n' "A3 level2 implicit-tmp fallback cannot preserve explicit UB address aliases"
         return 0
         ;;
