@@ -10270,6 +10270,8 @@ struct PTOMovToEmitC : public OpConversionPattern<pto::TMovOp> {
     const bool hasPreQuantScalar = static_cast<bool>(preQuantScalar);
     const bool hasMode = static_cast<bool>(modeAttr);
     const bool reluNonDefault = op.getReluPreMode() != pto::ReluPreMode::NoRelu;
+    const bool isXToZz =
+        hasFp && pto::classifyTMovForm(op.getFp()) == pto::TMovForm::XToZz;
 
     SmallVector<Value, 4> operands{dst, src};
     SmallVector<Attribute, 5> templateArgVec{
@@ -10284,14 +10286,22 @@ struct PTOMovToEmitC : public OpConversionPattern<pto::TMovOp> {
         return rewriter.notifyMatchFailure(
             op, "tmov fp lowering expects opaque fp type");
       operands.push_back(fp);
-      templateArgVec.push_back(emitc::OpaqueAttr::get(ctx, fpOT.getValue().str()));
-      if (hasMode)
+      if (isXToZz) {
+        templateArgVec.clear();
+        if (op.getGrpAxisAttr() &&
+            op.getGrpAxisAttr().getValue() == pto::MxGroupAxis::Axis0)
+          templateArgVec.push_back(emitc::OpaqueAttr::get(ctx, "0"));
+      } else {
         templateArgVec.push_back(
-            emitc::OpaqueAttr::get(ctx, modeTok(modeAttr.getValue())));
-      if (hasMode || reluNonDefault)
-        templateArgVec.push_back(
-            emitc::OpaqueAttr::get(ctx, reluTok(op.getReluPreMode())));
-      callee = hasMode ? "TMOV" : "TMOV_FP";
+            emitc::OpaqueAttr::get(ctx, fpOT.getValue().str()));
+        if (hasMode)
+          templateArgVec.push_back(
+              emitc::OpaqueAttr::get(ctx, modeTok(modeAttr.getValue())));
+        if (hasMode || reluNonDefault)
+          templateArgVec.push_back(
+              emitc::OpaqueAttr::get(ctx, reluTok(op.getReluPreMode())));
+        callee = hasMode ? "TMOV" : "TMOV_FP";
+      }
     } else if (hasPreQuantScalar) {
       operands.push_back(preQuantScalar);
       if (hasMode)
@@ -10311,8 +10321,10 @@ struct PTOMovToEmitC : public OpConversionPattern<pto::TMovOp> {
     }
 
     ArrayAttr templateArgs =
-        templateArgVec.size() == 2 && !hasFp && !hasPreQuantScalar &&
+        (isXToZz && templateArgVec.empty()) ||
+                (templateArgVec.size() == 2 && !hasFp && !hasPreQuantScalar &&
                 !hasMode && !reluNonDefault
+                )
             ? ArrayAttr{}
             : rewriter.getArrayAttr(templateArgVec);
 
@@ -10496,24 +10508,43 @@ struct PTOQuantMxToEmitC : public OpConversionPattern<pto::TQuantMxOp> {
     };
 
     SmallVector<Attribute> templateArgsStorage;
-    templateArgsStorage.push_back(emitc::OpaqueAttr::get(ctx, quantTypeStr));
-    if (auto storeMode = op.getStoreMode())
+    if (expZz) {
+      // Deprecated fused form: retain the existing PTO-ISA overload and
+      // complete tile-type template list for wire/API compatibility.
+      templateArgsStorage.push_back(emitc::OpaqueAttr::get(ctx, quantTypeStr));
+      if (auto storeMode = op.getStoreMode())
+        templateArgsStorage.push_back(
+            emitc::OpaqueAttr::get(ctx, vecStoreModeTok(*storeMode)));
       templateArgsStorage.push_back(
-          emitc::OpaqueAttr::get(ctx, vecStoreModeTok(*storeMode)));
-    templateArgsStorage.push_back(
-        emitc::OpaqueAttr::get(ctx, dstOT.getValue().str()));
-    templateArgsStorage.push_back(
-        emitc::OpaqueAttr::get(ctx, srcOT.getValue().str()));
-    templateArgsStorage.push_back(
-        emitc::OpaqueAttr::get(ctx, expOT.getValue().str()));
-    templateArgsStorage.push_back(
-        emitc::OpaqueAttr::get(ctx, maxOT.getValue().str()));
-    templateArgsStorage.push_back(
-        emitc::OpaqueAttr::get(ctx, scalingOT.getValue().str()));
-    if (!op.getStoreMode() &&
-        op.getQuantScaleAlg() != pto::QuantScaleAlg::OCP)
+          emitc::OpaqueAttr::get(ctx, dstOT.getValue().str()));
       templateArgsStorage.push_back(
-          emitc::OpaqueAttr::get(ctx, quantScaleAlgTok(op.getQuantScaleAlg())));
+          emitc::OpaqueAttr::get(ctx, srcOT.getValue().str()));
+      templateArgsStorage.push_back(
+          emitc::OpaqueAttr::get(ctx, expOT.getValue().str()));
+      templateArgsStorage.push_back(
+          emitc::OpaqueAttr::get(ctx, maxOT.getValue().str()));
+      templateArgsStorage.push_back(
+          emitc::OpaqueAttr::get(ctx, scalingOT.getValue().str()));
+      if (!op.getStoreMode() &&
+          op.getQuantScaleAlg() != pto::QuantScaleAlg::OCP)
+        templateArgsStorage.push_back(
+            emitc::OpaqueAttr::get(ctx, quantScaleAlgTok(op.getQuantScaleAlg())));
+    } else {
+      const StringRef axisTok = op.getGrpAxis() == pto::MxGroupAxis::Axis0 ? "0" : "1";
+      StringRef algTok;
+      if (op.getQuantType() == pto::QuantType::MXFP8)
+        algTok = op.getQuantScaleAlg() == pto::QuantScaleAlg::NV
+                     ? "pto::MxQuantAlg::NvMxFp8E4M3"
+                     : "pto::MxQuantAlg::OcpMxFp8E4M3";
+      else
+        algTok = op.getQuantScaleAlg() == pto::QuantScaleAlg::NV
+                     ? "pto::MxQuantAlg::NvMxFp4E2M1"
+                     : "pto::MxQuantAlg::OcpMxFp4E2M1";
+      templateArgsStorage.push_back(emitc::OpaqueAttr::get(ctx, axisTok));
+      templateArgsStorage.push_back(emitc::OpaqueAttr::get(ctx, algTok));
+      if (op.getInterleave())
+        templateArgsStorage.push_back(emitc::OpaqueAttr::get(ctx, "true"));
+    }
     ArrayAttr templateArgs = rewriter.getArrayAttr(templateArgsStorage);
 
     SmallVector<Value> operands{dst, src, expPtr, maxPtr, scalingPtr};

@@ -712,6 +712,11 @@ struct PlannerAnalysis {
     recordInplacePolicyConflicts(op, dpsInits);
   }
 
+  void recordSemanticNoAliasConflicts(Operation *op) {
+    for (const auto &[lhs, rhs] : getSemanticNoAliasPairs(op))
+      addForbidAliasBetweenRoots(getRoots(lhs), getRoots(rhs));
+  }
+
   void recordLoadDerivedRoots(Operation *op, ValueRange dpsInits) {
     if (!isa<pto::TLoadOp, pto::TPrefetchOp>(op)) {
       return;
@@ -1116,6 +1121,7 @@ struct PlannerAnalysis {
         recordSplitTpopDerivedValue(op);
         recordDpsTargetHazardFacts(op, index);
         recordDpsInplaceConflicts(op);
+        recordSemanticNoAliasConflicts(op);
         recordOpAccess(op, dpsInits);
       }
     }
@@ -1780,6 +1786,8 @@ LogicalResult mlir::pto::runModernPlanMemory(func::FuncOp func,
       mlir::failed(materializePlannedOffsets(func, buffer2Offsets))) {
     return failure();
   }
+  if (failed(verifySemanticNoAliasRanges(func)))
+    return failure();
 
   bool hasUnplannedAllocTile = false;
   func.walk([&](pto::AllocTileOp op) {
