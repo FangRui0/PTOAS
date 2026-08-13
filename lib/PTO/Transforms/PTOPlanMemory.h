@@ -11,14 +11,15 @@
 #ifndef PTO_PLAN_MEMORY_H
 #define PTO_PLAN_MEMORY_H
 
-#include "PTO/IR/PTO.h"
+#include <list>
 #include "OptMemPlanForPipeline.h"
+#include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Analysis/Liveness.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "llvm/ADT/SmallSet.h"
-#include <list>
+
 
 namespace mlir {
 namespace pto {

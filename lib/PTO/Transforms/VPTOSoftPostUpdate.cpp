@@ -6,7 +6,12 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <optional>
 #include "PTO/IR/PTO.h"
+#include "PTO/Support/CodeConstants.h"
 #include "PTO/Transforms/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -21,10 +26,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/MathExtras.h"
-#include <cstdint>
-#include <limits>
-#include <memory>
-#include <optional>
+
 
 namespace mlir {
 namespace pto {
@@ -38,6 +40,9 @@ using namespace mlir;
 namespace {
 // A hardware block is 32 bytes; block-strided ops count in these units.
 static constexpr int64_t kBlockSizeBytes = 32;
+static constexpr unsigned kIndexBitWidth = 64;
+static constexpr int64_t kSignedI8Min = -128;
+static constexpr int64_t kSignedI8Max = 127;
 
 // Loop-varying integer addresses must be normalized to this width before this
 // pass may turn them into pointer recurrences. Other widths are left for a
@@ -129,10 +134,10 @@ static std::optional<int64_t> addPtrUnitBytes(Value base) {
     return std::nullopt;
   }
   unsigned bits = elemTy.getIntOrFloatBitWidth();
-  if (bits == 0 || bits % 8 != 0) {
+  if (bits == 0 || bits % mlir::pto::kValue8 != 0) {
     return std::nullopt;
   }
-  return static_cast<int64_t>(bits / 8);
+  return static_cast<int64_t>(bits / mlir::pto::kValue8);
 }
 
 // Bytes covered by one unit of the op's strideOperand. Some units depend on
@@ -462,10 +467,11 @@ static bool divideAffineForm(AffineForm &form, int64_t divisor) {
   if (divisor <= 0 || form.constant % divisor != 0) {
     return false;
   }
-  for (const AffineTerm &term : form.terms)
+  for (const AffineTerm &term : form.terms) {
     if (term.coeff % divisor != 0) {
       return false;
     }
+  }
   form.constant /= divisor;
   for (AffineTerm &term : form.terms) {
     term.coeff /= divisor;
@@ -569,8 +575,9 @@ static std::optional<LinearDecomp> decomposeLinear(Value v,
 
   // v is loop-invariant or constant → {0, v}
   if (forOp.isDefinedOutsideOfLoop(v) ||
-      defOp->hasTrait<OpTrait::ConstantLike>())
+      defOp->hasTrait<OpTrait::ConstantLike>()) {
     return record(LinearDecomp{0, makeLeaf(v)});
+  }
 
   // v = addi(a, b) → {ca + cb, ia + ib}
   // v = subi(a, b) → {ca - cb, ia - ib}
@@ -670,8 +677,9 @@ static StrideResult getIterArgIncrement(Value v, scf::ForOp forOp) {
   while (true) {
     if (auto blockArg = dyn_cast<BlockArgument>(current)) {
       if (blockArg.getOwner() != forOp.getBody() ||
-          blockArg.getArgNumber() == 0)
+          blockArg.getArgNumber() == 0) {
         return {StrideStatus::NotIterArg, nullptr};
+      }
 
       unsigned idx = blockArg.getArgNumber() - 1;
       auto yieldOp = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
@@ -691,8 +699,9 @@ static StrideResult getIterArgIncrement(Value v, scf::ForOp forOp) {
 
     Operation *defOp = current.getDefiningOp();
     if (!defOp || forOp.isDefinedOutsideOfLoop(current) ||
-        defOp->hasTrait<OpTrait::ConstantLike>())
+        defOp->hasTrait<OpTrait::ConstantLike>()) {
       return {StrideStatus::NotIterArg, nullptr};
+    }
 
     if (isa<arith::IndexCastUIOp, arith::IndexCastOp>(defOp)) {
       if (!castPreservesLoopDelta(defOp, forOp)) {
@@ -742,7 +751,7 @@ using DeltaCache = DenseMap<Value, StrideExprRef>;
 
 static unsigned integerLikeBitWidth(Type type) {
   if (type.isIndex()) {
-    return 64;
+    return kIndexBitWidth;
   }
   return cast<IntegerType>(type).getWidth();
 }
@@ -799,9 +808,10 @@ getConstantIterArgIncrement(BlockArgument iterArg, scf::ForOp forOp,
       increment = addOp.getLhs();
     }
     auto constant = increment ? getConstantAPInt(increment) : std::nullopt;
-    if (constant)
+    if (constant) {
       return isUnsigned ? static_cast<__int128>(constant->getZExtValue())
                         : static_cast<__int128>(constant->getSExtValue());
+    }
   }
 
   if (auto subOp = yielded.getDefiningOp<arith::SubIOp>()) {
@@ -812,8 +822,9 @@ getConstantIterArgIncrement(BlockArgument iterArg, scf::ForOp forOp,
     if (constant) {
       int64_t signedConstant = constant->getSExtValue();
       if (signedConstant ==
-          -(int64_t{1} << (kCanonicalAddressWidth - 1)))
+          -(int64_t{1} << (kCanonicalAddressWidth - 1))) {
         return std::nullopt;
+      }
       return -static_cast<__int128>(signedConstant);
     }
   }
@@ -855,8 +866,9 @@ static bool canonicalAddressRecurrenceDoesNotWrap(Value input,
   } else {
     auto iterArg = dyn_cast<BlockArgument>(input);
     if (!iterArg || iterArg.getOwner() != forOp.getBody() ||
-        iterArg.getArgNumber() == 0)
+        iterArg.getArgNumber() == 0) {
       return false;
+    }
     unsigned idx = iterArg.getArgNumber() - 1;
     auto initial = getConstantAPInt(forOp.getInitArgs()[idx]);
     auto step = getConstantIterArgIncrement(iterArg, forOp, isUnsigned);
@@ -873,10 +885,11 @@ static bool canonicalAddressRecurrenceDoesNotWrap(Value input,
   __int128 final = initial + increment * static_cast<__int128>(*tripCount);
   __int128 minValue = std::min(initial, final);
   __int128 maxValue = std::max(initial, final);
-  if (isUnsigned)
+  if (isUnsigned) {
     return minValue >= 0 &&
            maxValue <=
                static_cast<__int128>(llvm::maxUIntN(kCanonicalAddressWidth));
+  }
   return minValue >= -static_cast<__int128>(uint64_t{1}
                                             << (kCanonicalAddressWidth - 1)) &&
          maxValue <= static_cast<__int128>(
@@ -890,12 +903,14 @@ static bool canonicalAddressRecurrenceDoesNotWrap(Value input,
 // recurrence. Narrowing casts retain the existing constant-IV range proof.
 static bool castPreservesLoopDelta(Operation *castOp, scf::ForOp forOp) {
   Value input = castOp->getOperand(0);
-  if (forOp.isDefinedOutsideOfLoop(input))
+  if (forOp.isDefinedOutsideOfLoop(input)) {
     return true; // Both the cast value and its delta (zero) are invariant.
+  }
 
   if (castOp->getResult(0).getType().isIndex() &&
-      isa<IntegerType>(input.getType()))
+      isa<IntegerType>(input.getType())) {
     return canonicalAddressRecurrenceDoesNotWrap(input, castOp, forOp);
+  }
 
   unsigned inputWidth = integerLikeBitWidth(input.getType());
   unsigned resultWidth = integerLikeBitWidth(castOp->getResult(0).getType());
@@ -913,14 +928,16 @@ static bool castPreservesLoopDelta(Operation *castOp, scf::ForOp forOp) {
   if (!lower || !upper || !step || *step <= 0) {
     return false;
   }
-  if (*lower >= *upper)
+  if (*lower >= *upper) {
     return true; // Empty loop.
+  }
 
   int64_t maxIV = *upper - 1;
-  if (isa<arith::IndexCastUIOp>(castOp))
+  if (isa<arith::IndexCastUIOp>(castOp)) {
     return *lower >= 0 &&
            llvm::isUIntN(resultWidth, static_cast<uint64_t>(*lower)) &&
            llvm::isUIntN(resultWidth, static_cast<uint64_t>(maxIV));
+  }
   return llvm::isIntN(resultWidth, *lower) && llvm::isIntN(resultWidth, maxIV);
 }
 
@@ -1136,9 +1153,10 @@ static Value normalizeAddPtrOffsetToIndex(Value offset, StrideUnit strideUnit,
   if (offset.getType().isIndex()) {
     return offset;
   }
-  if (strideUnit == StrideUnit::Block)
+  if (strideUnit == StrideUnit::Block) {
     return builder.create<arith::IndexCastUIOp>(loc, builder.getIndexType(),
                                                 offset);
+  }
   return builder.create<arith::IndexCastOp>(loc, builder.getIndexType(),
                                             offset);
 }
@@ -1167,9 +1185,10 @@ static Value createInitialPtr(Value base, Value strideOperand,
   if (unitBytes != elemBytes) {
     if (unitBytes % elemBytes == 0) {
       Value soIndex = strideOperand;
-      if (strideOperand.getType() != builder.getIndexType())
+      if (strideOperand.getType() != builder.getIndexType()) {
         soIndex = builder.create<arith::IndexCastUIOp>(
             loc, builder.getIndexType(), strideOperand);
+      }
       Value factor =
           builder.create<arith::ConstantIndexOp>(loc, unitBytes / elemBytes);
       scaledOffset = builder.create<arith::MulIOp>(loc, soIndex, factor);
@@ -1303,10 +1322,11 @@ static bool canHoistBefore(Value v, Operation *insertPt, scf::ForOp forOp,
   if (!isPure(defOp)) {
     return false;
   }
-  for (Value operand : defOp->getOperands())
+  for (Value operand : defOp->getOperands()) {
     if (!canHoistBefore(operand, insertPt, forOp, memo)) {
       return false;
     }
+  }
   memo[v] = true;
   return true;
 }
@@ -1320,8 +1340,9 @@ static Value hoistBefore(Value v, Operation *insertPt, scf::ForOp forOp,
   }
   Operation *defOp = v.getDefiningOp();
   if (!defOp || defOp->getBlock() != insertPt->getBlock() ||
-      defOp->isBeforeInBlock(insertPt))
+      defOp->isBeforeInBlock(insertPt)) {
     return v;
+  }
   auto it = memo.find(v);
   if (it != memo.end()) {
     return it->second;
@@ -1395,9 +1416,10 @@ static Value materializeConst(int64_t c, Type ty, Location loc,
   if (ty.isIndex()) {
     v = builder.create<arith::ConstantIndexOp>(loc, c);
   }
-  else
+  else {
     v = builder.create<arith::ConstantIntOp>(loc, c,
                                              ty.getIntOrFloatBitWidth());
+}
   cache[key] = v;
   return v;
 }
@@ -1410,10 +1432,11 @@ static Value materializeConst(int64_t c, Type ty, Location loc,
 static bool constantsFitType(const StrideExprRef &e, Type wantType) {
   switch (e->kind) {
   case StrideExpr::Kind::Const: {
-    if (!wantType || wantType.isIndex())
+    if (!wantType || wantType.isIndex()) {
       return true; // index is 64-bit, always holds an int64_t
+    }
     unsigned bitWidth = wantType.getIntOrFloatBitWidth();
-    return bitWidth >= 64 || llvm::isIntN(bitWidth, e->constant);
+    return bitWidth >= mlir::pto::kValue64 || llvm::isIntN(bitWidth, e->constant);
   }
   case StrideExpr::Kind::Leaf:
     return true;
@@ -1438,7 +1461,7 @@ static bool satisfiesStrideConstraint(const StrideExprRef &stride,
     return false;
   }
   return constraint == StrideConstraint::Constant ||
-         (*constant >= -128 && *constant <= 127);
+         (*constant >= kSignedI8Min && *constant <= kSignedI8Max);
 }
 
 // Emit `e` at the builder's current insertion point.  Sub-expressions are
@@ -1521,10 +1544,11 @@ static bool canHoistBefore(Value v, Operation *insertPt,
   if (!defOp || defOp->getBlock() != insertPt->getBlock() || !isPure(defOp)) {
     return false;
   }
-  for (Value operand : defOp->getOperands())
+  for (Value operand : defOp->getOperands()) {
     if (!canHoistBefore(operand, insertPt, dominance, memo)) {
       return false;
     }
+  }
   memo[v] = true;
   return true;
 }
@@ -1540,9 +1564,10 @@ static Value hoistBefore(Value v, Operation *insertPt, DominanceInfo &dominance,
 
   Operation *defOp = v.getDefiningOp();
   SmallVector<Value> newOperands;
-  for (Value operand : defOp->getOperands())
+  for (Value operand : defOp->getOperands()) {
     newOperands.push_back(
         hoistBefore(operand, insertPt, dominance, builder, memo));
+  }
 
   builder.setInsertionPoint(insertPt);
   Operation *cloned = builder.clone(*defOp);
@@ -1739,10 +1764,11 @@ static scf::ForOp pruneDeadLoopCarriedValues(scf::ForOp forOp,
   // rather than attempting a second control-flow-sensitive liveness analysis
   // here.
   for (Operation &op : forOp.getBody()->without_terminator()) {
-    if (!isPure(&op))
+    if (!isPure(&op)) {
       for (Value operand : op.getOperands()) {
         markLive(operand);
       }
+    }
     if (op.getNumRegions() != 0) {
       op.walk([&markLive](Operation *nested) {
         for (Value operand : nested->getOperands()) {
@@ -1757,8 +1783,9 @@ static scf::ForOp pruneDeadLoopCarriedValues(scf::ForOp forOp,
     Value value = worklist.pop_back_val();
     if (auto blockArg = dyn_cast<BlockArgument>(value)) {
       if (blockArg.getOwner() != forOp.getBody() ||
-          blockArg.getArgNumber() == 0)
+          blockArg.getArgNumber() == 0) {
         continue;
+      }
       unsigned idx = blockArg.getArgNumber() - 1;
       if (!keepIterArg[idx]) {
         keepIterArg[idx] = true;
@@ -1782,10 +1809,11 @@ static scf::ForOp pruneDeadLoopCarriedValues(scf::ForOp forOp,
 
   SmallVector<Value> newInitArgs;
   newInitArgs.reserve(numIterArgs);
-  for (auto [idx, init] : llvm::enumerate(forOp.getInitArgs()))
+  for (auto [idx, init] : llvm::enumerate(forOp.getInitArgs())) {
     if (keepIterArg[idx]) {
       newInitArgs.push_back(init);
     }
+  }
 
   builder.setInsertionPoint(forOp);
   auto newForOp = builder.create<scf::ForOp>(
@@ -1796,10 +1824,11 @@ static scf::ForOp pruneDeadLoopCarriedValues(scf::ForOp forOp,
   IRMapping mapping;
   mapping.map(forOp.getInductionVar(), newForOp.getInductionVar());
   unsigned newArgIdx = 0;
-  for (auto [idx, oldArg] : llvm::enumerate(forOp.getRegionIterArgs()))
+  for (auto [idx, oldArg] : llvm::enumerate(forOp.getRegionIterArgs())) {
     if (keepIterArg[idx]) {
       mapping.map(oldArg, newForOp.getRegionIterArgs()[newArgIdx++]);
     }
+  }
 
   builder.setInsertionPointToStart(newForOp.getBody());
   for (Operation &op : forOp.getBody()->without_terminator()) {
@@ -1813,10 +1842,11 @@ static scf::ForOp pruneDeadLoopCarriedValues(scf::ForOp forOp,
 
   SmallVector<Value> newYields;
   newYields.reserve(newInitArgs.size());
-  for (auto [idx, yielded] : llvm::enumerate(yieldOp.getOperands()))
+  for (auto [idx, yielded] : llvm::enumerate(yieldOp.getOperands())) {
     if (keepIterArg[idx]) {
       newYields.push_back(mapping.lookupOrDefault(yielded));
     }
+  }
   builder.setInsertionPointToEnd(newForOp.getBody());
   builder.create<scf::YieldOp>(yieldOp.getLoc(), newYields);
 
@@ -1988,13 +2018,13 @@ static StrideExprRef buildSequentialExpr(Value value,
     result = makeSub(buildSequentialExpr(sub.getLhs(), cache),
                      buildSequentialExpr(sub.getRhs(), cache));
   } else if (auto mul = dyn_cast_or_null<arith::MulIOp>(defOp)) {
-    if (auto lhsConst = getConstantIntValue(mul.getLhs()))
+    if (auto lhsConst = getConstantIntValue(mul.getLhs())) {
       result = makeMul(makeConst(*lhsConst),
                        buildSequentialExpr(mul.getRhs(), cache));
-    else if (auto rhsConst = getConstantIntValue(mul.getRhs()))
+    } else if (auto rhsConst = getConstantIntValue(mul.getRhs())) {
       result = makeMul(buildSequentialExpr(mul.getLhs(), cache),
                        makeConst(*rhsConst));
-    else {
+    } else {
       result = makeLeaf(value);
     }
   } else if (isa_and_nonnull<arith::IndexCastOp, arith::IndexCastUIOp>(defOp)) {
@@ -2054,8 +2084,9 @@ static std::optional<SequentialStep>
 analyzeSequentialStep(const SequentialCandidate &previous,
                       const SequentialCandidate &current) {
   if (previous.elemBytes != current.elemBytes ||
-      previous.unitBytes != current.unitBytes)
+      previous.unitBytes != current.unitBytes) {
     return std::nullopt;
+  }
 
   StrideExprRef deltaBase = makeSub(current.baseOffset, previous.baseOffset);
   StrideExprRef deltaStride = makeSub(current.strideExpr, previous.strideExpr);
@@ -2083,7 +2114,7 @@ struct SequentialRun {
 
 static bool validateSequentialRun(SequentialRun &run,
                                   DominanceInfo &dominance) {
-  if (run.candidates.size() < 3) {
+  if (run.candidates.size() < mlir::pto::kValue3) {
     return false;
   }
 
@@ -2099,8 +2130,9 @@ static bool validateSequentialRun(SequentialRun &run,
       !satisfiesStrideConstraint(run.step,
                                  first->info->strideConstraint) ||
       !canScaleInitialOffset(initialOffsetOperand, first->elemBytes,
-                             first->unitBytes))
+                             first->unitBytes)) {
     return false;
+  }
 
   for (SequentialCandidate *candidate : run.candidates) {
     Type candidateStrideType =
@@ -2178,8 +2210,9 @@ static void collectCumulativeOffsetOps(Value value,
                                        DenseSet<Operation *> &ops) {
   Operation *defOp = value.getDefiningOp();
   if (!isa_and_nonnull<arith::AddIOp, arith::SubIOp>(defOp) ||
-      !ops.insert(defOp).second)
+      !ops.insert(defOp).second) {
     return;
+  }
   for (Value operand : defOp->getOperands()) {
     collectCumulativeOffsetOps(operand, ops);
   }
@@ -2198,7 +2231,7 @@ static bool allUsesDisappearAfterRewrite(Operation *op,
 static bool cumulativeOffsetChainDefinitelyDies(
     const SequentialRun &run, DenseSet<Operation *> &deadOps) {
   for (SequentialCandidate *candidate :
-       llvm::drop_begin(run.candidates, 2)) {
+       llvm::drop_begin(run.candidates, mlir::pto::kValue2)) {
     if (candidate->strideOperand) {
       collectCumulativeOffsetOps(candidate->strideOperand, deadOps);
     }
@@ -2240,10 +2273,11 @@ static bool isStepMaterializationCostNeutral(
     clonedOps.insert(atom->castOp);
     SmallVector<Value> leaves;
     collectLeaves(atom, leaves);
-    for (Value leaf : leaves)
+    for (Value leaf : leaves) {
       if (!collectLatePureDefinitions(leaf, first->op, dominance, clonedOps)) {
         return false;
       }
+    }
   } else if (atom->kind == StrideExpr::Kind::Leaf &&
              !collectLatePureDefinitions(atom->leaf, first->op, dominance,
                                          clonedOps)) {
@@ -2271,15 +2305,17 @@ static bool isProfitableDirectSymbolicLeafRun(
   // validateSequentialRun already enforces N >= 3. This class intentionally
   // has no higher length threshold, so an N3 run may be accepted.
   if (run.stepForm.constant != 0 || run.stepForm.terms.size() != 1 ||
-      run.stepForm.terms.front().coeff != 1)
+      run.stepForm.terms.front().coeff != 1) {
     return false;
+  }
 
   // This class covers a direct fixed base with offsets 0, step, 2*step, ...
   // Dynamic base chains are handled independently above.
   if (!llvm::all_of(run.candidates, [](SequentialCandidate *candidate) {
         return candidate->base == candidate->rootBase;
-      }))
+      })) {
     return false;
+  }
   Value firstStrideOperand = run.candidates.front()->strideOperand;
   auto firstOffset = firstStrideOperand
                          ? getConstantIntValue(firstStrideOperand)
@@ -2312,8 +2348,9 @@ static void collectNestedBlocks(Operation *op, pto::VecScopeOp owner,
       blocks.push_back(&block);
       for (Operation &nested : block) {
         if (auto nestedScope = dyn_cast<pto::VecScopeOp>(nested);
-            nestedScope && nestedScope != owner)
+            nestedScope && nestedScope != owner) {
           continue;
+        }
         collectNestedBlocks(&nested, owner, blocks);
       }
     }
@@ -2427,10 +2464,11 @@ static void processSequentialBlock(Block *block, DominanceInfo &dominance,
   }
 
   DenseMap<Operation *, unsigned> opToRun;
-  for (auto [runIdx, run] : llvm::enumerate(runs))
+  for (auto [runIdx, run] : llvm::enumerate(runs)) {
     for (SequentialCandidate *candidate : run.candidates) {
       opToRun[candidate->op] = runIdx;
     }
+  }
 
   // Rewrite in original program order so interleaved buckets maintain separate
   // pointer chains without invalidating one another.
@@ -2544,7 +2582,6 @@ private:
       StrideExprRef deltaOffset =
           strideOperand ? getStride(strideOperand, forOp, deltaCache)
                         : makeConst(0);
-
       if (!deltaBase || !deltaOffset) {
         continue;
       }
@@ -2590,8 +2627,9 @@ private:
         DenseMap<Value, bool> canCache;
         if (!llvm::all_of(leaves, [&](Value l) {
               return canHoistBefore(l, &op, forOp, canCache);
-            }))
+            })) {
           continue;
+        }
         DenseMap<Value, Value> hoistMemo;
         finalExpr = makeAvailableAt(total, &op, forOp, builder, hoistMemo);
       }

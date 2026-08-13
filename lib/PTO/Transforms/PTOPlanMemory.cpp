@@ -9,6 +9,7 @@
 //===- PlanMemory.cpp ----Plan Buffer Memory Address ----------------------===//
 //===----------------------------------------------------------------------===//
 
+#include "PTO/Support/CodeConstants.h"
 #include "PTOPlanMemory.h"
 
 #include "PTO/IR/PTOMultiBuffer.h"
@@ -78,7 +79,7 @@ static std::optional<int64_t> getTileBufferFootprintBytes(TileBufType type) {
     return totalStaticSize.value() * static_cast<int64_t>(elemBytes);
   }
 
-  if (shape.size() != 2 || llvm::is_contained(shape, ShapedType::kDynamic)) {
+  if (shape.size() != mlir::pto::kValue2 || llvm::is_contained(shape, ShapedType::kDynamic)) {
     return std::nullopt;
   }
 
@@ -146,26 +147,28 @@ static bool isIgnoredA5TmpOperandUse(OpOperand &use) {
   }
 
   if (isNameIn(name, {"pto.trowargmax", "pto.trowargmin", "pto.trowmax",
-                     "pto.trowmin", "pto.trowsum", "pto.trowprod"}))
+                      "pto.trowmin", "pto.trowsum", "pto.trowprod"})) {
     return operandNo == 1;
+  }
 
   if (name == "pto.txors") {
-    return operandNo == 2;
+    return operandNo == mlir::pto::kValue2;
   }
 
   if (isNameIn(name, {"pto.tprelu", "pto.txor", "pto.tsels",
-                     "pto.trowexpand", "pto.tcolexpand",
-                     "pto.trowexpandadd", "pto.trowexpanddiv",
-                     "pto.trowexpandexpdif", "pto.trowexpandmax",
-                     "pto.trowexpandmin", "pto.trowexpandmul",
-                     "pto.trowexpandsub", "pto.tcolexpandadd",
-                     "pto.tcolexpanddiv", "pto.tcolexpandexpdif",
-                     "pto.tcolexpandmax", "pto.tcolexpandmin",
-                     "pto.tcolexpandmul", "pto.tcolexpandsub"}))
-    return operandNo == 2;
+                      "pto.trowexpand", "pto.tcolexpand",
+                      "pto.trowexpandadd", "pto.trowexpanddiv",
+                      "pto.trowexpandexpdif", "pto.trowexpandmax",
+                      "pto.trowexpandmin", "pto.trowexpandmul",
+                      "pto.trowexpandsub", "pto.tcolexpandadd",
+                      "pto.tcolexpanddiv", "pto.tcolexpandexpdif",
+                      "pto.tcolexpandmax", "pto.tcolexpandmin",
+                      "pto.tcolexpandmul", "pto.tcolexpandsub"})) {
+    return operandNo == mlir::pto::kValue2;
+  }
 
   if (name == "pto.tsel") {
-    return operandNo == 3;
+    return operandNo == mlir::pto::kValue3;
   }
 
   return false;
@@ -193,7 +196,7 @@ static void collectStableValueOrder(Region &region,
                                     AsmState &asmState,
                                     DenseMap<Value, std::string> &stableValueKeys,
                                     SmallVectorImpl<Value> &seenValues) {
-  auto recordValue = [&](Value value) {
+  auto recordValue = [&asmState, &seenValues, &stableValueKeys](Value value) {
     if (stableValueKeys.find(value) != stableValueKeys.end()) {
       return;
     }
@@ -1071,7 +1074,7 @@ void MemLivenessAnalysis::RecordSemanticConflict(Value lhs, Value rhs) {
   SetVector<Value> rhsAliases = GetAliasBuffers(rhs);
   rhsAliases.insert(rhs);
 
-  auto appendUniquePair = [&](Value a, Value b) {
+  auto appendUniquePair = [this](Value a, Value b) {
     if (!a || !b || a == b) {
       return;
     }
@@ -1279,7 +1282,7 @@ bool MemPlan::HasSemanticConflict(const StorageEntry *entry,
     return false;
   }
 
-  auto containsPair = [&](Value lhs, Value rhs) {
+  auto containsPair = [this](Value lhs, Value rhs) {
     ValuePair pair = isLessValue(lhs, rhs) ? ValuePair(lhs, rhs)
                                            : ValuePair(rhs, lhs);
     return llvm::is_contained(semanticConflictPairs, pair);
@@ -2738,8 +2741,9 @@ private:
 static FailureOr<MemPlanMode> parseLegacyMemPlanMode(func::FuncOp func,
                                                      llvm::StringRef memMode) {
   if (memMode.equals_insensitive("local") ||
-      memMode.equals_insensitive("local-mem-plan"))
+      memMode.equals_insensitive("local-mem-plan")) {
     return MemPlanMode::LOCAL_MEM_PLAN;
+  }
   if (memMode.equals_insensitive("global-work-space-plan")) {
     return MemPlanMode::GLOBAL_WORKSPACE_PLAN;
   }

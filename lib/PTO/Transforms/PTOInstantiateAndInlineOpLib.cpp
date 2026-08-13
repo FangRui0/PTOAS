@@ -69,8 +69,9 @@ static bool isInlineableLibFunc(func::FuncOp fn) {
   // Keep OP-Lib behavior unchanged while TileLang private template helpers are
   // still handled on the VPTO tile-op expansion path, together with
   // TileLang inline_proc helpers that only become meaningful after ExpandTileOp.
-  if (isInstanceFunc(fn) || isTilelangInlineProcFunc(fn) || isSoftLibFunc(fn))
+  if (isInstanceFunc(fn) || isTilelangInlineProcFunc(fn) || isSoftLibFunc(fn)) {
     return true;
+  }
   return isTilelangTemplateFunc(fn);
 }
 

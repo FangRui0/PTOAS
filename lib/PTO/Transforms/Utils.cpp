@@ -35,17 +35,20 @@ static constexpr llvm::StringLiteral kFrontendPipeIdAttrName =
 FailureOr<bool> hasTFillPadExpandedPhysicalShape(TFillPadOp op) {
   auto srcType = dyn_cast<TileBufType>(op.getSrc().getType());
   auto dstType = dyn_cast<TileBufType>(op.getDst().getType());
-  if (!srcType || !dstType || srcType.getRank() != dstType.getRank())
+  if (!srcType || !dstType || srcType.getRank() != dstType.getRank()) {
     return failure();
+  }
 
   bool expanded = false;
   for (auto [srcDim, dstDim] :
        llvm::zip_equal(srcType.getShape(), dstType.getShape())) {
-    if (srcDim == dstDim)
+    if (srcDim == dstDim) {
       continue;
+    }
     if (ShapedType::isDynamic(srcDim) || ShapedType::isDynamic(dstDim) ||
-        dstDim < srcDim)
+        dstDim < srcDim) {
       return failure();
+    }
     expanded = true;
   }
   return expanded;
@@ -55,11 +58,13 @@ static Value peelTFillPadStorageAlias(Value value) {
   constexpr unsigned kMaxDepth = 32;
   for (unsigned depth = 0; value && depth < kMaxDepth; ++depth) {
     Operation *def = value.getDefiningOp();
-    if (!def)
+    if (!def) {
       break;
+    }
     if (auto cast = dyn_cast<UnrealizedConversionCastOp>(def)) {
-      if (cast.getNumOperands() != 1 || cast.getNumResults() != 1)
+      if (cast.getNumOperands() != 1 || cast.getNumResults() != 1) {
         break;
+      }
       value = cast.getOperand(0);
       continue;
     }
@@ -79,18 +84,21 @@ static Value peelTFillPadStorageAlias(Value value) {
 static bool haveSameKnownTFillPadStartAddress(Value src, Value dst) {
   src = peelTFillPadStorageAlias(src);
   dst = peelTFillPadStorageAlias(dst);
-  if (src == dst)
+  if (src == dst) {
     return true;
+  }
 
   auto srcAlloc = src.getDefiningOp<AllocTileOp>();
   auto dstAlloc = dst.getDefiningOp<AllocTileOp>();
-  if (!srcAlloc || !dstAlloc || !srcAlloc.getAddr() || !dstAlloc.getAddr())
+  if (!srcAlloc || !dstAlloc || !srcAlloc.getAddr() || !dstAlloc.getAddr()) {
     return false;
+  }
 
   Value srcAddr = srcAlloc.getAddr();
   Value dstAddr = dstAlloc.getAddr();
-  if (srcAddr == dstAddr)
+  if (srcAddr == dstAddr) {
     return true;
+  }
 
   IntegerAttr srcConst;
   IntegerAttr dstConst;
@@ -102,8 +110,9 @@ static bool haveSameKnownTFillPadStartAddress(Value src, Value dst) {
 FailureOr<TFillPadLoweringKind>
 inferTFillPadLoweringKindAfterMemoryPlanning(TFillPadOp op) {
   FailureOr<bool> expanded = hasTFillPadExpandedPhysicalShape(op);
-  if (failed(expanded))
+  if (failed(expanded)) {
     return failure();
+  }
 
   auto srcSpace = GetBufferSpaceAttr(op.getSrc());
   auto dstSpace = GetBufferSpaceAttr(op.getDst());
@@ -112,13 +121,15 @@ inferTFillPadLoweringKindAfterMemoryPlanning(TFillPadOp op) {
                dstSpace->getAddressSpace() == AddressSpace::VEC;
 
   if (*expanded) {
-    if (!isVec)
+    if (!isVec) {
       return failure();
+    }
     return TFillPadLoweringKind::Expand;
   }
   if (isVec &&
-      haveSameKnownTFillPadStartAddress(op.getSrc(), op.getDst()))
+      haveSameKnownTFillPadStartAddress(op.getSrc(), op.getDst())) {
     return TFillPadLoweringKind::InPlace;
+  }
   return TFillPadLoweringKind::Normal;
 }
 
@@ -156,8 +167,9 @@ func::ReturnOp getAssumedUniqueReturnOp(func::FuncOp funcOp) {
 }
 
 Value peelUnrealized(Value value) {
-  if (auto castOp = value.getDefiningOp<UnrealizedConversionCastOp>())
+  if (auto castOp = value.getDefiningOp<UnrealizedConversionCastOp>()) {
     return castOp.getOperand(0);
+  }
   return value;
 }
 
@@ -195,18 +207,22 @@ Operation *getPipeInitDef(Value pipeHandle) {
 }
 
 AccPushEpilogueAttr getPipeInitAccPushEpilogue(Operation *initOp) {
-  if (auto init = dyn_cast_or_null<InitializeL2LPipeOp>(initOp))
+  if (auto init = dyn_cast_or_null<InitializeL2LPipeOp>(initOp)) {
     return init.getAccPushEpilogueAttr();
-  if (auto init = dyn_cast_or_null<InitializeL2G2LPipeOp>(initOp))
+  }
+  if (auto init = dyn_cast_or_null<InitializeL2G2LPipeOp>(initOp)) {
     return init.getAccPushEpilogueAttr();
+  }
   return {};
 }
 
 std::optional<int32_t> getFrontendPipeIdFromInit(Operation *initOp) {
-  if (!initOp)
+  if (!initOp) {
     return std::nullopt;
-  if (auto attr = initOp->getAttrOfType<IntegerAttr>(kFrontendPipeIdAttrName))
+  }
+  if (auto attr = initOp->getAttrOfType<IntegerAttr>(kFrontendPipeIdAttrName)) {
     return static_cast<int32_t>(attr.getInt());
+  }
   return std::nullopt;
 }
 
@@ -251,14 +267,16 @@ void setBaseMemRefTypeScope(Value val, AddressSpaceAttr targetMemScope) {
 std::optional<AddressSpaceAttr> GetBufferSpaceAttr(Value operand) {
   if (auto tileTy = dyn_cast<pto::TileBufType>(operand.getType())) {
     if (auto memorySpaceAttr =
-            dyn_cast_or_null<AddressSpaceAttr>(tileTy.getMemorySpace()))
+            dyn_cast_or_null<AddressSpaceAttr>(tileTy.getMemorySpace())) {
       return memorySpaceAttr;
+    }
     return std::nullopt;
   }
   if (auto multiTy = dyn_cast<pto::MultiTileBufType>(operand.getType())) {
     if (auto memorySpaceAttr = dyn_cast_or_null<AddressSpaceAttr>(
-            multiTy.getSlotType().getMemorySpace()))
+            multiTy.getSlotType().getMemorySpace())) {
       return memorySpaceAttr;
+    }
     return std::nullopt;
   }
 
@@ -267,8 +285,9 @@ std::optional<AddressSpaceAttr> GetBufferSpaceAttr(Value operand) {
   }
   auto memRefType = cast<MemRefType>(operand.getType());
   auto memorySpace = memRefType.getMemorySpace();
-  if (!memorySpace)
+  if (!memorySpace) {
     return std::nullopt;
+  }
   auto memorySpaceAttr = dyn_cast<AddressSpaceAttr>(memorySpace);
   if (!memorySpaceAttr) {
     return std::nullopt;
@@ -317,8 +336,9 @@ std::optional<std::pair<Value, Value>> getOperationAliasInfo(Operation *op) {
   } else if (auto castOp = dyn_cast<memref::CastOp>(op)) {
     return std::make_pair(castOp.getResult(), castOp.getViewSource());
   } else if (auto castOp = dyn_cast<UnrealizedConversionCastOp>(op)) {
-    if (castOp.getNumOperands() == 1 && castOp.getNumResults() == 1)
+    if (castOp.getNumOperands() == 1 && castOp.getNumResults() == 1) {
       return std::make_pair(castOp.getResult(0), castOp.getOperand(0));
+    }
   } else if (auto extractStridedMetadataOp =
                  dyn_cast<memref::ExtractStridedMetadataOp>(op)) {
     return std::make_pair(extractStridedMetadataOp.getBaseBuffer(),

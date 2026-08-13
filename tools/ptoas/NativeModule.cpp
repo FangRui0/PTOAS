@@ -6,6 +6,7 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
+#include "PTO/Support/CodeConstants.h"
 #include "ptoas.h"
 
 #include "PTOModule.h"
@@ -60,9 +61,10 @@ public:
       py::tuple result = getCompilerRuntime().attr("materialize")(
           request.target, request.op, request.operandSpecsJson,
           request.contextAttrsJson, request.candidateId, contextOwner);
-      if (result.size() != 2)
+      if (result.size() != mlir::pto::kValue2) {
         throw py::value_error(
             "PTODSL materialize() must return (module, entry_symbol)");
+      }
 
       // MlirModule is a non-owning handle. Keep result[0] alive until the
       // complete source module has been cloned into C++ ownership.
