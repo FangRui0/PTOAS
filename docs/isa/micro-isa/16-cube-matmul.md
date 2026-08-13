@@ -377,8 +377,10 @@ pto.raw_fill_l1 %dst, %byte_offset, %raw_value, %repeat_times,
 - **semantics:** Fill a strided L1 matrix region beginning at `%dst +
   %byte_offset` with the selected raw word pattern. Each repetition writes
   `%block_num_32b` contiguous 32-byte blocks, and `%dst_gap_32b` gives the
-  destination gap between repetitions in 32-bit blocks. No fill range is
-  omitted when the final repetition is a tail region.
+  destination gap between repetitions in 32-byte blocks. For a 16-bit fill,
+  the low 16 bits of `%raw_value` are repeated in every 16-bit word; for a
+  32-bit fill, all 32 bits of `%raw_value` are used. No fill range is omitted
+  when the final repetition is a tail region.
 
 **Parameter Table:**
 
@@ -386,24 +388,21 @@ pto.raw_fill_l1 %dst, %byte_offset, %raw_value, %repeat_times,
 |-----------|-------|-------------|
 | `%dst` | ptr | Destination base pointer in the `mat` L1 address space |
 | `%byte_offset` | i64 | Non-negative byte offset from `%dst` to the first filled word |
-| `%raw_value` | i32 | Raw bit pattern repeated through the selected fill-word view |
+| `%raw_value` | i32 | Raw pattern; low 16 bits are repeated for a 16-bit fill, all 32 bits are used for a 32-bit fill |
 | `%repeat_times` | i64 | Number of strided fill repetitions |
 | `%block_num_32b` | i64 | Number of 32-byte blocks written by each repetition |
-| `%dst_gap_32b` | i64 | Destination gap between repetitions, measured in 32-bit blocks |
+| `%dst_gap_32b` | i64 | Destination gap between repetitions, measured in 32-byte blocks |
 | `%fill_word_bits` | i64 | Compile-time fill-word width: exactly `16` or `32` |
 
 **Constraints:**
 
 - `%dst` must have the `mat` L1 address space.
 - `%byte_offset`, `%repeat_times`, `%block_num_32b`, and `%dst_gap_32b` must
-  be non-negative when constant.
-- `%repeat_times`, `%block_num_32b`, and `%dst_gap_32b` must not exceed
-  `32767` when constant.
+  be non-negative. PTOAS diagnoses known constant violations.
+- `%repeat_times`, `%block_num_32b`, and `%dst_gap_32b` must each be at most
+  `32767`, including dynamically computed values. PTOAS diagnoses known
+  constant violations; dynamic values are a caller precondition.
 - `%fill_word_bits` must be a compile-time `16` or `32` value.
-
-Wrapper expansion applies `%byte_offset` in byte units and casts the resulting
-destination to the canonical `!pto.ptr<ui16, mat>` or `!pto.ptr<ui32, mat>`
-view selected by `%fill_word_bits` before emitting the raw fill micro-op.
 
 **Example:**
 

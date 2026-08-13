@@ -5715,6 +5715,23 @@ public:
     }
 
     Location loc = op.getLoc();
+    APInt fillWordBits;
+    if (!matchPattern(op.getFillWordBits(), m_ConstantInt(&fillWordBits))) {
+      return rewriter.notifyMatchFailure(op,
+                                         "expected constant fill word width");
+    }
+    uint64_t fillWordWidth = fillWordBits.getZExtValue();
+    Value fillPattern = rawValue;
+    if (fillWordWidth == 16) {
+      Value wordMask = getI32Constant(rewriter, loc, 0xFFFFU);
+      Value lowWord = rewriter.create<arith::AndIOp>(loc, rawValue, wordMask);
+      Value highWord = rewriter.create<arith::ShLIOp>(
+          loc, lowWord, getI32Constant(rewriter, loc, 16));
+      fillPattern = rewriter.create<arith::OrIOp>(loc, lowWord, highWord);
+    } else if (fillWordWidth != 32) {
+      return rewriter.notifyMatchFailure(op, "expected a 16-bit or 32-bit fill word");
+    }
+
     Value fieldMask = getI64Constant(rewriter, loc, 0x7FFFU);
     auto maskField = [&](Value value) -> Value {
       return rewriter.create<arith::AndIOp>(loc, value, fieldMask);
@@ -5734,7 +5751,7 @@ public:
     auto funcType = rewriter.getFunctionType(
         TypeRange{destination->getType(), i64Ty, i32Ty}, TypeRange{});
     rewriter.create<func::CallOp>(loc, calleeName, TypeRange{},
-                                  ValueRange{*destination, config, rawValue});
+                                  ValueRange{*destination, config, fillPattern});
     state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
     rewriter.eraseOp(op);
     return success();

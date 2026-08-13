@@ -3068,14 +3068,16 @@ def PTO_RawFillL1Op : PTO_MicroOp<"raw_fill_l1", [
     - `dst`: destination buffer; after expansion must resolve to the MAT/L1
       address space.
     - `byte_offset`: byte distance applied to `dst` before the fill.
-    - `raw_value`: raw 32-bit bit pattern replicated over the fill words.
-    - `repeat_times`: number of 32-byte fill repeats.
-    - `block_num_32b`: number of 32-bit blocks per repeat.
-    - `dst_gap_32b`: destination gap between repeats, in 32-bit blocks.
+    - `raw_value`: raw fill pattern. For a 16-bit fill, the low 16 bits are
+      repeated in every 16-bit word; for a 32-bit fill, all 32 bits are used.
+    - `repeat_times`: number of fill repetitions.
+    - `block_num_32b`: number of 32-byte blocks per repeat.
+    - `dst_gap_32b`: destination gap between repeats, in 32-byte blocks.
     - `fill_word_bits`: compile-time fill word width, exactly 16 or 32.
 
-    The expansion performs only pointer normalization, byte offset, and the
-    16/32-bit view cast. It does not split loops or change the tail fill range.
+    `repeat_times`, `block_num_32b`, and `dst_gap_32b` must each be in the
+    inclusive range [0, 32767], including when dynamically computed. The
+    verifier diagnoses known constants outside that range.
   }];
 
   let arguments = (ins
@@ -3109,11 +3111,11 @@ def PTO_CreateCbufMatrixOp : PTO_CubeMicroOp<"create_cbuf_matrix", [
     bit pattern. Produced by the `pto.raw_fill_l1` wrapper expansion.
 
     `dst` must be a `!pto.ptr<ui16|ui32, #pto.address_space<mat>>` pointer that
-    already includes `byte_offset`; `raw_value` is the raw 32-bit bit pattern
-    and `fill_word_bits` (exactly 16 or 32) selects whether the 16-bit or
-    32-bit fill view is used. The control fields pack into the hardware
-    intrinsic config as `repeat_times | (block_num_32b << 16) |
-    (dst_gap_32b << 32)`.
+    already includes `byte_offset`. For a 16-bit fill, the low 16 bits of
+    `raw_value` are repeated in every 16-bit word; for a 32-bit fill, all 32
+    bits are used. `repeat_times` counts repetitions; `block_num_32b` and
+    `dst_gap_32b` count 32-byte blocks. All three geometry operands must be
+    in the inclusive range [0, 32767].
   }];
 
   let arguments = (ins

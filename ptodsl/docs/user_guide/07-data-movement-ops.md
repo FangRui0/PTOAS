@@ -911,15 +911,17 @@ padding and tail regions, including the final strided repetition.
 |-----------|------|-------------|
 | `dst` | `PtrType` (L1/MAT) | Destination L1 buffer |
 | `byte_offset` | `int` | Non-negative byte offset to the first filled word |
-| `raw_value` | `int` | Raw 32-bit bit pattern; the selected view determines the word width |
-| `repeat_times` | `int` | Number of fill repetitions; constant values must be at most `32767` |
-| `block_num_32b` | `int` | Number of contiguous 32-byte blocks per repetition; constant values must be at most `32767` |
-| `dst_gap_32b` | `int` | Gap between repetitions in 32-bit blocks; constant values must be at most `32767` |
+| `raw_value` | `int` | Raw pattern; low 16 bits are repeated for a 16-bit fill, all 32 bits are used for a 32-bit fill |
+| `repeat_times` | `int` | Number of fill repetitions; all values must be at most `32767` |
+| `block_num_32b` | `int` | Number of contiguous 32-byte blocks per repetition; all values must be at most `32767` |
+| `dst_gap_32b` | `int` | Gap between repetitions in 32-byte blocks; all values must be at most `32767` |
 | `fill_word_bits` | `int` | Compile-time view width, exactly `16` or `32` |
 
-**Constraints**: `dst` must be in the L1/MAT address space. Constant offsets and
-geometry values must be non-negative. `fill_word_bits` must be a compile-time
-`16` or `32` value.
+**Constraints**: `dst` must be in the L1/MAT address space. Offsets and
+geometry values must be non-negative. `repeat_times`, `block_num_32b`, and
+`dst_gap_32b` must be at most `32767`, including when dynamically computed;
+PTOAS diagnoses known constant violations. `fill_word_bits` must be a
+compile-time `16` or `32` value.
 
 **Example**:
 
