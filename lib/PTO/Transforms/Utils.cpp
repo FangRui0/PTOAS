@@ -331,9 +331,9 @@ std::optional<std::pair<Value, Value>> getOperationAliasInfo(Operation *op) {
   return std::nullopt;
 }
 
-SmallVector<std::pair<Value, Value>, 5>
+SmallVector<std::pair<Value, Value>, 15>
 getSemanticNoAliasPairs(Operation *op) {
-  SmallVector<std::pair<Value, Value>, 5> pairs;
+  SmallVector<std::pair<Value, Value>, 15> pairs;
   if (auto tmov = dyn_cast<TMovOp>(op)) {
     if (classifyTMovForm(tmov.getFp()) == TMovForm::XToZz) {
       pairs.emplace_back(tmov.getSrc(), tmov.getDst());
@@ -344,13 +344,14 @@ getSemanticNoAliasPairs(Operation *op) {
   }
 
   if (auto tquant = dyn_cast<TQuantMxOp>(op)) {
-    Value src = tquant.getSrc();
-    pairs.emplace_back(src, tquant.getDst());
-    pairs.emplace_back(src, tquant.getExp());
-    pairs.emplace_back(src, tquant.getMax());
-    pairs.emplace_back(src, tquant.getScaling());
+    SmallVector<Value, 6> tiles{tquant.getSrc(), tquant.getDst(),
+                                tquant.getExp(), tquant.getMax(),
+                                tquant.getScaling()};
     if (Value expZz = tquant.getExpZz())
-      pairs.emplace_back(src, expZz);
+      tiles.push_back(expZz);
+    for (unsigned lhs = 0; lhs < tiles.size(); ++lhs)
+      for (unsigned rhs = lhs + 1; rhs < tiles.size(); ++rhs)
+        pairs.emplace_back(tiles[lhs], tiles[rhs]);
   }
   return pairs;
 }

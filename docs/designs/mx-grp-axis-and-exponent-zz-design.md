@@ -1061,8 +1061,8 @@ MemoryEffects 只描述读写方向，不能证明两个 operand 使用不同 al
 
 | op 形态 | 必须不重叠的 byte range | 原因 |
 |---|---|---|
-| X-to-ZZ，axis0 / axis1 | `src` ↔ `dst` | 转换在读取全部 source 前开始写 destination；DN 的第一个 32B store 会覆盖后续 column block 尚未读取的 source |
-| `pto.tquant.mx`，所有 dtype/axis/algorithm | `src` ↔ `dst`、`src` ↔ `exp`、`src` ↔ `max`、`src` ↔ `scaling`，以及存在时 `src` ↔ `exp_zz` | 量化分阶段读取 source 并写多个输出；任一输出复用 source 都可能破坏后续读取 |
+| X-to-ZZ，axis0 / axis1 | `src`、`tmp`、`dst` 任意两个 tile 的完整 byte range 均不得重叠 | 转换会写索引表 `tmp`，且在读取全部 source 前开始写 destination；任意复用都可能覆盖仍需读取的数据，DN 的第一个 32B store 也会覆盖后续 column block 尚未读取的 source |
+| `pto.tquant.mx`，所有 dtype/axis/algorithm | `src`、`dst`、`exp`、`max`、`scaling`，以及存在时的 `exp_zz`，任意两个 tile 的完整 byte range 均不得重叠 | 量化分阶段读写这些 tile；任一输出复用 source 都可能破坏后续 source 读取，输出之间复用也可能覆盖后续阶段仍需读取的中间结果，例如生成 `dst` 时仍会读取 `scaling` |
 
 该契约独立于 source 是 `Read` 还是 `Read + Write`：不得为了触发 scratch 冲突而把 f32 或
 tight B16 source 虚构成 `Write`。实现增加共享的语义 no-alias pair helper，并由两个 planner
@@ -1077,8 +1077,8 @@ tight B16 source 虚构成 `Write`。实现增加共享的语义 no-alias pair h
 - 对已带显式地址的 tile，以及 planner 结束后的分配结果，若任一受约束 byte range 重叠，
   pass 必须报错，不能静默保留重叠地址。
 
-§11.2 构造“source 在该 op 最后一次使用、destination 在该 op 第一次写入”的生命期交界用例，
-分别运行 legacy 与 modern PlanMemory，断言上述 pair 的规划地址区间不重叠；另用普通
+§11.2 构造参与 tile 在该 op 处生命期交界的用例，分别运行 legacy 与 modern PlanMemory，
+断言上述 pair 的规划地址区间不重叠；另用普通
 `pto.tmov` control case 证明允许的 inplace/reuse 策略没有被全局关闭。
 
 X-to-ZZ 的 src/dst 都是 vec tile，现有 `TMovOp::getPipe()` 会返回 `PIPE_V`；无需新增
