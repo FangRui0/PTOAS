@@ -5109,12 +5109,7 @@ public:
     }
 
     Location loc = op.getLoc();
-    APInt fillWordBits;
-    if (!matchPattern(op.getFillWordBits(), m_ConstantInt(&fillWordBits))) {
-      return rewriter.notifyMatchFailure(op,
-                                         "expected constant fill word width");
-    }
-    uint64_t fillWordWidth = fillWordBits.getZExtValue();
+    const uint64_t fillWordWidth = static_cast<uint64_t>(op.getFillWordBits());
     StringRef calleeName;
     Value fillPattern;
     if (fillWordWidth == 16) {

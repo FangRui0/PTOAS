@@ -15,8 +15,7 @@ module {
     %c0_i64 = arith.constant 0 : i64
     %zero_i32 = arith.constant 0 : i32
     %c32_i64 = arith.constant 32 : i64
-    pto.create_cbuf_matrix %dst, %zero_i32, %c1_i64, %c1_i64, %c0_i64,
-      %c32_i64 : !pto.ptr<ui16, mat>, i32, i64, i64, i64, i64
+    pto.create_cbuf_matrix %dst, %zero_i32, %c1_i64, %c1_i64, %c0_i64 {fill_word_bits = 32 : i64} : !pto.ptr<ui16, mat>, i32, i64, i64, i64
     return
   }
 }
@@ -32,8 +31,7 @@ module {
     %c0_i64 = arith.constant 0 : i64
     %zero_i32 = arith.constant 0 : i32
     %c16_i64 = arith.constant 16 : i64
-    pto.create_cbuf_matrix %dst, %zero_i32, %c1_i64, %c1_i64, %c0_i64,
-      %c16_i64 : !pto.ptr<i16, mat>, i32, i64, i64, i64, i64
+    pto.create_cbuf_matrix %dst, %zero_i32, %c1_i64, %c1_i64, %c0_i64 {fill_word_bits = 16 : i64} : !pto.ptr<i16, mat>, i32, i64, i64, i64
     return
   }
 }
@@ -49,8 +47,7 @@ module {
     %c0_i64 = arith.constant 0 : i64
     %zero_i32 = arith.constant 0 : i32
     %c16_i64 = arith.constant 16 : i64
-    pto.create_cbuf_matrix %dst, %zero_i32, %c1_i64, %c1_i64, %c0_i64,
-      %c16_i64 : !pto.ptr<ui8, mat>, i32, i64, i64, i64, i64
+    pto.create_cbuf_matrix %dst, %zero_i32, %c1_i64, %c1_i64, %c0_i64 {fill_word_bits = 16 : i64} : !pto.ptr<ui8, mat>, i32, i64, i64, i64
     return
   }
 }

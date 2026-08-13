@@ -9,7 +9,7 @@
 import unittest
 import inspect
 from types import SimpleNamespace
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import ANY, MagicMock, call, patch
 
 import ptodsl._ops as _ops
 import ptodsl._pipe_namespace as _pipe_namespace
@@ -253,9 +253,21 @@ class VectorCubeSurfaceTest(unittest.TestCase):
              patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
              patch.object(_ops, "_coerce_i64", side_effect=coerce), \
              patch.object(_ops, "_coerce_i32", side_effect=coerce), \
+             patch.object(_ops, "IntegerAttr") as integer_attr, \
+             patch.object(_ops, "IntegerType") as integer_type, \
              patch.object(_ops._pto, "RawFillL1Op") as raw_fill:
-            pto.raw_fill_l1(destination, 32, 0x12345678, 3, 7, 11, 16)
+            pto.raw_fill_l1(
+                destination,
+                32,
+                0x12345678,
+                repeat_times=3,
+                block_num_32b=7,
+                dst_gap_32b=11,
+                fill_word_bits=16,
+            )
 
+        integer_type.get_signless.assert_called_once_with(64)
+        integer_attr.get.assert_called_once_with(ANY, 16)
         raw_fill.assert_called_once_with(
             destination,
             "raw_fill_l1 byte_offset:32",
@@ -263,8 +275,64 @@ class VectorCubeSurfaceTest(unittest.TestCase):
             "raw_fill_l1 repeat_times:3",
             "raw_fill_l1 block_num_32b:7",
             "raw_fill_l1 dst_gap_32b:11",
-            "raw_fill_l1 fill_word_bits:16",
+            integer_attr.get.return_value,
         )
+
+    def test_raw_fill_l1_rejects_positional_control_fields(self):
+        destination = object()
+        with patch.object(_ops, "_require_explicit_mode"):
+            with self.assertRaises(TypeError):
+                pto.raw_fill_l1(destination, 32, 0x12345678, 3, 7, 11, 16)
+
+    def test_raw_fill_l1_validates_fill_word_bits(self):
+        destination = object()
+        with patch.object(_ops, "_require_explicit_mode"):
+            with self.assertRaises(ValueError):
+                pto.raw_fill_l1(
+                    destination, 32, 0,
+                    repeat_times=1, block_num_32b=1, dst_gap_32b=0,
+                    fill_word_bits=8,
+                )
+            with self.assertRaises(TypeError):
+                pto.raw_fill_l1(
+                    destination, 32, 0,
+                    repeat_times=1, block_num_32b=1, dst_gap_32b=0,
+                    fill_word_bits=True,
+                )
+            with self.assertRaises(TypeError):
+                pto.raw_fill_l1(
+                    destination, 32, 0,
+                    repeat_times=1, block_num_32b=1, dst_gap_32b=0,
+                    fill_word_bits=16.0,
+                )
+
+    def test_raw_fill_l1_validates_static_geometry(self):
+        destination = object()
+        with patch.object(_ops, "_require_explicit_mode"):
+            with self.assertRaises(ValueError):
+                pto.raw_fill_l1(
+                    destination, 2, 0,
+                    repeat_times=1, block_num_32b=1, dst_gap_32b=0,
+                    fill_word_bits=16,
+                )
+            with self.assertRaises(ValueError):
+                pto.raw_fill_l1(
+                    destination, -1, 0,
+                    repeat_times=1, block_num_32b=1, dst_gap_32b=0,
+                    fill_word_bits=16,
+                )
+            with self.assertRaises(ValueError):
+                pto.raw_fill_l1(
+                    destination, 32, 0,
+                    repeat_times=32768, block_num_32b=1, dst_gap_32b=0,
+                    fill_word_bits=16,
+                )
+            with self.assertRaises(ValueError):
+                pto.raw_fill_l1(
+                    destination, 32, 0,
+                    repeat_times=1, block_num_32b=1, dst_gap_32b=-2,
+                    fill_word_bits=16,
+                )
 
     def test_tile_bitwise_aliases_are_exposed_without_legacy_names(self):
         preferred_names = [

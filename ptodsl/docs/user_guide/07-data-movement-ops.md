@@ -899,29 +899,35 @@ Cube compute step; it does not issue those transfers itself.
 
 ---
 
-#### `pto.raw_fill_l1(dst: PtrType, byte_offset: int, raw_value: int, repeat_times: int, block_num_32b: int, dst_gap_32b: int, fill_word_bits: int) -> None`
+#### `pto.raw_fill_l1(dst: PtrType, byte_offset: int, raw_value: int, *, repeat_times: int, block_num_32b: int, dst_gap_32b: int, fill_word_bits: int) -> None`
 
 **Description**: Fill a strided region in the L1 (MAT) buffer with one raw
 16-bit or 32-bit word pattern. This is the explicit PTO surface used for
 padding and tail regions, including the final strided repetition.
+
+All parameters from `repeat_times` onward are keyword-only.
 
 **Parameters**:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `dst` | `PtrType` (L1/MAT) | Destination L1 buffer |
-| `byte_offset` | `int` | Non-negative byte offset to the first filled word |
+| `byte_offset` | `int` | Non-negative byte offset to the first filled word; must be a multiple of 32 bytes |
 | `raw_value` | `int` | Raw pattern; low 16 bits are repeated for a 16-bit fill, all 32 bits are used for a 32-bit fill |
 | `repeat_times` | `int` | Number of fill repetitions; all values must be at most `32767` |
 | `block_num_32b` | `int` | Number of contiguous 32-byte blocks per repetition; all values must be at most `32767` |
 | `dst_gap_32b` | `int` | Gap between repetitions in 32-byte blocks; all values must be at most `32767` |
-| `fill_word_bits` | `int` | Compile-time view width, exactly `16` or `32` |
+| `fill_word_bits` | `int` | Static view width, exactly `16` or `32`; must be a Python `int` |
 
 **Constraints**: `dst` must be in the L1/MAT address space. Offsets and
 geometry values must be non-negative. `repeat_times`, `block_num_32b`, and
 `dst_gap_32b` must be at most `32767`, including when dynamically computed;
-PTOAS diagnoses known constant violations. `fill_word_bits` must be a
-compile-time `16` or `32` value.
+PTODSL diagnoses static Python `int` violations up front, and PTOAS diagnoses
+known constant violations for dynamically computed values. `fill_word_bits`
+must be a static `16` or `32` value and is recorded as an IR attribute. The
+effective destination address `dst + byte_offset` must be 32-byte aligned;
+PTODSL rejects non-aligned static Python `int` offsets, while dynamic offset
+alignment is a caller precondition.
 
 **Example**:
 

@@ -16,8 +16,7 @@ module {
     %c32768_i64 = arith.constant 32768 : i64
     %zero_i32 = arith.constant 0 : i32
     pto.raw_fill_l1 %dst, %c0_i64, %zero_i32, %c32768_i64, %c1_i64,
-      %c0_i64, %c16_i64
-      : !pto.ptr<ui16, mat>, i64, i32, i64, i64, i64, i64
+      %c0_i64 {fill_word_bits = 16 : i64} : !pto.ptr<ui16, mat>, i64, i32, i64, i64, i64
     return
   }
 }
@@ -34,8 +33,7 @@ module {
     %c32768_i64 = arith.constant 32768 : i64
     %zero_i32 = arith.constant 0 : i32
     pto.raw_fill_l1 %dst, %c0_i64, %zero_i32, %c1_i64, %c1_i64,
-      %c32768_i64, %c16_i64
-      : !pto.ptr<ui32, mat>, i64, i32, i64, i64, i64, i64
+      %c32768_i64 {fill_word_bits = 16 : i64} : !pto.ptr<ui32, mat>, i64, i32, i64, i64, i64
     return
   }
 }
@@ -52,8 +50,7 @@ module {
     %c32768_i64 = arith.constant 32768 : i64
     %zero_i32 = arith.constant 0 : i32
     pto.raw_fill_l1 %dst, %c0_i64, %zero_i32, %c1_i64, %c32768_i64,
-      %c0_i64, %c16_i64
-      : !pto.ptr<ui16, mat>, i64, i32, i64, i64, i64, i64
+      %c0_i64 {fill_word_bits = 16 : i64} : !pto.ptr<ui16, mat>, i64, i32, i64, i64, i64
     return
   }
 }
@@ -71,13 +68,29 @@ module {
     %c16_i64 = arith.constant 16 : i64
     %zero_i32 = arith.constant 0 : i32
     pto.raw_fill_l1 %dst, %cm1_i64, %zero_i32, %c1_i64, %c1_i64,
-      %c0_i64, %c16_i64
-      : !pto.ptr<ui16, mat>, i64, i32, i64, i64, i64, i64
+      %c0_i64 {fill_word_bits = 16 : i64} : !pto.ptr<ui16, mat>, i64, i32, i64, i64, i64
     return
   }
 }
 
 // CHECK: 'pto.raw_fill_l1' op byte_offset must be non-negative
+
+// -----
+
+module {
+  func.func @raw_fill_l1_rejects_unaligned_byte_offset(
+      %dst: !pto.ptr<ui16, mat>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c2_i64 = arith.constant 2 : i64
+    %zero_i32 = arith.constant 0 : i32
+    pto.raw_fill_l1 %dst, %c2_i64, %zero_i32, %c1_i64, %c1_i64,
+      %c0_i64 {fill_word_bits = 16 : i64} : !pto.ptr<ui16, mat>, i64, i32, i64, i64, i64
+    return
+  }
+}
+
+// CHECK: 'pto.raw_fill_l1' op byte_offset must be a multiple of 32 bytes
 
 // -----
 
@@ -90,8 +103,7 @@ module {
     %c16_i64 = arith.constant 16 : i64
     %zero_i32 = arith.constant 0 : i32
     pto.raw_fill_l1 %dst, %c0_i64, %zero_i32, %cm1_i64, %c1_i64,
-      %c0_i64, %c16_i64
-      : !pto.ptr<ui16, mat>, i64, i32, i64, i64, i64, i64
+      %c0_i64 {fill_word_bits = 16 : i64} : !pto.ptr<ui16, mat>, i64, i32, i64, i64, i64
     return
   }
 }
@@ -109,8 +121,7 @@ module {
     %c16_i64 = arith.constant 16 : i64
     %zero_i32 = arith.constant 0 : i32
     pto.raw_fill_l1 %dst, %c0_i64, %zero_i32, %c1_i64, %cm1_i64,
-      %c0_i64, %c16_i64
-      : !pto.ptr<ui16, mat>, i64, i32, i64, i64, i64, i64
+      %c0_i64 {fill_word_bits = 16 : i64} : !pto.ptr<ui16, mat>, i64, i32, i64, i64, i64
     return
   }
 }
@@ -127,8 +138,7 @@ module {
     %c16_i64 = arith.constant 16 : i64
     %zero_i32 = arith.constant 0 : i32
     pto.raw_fill_l1 %dst, %c0_i64, %zero_i32, %c1_i64, %c1_i64,
-      %cm1_i64, %c16_i64
-      : !pto.ptr<ui16, mat>, i64, i32, i64, i64, i64, i64
+      %cm1_i64 {fill_word_bits = 16 : i64} : !pto.ptr<ui16, mat>, i64, i32, i64, i64, i64
     return
   }
 }

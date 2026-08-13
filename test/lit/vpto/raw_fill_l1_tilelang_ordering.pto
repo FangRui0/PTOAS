@@ -36,8 +36,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
           shape i64, i64, src_layout(i64), dst_group i64, i64, i64, i64,
           ctrl i64, i1
       pto.raw_fill_l1 %dst, %c832_i64, %zero_i32, %c1_i64, %c13_i64,
-        %c0_i64, %c16_i64
-        : !pto.ptr<bf16, mat>, i64, i32, i64, i64, i64, i64
+        %c0_i64 {fill_word_bits = 16 : i64} : !pto.ptr<bf16, mat>, i64, i32, i64, i64, i64
       pto.mte_l1_l0a %dst, %l0a, %c16_i64, %c16_i64, %c0_i64, %c0_i64
         : !pto.ptr<bf16, mat>, !pto.ptr<bf16, left>, i64, i64, i64, i64
     }

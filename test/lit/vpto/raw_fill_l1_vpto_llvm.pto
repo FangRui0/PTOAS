@@ -31,14 +31,11 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
     %c65535_i32 = arith.constant 65535 : i32
 
     pto.raw_fill_l1 %dst16, %c32_i64, %c4660_i32, %c3_i64, %c7_i64,
-      %c11_i64, %c16_i64
-      : !pto.ptr<ui16, mat>, i64, i32, i64, i64, i64, i64
+      %c11_i64 {fill_word_bits = 16 : i64} : !pto.ptr<ui16, mat>, i64, i32, i64, i64, i64
     pto.raw_fill_l1 %dst32, %c64_i64, %c305419896_i32, %c5_i64, %c2_i64,
-      %c9_i64, %c32_word_i64
-      : !pto.ptr<ui32, mat>, i64, i32, i64, i64, i64, i64
+      %c9_i64 {fill_word_bits = 32 : i64} : !pto.ptr<ui32, mat>, i64, i32, i64, i64, i64
     pto.raw_fill_l1 %dst16_memref, %c32_i64, %c65535_i32, %c32767_i64,
-      %c32767_i64, %c32767_i64, %c16_i64
-      : memref<?xui16, #pto.address_space<mat>>, i64, i32, i64, i64, i64, i64
+      %c32767_i64, %c32767_i64 {fill_word_bits = 16 : i64} : memref<?xui16, #pto.address_space<mat>>, i64, i32, i64, i64, i64
     return
   }
 }

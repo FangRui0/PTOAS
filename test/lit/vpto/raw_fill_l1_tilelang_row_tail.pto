@@ -29,14 +29,13 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
     // dst_n = 16 is the physical C0 row stride, so dst_gap_32b = 16 - 1 = 15.
     // config = 3 | (1 << 16) | (15 << 32) = 64424574979.
     pto.raw_fill_l1 %dst, %c480_i64, %zero_i32, %c3_i64, %c1_i64,
-      %c15_i64, %c16_i64
-      : !pto.ptr<bf16, mat>, i64, i32, i64, i64, i64, i64
+      %c15_i64 {fill_word_bits = 16 : i64} : !pto.ptr<bf16, mat>, i64, i32, i64, i64, i64
     return
   }
 }
 
 // ROUNDTRIP-LABEL: func.func @raw_fill_l1_tilelang_row_tail(
-// ROUNDTRIP: pto.raw_fill_l1 %{{.*}}, %c480_i64, %{{.*}}, %c3_i64, %c1_i64, %c15_i64, %c16_i64
+// ROUNDTRIP: pto.raw_fill_l1 %{{.*}}, %c480_i64, %{{.*}}, %c3_i64, %c1_i64, %c15_i64 {fill_word_bits = 16 : i64}
 
 // EXPAND-LABEL: func.func @raw_fill_l1_tilelang_row_tail(
 // EXPAND: pto.castptr %{{.*}} : !pto.ptr<bf16, l1> -> !pto.ptr<ui16, l1>

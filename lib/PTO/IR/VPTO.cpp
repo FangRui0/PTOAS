@@ -7531,6 +7531,7 @@ void MteGmL1FracOp::print(OpAsmPrinter &printer) {
 }
 
 static constexpr uint64_t kRawFillControlFieldMax = 32767;
+static constexpr uint64_t kRawFillByteOffsetAlignment = 32;
 
 static StringRef getAddressSpaceDiagnosticName(pto::AddressSpace space) {
   switch (space) {
@@ -7585,12 +7586,31 @@ static LogicalResult verifyRawFillGeometry(Operation *op, Value byteOffset,
     }
     return success();
   };
+  auto checkConstAlignment = [&](Value value, StringRef name,
+                                 uint64_t alignment) -> LogicalResult {
+    if (!value) {
+      return success();
+    }
+    APInt intValue;
+    const bool hasUnalignedConstant =
+        matchPattern(value, m_ConstantInt(&intValue)) &&
+        intValue.urem(alignment) != 0;
+    if (hasUnalignedConstant) {
+      return op->emitOpError()
+             << name << " must be a multiple of " << alignment << " bytes";
+    }
+    return success();
+  };
   const bool hasNonNegativeGeometry =
       succeeded(checkNonNegativeConst(byteOffset, "byte_offset")) &&
       succeeded(checkNonNegativeConst(repeatTimes, "repeat_times")) &&
       succeeded(checkNonNegativeConst(blockNum32b, "block_num_32b")) &&
       succeeded(checkNonNegativeConst(dstGap32b, "dst_gap_32b"));
   if (!hasNonNegativeGeometry) {
+    return failure();
+  }
+  if (failed(checkConstAlignment(byteOffset, "byte_offset",
+                                 kRawFillByteOffsetAlignment))) {
     return failure();
   }
   if (failed(checkConstMax(repeatTimes, "repeat_times",
@@ -7604,21 +7624,11 @@ static LogicalResult verifyRawFillGeometry(Operation *op, Value byteOffset,
   return success();
 }
 
-static LogicalResult verifyRawFillWordBits(Operation *op, Value fillWordBits) {
-  if (!fillWordBits) {
-    return op->emitOpError("missing fill_word_bits");
-  }
-  APInt wordBits;
-  if (!matchPattern(fillWordBits, m_ConstantInt(&wordBits))) {
-    return op->emitOpError(
-        "fill_word_bits must be a compile-time constant 16 or 32");
-  }
-  const bool validWordBits = wordBits.getZExtValue() == 16 ||
-                             wordBits.getZExtValue() == 32;
+static LogicalResult verifyRawFillWordBits(Operation *op, int64_t fillWordBits) {
+  const bool validWordBits = fillWordBits == 16 || fillWordBits == 32;
   if (!validWordBits) {
-    return op->emitOpError()
-           << "fill_word_bits must be 16 or 32, got "
-           << wordBits.getZExtValue();
+    return op->emitOpError() << "fill_word_bits must be 16 or 32, got "
+                             << fillWordBits;
   }
   return success();
 }
@@ -7679,13 +7689,11 @@ LogicalResult CreateCbufMatrixOp::verify() {
   if (failed(verifyRawFillWordBits(getOperation(), getFillWordBits()))) {
     return failure();
   }
-  APInt wordBits;
   const bool wordWidthMatches =
-      !matchPattern(getFillWordBits(), m_ConstantInt(&wordBits)) ||
-      wordBits.getZExtValue() == integerType.getWidth();
+      static_cast<unsigned>(getFillWordBits()) == integerType.getWidth();
   if (!wordWidthMatches) {
     return emitOpError()
-           << "fill_word_bits " << wordBits.getZExtValue()
+           << "fill_word_bits " << getFillWordBits()
            << " does not match the " << integerType.getWidth()
            << "-bit destination view";
   }

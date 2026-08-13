@@ -1374,11 +1374,7 @@ struct ExpandRawFillL1Pattern : public OpRewritePattern<pto::RawFillL1Op> {
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    APInt wordBits;
-    if (!matchPattern(op.getFillWordBits(), m_ConstantInt(&wordBits))) {
-      return rewriter.notifyMatchFailure(op, "fill_word_bits not constant");
-    }
-    unsigned viewWidth = wordBits.getZExtValue() == 16 ? 16 : 32;
+    const unsigned viewWidth = op.getFillWordBits() == 16 ? 16 : 32;
 
     Value basePtr = materializeBufferPointer(op.getDst(), rewriter, loc);
     if (!basePtr || !isa<pto::PtrType>(basePtr.getType())) {
@@ -1404,7 +1400,8 @@ struct ExpandRawFillL1Pattern : public OpRewritePattern<pto::RawFillL1Op> {
 
     rewriter.create<pto::CreateCbufMatrixOp>(
         loc, viewPtr, op.getRawValue(), op.getRepeatTimes(),
-        op.getBlockNum_32b(), op.getDstGap_32b(), op.getFillWordBits());
+        op.getBlockNum_32b(), op.getDstGap_32b(),
+        static_cast<uint64_t>(op.getFillWordBits()));
     rewriter.eraseOp(op);
     return success();
   }

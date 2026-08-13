@@ -82,6 +82,7 @@ from ptoas.mlir.ir import (
     Float8E5M2Type,
     FloatAttr,
     IndexType,
+    IntegerAttr,
     IntegerType,
     MemRefType,
     Operation,
@@ -4438,6 +4439,27 @@ def _coerce_i64(value, *, context: str):
     return coerce_runtime_integer_value(raw_value, IntegerType.get_signless(64), context=context)
 
 
+def _validate_raw_fill_l1_static_scalar(
+        value, *, context: str, maximum=None, alignment=None):
+    if isinstance(value, bool):
+        raise TypeError(f"{context} does not accept bool values")
+    if not isinstance(value, int):
+        return
+    if value < 0:
+        raise ValueError(f"{context} expects a non-negative static value, got {value}")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"{context} expects a static value in [0, {maximum}], got {value}")
+    if alignment is not None and value % alignment != 0:
+        raise ValueError(f"{context} expects a static value aligned to {alignment} bytes, got {value}")
+
+
+def _validate_raw_fill_l1_fill_word_bits(fill_word_bits, *, context: str):
+    if isinstance(fill_word_bits, bool) or not isinstance(fill_word_bits, int):
+        raise TypeError(f"{context} expects a static int fill_word_bits, got {fill_word_bits!r}")
+    if fill_word_bits not in (16, 32):
+        raise ValueError(f"{context} expects fill_word_bits 16 or 32, got {fill_word_bits}")
+
+
 def _coerce_i1(value, *, context: str):
     raw_value = unwrap_surface_value(value)
     return coerce_runtime_i1_value(raw_value, context=context)
@@ -5265,9 +5287,19 @@ def mte_gm_l1(source, destination, len_burst, *, nburst, loops=None):
 
 
 @_explicit_mode_only("pto.raw_fill_l1(...)")
-def raw_fill_l1(dst, byte_offset, raw_value, repeat_times, block_num_32b,
-                dst_gap_32b, fill_word_bits):
+def raw_fill_l1(dst, byte_offset, raw_value, *,
+                repeat_times, block_num_32b, dst_gap_32b, fill_word_bits):
     """Fill a strided L1/MAT region with a raw 16-bit or 32-bit pattern."""
+    _validate_raw_fill_l1_static_scalar(
+        byte_offset, context="raw_fill_l1 byte_offset", alignment=32)
+    _validate_raw_fill_l1_static_scalar(
+        repeat_times, context="raw_fill_l1 repeat_times", maximum=32767)
+    _validate_raw_fill_l1_static_scalar(
+        block_num_32b, context="raw_fill_l1 block_num_32b", maximum=32767)
+    _validate_raw_fill_l1_static_scalar(
+        dst_gap_32b, context="raw_fill_l1 dst_gap_32b", maximum=32767)
+    _validate_raw_fill_l1_fill_word_bits(
+        fill_word_bits, context="raw_fill_l1 fill_word_bits")
     _pto.RawFillL1Op(
         unwrap_surface_value(dst),
         _coerce_i64(byte_offset, context="raw_fill_l1 byte_offset"),
@@ -5275,7 +5307,7 @@ def raw_fill_l1(dst, byte_offset, raw_value, repeat_times, block_num_32b,
         _coerce_i64(repeat_times, context="raw_fill_l1 repeat_times"),
         _coerce_i64(block_num_32b, context="raw_fill_l1 block_num_32b"),
         _coerce_i64(dst_gap_32b, context="raw_fill_l1 dst_gap_32b"),
-        _coerce_i64(fill_word_bits, context="raw_fill_l1 fill_word_bits"),
+        IntegerAttr.get(IntegerType.get_signless(64), fill_word_bits),
     )
 
 

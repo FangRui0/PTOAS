@@ -3067,17 +3067,23 @@ def PTO_RawFillL1Op : PTO_MicroOp<"raw_fill_l1", [
     Fields (in order):
     - `dst`: destination buffer; after expansion must resolve to the MAT/L1
       address space.
-    - `byte_offset`: byte distance applied to `dst` before the fill.
+    - `byte_offset`: non-negative byte distance applied to `dst` before the
+      fill; it must be a multiple of 32 bytes.
     - `raw_value`: raw fill pattern. For a 16-bit fill, the low 16 bits are
       repeated in every 16-bit word; for a 32-bit fill, all 32 bits are used.
     - `repeat_times`: number of fill repetitions.
     - `block_num_32b`: number of 32-byte blocks per repeat.
     - `dst_gap_32b`: destination gap between repeats, in 32-byte blocks.
-    - `fill_word_bits`: compile-time fill word width, exactly 16 or 32.
+    - `fill_word_bits`: static i64 attribute selecting the compile-time fill
+      word width, exactly 16 or 32.
 
     `repeat_times`, `block_num_32b`, and `dst_gap_32b` must each be in the
     inclusive range [0, 32767], including when dynamically computed. The
     verifier diagnoses known constants outside that range.
+
+    The effective destination address (`dst + byte_offset`) must be aligned to
+    32 bytes. The verifier diagnoses known constant offsets that are not
+    multiples of 32; dynamic offsets are a caller precondition.
   }];
 
   let arguments = (ins
@@ -3087,7 +3093,7 @@ def PTO_RawFillL1Op : PTO_MicroOp<"raw_fill_l1", [
     I64:$repeat_times,
     I64:$block_num_32b,
     I64:$dst_gap_32b,
-    I64:$fill_word_bits
+    I64Attr:$fill_word_bits
   );
 
   let results = (outs);
@@ -3096,9 +3102,9 @@ def PTO_RawFillL1Op : PTO_MicroOp<"raw_fill_l1", [
 
   let assemblyFormat = [{
     $dst `,` $byte_offset `,` $raw_value `,` $repeat_times `,` $block_num_32b `,`
-    $dst_gap_32b `,` $fill_word_bits attr-dict `:` type($dst) `,` type($byte_offset) `,`
+    $dst_gap_32b attr-dict `:` type($dst) `,` type($byte_offset) `,`
     type($raw_value) `,` type($repeat_times) `,` type($block_num_32b) `,`
-    type($dst_gap_32b) `,` type($fill_word_bits)
+    type($dst_gap_32b)
   }];
 }
 
@@ -3110,12 +3116,15 @@ def PTO_CreateCbufMatrixOp : PTO_CubeMicroOp<"create_cbuf_matrix", [
     Canonical micro-op for filling a strided L1/CBUF matrix region with a raw
     bit pattern. Produced by the `pto.raw_fill_l1` wrapper expansion.
 
-    `dst` must be a `!pto.ptr<ui16|ui32, #pto.address_space<mat>>` pointer that
-    already includes `byte_offset`. For a 16-bit fill, the low 16 bits of
+    `dst` must be a 32-byte-aligned
+    `!pto.ptr<ui16|ui32, #pto.address_space<mat>>` pointer that already
+    includes `byte_offset`. For a 16-bit fill, the low 16 bits of
     `raw_value` are repeated in every 16-bit word; for a 32-bit fill, all 32
-    bits are used. `repeat_times` counts repetitions; `block_num_32b` and
-    `dst_gap_32b` count 32-byte blocks. All three geometry operands must be
-    in the inclusive range [0, 32767].
+    bits are used. The static `fill_word_bits` i64 attribute selects the fill
+    word width, exactly 16 or 32, and must match the destination view width.
+    `repeat_times` counts repetitions; `block_num_32b` and `dst_gap_32b`
+    count 32-byte blocks. All three geometry operands must be in the
+    inclusive range [0, 32767].
   }];
 
   let arguments = (ins
@@ -3124,7 +3133,7 @@ def PTO_CreateCbufMatrixOp : PTO_CubeMicroOp<"create_cbuf_matrix", [
     I64:$repeat_times,
     I64:$block_num_32b,
     I64:$dst_gap_32b,
-    I64:$fill_word_bits
+    I64Attr:$fill_word_bits
   );
 
   let results = (outs);
@@ -3133,9 +3142,8 @@ def PTO_CreateCbufMatrixOp : PTO_CubeMicroOp<"create_cbuf_matrix", [
 
   let assemblyFormat = [{
     $dst `,` $raw_value `,` $repeat_times `,` $block_num_32b `,`
-    $dst_gap_32b `,` $fill_word_bits attr-dict `:` type($dst) `,` type($raw_value) `,`
-    type($repeat_times) `,` type($block_num_32b) `,` type($dst_gap_32b) `,`
-    type($fill_word_bits)
+    $dst_gap_32b attr-dict `:` type($dst) `,` type($raw_value) `,`
+    type($repeat_times) `,` type($block_num_32b) `,` type($dst_gap_32b)
   }];
 }
 
