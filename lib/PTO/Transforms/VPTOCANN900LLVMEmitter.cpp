@@ -5115,14 +5115,20 @@ public:
                                          "expected constant fill word width");
     }
     uint64_t fillWordWidth = fillWordBits.getZExtValue();
-    Value fillPattern = rawValue;
+    StringRef calleeName;
+    Value fillPattern;
     if (fillWordWidth == 16) {
       Value wordMask = getI32Constant(rewriter, loc, 0xFFFFU);
       Value lowWord = rewriter.create<arith::AndIOp>(loc, rawValue, wordMask);
-      Value highWord = rewriter.create<arith::ShLIOp>(
-          loc, lowWord, getI32Constant(rewriter, loc, 16));
-      fillPattern = rewriter.create<arith::OrIOp>(loc, lowWord, highWord);
-    } else if (fillWordWidth != 32) {
+      Value wordBits = rewriter.create<arith::TruncIOp>(
+          loc, rewriter.getI16Type(), lowWord);
+      fillPattern =
+          rewriter.create<LLVM::BitcastOp>(loc, rewriter.getF16Type(), wordBits);
+      calleeName = "llvm.hivm.CREATE.CBUF.MATRIX.v3.u16.h";
+    } else if (fillWordWidth == 32) {
+      fillPattern = rewriter.create<arith::ExtUIOp>(loc, i64Ty, rawValue);
+      calleeName = "llvm.hivm.CREATE.CBUF.MATRIX.v3.u32";
+    } else {
       return rewriter.notifyMatchFailure(op, "expected a 16-bit or 32-bit fill word");
     }
 
@@ -5141,9 +5147,8 @@ public:
     config = rewriter.create<arith::OrIOp>(
         loc, config, shiftField(maskField(dstGap32b), 32));
 
-    StringRef calleeName = "llvm.hivm.SET.L1.2D";
     auto funcType = rewriter.getFunctionType(
-        TypeRange{destination->getType(), i64Ty, i32Ty}, TypeRange{});
+        TypeRange{destination->getType(), i64Ty, fillPattern.getType()}, TypeRange{});
     rewriter.create<func::CallOp>(loc, calleeName, TypeRange{},
                                   ValueRange{*destination, config, fillPattern});
     state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});

@@ -386,7 +386,7 @@ pto.raw_fill_l1 %dst, %byte_offset, %raw_value, %repeat_times,
 
 | Parameter | Width | Description |
 |-----------|-------|-------------|
-| `%dst` | ptr | Destination base pointer in the `mat` L1 address space |
+| `%dst` | ptr or memref | Destination buffer in the `mat` L1 address space; accepts `!pto.ptr<T, mat>` or a `memref` with `#pto.address_space<mat>` |
 | `%byte_offset` | i64 | Non-negative byte offset from `%dst` to the first filled word |
 | `%raw_value` | i32 | Raw pattern; low 16 bits are repeated for a 16-bit fill, all 32 bits are used for a 32-bit fill |
 | `%repeat_times` | i64 | Number of strided fill repetitions |

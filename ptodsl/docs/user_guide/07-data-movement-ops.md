@@ -1242,7 +1242,7 @@ pto.mte_l0c_gm(
 | Data Flow | Operation | Src Space | Dst Space |
 |-----------|-----------|-----------|-----------|
 | GM → L1 | `mte_gm_l1` | gm | l1 |
-| L1 raw fill | `raw_fill_l1` | l1 | l1 |
+| L1 raw fill | `raw_fill_l1` | -- | l1 |
 | GM → L1 (fractal) | `mte_gm_l1_frac` | gm | l1 |
 | L1 → UB | `mte_l1_ub` | l1 | ub |
 | L1 → L0A (explicit control) | `mte_l1_l0a` | l1 | l0a |

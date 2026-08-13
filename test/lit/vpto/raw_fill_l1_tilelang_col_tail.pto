@@ -43,4 +43,4 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
 // EXPAND-NOT: pto.raw_fill_l1
 
 // LLVM-LABEL: define void @raw_fill_l1_tilelang_col_tail{{.*}}
-// LLVM: call void @llvm.hivm.SET.L1.2D(ptr addrspace(2) {{.*}}, i64 851969, i32 0)
+// LLVM: call void @llvm.hivm.CREATE.CBUF.MATRIX.v3.u16.h(ptr addrspace(2) {{.*}}, i64 851969, half {{.*}})
