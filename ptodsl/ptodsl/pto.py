@@ -146,7 +146,7 @@ from ._ops import (             # noqa: F401
     atomic_exch, atomic_add, atomic_sub, atomic_min, atomic_max,
     atomic_and, atomic_or, atomic_xor, atomic_cas,
     prmt, mulhi, mul_i32toi64,
-    absf, sqrt, exp, log, pow, ceil, floor, rint, round,
+    absf, sqrt, exp, log, sin, cos, pow, ceil, floor, rint, round,
     fmin, fmax, fma, convert,
     syncthreads, threadfence, threadfence_block, trap, keep, resume,
     pipe_barrier,

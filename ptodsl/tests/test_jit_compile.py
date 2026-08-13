@@ -18,6 +18,10 @@ from importlib.util import module_from_spec, spec_from_file_location
 from typing import Optional
 from unittest import mock
 
+# Prefer the build-tree MLIR Python bindings during CMake/CTest runs.  An
+# editable scikit-build install otherwise redirects ptoas.mlir imports to the
+# previously installed generated bindings, which can miss newly added ops.
+sys.meta_path[:] = [finder for finder in sys.meta_path if "editable" not in repr(finder).lower()]
 
 from ptodsl import pto, scalar
 from ptodsl import _types as pto_types
@@ -936,6 +940,8 @@ def simt_collective_math_probe():
     pto.sqrt(as_f32)
     pto.exp(as_f32)
     pto.log(as_f32)
+    pto.sin(as_f32)
+    pto.cos(as_f32)
     pto.pow(as_f32, as_f32)
     pto.ceil(as_f32)
     pto.floor(as_f32)
@@ -6062,6 +6068,8 @@ def main() -> None:
         "pto.sqrt",
         "pto.exp",
         "pto.log",
+        "pto.sin",
+        "pto.cos",
         "pto.pow",
         "pto.ceil",
         "pto.floor",

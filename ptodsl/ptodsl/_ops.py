@@ -52,6 +52,7 @@ from ._surface_values import (
     compose_partition_spec,
     emit_as_ptr,
     infer_tile_element_type,
+    is_runtime_scalar_ir_type,
     parse_tile_type_metadata,
     resolve_address_access,
     unwrap_surface_value,
@@ -3393,13 +3394,26 @@ def tmuls(src, scalar, dst):
 
 
 def tdivs(src, scalar, dst, *, div_precision=None):
-    """``pto.tdivs ins(src, scalar) outs(dst)``."""
-    _pto.tdivs(
-        unwrap_surface_value(src),
-        _coerce_tile_scalar_operand(src, scalar, context="tdivs"),
-        unwrap_surface_value(dst),
-        precision_type=div_precision,
-    )
+    """``pto.tdivs ins(src, scalar) outs(dst)``.
+
+    Accepts both ``(tile, scalar, dst)`` and ``(scalar, tile, dst)`` operand
+    orders; the scalar-lhs form mirrors the A5 TileLib ``scalar_tile``
+    templates.
+    """
+    if is_runtime_scalar_ir_type(getattr(src, "type", None)):
+        _pto.tdivs(
+            unwrap_surface_value(src),
+            unwrap_surface_value(scalar),
+            unwrap_surface_value(dst),
+            precision_type=div_precision,
+        )
+    else:
+        _pto.tdivs(
+            unwrap_surface_value(src),
+            _coerce_tile_scalar_operand(src, scalar, context="tdivs"),
+            unwrap_surface_value(dst),
+            precision_type=div_precision,
+        )
 
 
 def tmaxs(src, scalar, dst):
@@ -6477,6 +6491,16 @@ def log(value):
     return _same_type_unary(_pto.LogOp, value)
 
 
+def sin(value):
+    """``pto.sin`` – A5 SIMT floating sine software-library hook."""
+    return _same_type_unary(_pto.SinOp, value)
+
+
+def cos(value):
+    """``pto.cos`` – A5 SIMT floating cosine software-library hook."""
+    return _same_type_unary(_pto.CosOp, value)
+
+
 def pow(lhs, rhs):
     """``pto.pow`` – SIMT floating power."""
     return _same_type_binary(_pto.PowOp, lhs, rhs, context="pow(lhs, rhs)")
@@ -6829,7 +6853,7 @@ __all__ = [
     "atomic_exch", "atomic_add", "atomic_sub", "atomic_min", "atomic_max",
     "atomic_and", "atomic_or", "atomic_xor", "atomic_cas",
     "prmt", "mulhi", "mul_i32toi64",
-    "absf", "sqrt", "exp", "log", "pow", "ceil", "floor", "rint", "round",
+    "absf", "sqrt", "exp", "log", "sin", "cos", "pow", "ceil", "floor", "rint", "round",
     "fmin", "fmax", "fma", "convert",
     "syncthreads", "threadfence", "threadfence_block", "trap", "keep", "resume",
     "pipe_barrier", "get_buf", "rls_buf",

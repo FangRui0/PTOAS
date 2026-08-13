@@ -1162,6 +1162,23 @@ def VMIToVPTO : Pass<"vmi-to-vpto", "ModuleOp"> {
                            "mlir::scf::SCFDialect"];
 }
 
+def PTOExpandSoftLib : Pass<"pto-expand-soft-lib", "ModuleOp"> {
+  let summary = "Expand VPTO operations that lack native target support";
+  let description = [{
+    Materializes matching PTODSL SoftOps implementations for f32 SIMT
+    `pto.sin`/`pto.cos` at the final VPTO emission boundary. The generated
+    helpers are then inlined by PTOInlineLibCall. A5 `pto.vdiv`, including its
+    supported integer forms, remains on the native emitter path. The A2/A3
+    `pto.ub.vdiv` operation is a different operation and is intentionally not
+    handled by this pass. Trigonometric helpers use the PTODSL software
+    approximation authored in `lib/SoftOps`.
+  }];
+  let constructor = "mlir::pto::createPTOExpandSoftLibPass()";
+  let dependentDialects = ["mlir::pto::PTODialect",
+                           "mlir::arith::ArithDialect",
+                           "mlir::func::FuncDialect"];
+}
+
 def PTOValidateVPTOEmissionIR
     : Pass<"pto-validate-vpto-emission-ir", "ModuleOp"> {
   let summary =
