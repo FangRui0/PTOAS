@@ -1,13 +1,13 @@
 ---
 name: build-ptoas-wsl
-description: Build PTOAS from source inside WSL using the repository README workflow. Use when Codex is asked to build, configure, install, test, or troubleshoot ptoas/PTOAS in WSL or Ubuntu, including the VPTO LLVM 21 setup, editable scikit-build-core installs, CMake/Ninja incremental builds, namespaced MLIR Python bindings, CLI smoke tests, or Python dialect import validation.
+description: Build PTOAS from source inside WSL using the repository README workflow. Use when Codex is asked to build, configure, install, test, or troubleshoot ptoas/PTOAS in WSL or Ubuntu, including the VPTO LLVM 19 setup, editable scikit-build-core installs, CMake/Ninja incremental builds, namespaced MLIR Python bindings, CLI smoke tests, or Python dialect import validation.
 ---
 
 # Build PTOAS in WSL
 
 ## Overview
 
-Use this skill to build PTOAS in a Linux environment under WSL. Keep the build aligned with the README: use the VPTO-enabled LLVM branch `feature-vpto-llvm21`, build shared LLVM/MLIR libraries with Python bindings, and install PTOAS through the repository's standard editable PEP 517 workflow.
+Use this skill to build PTOAS in a Linux environment under WSL. Keep the build aligned with the README: use the VPTO-enabled LLVM branch `feature-vpto`, build shared LLVM/MLIR libraries with Python bindings, and install PTOAS through the repository's standard editable PEP 517 workflow.
 
 Prefer running Linux build commands through WSL, not Windows PowerShell/CMake. If the user is already in a Windows checkout, either convert the path to `/mnt/c/...` for a quick build or clone/copy into the WSL ext4 filesystem for better performance.
 
@@ -32,7 +32,7 @@ wsl.exe -- bash -lc 'uname -a; cat /etc/os-release | head'
 sudo apt-get update
 sudo apt-get install -y git cmake ninja-build build-essential python3 python3-pip python3-dev
 python3 -m pip install --user \
-  'scikit-build-core>=0.12.2,<2' 'pybind11<3' 'nanobind>=2.4' numpy
+  'scikit-build-core>=0.12.2,<2' 'pybind11<3' numpy
 ```
 
 Keep `pybind11<3`; LLVM/MLIR Python bindings are not compatible with pybind11 3.x in this workflow.
@@ -70,7 +70,7 @@ fi
 
 cd "$LLVM_SOURCE_DIR"
 git fetch --tags
-git checkout feature-vpto-llvm21
+git checkout feature-vpto
 
 cmake -G Ninja -S llvm -B "$LLVM_BUILD_DIR" \
   -DLLVM_ENABLE_PROJECTS="mlir;clang" \
@@ -80,7 +80,6 @@ cmake -G Ninja -S llvm -B "$LLVM_BUILD_DIR" \
   -DPython3_EXECUTABLE="$(which python3)" \
   -DPython_EXECUTABLE="$(which python3)" \
   -Dpybind11_DIR="$(python3 -m pybind11 --cmakedir)" \
-  -Dnanobind_DIR="$(python3 -m nanobind --cmake_dir)" \
   -DCMAKE_BUILD_TYPE=Release \
   -DLLVM_TARGETS_TO_BUILD="host"
 
@@ -178,7 +177,7 @@ PY
 - CMake cannot find LLVM or MLIR: confirm
   `LLVM_DIR=$LLVM_BUILD_DIR/lib/cmake/llvm` and
   `MLIR_DIR=$LLVM_BUILD_DIR/lib/cmake/mlir` exist in the
-  `feature-vpto-llvm21` build.
+  `feature-vpto` build.
 - Python cannot import `ptoas.mlir.dialects.pto`: confirm the editable install is
   active, then check `build/python/ptoas/_core.cpython-*.so` and
   `build/python/ptoas/mlir/_mlir_libs/_mlir*.so` in the same build tree. For

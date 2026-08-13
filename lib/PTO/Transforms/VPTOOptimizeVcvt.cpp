@@ -268,9 +268,8 @@ struct VPTOOptimizeVcvtPass
     RewritePatternSet patterns(&getContext());
     patterns.add<CanonicalizeEquivalentPartPattern,
                  FoldZeroGapExtensionPattern>(&getContext());
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
+    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns))))
       signalPassFailure();
-    }
   }
 };
 

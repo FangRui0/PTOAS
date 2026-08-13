@@ -159,7 +159,6 @@ add_mlir_python_extension(PTOASPythonCore _core
   INSTALL_COMPONENT PTOAS_Python
   INSTALL_DIR ptoas
   OUTPUT_DIRECTORY "${PTOAS_BUILD_PYTHON_PACKAGE_DIR}"
-  PYTHON_BINDINGS_LIBRARY pybind11
   SOURCES
     NativeModule.cpp
   LINK_LIBS

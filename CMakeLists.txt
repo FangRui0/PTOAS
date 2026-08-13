@@ -18,6 +18,15 @@ if(POLICY CMP0169)
   set(CMAKE_POLICY_DEFAULT_CMP0169 OLD)
 endif()
 
+# LLVM 19's AddMLIRPython.cmake still passes PRE_BUILD to the OUTPUT form of
+# add_custom_command(). CMake 4.1 diagnoses that legacy combination under the
+# NEW behavior of CMP0175, so retain the compatibility behavior while PTOAS is
+# built against LLVM 19's installed CMake package.
+if(POLICY CMP0175)
+  cmake_policy(SET CMP0175 OLD)
+  set(CMAKE_POLICY_DEFAULT_CMP0175 OLD)
+endif()
+
 # Standard Python build backends pass environment variables through to CMake
 # but do not synthesize project-specific cache arguments. Accept the existing
 # LLVM_BUILD_DIR convention directly so `pip wheel .` and `pip install .` can
@@ -116,11 +125,11 @@ message(STATUS "LLVM Include Dir: ${LLVM_INCLUDE_DIRS}")
 if(NOT DEFINED LLVM_VERSION_MAJOR)
   string(REGEX MATCH "^[0-9]+" LLVM_VERSION_MAJOR "${LLVM_PACKAGE_VERSION}")
 endif()
-if(NOT LLVM_VERSION_MAJOR STREQUAL "21")
+if(NOT LLVM_VERSION_MAJOR STREQUAL "19")
   message(FATAL_ERROR
-    "PTOAS requires LLVM 21 after the LLVM21 upgrade, but found "
+    "PTOAS requires LLVM 19, but found "
     "LLVM ${LLVM_PACKAGE_VERSION}. Please point LLVM_DIR/MLIR_DIR to an "
-    "LLVM 21 build, for example vpto-dev/llvm-project:feature-vpto-llvm21.")
+    "LLVM 19 build, for example vpto-dev/llvm-project:feature-vpto.")
 endif()
 # 将 LLVM 模块路径加入 CMake 搜索路径
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")

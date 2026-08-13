@@ -2,7 +2,7 @@
 
 ## 1. 项目简介 (Introduction)
 
-**ptoas** (`ptoas`) 是一个基于 **LLVM/MLIR LLVM21 VPTO 分支 (`vpto-dev/llvm-project:feature-vpto-llvm21`)** 框架构建的专用编译器工具链，专为 **PTO Bytecode** (Programming Tiling Operator Bytecode) 设计。
+**ptoas** (`ptoas`) 是一个基于 **LLVM/MLIR LLVM19 VPTO 分支 (`vpto-dev/llvm-project:feature-vpto`)** 框架构建的专用编译器工具链，专为 **PTO Bytecode** (Programming Tiling Operator Bytecode) 设计。
 
 作为连接上层 AI 框架与底层各类NPU/GPGPU/CPU硬件，`ptoas` 采用 **Out-of-Tree** 架构构建，提供了完整的 C++ 与 Python 接口，主要职责包括：
 
@@ -37,7 +37,7 @@ PTOAS/
 
 ## 3. 构建指南 (Build Instructions)
 
-⚠️ **重要提示**：本项目严格依赖 **LLVM21 VPTO 分支 `vpto-dev/llvm-project:feature-vpto-llvm21`**。
+⚠️ **重要提示**：本项目严格依赖 **LLVM19 VPTO 分支 `vpto-dev/llvm-project:feature-vpto`**。
 
 
 ### 3.0 环境变量配置 (Configuration)
@@ -73,13 +73,13 @@ export PYTHON_BIN="$(command -v python3)"
 * **Compiler**: GCC >= 9 或 Clang (支持 C++17)
 * **Build System**: CMake >= 3.20, Ninja
 * **Python**: 3.10+
-* **Python Packages**: `scikit-build-core`, `pybind11<3`, `nanobind`, `numpy`
+* **Python Packages**: `scikit-build-core`, `pybind11<3`, `numpy`
 ```bash
-"$PYTHON_BIN" -m pip install 'scikit-build-core>=0.12.2,<2' 'pybind11<3' nanobind numpy
+"$PYTHON_BIN" -m pip install 'scikit-build-core>=0.12.2,<2' 'pybind11<3' numpy
 
 ```
 
-> 说明：当前 PTOAS Python 扩展继续使用 `pybind11`，LLVM21 的 MLIR Python 绑定构建需要 `nanobind`。
+> 说明：PTOAS 与 LLVM 19 的 MLIR Python 绑定均使用 `pybind11`。
 > 当前 LLVM/MLIR Python 绑定与 `pybind11` 3.x 不兼容。
 > 如果编译 LLVM 时遇到 `def_property family does not currently support keep_alive` 等报错，
 > 请确认使用上面的 `pybind11<3` 依赖。
@@ -88,7 +88,7 @@ export PYTHON_BIN="$(command -v python3)"
 
 ### 3.2 第一步：构建 LLVM/MLIR (Dependency)
 
-我们需要下载 VPTO 适配后的 LLVM 源码，切换到 `feature-vpto-llvm21` 分支，并以**动态库 (Shared Libs)** 模式编译，以确保 Python Binding 的正确链接。
+我们需要下载 VPTO 适配后的 LLVM 源码，切换到 `feature-vpto` 分支，并以**动态库 (Shared Libs)** 模式编译，以确保 Python Binding 的正确链接。
 
 ```bash
 # 1. 下载 LLVM 源码
@@ -97,7 +97,7 @@ git clone https://github.com/vpto-dev/llvm-project.git
 cd $LLVM_SOURCE_DIR
 
 # 2. [关键] 切换到 VPTO 适配分支
-git checkout feature-vpto-llvm21
+git checkout feature-vpto
 
 # 3. 配置 CMake (构建动态库并启用 Python 绑定)
 cmake -G Ninja -S llvm -B $LLVM_BUILD_DIR \
@@ -108,7 +108,6 @@ cmake -G Ninja -S llvm -B $LLVM_BUILD_DIR \
     -DPython3_EXECUTABLE="$PYTHON_BIN" \
     -DPython_EXECUTABLE="$PYTHON_BIN" \
     -Dpybind11_DIR="$("$PYTHON_BIN" -m pybind11 --cmakedir)" \
-    -Dnanobind_DIR="$("$PYTHON_BIN" -m nanobind --cmake_dir)" \
     -DCMAKE_BUILD_TYPE=Release \
     -DLLVM_TARGETS_TO_BUILD="host"
 
@@ -119,7 +118,7 @@ ninja -C $LLVM_BUILD_DIR
 
 ### 3.3 第二步：构建 PTOAS (Out-of-Tree)
 
-下载 PTOAS 源码并基于刚刚编译好的 LLVM 21 进行构建。
+下载 PTOAS 源码并基于刚刚编译好的 LLVM 19 进行构建。
 
 ```bash
 # 1. 下载 PTOAS 源码

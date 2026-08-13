@@ -2839,7 +2839,7 @@ void PlanMemoryPass::runOnOperation() {
 
     RewritePatternSet patterns(&getContext());
     populateBufferAddressToAllocOp(patterns, mode, memPlan.GetBuffer2Offsets());
-    if (failed(applyPatternsGreedily(funcOp, std::move(patterns)))) {
+    if (failed(applyPatternsAndFoldGreedily(funcOp, std::move(patterns)))) {
       return signalPassFailure();
     }
     if (failed(verifySemanticNoAliasRanges(funcOp)))

@@ -1411,6 +1411,20 @@ def VPTOOptimizeVcvt
   let dependentDialects = ["mlir::pto::PTODialect"];
 }
 
+def VPTOCombineReductions
+    : Pass<"vpto-combine-reductions", "ModuleOp"> {
+  let summary = "Combine VPTO reduction trees with equivalent masks";
+  let description = [{
+    Reassociates conservative physical reduction trees emitted by VMI-to-VPTO
+    lowering. When every chunk reduction uses an equivalent mask, the pass
+    combines the source chunks first and emits one vcadd/vcmax/vcmin or
+    vcgadd/vcgmax/vcgmin operation. Run this after mask simplification, LICM,
+    and CSE so equivalent predicates have stable VPTO producers.
+  }];
+  let constructor = "mlir::pto::createVPTOCombineReductionsPass()";
+  let dependentDialects = ["mlir::pto::PTODialect"];
+}
+
 def VPTOMaskSimplify
     : Pass<"vpto-mask-simplify", "ModuleOp"> {
   let summary = "Simplify provably redundant VPTO mask transformations";
