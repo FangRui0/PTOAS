@@ -43,11 +43,39 @@ def _make_float_payload(count: int, *, bias: np.float32) -> np.ndarray:
     return payload.astype(np.float32, copy=False)
 
 
+def _score_buffer_values(meta, name: str, case_name: str):
+    count = int(meta.elem_counts[name])
+    dtype = np.dtype(meta.np_types[name])
+    if name == 'v1':
+        # kv_seq_lens=2048 and position=2047 make worker zero process two
+        # cache blocks instead of taking the empty-sequence path.
+        return np.full((count,), 2_048, dtype=dtype)
+    if name == 'v2':
+        return np.full((count,), 2_047, dtype=dtype)
+    if name in {'v3', 'v8'}:
+        values = (np.arange(count, dtype=np.int32) % 15) - 7
+        values[values == 0] = 1
+        return values.astype(dtype, copy=False)
+    if name == 'v7':
+        # Every logical cache entry refers to the single backing block used by
+        # this one-worker harness.
+        return np.zeros((count,), dtype=dtype)
+    if name in {'v4', 'v5', 'v9'}:
+        values = np.abs(_make_float_payload(count, bias=_case_bias(case_name))) + np.float32(0.25)
+        return values.astype(dtype, copy=False)
+    if name == 'v10':
+        return np.zeros((count,), dtype=dtype)
+    raise KeyError(f'unexpected score buffer: {name}')
+
+
 def _buffer_values(meta, name: str, case_name: str):
     count = int(meta.elem_counts[name])
     dtype = np.dtype(meta.np_types[name])
     if name in meta.outputs:
         return np.zeros((count,), dtype=dtype)
+
+    if case_name == 'score':
+        return _score_buffer_values(meta, name, case_name)
 
     if dtype == np.dtype(np.uint16):
         return float32_to_bf16(_make_float_payload(count, bias=_case_bias(case_name)))

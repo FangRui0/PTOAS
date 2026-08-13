@@ -1631,6 +1631,7 @@ fi
 if [[ $# -eq 1 && "$1" == "all" ]]; then
   run_all
 elif [[ $# -eq 2 && "$1" == "-t" ]]; then
+  target_rc=0
   A="$(ucfirst "$2")"
   out_dir="${PTOAS_OUT_DIR}"
   if [[ -z "${out_dir}" ]]; then
@@ -1641,7 +1642,9 @@ elif [[ $# -eq 2 && "$1" == "-t" ]]; then
   echo "PTOAS_OUT_DIR=${out_dir}"
   echo "========== SUMMARY =========="
   process_one_dir "$A" "$out_dir" | awk -F'\t' '{ printf "%-12s %-4s %s\n", $1, $2, $3 }'
+  target_rc=$?
   write_board_case_manifest "${out_dir}"
+  exit "${target_rc}"
 else
   usage
 fi

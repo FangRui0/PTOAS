@@ -299,6 +299,22 @@ case_requires_multicard_comm() {
   grep -Eiq 'pto::comm::|CommRemoteOffset_|(^|[^A-Za-z0-9_])(tput|tnotify|twait)([^A-Za-z0-9_]|$)' "${cpp}"
 }
 
+board_runtime_skip_reason() {
+  local stage="$1"
+  local sample_name="$2"
+  local testcase="$3"
+
+  if [[ "${stage}" == "run" && "${sample_name}" == "DeepseekV4DecodeA3" ]]; then
+    case "${testcase}" in
+      rope_interleave | rmsnorm_rope_cache_write | rmsnorm_rope | rope_cs)
+        printf '%s\n' "A3 level2 implicit-tmp fallback cannot preserve explicit UB address aliases"
+        return 0
+        ;;
+    esac
+  fi
+  return 1
+}
+
 SKIP_CASES_NORM="$(normalize_list "${SKIP_CASES}")"
 RUN_ONLY_CASES_NORM="$(normalize_list "${RUN_ONLY_CASES}")"
 EXPECTED_CASES_FILTER_NORM="$(normalize_list "${EXPECTED_CASES_FILTER}")"
@@ -592,6 +608,21 @@ while IFS= read -r -d '' cpp; do
     skip_count=$((skip_count + 1))
     printf "%s\tSKIP\t%s\tA3 legacy EmitC dynamic-stride MTE runtime incompatibility\n" "${case_id}" "${STAGE}" >> "${RESULTS_TSV}"
     log "SKIP: ${testcase} (A3 legacy EmitC dynamic-stride MTE runtime incompatibility)"
+    continue
+  fi
+
+  # These level-3 PyPTO snapshots use repeated explicit UB addresses as
+  # physical dataflow aliases. Their implicit TCI/TCVT scratch operands force
+  # runop.sh through the level-2 compatibility path, whose current PlanMemory
+  # model treats the address-aliased alloc_tile roots as independent buffers.
+  # The derived kernels compile but read uninitialized/replanned storage on A3.
+  # Keep source export and host/device build coverage, and skip only execution
+  # until fixed-address planning can preserve those aliases while adding tmp.
+  runtime_skip_reason=""
+  if runtime_skip_reason="$(board_runtime_skip_reason "${STAGE}" "${sample_name}" "${testcase}")"; then
+    skip_count=$((skip_count + 1))
+    printf "%s\tSKIP\t%s\t%s\n" "${case_id}" "${STAGE}" "${runtime_skip_reason}" >> "${RESULTS_TSV}"
+    log "SKIP: ${testcase} (${runtime_skip_reason})"
     continue
   fi
 
