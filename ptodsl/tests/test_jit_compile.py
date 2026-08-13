@@ -11,6 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 import os
 import re
+import subprocess
 import sys
 from tempfile import TemporaryDirectory
 from importlib.util import module_from_spec, spec_from_file_location
@@ -23,6 +24,7 @@ from ptodsl import _types as pto_types
 import ptodsl._vmi_namespace as vmi_namespace
 from ptodsl._ast_rewrite import PTODSLAstRewriteError
 from ptodsl._context import make_context
+from ptodsl._cache_signature import cache_signature_atom
 from ptodsl._kernel_signature import DeviceParameterSpec, HelperMarkerParameterSpec, RuntimeScalarParameterSpec
 from ptodsl._tracing.runtime import SignatureTracingRuntime
 from ptodsl._runtime import native_build as native_build_runtime
@@ -73,6 +75,43 @@ def mlir_op_sequence(text: str) -> list[str]:
         if match is not None:
             ops.append(match.group(1))
     return ops
+
+
+def run_python_snippet(source: str) -> str:
+    env = dict(os.environ)
+    if "PYTHONPYCACHEPREFIX" not in env:
+        env["PYTHONPYCACHEPREFIX"] = "/tmp/ptoas-pycache"
+    result = subprocess.run(
+        [sys.executable, "-c", source],
+        check=True,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def ptodsl_func_stable_symbol_from_subprocess() -> str:
+    source = r'''
+import re
+from ptodsl import pto
+
+@pto.func(returns=pto.i32)
+def stable_dtype_return_helper(x: pto.i32):
+    return x
+
+@pto.jit(target="a5")
+def stable_dtype_symbol_probe(x: pto.i32):
+    _ = stable_dtype_return_helper(x)
+
+text = stable_dtype_symbol_probe.compile().mlir_text()
+match = re.search(r"func\.func @(stable_dtype_return_helper__ptodsl_[0-9a-f]+)\(", text)
+if match is None:
+    raise RuntimeError(text)
+print(match.group(1))
+'''
+    return run_python_snippet(source)
 
 
 expect_raises(
@@ -1590,6 +1629,187 @@ def ast_nested_helper_ast_rewrite_probe(rows: pto.i32):
     _ = value
 
 
+@pto.func(returns=pto.i32)
+def func_runtime_for_return_helper(limit: pto.i32, initial: pto.i32):
+    one = pto.const(1, dtype=pto.i32)
+    total = initial
+    for _ in range(limit):
+        total = total + one
+    return total
+
+
+@pto.func(returns=pto.i32)
+def func_runtime_if_return_helper(lhs: pto.i32, rhs: pto.i32):
+    if lhs > rhs:
+        total = lhs + rhs
+    else:
+        total = rhs + lhs
+    return total
+
+
+@pto.func(returns=pto.i32)
+def func_runtime_if_early_return_helper(lhs: pto.i32, rhs: pto.i32):
+    if lhs > rhs:
+        return lhs
+    return rhs
+
+
+@pto.func(returns=pto.i32)
+def func_runtime_for_early_return_helper(limit: pto.i32, initial: pto.i32):
+    for _ in range(limit):
+        return initial
+    return initial
+
+
+@pto.func(returns=None)
+def func_runtime_if_yield_helper(lhs: pto.i32, rhs: pto.i32):
+    if lhs > rhs:
+        yield lhs
+
+
+@pto.func(returns=(pto.i32, pto.i32))
+def func_multi_return_helper(value: pto.i32):
+    one = pto.const(1, dtype=pto.i32)
+    return value, value + one
+
+
+@pto.func(returns=None)
+def func_void_helper():
+    pto.pipe_barrier(pto.Pipe.ALL)
+
+
+@pto.func(returns=None)
+def func_i32_argument_helper(value: pto.i32):
+    _ = value
+
+
+@pto.func(returns=pto.i32)
+def func_partition_metadata_helper(part: pto.PartitionTensorView, cols: pto.i32):
+    return part.sizes[0] + cols
+
+
+@pto.func(returns=pto.i32)
+def func_constexpr_static_helper(value: pto.i32, *, BLOCK: pto.const_expr = 2):
+    total = value
+    one = pto.const(1, dtype=pto.i32)
+    for _ in pto.static_range(BLOCK):
+        total = total + one
+    return total
+
+
+def _make_future_annotations_ptodsl_func_helpers():
+    namespace = {"pto": pto}
+    exec(
+        """
+from __future__ import annotations
+
+@pto.func
+def func_future_i32_return_helper(x: pto.i32) -> pto.i32:
+    return x + pto.const(1, dtype=pto.i32)
+
+@pto.func
+def func_future_i64_literal_helper(x: pto.i64) -> pto.i64:
+    return x + pto.const(1, dtype=pto.i64)
+
+@pto.func
+def func_future_void_helper(x: pto.i32) -> None:
+    _ = x
+    pto.pipe_barrier(pto.Pipe.ALL)
+""",
+        namespace,
+    )
+    return (
+        namespace["func_future_i32_return_helper"],
+        namespace["func_future_i64_literal_helper"],
+        namespace["func_future_void_helper"],
+    )
+
+
+(
+    func_future_i32_return_helper,
+    func_future_i64_literal_helper,
+    func_future_void_helper,
+) = _make_future_annotations_ptodsl_func_helpers()
+
+
+@pto.jit(target="a5")
+def ptodsl_func_call_probe(rows: pto.i32):
+    init = pto.const(0, dtype=pto.i32)
+    total = func_runtime_for_return_helper(rows, init)
+    merged = func_runtime_if_return_helper(total, init)
+    first, second = func_multi_return_helper(merged)
+    _ = first + second
+    func_void_helper()
+    func_void_helper()
+
+
+@pto.jit(target="a5")
+def ptodsl_func_partition_metadata_probe(
+    A_ptr: pto.ptr(pto.f32, "gm"),
+    cols: pto.i32,
+):
+    a_view = pto.make_tensor_view(A_ptr, shape=[1, 16], strides=[16, 1])
+    part = pto.partition_view(a_view, offsets=[0, 0], sizes=[1, 16])
+    _ = func_partition_metadata_helper(part, cols)
+
+
+@pto.jit(target="a5")
+def ptodsl_func_future_annotations_probe(rows: pto.i32):
+    i32_value = func_future_i32_return_helper(rows)
+    i64_value = func_future_i64_literal_helper(1)
+    func_future_void_helper(i32_value)
+    _ = i64_value
+
+
+@pto.jit(target="a5")
+def ptodsl_func_constexpr_probe(rows: pto.i32):
+    first = func_constexpr_static_helper(rows, BLOCK=2)
+    second = func_constexpr_static_helper(rows, BLOCK=4)
+    _ = first + second
+
+
+@pto.jit(target="a5")
+def ptodsl_func_constexpr_runtime_value_probe(rows: pto.i32):
+    _ = func_constexpr_static_helper(rows, BLOCK=rows)
+
+
+@pto.jit(target="a5")
+def ptodsl_func_traced_argument_coercion_probe(value: pto.i64):
+    func_i32_argument_helper(value)
+
+
+@pto.jit(target="a5")
+def ptodsl_func_traced_argument_type_error_probe(value: pto.f32):
+    func_i32_argument_helper(value)
+
+
+@pto.jit(target="a5")
+def ptodsl_func_runtime_closure_capture_probe(value: pto.i32):
+    @pto.func(returns=None)
+    def helper():
+        _ = value
+
+    helper()
+
+
+@pto.jit(target="a5")
+def ptodsl_func_if_early_return_probe(rows: pto.i32):
+    init = pto.const(0, dtype=pto.i32)
+    _ = func_runtime_if_early_return_helper(rows, init)
+
+
+@pto.jit(target="a5")
+def ptodsl_func_for_early_return_probe(rows: pto.i32):
+    init = pto.const(0, dtype=pto.i32)
+    _ = func_runtime_for_early_return_helper(rows, init)
+
+
+@pto.jit(target="a5")
+def ptodsl_func_if_yield_probe(rows: pto.i32):
+    init = pto.const(0, dtype=pto.i32)
+    func_runtime_if_yield_helper(rows, init)
+
+
 @pto.jit(target="a5")
 def ast_nested_helper_freevar_if_merge_probe():
     lhs = pto.const(4, dtype=pto.i32)
@@ -1782,6 +2002,29 @@ def sourceless_subkernel_helper():
 
 
 sourceless_subkernel_entry_probe = make_sourceless_subkernel_entry()
+
+
+def make_sourceless_ptodsl_func_probe():
+    namespace = {"pto": pto}
+    exec(
+        """
+@pto.func(returns=None)
+def sourceless_ptodsl_func_helper():
+    if True:
+        pto.pipe_barrier(pto.Pipe.ALL)
+""",
+        namespace,
+    )
+    helper = namespace["sourceless_ptodsl_func_helper"]
+
+    @pto.jit(target="a5")
+    def sourceless_ptodsl_func_probe(*, TRACE_TOKEN: pto.const_expr = 0):
+        helper()
+
+    return sourceless_ptodsl_func_probe
+
+
+sourceless_ptodsl_func_probe = make_sourceless_ptodsl_func_probe()
 
 
 def make_entry_closure_kernel_module_probe():
@@ -6215,6 +6458,158 @@ def main() -> None:
         "rewritten nested helpers should preserve loop-carried and branch live-out values",
     )
 
+    ptodsl_func_call_text = ptodsl_func_call_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(ptodsl_func_call_text, "@pto.func helper call specialization")
+    expect(
+        re.search(r"func\.func @func_runtime_for_return_helper__ptodsl_[0-9a-f]+\(.*\) -> i32", ptodsl_func_call_text)
+        is not None,
+        "@pto.func helpers that return one runtime value should materialize a typed helper result",
+    )
+    expect(
+        re.search(r"func\.func @func_multi_return_helper__ptodsl_[0-9a-f]+\(.*\) -> \(i32, i32\)", ptodsl_func_call_text)
+        is not None,
+        "@pto.func helpers should support multiple returned runtime values",
+    )
+    expect(
+        ptodsl_func_call_text.count("scf.for") >= 1 and ptodsl_func_call_text.count("scf.if") >= 1,
+        "@pto.func helper bodies should use native control-flow AST rewrite",
+    )
+    expect(
+        len(re.findall(r"func\.func @func_void_helper__ptodsl_[0-9a-f]+", ptodsl_func_call_text)) == 1
+        and len(re.findall(r"call @func_void_helper__ptodsl_[0-9a-f]+", ptodsl_func_call_text)) == 2,
+        "repeated @pto.func calls should reuse one materialized helper artifact",
+    )
+    ptodsl_func_partition_metadata_text = ptodsl_func_partition_metadata_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ptodsl_func_partition_metadata_text,
+        "@pto.func partition metadata specialization",
+    )
+    expect(
+        re.search(r"func\.func @func_partition_metadata_helper__ptodsl_[0-9a-f]+", ptodsl_func_partition_metadata_text)
+        is not None
+        and re.search(r"func\.func @func_partition_metadata_helper__ptodsl_[0-9a-f]+\(.*\) -> i32", ptodsl_func_partition_metadata_text)
+        is not None
+        and re.search(r"%c1_i32 = arith\.constant 1 : i32", ptodsl_func_partition_metadata_text) is not None,
+        "@pto.func should preserve partition metadata across the helper boundary",
+    )
+    ptodsl_func_future_annotations_text = ptodsl_func_future_annotations_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ptodsl_func_future_annotations_text,
+        "@pto.func future annotations specialization",
+    )
+    expect(
+        re.search(
+            r"func\.func @func_future_i32_return_helper__ptodsl_[0-9a-f]+\(.*i32.*\) -> i32",
+            ptodsl_func_future_annotations_text,
+        )
+        is not None,
+        "@pto.func should resolve PEP 563 string return annotations to PTO result types",
+    )
+    expect(
+        re.search(
+            r"func\.func @func_future_i64_literal_helper__ptodsl_[0-9a-f]+\(.*i64.*\) -> i64",
+            ptodsl_func_future_annotations_text,
+        )
+        is not None,
+        "@pto.func should resolve PEP 563 string parameter annotations before materializing literals",
+    )
+    expect(
+        re.search(
+            r"func\.func @func_future_void_helper__ptodsl_[0-9a-f]+\(.*i32.*\) attributes",
+            ptodsl_func_future_annotations_text,
+        )
+        is not None,
+        "@pto.func should resolve PEP 563 -> None annotations as void helpers",
+    )
+    i32_cache_signature = cache_signature_atom(pto.i32)
+    i64_cache_signature = cache_signature_atom(pto.i64)
+    ptr_cache_signature = cache_signature_atom(pto.ptr(pto.f32, "gm"))
+    expect(
+        i32_cache_signature != i64_cache_signature,
+        "dtype cache signatures should distinguish different MLIR scalar types",
+    )
+    expect(
+        "0x" not in repr(i32_cache_signature)
+        and "0x" not in repr(ptr_cache_signature)
+        and "function" not in repr(i32_cache_signature),
+        "dtype cache signatures should not include Python factory reprs or memory addresses",
+    )
+    first_stable_symbol = ptodsl_func_stable_symbol_from_subprocess()
+    second_stable_symbol = ptodsl_func_stable_symbol_from_subprocess()
+    expect(
+        first_stable_symbol == second_stable_symbol,
+        "@pto.func helper symbols should stay stable across Python processes",
+    )
+    ptodsl_func_constexpr_text = ptodsl_func_constexpr_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ptodsl_func_constexpr_text,
+        "@pto.func const_expr specialization",
+    )
+    constexpr_helper_names = re.findall(
+        r"func\.func @(func_constexpr_static_helper__ptodsl_[0-9a-f]+)\(%arg0: i32\) -> i32",
+        ptodsl_func_constexpr_text,
+    )
+    expect(
+        len(set(constexpr_helper_names)) == 2,
+        "@pto.func const_expr parameters should specialize helpers without entering the runtime ABI",
+    )
+    expect(
+        ptodsl_func_constexpr_text.count("call @func_constexpr_static_helper__ptodsl_") == 2
+        and ptodsl_func_constexpr_text.count("arith.addi") >= 6,
+        "@pto.func const_expr values should remain available for static_range unrolling",
+    )
+    expect_raises(
+        TypeError,
+        lambda: ptodsl_func_constexpr_runtime_value_probe.compile().mlir_text(),
+        "const_expr parameter 'BLOCK' expects a compile-time Python value",
+    )
+    ptodsl_func_traced_argument_coercion_text = (
+        ptodsl_func_traced_argument_coercion_probe.compile().mlir_text()
+    )
+    expect_parse_roundtrip_and_verify(
+        ptodsl_func_traced_argument_coercion_text,
+        "@pto.func traced argument annotation coercion",
+    )
+    expect(
+        "arith.trunci" in ptodsl_func_traced_argument_coercion_text
+        and re.search(
+            r"func\.func @func_i32_argument_helper__ptodsl_[0-9a-f]+\(%arg0: i32\)",
+            ptodsl_func_traced_argument_coercion_text,
+        )
+        is not None,
+        "@pto.func should adapt traced SSA arguments to their declared parameter type",
+    )
+    expect_raises(
+        TypeError,
+        lambda: ptodsl_func_traced_argument_type_error_probe.compile().mlir_text(),
+        "@pto.func parameter 'value' cannot coerce",
+    )
+    expect_raises(
+        TypeError,
+        lambda: ptodsl_func_runtime_closure_capture_probe.compile().mlir_text(),
+        "captures runtime value 'value'",
+    )
+    expect_raises(
+        PTODSLAstRewriteError,
+        lambda: ptodsl_func_if_early_return_probe.compile().mlir_text(),
+        "return/yield inside rewritten if branches",
+    )
+    expect_raises(
+        PTODSLAstRewriteError,
+        lambda: ptodsl_func_for_early_return_probe.compile().mlir_text(),
+        "return/yield inside rewritten for-loop bodies",
+    )
+    expect_raises(
+        PTODSLAstRewriteError,
+        lambda: ptodsl_func_if_yield_probe.compile().mlir_text(),
+        "return/yield inside rewritten if branches",
+    )
+    expect_raises(
+        TypeError,
+        lambda: pto.func(lambda value: value),
+        "must explicitly declare return types",
+    )
+
     ast_nested_helper_freevar_if_merge_text = ast_nested_helper_freevar_if_merge_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(
         ast_nested_helper_freevar_if_merge_text,
@@ -6336,6 +6731,16 @@ def main() -> None:
     expect(
         sourceless_subkernel_text.count("pto.simt_launch @tileop_noop_simt_probe__simt_") == 1,
         "source-less subkernels should fall back to original trace-time Python execution",
+    )
+
+    sourceless_ptodsl_func_text = sourceless_ptodsl_func_probe.compile(TRACE_TOKEN=1).mlir_text()
+    expect_parse_roundtrip_and_verify(
+        sourceless_ptodsl_func_text,
+        "source-less @pto.func AST rewrite fallback specialization",
+    )
+    expect(
+        sourceless_ptodsl_func_text.count("pto.barrier <PIPE_ALL>") == 1,
+        "source-less @pto.func helpers should fall back to original trace-time Python execution",
     )
 
     ast_python_bool_guard_enabled_text = ast_python_bool_guard_probe.compile().mlir_text()

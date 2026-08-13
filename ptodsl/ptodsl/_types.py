@@ -36,6 +36,8 @@ from ptoas.mlir.ir import (
     VectorType,
 )
 
+from ._context import make_context
+
 # ── Address-space name → AddressSpace enum ───────────────────────────────────
 _ADDR_SPACE = {
     "ub":  _pto.AddressSpace.VEC,  # UB == unified buffer == VEC in PTO
@@ -78,6 +80,10 @@ class _DType:
         if kind == "integer":
             return _materialize_integer_literal(target_type, value)
         raise TypeError(f"unsupported eager constructor target type {target_type}")
+
+    def __ptodsl_cache_signature__(self):
+        with make_context():
+            return ("dtype", str(self.resolve()))
 
     def __repr__(self):
         return f"<pto.dtype {self._factory}>"
