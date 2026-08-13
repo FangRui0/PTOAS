@@ -3492,6 +3492,64 @@ def tdequant(src, scale, offset, dst):
     )
 
 
+_PRINT_FORMAT_ALIASES = {
+    None: None,
+    "width8_precision4": ("Width8_Precision4", "width8_precision4"),
+    "Width8_Precision4": ("Width8_Precision4", "width8_precision4"),
+    "width8_precision2": ("Width8_Precision2", "width8_precision2"),
+    "Width8_Precision2": ("Width8_Precision2", "width8_precision2"),
+    "width10_precision6": ("Width10_Precision6", "width10_precision6"),
+    "Width10_Precision6": ("Width10_Precision6", "width10_precision6"),
+}
+
+
+def _normalize_print_format(value, *, context: str):
+    if value is None:
+        return None
+    if hasattr(value, "type"):
+        return value
+    names = _PRINT_FORMAT_ALIASES.get(value)
+    if names is None:
+        allowed = ", ".join(sorted(k for k in _PRINT_FORMAT_ALIASES if isinstance(k, str)))
+        raise ValueError(f"{context} expects one of {allowed}, got {value!r}")
+    enum_name, asm_name = names
+    if hasattr(_pto, "PrintFormat") and hasattr(_pto, "PrintFormatAttr"):
+        enum_value = getattr(_pto.PrintFormat, enum_name)
+        return _pto.PrintFormatAttr.get(enum_value)
+    return Attribute.parse(f"#pto<print_format {asm_name}>")
+
+
+def _require_emitc_tprint_backend():
+    from ._tracing.active import current_runtime
+
+    runtime = current_runtime()
+    module_spec = getattr(runtime, "module_spec", None)
+    backend = getattr(module_spec, "backend", None)
+    if backend == "vpto":
+        raise ValueError("pto.tprint is supported only by the EmitC backend; got backend='vpto'")
+
+
+def print(fmt, scalar):
+    """``pto.print ins(fmt, scalar)``."""
+    raw_scalar = unwrap_surface_value(scalar)
+    if IndexType.isinstance(raw_scalar.type):
+        raw_scalar = arith.IndexCastOp(IntegerType.get_signless(32), raw_scalar).result
+    _pto.PrintOp(str(fmt), raw_scalar)
+
+
+def tprint(src, tmp=None, *, print_format=None):
+    """``pto.tprint ins(src[, tmp])``."""
+    _require_emitc_tprint_backend()
+    kwargs = {}
+    fmt_attr = _normalize_print_format(print_format, context="tprint(..., print_format=...)")
+    if fmt_attr is not None:
+        kwargs["printFormat"] = fmt_attr
+    if tmp is None:
+        _pto.TPrintOp(unwrap_surface_value(src), **kwargs)
+    else:
+        _pto.TPrintOp(unwrap_surface_value(src), tmp=unwrap_surface_value(tmp), **kwargs)
+
+
 def trelu(src, dst):
     """``pto.trelu ins(src) outs(dst)``."""
     _pto.trelu(
@@ -4049,8 +4107,8 @@ def tsel(mask, src0, src1, dst, *, tmp=None):
         unwrap_surface_value(mask),
         unwrap_surface_value(src0),
         unwrap_surface_value(src1),
-        unwrap_surface_value(resolved_tmp),
         unwrap_surface_value(dst),
+        tmp=unwrap_surface_value(resolved_tmp),
     )
 
 
@@ -4060,9 +4118,9 @@ def tsels(mask, src, scalar, dst, *, tmp=None):
     _pto.tsels(
         unwrap_surface_value(mask),
         unwrap_surface_value(src),
-        unwrap_surface_value(resolved_tmp),
         _coerce_tile_scalar_operand(src, scalar, context="tsels"),
         unwrap_surface_value(dst),
+        tmp=unwrap_surface_value(resolved_tmp),
     )
 
 
@@ -5361,20 +5419,13 @@ def mem_bar(barrier_type):
     _pto.MemBarOp(kind=_membar_attr(barrier_name))
 
 
-def _is_fp4_packed_pointer_value(value) -> bool:
-    type_text = str(getattr(value, "type", ""))
-    return type_text.startswith("!pto.ptr<!pto.f4") and "x2, " in type_text
-
-
-def _reject_explicit_fp4_load(source_value, *, op_name: str, source_role: str):
-    if _is_fp4_packed_pointer_value(source_value):
-        raise TypeError(
-            f"{op_name} explicit-control FP4 loads are not supported yet because "
-            "the compatibility wrapper would currently emit the regular load path; "
-            f"using FP4 in {source_role} may silently select an incorrect intrinsic. "
-            "Use the "
-            "shape-derived m/k or k/n form for FP4 L1-to-L0 loads."
-        )
+def _normalize_cube_transpose(value, *, context: str) -> bool:
+    """Normalize the legacy BoolAttr-compatible 0/1 spelling."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    raise TypeError(f"{context} transpose expects bool or integer 0/1")
 
 
 @_explicit_mode_only("pto.mte_l1_l0a(...)")
@@ -5397,9 +5448,10 @@ def mte_l1_l0a(
     """``pto.mte_l1_l0a`` – structured or explicit-control L1-to-L0A load.
 
     Use either the existing shape-derived ``m``/``k`` form or provide all six
-    explicit L1-to-L0A controls. The explicit-control overload currently rejects
-    FP4 packed pointers; use the shape-derived form for FP4 staging.
+    explicit L1-to-L0A controls. PTOAS selects the regular or packed-S4 raw
+    load during wrapper expansion.
     """
+    transpose = _normalize_cube_transpose(transpose, context="mte_l1_l0a")
     controls = (m_start, k_start, m_step, k_step, src_stride, dst_stride)
     has_explicit_controls = any(control is not None for control in controls)
     if has_explicit_controls:
@@ -5416,18 +5468,15 @@ def mte_l1_l0a(
                 "mte_l1_l0a explicit controls require m_start, k_start, "
                 "m_step, k_step, src_stride, and dst_stride"
             )
-        source_value = unwrap_surface_value(source)
-        destination_value = unwrap_surface_value(destination)
-        _reject_explicit_fp4_load(source_value, op_name="mte_l1_l0a", source_role="source")
-        _pto.LoadCbufToCaOp(
-            source_value,
-            destination_value,
-            _coerce_i64(m_start, context="mte_l1_l0a m_start"),
-            _coerce_i64(k_start, context="mte_l1_l0a k_start"),
-            _coerce_i64(m_step, context="mte_l1_l0a m_step"),
-            _coerce_i64(k_step, context="mte_l1_l0a k_step"),
-            _coerce_i64(src_stride, context="mte_l1_l0a src_stride"),
-            _coerce_i64(dst_stride, context="mte_l1_l0a dst_stride"),
+        _pto.MteL1L0aOp(
+            unwrap_surface_value(source),
+            unwrap_surface_value(destination),
+            m_start=_coerce_i64(m_start, context="mte_l1_l0a m_start"),
+            k_start=_coerce_i64(k_start, context="mte_l1_l0a k_start"),
+            m_step=_coerce_i64(m_step, context="mte_l1_l0a m_step"),
+            k_step=_coerce_i64(k_step, context="mte_l1_l0a k_step"),
+            src_stride=_coerce_i64(src_stride, context="mte_l1_l0a src_stride"),
+            dst_stride=_coerce_i64(dst_stride, context="mte_l1_l0a dst_stride"),
             transpose=transpose,
         )
         return
@@ -5436,10 +5485,10 @@ def mte_l1_l0a(
     _pto.MteL1L0aOp(
         unwrap_surface_value(source),
         unwrap_surface_value(destination),
-        _coerce_i64(m, context="mte_l1_l0a m"),
-        _coerce_i64(k, context="mte_l1_l0a k"),
-        _coerce_i64(start_row, context="mte_l1_l0a start_row"),
-        _coerce_i64(start_col, context="mte_l1_l0a start_col"),
+        m=_coerce_i64(m, context="mte_l1_l0a m"),
+        k=_coerce_i64(k, context="mte_l1_l0a k"),
+        start_row=_coerce_i64(start_row, context="mte_l1_l0a start_row"),
+        start_col=_coerce_i64(start_col, context="mte_l1_l0a start_col"),
         transpose=transpose,
     )
 
@@ -5464,9 +5513,10 @@ def mte_l1_l0b(
     """``pto.mte_l1_l0b`` – structured or explicit-control L1-to-L0B load.
 
     Use either the existing shape-derived ``k``/``n`` form or provide all six
-    explicit L1-to-L0B controls. The explicit-control overload currently rejects
-    FP4 packed pointers; use the shape-derived form for FP4 staging.
+    explicit L1-to-L0B controls. PTOAS selects the regular or packed-S4 raw
+    load during wrapper expansion.
     """
+    transpose = _normalize_cube_transpose(transpose, context="mte_l1_l0b")
     controls = (m_start, k_start, m_step, k_step, src_stride, dst_stride)
     has_explicit_controls = any(control is not None for control in controls)
     if has_explicit_controls:
@@ -5483,18 +5533,15 @@ def mte_l1_l0b(
                 "mte_l1_l0b explicit controls require m_start, k_start, "
                 "m_step, k_step, src_stride, and dst_stride"
             )
-        source_value = unwrap_surface_value(source)
-        destination_value = unwrap_surface_value(destination)
-        _reject_explicit_fp4_load(source_value, op_name="mte_l1_l0b", source_role="source")
-        _pto.LoadCbufToCbOp(
-            source_value,
-            destination_value,
-            _coerce_i64(m_start, context="mte_l1_l0b m_start"),
-            _coerce_i64(k_start, context="mte_l1_l0b k_start"),
-            _coerce_i64(m_step, context="mte_l1_l0b m_step"),
-            _coerce_i64(k_step, context="mte_l1_l0b k_step"),
-            _coerce_i64(src_stride, context="mte_l1_l0b src_stride"),
-            _coerce_i64(dst_stride, context="mte_l1_l0b dst_stride"),
+        _pto.MteL1L0bOp(
+            unwrap_surface_value(source),
+            unwrap_surface_value(destination),
+            m_start=_coerce_i64(m_start, context="mte_l1_l0b m_start"),
+            k_start=_coerce_i64(k_start, context="mte_l1_l0b k_start"),
+            m_step=_coerce_i64(m_step, context="mte_l1_l0b m_step"),
+            k_step=_coerce_i64(k_step, context="mte_l1_l0b k_step"),
+            src_stride=_coerce_i64(src_stride, context="mte_l1_l0b src_stride"),
+            dst_stride=_coerce_i64(dst_stride, context="mte_l1_l0b dst_stride"),
             transpose=transpose,
         )
         return
@@ -5503,10 +5550,10 @@ def mte_l1_l0b(
     _pto.MteL1L0bOp(
         unwrap_surface_value(source),
         unwrap_surface_value(destination),
-        _coerce_i64(k, context="mte_l1_l0b k"),
-        _coerce_i64(n, context="mte_l1_l0b n"),
-        _coerce_i64(start_row, context="mte_l1_l0b start_row"),
-        _coerce_i64(start_col, context="mte_l1_l0b start_col"),
+        k=_coerce_i64(k, context="mte_l1_l0b k"),
+        n=_coerce_i64(n, context="mte_l1_l0b n"),
+        start_row=_coerce_i64(start_row, context="mte_l1_l0b start_row"),
+        start_col=_coerce_i64(start_col, context="mte_l1_l0b start_col"),
         transpose=transpose,
     )
 
@@ -6674,7 +6721,6 @@ def wait_flag(src: str, dst: str, *, event_id: int = 0):
 
 
 def reserve_buffer(name, *, size, location, auto=True, base=None):
-    """``pto.reserve_buffer(name, size, location, auto=True, base=None)``."""
     space = _normalize_address_space(location)
     if space not in (_pto.AddressSpace.VEC, _pto.AddressSpace.MAT):
         raise ValueError(
@@ -6691,7 +6737,6 @@ def reserve_buffer(name, *, size, location, auto=True, base=None):
 
 
 def import_reserved_buffer(name, *, peer_func):
-    """``pto.import_reserved_buffer(name, peer_func=...)``."""
     if not isinstance(peer_func, str):
         spec = getattr(peer_func, "spec", None)
         role = getattr(spec, "role", None)
@@ -6743,7 +6788,7 @@ __all__ = [
     "tgemv_mx", "tgemv_mx_acc", "tgemv_mx_bias",
     "tadd", "taddrelu", "tsub", "tmul", "tdiv", "tmax", "tmin",
     "tadds", "tsubs", "tmuls", "tdivs", "tmaxs", "tmins",
-    "texp", "tlog", "tsqrt", "trsqrt", "trecip", "tabs", "tneg", "tdequant",
+    "texp", "tlog", "tsqrt", "trsqrt", "trecip", "tabs", "tneg", "tdequant", "tprint", "print",
     "trelu", "tlrelu",
     "trowsum", "trowmax", "trowmin", "trowprod", "trowargmax", "trowargmin",
     "tcolsum", "tcolmax", "tcolmin", "tcolprod", "tcolargmax", "tcolargmin",

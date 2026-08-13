@@ -91,8 +91,9 @@ static bool isCurrentlyPlannableOp(StringRef opName) {
 static bool isProvenIterationDomain(
     const pto::FusionBlockAnalysis &blockAnalysis,
     const pto::FusionComputeNode &node) {
-  if (node.iterationDomainClass >= blockAnalysis.iterationDomainClasses.size())
+  if (node.iterationDomainClass >= blockAnalysis.iterationDomainClasses.size()) {
     return false;
+  }
   return blockAnalysis.iterationDomainClasses[node.iterationDomainClass]
              .info.proof == pto::IterationDomainProof::Proven;
 }
@@ -128,10 +129,12 @@ static bool dependsOnPreviousNode(
     const pto::FusionComputeNode &previous,
     const pto::FusionComputeNode &current) {
   for (unsigned edgeId : current.incomingEdges) {
-    if (edgeId >= blockAnalysis.edges.size())
+    if (edgeId >= blockAnalysis.edges.size()) {
       continue;
-    if (blockAnalysis.edges[edgeId].producerNode == previous.id)
+    }
+    if (blockAnalysis.edges[edgeId].producerNode == previous.id) {
       return true;
+    }
   }
 
   for (Value output : previous.semantics.tileOutputs)
@@ -147,8 +150,9 @@ buildStableInGroupOrder(ArrayRef<const pto::FusionComputeNode *> members) {
                                                          members.end());
   llvm::stable_sort(ordered, [](const pto::FusionComputeNode *lhs,
                                 const pto::FusionComputeNode *rhs) {
-    if (lhs->blockOrder != rhs->blockOrder)
+    if (lhs->blockOrder != rhs->blockOrder) {
       return lhs->blockOrder < rhs->blockOrder;
+    }
     return lhs->id < rhs->id;
   });
   return ordered;
@@ -159,15 +163,17 @@ static void assignStableGroupMetadata(ArrayRef<PlannedFusionGroup> groups,
                                       int64_t &nextGroupId) {
   SmallVector<const PlannedFusionGroup *, 8> orderedGroups;
   orderedGroups.reserve(groups.size());
-  for (const PlannedFusionGroup &group : groups)
+  for (const PlannedFusionGroup &group : groups) {
     orderedGroups.push_back(&group);
+  }
 
   llvm::stable_sort(orderedGroups, [](const PlannedFusionGroup *lhs,
                                       const PlannedFusionGroup *rhs) {
     const pto::FusionComputeNode *lhsFirst = lhs->members.front();
     const pto::FusionComputeNode *rhsFirst = rhs->members.front();
-    if (lhsFirst->blockOrder != rhsFirst->blockOrder)
+    if (lhsFirst->blockOrder != rhsFirst->blockOrder) {
       return lhsFirst->blockOrder < rhsFirst->blockOrder;
+    }
     return lhsFirst->id < rhsFirst->id;
   });
 
@@ -201,10 +207,12 @@ countEdgesFromGroup(const pto::FusionBlockAnalysis &blockAnalysis,
 
   unsigned count = 0;
   for (unsigned edgeId : candidate.incomingEdges) {
-    if (edgeId >= blockAnalysis.edges.size())
+    if (edgeId >= blockAnalysis.edges.size()) {
       continue;
-    if (producerIds.contains(blockAnalysis.edges[edgeId].producerNode))
+    }
+    if (producerIds.contains(blockAnalysis.edges[edgeId].producerNode)) {
       ++count;
+    }
   }
   return count;
 }
@@ -218,17 +226,21 @@ static bool nodesHaveDirectDataFlowConnection(
     const pto::FusionBlockAnalysis &blockAnalysis,
     const pto::FusionComputeNode &lhs, const pto::FusionComputeNode &rhs) {
   for (unsigned edgeId : lhs.outgoingEdges) {
-    if (edgeId >= blockAnalysis.edges.size())
+    if (edgeId >= blockAnalysis.edges.size()) {
       continue;
-    if (blockAnalysis.edges[edgeId].consumerNode == rhs.id)
+    }
+    if (blockAnalysis.edges[edgeId].consumerNode == rhs.id) {
       return true;
+    }
   }
 
   for (unsigned edgeId : lhs.incomingEdges) {
-    if (edgeId >= blockAnalysis.edges.size())
+    if (edgeId >= blockAnalysis.edges.size()) {
       continue;
-    if (blockAnalysis.edges[edgeId].producerNode == rhs.id)
+    }
+    if (blockAnalysis.edges[edgeId].producerNode == rhs.id) {
       return true;
+    }
   }
 
   for (Value output : lhs.semantics.tileOutputs)
@@ -269,8 +281,9 @@ computeGroupFootprint(ArrayRef<const pto::FusionComputeNode *> members) {
   for (const pto::FusionComputeNode *member : members) {
     for (Value input : member->semantics.tileInputs) {
       touchedTiles.insert(input);
-      if (!producedTiles.contains(input))
+      if (!producedTiles.contains(input)) {
         externalInputs.insert(input);
+      }
     }
   }
 
@@ -300,8 +313,9 @@ public:
   evaluateSeed(const PlanningContext &ctx,
                const pto::FusionComputeNode &candidate) const override {
     PlanningDecision decision;
-    if (!isSupportedPlanningNode(candidate))
+    if (!isSupportedPlanningNode(candidate)) {
       return decision;
+    }
 
     if (!isProvenIterationDomain(ctx.blockAnalysis, candidate)) {
       decision.cost.rejectedForDynamicShape = true;
@@ -317,8 +331,9 @@ public:
                  ArrayRef<const pto::FusionComputeNode *> currentGroup,
                  const pto::FusionComputeNode &candidate) const override {
     PlanningDecision seedDecision = evaluateSeed(ctx, candidate);
-    if (!seedDecision.accept)
+    if (!seedDecision.accept) {
       return seedDecision;
+    }
 
     PlanningDecision decision;
     if (currentGroup.empty()) {
@@ -333,8 +348,9 @@ public:
         candidate.blockOrder == previous.blockOrder + 1;
     const bool directlyDependent =
         dependsOnPreviousNode(ctx.blockAnalysis, previous, candidate);
-    if (!sameDomainClass || !contiguousInBlock || !directlyDependent)
+    if (!sameDomainClass || !contiguousInBlock || !directlyDependent) {
       return decision;
+    }
 
     SmallVector<const pto::FusionComputeNode *, 8> proposedGroup(
         currentGroup.begin(), currentGroup.end());
@@ -360,8 +376,9 @@ public:
   evaluateSeed(const PlanningContext &ctx,
                const pto::FusionComputeNode &candidate) const override {
     PlanningDecision decision;
-    if (!isSupportedPlanningNode(candidate))
+    if (!isSupportedPlanningNode(candidate)) {
       return decision;
+    }
 
     if (!isProvenIterationDomain(ctx.blockAnalysis, candidate)) {
       decision.cost.rejectedForDynamicShape = true;
@@ -377,8 +394,9 @@ public:
                  ArrayRef<const pto::FusionComputeNode *> currentGroup,
                  const pto::FusionComputeNode &candidate) const override {
     PlanningDecision seedDecision = evaluateSeed(ctx, candidate);
-    if (!seedDecision.accept)
+    if (!seedDecision.accept) {
       return seedDecision;
+    }
 
     PlanningDecision decision;
     if (currentGroup.empty()) {
@@ -390,13 +408,15 @@ public:
         candidate.iterationDomainClass)
       return decision;
 
-    if (hasHardBoundaryToGroup(currentGroup, candidate))
+    if (hasHardBoundaryToGroup(currentGroup, candidate)) {
       return decision;
+    }
 
     const unsigned connectionCount =
         countConnectionsToGroup(ctx.blockAnalysis, currentGroup, candidate);
-    if (connectionCount == 0)
+    if (connectionCount == 0) {
       return decision;
+    }
 
     SmallVector<const pto::FusionComputeNode *, 8> proposedGroup(
         currentGroup.begin(), currentGroup.end());
@@ -479,12 +499,14 @@ public:
     DenseSet<unsigned> assignedNodes;
 
     for (const pto::FusionComputeNode &seed : ctx.blockAnalysis.computeNodes) {
-      if (assignedNodes.contains(seed.id))
+      if (assignedNodes.contains(seed.id)) {
         continue;
+      }
 
       PlanningDecision seedDecision = costModel.evaluateSeed(ctx, seed);
-      if (!seedDecision.accept)
+      if (!seedDecision.accept) {
         continue;
+      }
 
       SmallVector<const pto::FusionComputeNode *, 8> groupMembers;
       DenseSet<unsigned> groupNodeIds;
@@ -502,8 +524,9 @@ public:
 
           PlanningDecision appendDecision =
               costModel.evaluateAppend(ctx, groupMembers, candidate);
-          if (!appendDecision.accept)
+          if (!appendDecision.accept) {
             continue;
+          }
 
           groupMembers.push_back(&candidate);
           groupNodeIds.insert(candidate.id);
@@ -511,14 +534,16 @@ public:
         }
       }
 
-      if (groupMembers.size() < 2)
+      if (groupMembers.size() < 2) {
         continue;
+      }
 
       PlannedFusionGroup group;
       group.members = buildStableInGroupOrder(groupMembers);
       groups.push_back(group);
-      for (const pto::FusionComputeNode *member : group.members)
+      for (const pto::FusionComputeNode *member : group.members) {
         assignedNodes.insert(member->id);
+      }
     }
 
     return groups;
@@ -554,8 +579,9 @@ struct FusionPlanPass : public pto::impl::FusionPlanBase<FusionPlanPass> {
 
   void runOnOperation() override {
     func::FuncOp func = getOperation();
-    if (func.isExternal())
+    if (func.isExternal()) {
       return;
+    }
 
     clearPlanningAttrs(func);
 

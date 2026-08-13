@@ -114,8 +114,7 @@ static MlirAttribute optionalAttributeFromPy(py::object attr) {
   return py::cast<MlirAttribute>(attr);
 }
 
-void populatePTODialectSubmodule(pybind11::module &m);
-void populatePTODialectSubmodule(pybind11::module &m) {
+static void populatePTODialectSubmodule(pybind11::module &m) {
   (void)m;
 }
 
@@ -764,6 +763,11 @@ void mlir::pto::python::populatePTODialectBindings(pybind11::module_ &m) {
       .value("NV", mlir::pto::QuantScaleAlg::NV)
       .export_values();
 
+    py::enum_<mlir::pto::MxGroupAxis>(m, "MxGroupAxis")
+      .value("Axis0", mlir::pto::MxGroupAxis::Axis0)
+      .value("Axis1", mlir::pto::MxGroupAxis::Axis1)
+      .export_values();
+
     py::enum_<mlir::pto::VecStoreMode>(m, "VecStoreMode")
       .value("ND", mlir::pto::VecStoreMode::ND)
       .value("NZ", mlir::pto::VecStoreMode::NZ)
@@ -817,6 +821,31 @@ void mlir::pto::python::populatePTODialectBindings(pybind11::module_ &m) {
           "value",
           [](MlirAttribute self) -> int32_t {
             return mlirPTOQuantScaleAlgAttrGetValue(self);
+          });
+
+    mlir_attribute_subclass(
+        m, "MxGroupAxisAttr",
+        [](MlirAttribute a) { return mlirPTOAttrIsAMxGroupAxisAttr(a); })
+      .def_classmethod(
+          "get",
+          [](py::object cls, py::object value, MlirContext ctx) -> py::object {
+            int32_t v = 0;
+            if (py::isinstance<py::int_>(value)) {
+              v = py::cast<int32_t>(value);
+            } else if (py::hasattr(value, "value")) {
+              v = value.attr("value").cast<int32_t>();
+            } else {
+              throw std::runtime_error("MxGroupAxisAttr.get expects int or MxGroupAxis enum");
+            }
+            MlirAttribute a = mlirPTOMxGroupAxisAttrGet(ctx, v);
+            if (mlirAttributeIsNull(a)) return py::none();
+            return cls.attr("__call__")(a);
+          },
+          py::arg("cls"), py::arg("value"), py::arg("context") = py::none())
+      .def_property_readonly(
+          "value",
+          [](MlirAttribute self) -> int32_t {
+            return mlirPTOMxGroupAxisAttrGetValue(self);
           });
 
     mlir_attribute_subclass(
@@ -1171,6 +1200,17 @@ void mlir::pto::python::populatePTODialectBindings(pybind11::module_ &m) {
             py::arg("cls"), py::arg("context") = py::none());
 
     mlir_type_subclass(
+        m, "BF16x2Type",
+        [](MlirType type) -> bool { return mlirPTOTypeIsABF16x2Type(type); })
+        .def_classmethod(
+            "get",
+            [](py::object cls, MlirContext context) -> py::object {
+                MlirType t = mlirPTOBF16x2TypeGet(context);
+                return cls.attr("__call__")(t);
+            },
+            py::arg("cls"), py::arg("context") = py::none());
+
+    mlir_type_subclass(
         m, "F4E1M2x2Type",
         [](MlirType type) -> bool { return mlirPTOTypeIsAF4E1M2x2Type(type); })
         .def_classmethod(
@@ -1204,7 +1244,7 @@ void mlir::pto::python::populatePTODialectBindings(pybind11::module_ &m) {
                 std::vector<int64_t> shp = toShapeVectorOrDynamicRank(shape_or_rank);
                 context = inferContextFromElementType(context, elementType);
                 MlirType t = mlirPTOTensorViewTypeGet(
-                    context, (intptr_t)shp.size(), shp.data(), elementType);
+                    context, static_cast<intptr_t>(shp.size()), shp.data(), elementType);
                 return cls.attr("__call__")(t);
             },
             py::arg("cls"), py::arg("shape_or_rank"), py::arg("element_type"),
@@ -1236,7 +1276,7 @@ void mlir::pto::python::populatePTODialectBindings(pybind11::module_ &m) {
         std::vector<int64_t> shp = toShapeVectorOrDynamicRank(shape_or_rank);
         context = inferContextFromElementType(context, elementType);
         MlirType t = mlirPTOPartitionTensorViewTypeGet(context,
-                                            (intptr_t)shp.size(),
+                                            static_cast<intptr_t>(shp.size()),
                                             shp.data(),
                                             elementType);
         return cls.attr("__call__")(t);
@@ -1268,7 +1308,7 @@ void mlir::pto::python::populatePTODialectBindings(pybind11::module_ &m) {
         [](py::object cls, py::sequence shape, MlirType elementType, MlirContext context) -> py::object {
         auto shp = toInt64Vector(shape);
         MlirType t = mlirPTOTileTypeGet(context,
-                                        (intptr_t)shp.size(),
+                                        static_cast<intptr_t>(shp.size()),
                                         shp.data(),
                                         elementType);
         return cls.attr("__call__")(t);
@@ -1359,7 +1399,7 @@ void mlir::pto::python::populatePTODialectBindings(pybind11::module_ &m) {
             if (!validShapeObj.is_none()) {
             // 支持 valid_shape 为 list[int] 或 list[Optional[int]]
             py::list lst = validShapeObj.cast<py::list>();
-            if ((size_t)lst.size() != shape.size()) {
+            if (static_cast<size_t>(lst.size()) != shape.size()) {
                 throw std::runtime_error("valid_shape rank must match shape rank");
             }
             validShape.resize(lst.size());
@@ -1379,16 +1419,16 @@ void mlir::pto::python::populatePTODialectBindings(pybind11::module_ &m) {
             MlirAttribute cfg = configObj.cast<MlirAttribute>();
             ty = mlirPTOTileBufTypeGetWithValidShapeAndConfig(
                 ctx,
-                (intptr_t)shape.size(), shape.data(),
+                static_cast<intptr_t>(shape.size()), shape.data(),
                 elementType, memorySpace,
-                (intptr_t)validShape.size(), validShape.data(),
+                static_cast<intptr_t>(validShape.size()), validShape.data(),
                 cfg);
             } else {
             ty = mlirPTOTileBufTypeGetWithValidShape(
                 ctx,
-                (intptr_t)shape.size(), shape.data(),
+                static_cast<intptr_t>(shape.size()), shape.data(),
                 elementType, memorySpace,
-                (intptr_t)validShape.size(), validShape.data());
+                static_cast<intptr_t>(validShape.size()), validShape.data());
             }
 
             if (mlirTypeIsNull(ty)) return py::none();

@@ -20,19 +20,7 @@ PTOAS_OUT_DIR="${PTOAS_OUT_DIR:-}"
 PTO_BUILD_DIR="${PTO_BUILD_DIR:-}"
 PTOAS_ENABLE_INSERT_SYNC="${PTOAS_ENABLE_INSERT_SYNC:-1}"
 PTOAS_FLAGS="${PTOAS_FLAGS:-}"
-MODEL_PTO_DIRS=""
-for model_path in "${BASE_DIR}"/Qwen* "${BASE_DIR}"/Deepseek*; do
-  [[ -d "${model_path}" ]] || continue
-  model_name="$(basename "${model_path}")"
-  case "${model_name}" in
-    *A3|*A5)
-      if find "${model_path}" -type f -name '*.pto' -print -quit | grep -q .; then
-        MODEL_PTO_DIRS+=" ${model_name}"
-      fi
-      ;;
-  esac
-done
-PTO_PTO_DIRS="${PTO_PTO_DIRS:-Sync${MODEL_PTO_DIRS} CommSync Prelu Rem Rems Gemvmx MatmulMxLowPrecision TquantMx Movfp}"
+PTO_PTO_DIRS="${PTO_PTO_DIRS:-Sync Qwen3DecodeA3 Qwen3DecodeA5 DeepseekV4DecodeA3 DeepseekV4DecodeA5 CommSync Prelu Rem Rems Gemvmx MatmulMxLowPrecision TquantMx TquantMxDn Movfp}"
 ENABLE_BC=0
 
 usage() {
@@ -50,7 +38,7 @@ Env:
   PTO_BUILD_DIR  # build directory root that contains tools/ptobc (optional)
   PTOAS_FLAGS  # extra flags passed to ptoas (e.g. --enable-insert-sync)
   PTOAS_ENABLE_INSERT_SYNC  # 1 to append --enable-insert-sync to PTOAS_FLAGS (default: 1)
-  PTO_PTO_DIRS  # space-separated dirs to run .pto directly (default: Sync, every Qwen*/Deepseek* A3/A5 model dir, and the legacy direct-PTO dirs)
+  PTO_PTO_DIRS  # space-separated dirs to run .pto directly (default: Sync Qwen3DecodeA3 Qwen3DecodeA5 DeepseekV4DecodeA3 DeepseekV4DecodeA5 CommSync Prelu Rem Rems Gemvmx MatmulMxLowPrecision TquantMx TquantMxDn Movfp)
 
 Flags:
   --enablebc  # enable: python -> .pto -> ptobc -> .pto -> ptoas
@@ -155,23 +143,12 @@ copy_validation_assets() {
   fi
 }
 
-direct_pto_files() {
-  local sample_dir="$1"
-  find "${sample_dir}" -type f -name '*.pto' \
-    ! -path '*/npu_validation/*' \
-    ! -name '*-pto-ir.pto' -print0
-}
-
 process_one_dir() {
   local A="$1" # folder name (e.g. Abs)
   local out_dir="$2"
-  local dir ptoas ptobc python out_subdir model_arch=""
+  local dir ptoas ptobc python out_subdir
   dir="${BASE_DIR}/${A}"
   out_subdir="${out_dir}/${A}"
-  case "${A}" in
-    Qwen*A3|Deepseek*A3) model_arch="a3" ;;
-    Qwen*A5|Deepseek*A5) model_arch="a5" ;;
-  esac
   mkdir -p "${out_subdir}"
   copy_validation_assets "${dir}" "${out_dir}" "${out_subdir}"
 
@@ -182,7 +159,7 @@ process_one_dir() {
   if [[ "${ENABLE_BC}" == "1" ]]; then
     use_ptobc_roundtrip=1
   fi
-  if [[ -n "${model_arch}" ]]; then
+  if [[ "$A" == "Qwen3DecodeA3" || "$A" == "Qwen3DecodeA5" || "$A" == "DeepseekV4DecodeA3" || "$A" == "DeepseekV4DecodeA5" ]]; then
     use_ptobc_roundtrip=0
   fi
   local -a ptoas_flags=()
@@ -221,7 +198,7 @@ process_one_dir() {
       fi
     done
   fi
-  if [[ "${model_arch}" == "a5" ]]; then
+  if [[ "$A" == "Qwen3DecodeA5" || "$A" == "DeepseekV4DecodeA5" ]]; then
     if [[ $has_pto_arch_override -eq 0 ]]; then
       ptoas_flags+=(--pto-arch a5)
       target_arch="a5"
@@ -229,7 +206,7 @@ process_one_dir() {
     if [[ $has_pto_level_override -eq 0 ]]; then
       ptoas_flags+=(--pto-level=level3)
     fi
-  elif [[ "${model_arch}" == "a3" ]]; then
+  elif [[ "$A" == "Qwen3DecodeA3" || "$A" == "DeepseekV4DecodeA3" ]]; then
     if [[ $has_pto_level_override -eq 0 ]]; then
       ptoas_flags+=(--pto-level=level3)
     fi
@@ -267,32 +244,48 @@ process_one_dir() {
     echo -e "${A}\tSKIP\tMissing dir: $dir"
     return 0
   fi
-  if [[ "${model_arch}" == "a3" && "${target_arch_lc}" != "a3" ]]; then
+  if [[ ( "$A" == "Qwen3DecodeA3" || "$A" == "DeepseekV4DecodeA3" ) && "${target_arch_lc}" != "a3" ]]; then
     local direct_case
-    while IFS= read -r -d '' direct_case; do
+    for direct_case in "$dir"/*.pto; do
+      [[ -f "$direct_case" ]] || continue
+      case "$direct_case" in
+        *-pto-ir.pto) continue ;;
+      esac
       echo -e "${A}($(basename "$direct_case"))\tSKIP\trequires --pto-arch=a3"
-    done < <(direct_pto_files "$dir")
+    done
     return 0
   fi
-  if [[ "${model_arch}" == "a3" && -n "${soc_lc}" && ( "${soc_lc}" == *"a5"* || "${soc_lc}" == *"950"* ) ]]; then
+  if [[ ( "$A" == "Qwen3DecodeA3" || "$A" == "DeepseekV4DecodeA3" ) && -n "${soc_lc}" && ( "${soc_lc}" == *"a5"* || "${soc_lc}" == *"950"* ) ]]; then
     local direct_case
-    while IFS= read -r -d '' direct_case; do
+    for direct_case in "$dir"/*.pto; do
+      [[ -f "$direct_case" ]] || continue
+      case "$direct_case" in
+        *-pto-ir.pto) continue ;;
+      esac
       echo -e "${A}($(basename "$direct_case"))\tSKIP\trequires A3 target SOC"
-    done < <(direct_pto_files "$dir")
+    done
     return 0
   fi
-  if [[ "${model_arch}" == "a5" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a5" ]]; then
+  if [[ ( "$A" == "Qwen3DecodeA5" || "$A" == "DeepseekV4DecodeA5" ) && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a5" ]]; then
     local direct_case
-    while IFS= read -r -d '' direct_case; do
+    for direct_case in "$dir"/*.pto; do
+      [[ -f "$direct_case" ]] || continue
+      case "$direct_case" in
+        *-pto-ir.pto) continue ;;
+      esac
       echo -e "${A}($(basename "$direct_case"))\tSKIP\trequires --pto-arch=a5"
-    done < <(direct_pto_files "$dir")
+    done
     return 0
   fi
-  if [[ "${model_arch}" == "a5" && -n "${soc_lc}" && "${soc_lc}" != *"a5"* && "${soc_lc}" != *"950"* ]]; then
+  if [[ ( "$A" == "Qwen3DecodeA5" || "$A" == "DeepseekV4DecodeA5" ) && -n "${soc_lc}" && "${soc_lc}" != *"a5"* && "${soc_lc}" != *"950"* ]]; then
     local direct_case
-    while IFS= read -r -d '' direct_case; do
+    for direct_case in "$dir"/*.pto; do
+      [[ -f "$direct_case" ]] || continue
+      case "$direct_case" in
+        *-pto-ir.pto) continue ;;
+      esac
       echo -e "${A}($(basename "$direct_case"))\tSKIP\trequires A5 target SOC"
-    done < <(direct_pto_files "$dir")
+    done
     return 0
   fi
 
@@ -344,11 +337,6 @@ process_one_dir() {
       continue
     fi
     if [[ ( "$base" == "gemvmx" || "$base" == "matmul_mx_low_precision" ) && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a5" ]]; then
-      echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a5"
-      continue
-    fi
-    if [[ ( "$base" == "mgather" || "$base" == "mscatter" ) && \
-          "${target_arch_lc}" != "a5" ]]; then
       echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a5"
       continue
     fi
@@ -405,7 +393,7 @@ process_one_dir() {
     mlir="${out_subdir}/${base}-pto-ir.pto"
     cpp="${out_subdir}/${base}-pto.cpp"
 
-    if ! "$python" "$f" > "$mlir"; then
+    if ! PTOAS_SAMPLE_ARCH="${target_arch_lc}" "$python" "$f" > "$mlir"; then
       if [[ $expect_fail -eq 1 ]]; then
         echo -e "${A}(${base}.py)\tXFAIL\tpython failed as expected"
         continue
@@ -1305,7 +1293,11 @@ PY
   done
 
   if [[ $allow_pto -eq 1 ]]; then
-    while IFS= read -r -d '' f; do
+    for f in "$dir"/*.pto; do
+      [[ -f "$f" ]] || continue
+      case "$f" in
+        *-pto-ir.pto) continue ;;
+      esac
       base="$(basename "$f" .pto)"
       local expect_fail=0
       local case_target_arch_lc="${target_arch_lc}"
@@ -1345,7 +1337,7 @@ PY
       ptobc_file="${out_subdir}/${base}.ptobc"
       decoded_pto="${out_subdir}/${base}-roundtrip.pto"
       cpp="${out_subdir}/${base}.cpp"
-      if [[ -n "${model_arch}" ]]; then
+      if [[ "$A" == "Qwen3DecodeA3" || "$A" == "Qwen3DecodeA5" || "$A" == "DeepseekV4DecodeA3" || "$A" == "DeepseekV4DecodeA5" ]]; then
         cpp="${out_subdir}/${base}-pto.cpp"
       elif [[ "$base" == "tquant_mx" ]]; then
         # Board validation currently discovers generated sample kernels via
@@ -1394,58 +1386,7 @@ PY
 
       local -a ptoas_cmd=("${case_ptoas_cmd_base[@]}" "$pto_input" -o "$cpp")
       local ptoas_log="${out_subdir}/${base}-ptoas.log"
-      local used_model_level2_fallback=0
       if ! "${ptoas_cmd[@]}" >"${ptoas_log}" 2>&1; then
-        # PyPTO model exports are level-3 snapshots: alloc_tile addresses are
-        # already assigned by the exporter. Newer PTOAS revisions require
-        # explicit scratch operands for a few ops when PlanMemory is skipped.
-        # Keep the checked-in snapshots byte-for-byte, but compile a derived
-        # address-free level-2 copy so PTOAS can materialize those scratch
-        # tiles and re-plan local memory.
-        if [[ -n "${model_arch}" ]] &&
-            grep -Fq "requires explicit tmp" "${ptoas_log}"; then
-          local normalized_pto="${out_subdir}/${base}-level2-normalized.pto"
-          sed -E 's/ addr = %[A-Za-z0-9_]+//g' "$f" >"${normalized_pto}"
-
-          local -a level2_cmd_base=()
-          for ((i=0; i<${#case_ptoas_cmd_base[@]}; ++i)); do
-            case "${case_ptoas_cmd_base[i]}" in
-              --pto-level=*)
-                ;;
-              --pto-level)
-                ((i += 1))
-                ;;
-              *)
-                level2_cmd_base+=("${case_ptoas_cmd_base[i]}")
-                ;;
-            esac
-          done
-          level2_cmd_base+=(--pto-level=level2)
-
-          local -a level2_cmd=("${level2_cmd_base[@]}" "$normalized_pto" -o "$cpp")
-          if "${level2_cmd[@]}" >"${ptoas_log}" 2>&1; then
-            used_model_level2_fallback=1
-          elif [[ "${model_arch}" == "a3" ]] &&
-              grep -Fq "requires static tile_buf shapes to materialize implicit tcvt tmp" "${ptoas_log}"; then
-            # Older A3 PyPTO snapshots encode constant valid_row/valid_col
-            # operands with dynamic valid-shape type markers. The implicit
-            # TCvt scratch calculation needs static upper bounds, so compile
-            # the derived copy with its physical tile shape as that bound.
-            sed -E \
-              -e 's/ addr = %[A-Za-z0-9_]+//g' \
-              -e 's/ valid_row = %[A-Za-z0-9_]+ valid_col = %[A-Za-z0-9_]+//g' \
-              -e 's/rows=([0-9]+), cols=([0-9]+), v_row=\?, v_col=\?/rows=\1, cols=\2, v_row=\1, v_col=\2/g' \
-              "$f" >"${normalized_pto}"
-            if "${level2_cmd[@]}" >"${ptoas_log}" 2>&1; then
-              used_model_level2_fallback=1
-            fi
-          fi
-        fi
-
-        if [[ $used_model_level2_fallback -eq 1 ]]; then
-          echo -e "${A}(${base}.pto)\tOK\tgenerated with level2 implicit-tmp compatibility: $(basename "$cpp")"
-          continue
-        fi
         if [[ $expect_fail -eq 1 ]]; then
           if [[ "$base" == "test_frontend_pipe_flag_id_overflow_invalid" ]]; then
             if ! grep -Fq "fit within 16 hardware flag ids" "${ptoas_log}"; then
@@ -1516,7 +1457,7 @@ PY
       fi
 
       echo -e "${A}(${base}.pto)\tOK\tgenerated: $(basename "$cpp")"
-    done < <(direct_pto_files "$dir")
+    done
   fi
 
   return $overall
@@ -1575,7 +1516,7 @@ write_board_case_manifest() {
 }
 
 run_all() {
-  local tmp out_dir summary_rc
+  local results tmp out_dir summary_rc
   out_dir="${PTOAS_OUT_DIR}"
   if [[ -z "${out_dir}" ]]; then
     out_dir="$(mktemp -d -t ptoas.samples.XXXXXX)"

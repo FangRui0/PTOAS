@@ -120,8 +120,9 @@ static std::optional<unsigned> traceToFunctionArgument(Value value,
 static void applyEffectToAllTileArguments(func::FuncOp function, uint8_t effect,
                                           SmallVectorImpl<uint8_t> &effects) {
   for (auto [index, type] : llvm::enumerate(function.getArgumentTypes()))
-    if (isa<TileBufType>(type))
+    if (isa<TileBufType>(type)) {
       effects[index] |= effect;
+    }
 }
 
 static SmallVector<uint8_t>
@@ -141,8 +142,9 @@ collectDirectArgumentEffects(func::FuncOp function) {
         effect = ReadEffect;
       else if (isa<MemoryEffects::Write>(instance.getEffect()))
         effect = WriteEffect;
-      if (effect == NoEffect || !instance.getValue())
+      if (effect == NoEffect || !instance.getValue()) {
         continue;
+      }
 
       if (auto argument =
               traceToFunctionArgument(instance.getValue(), function))
@@ -168,8 +170,9 @@ static void summarizeSimtLaunchEffects(func::FuncOp helper, SimtLaunchOp launch,
   SmallVector<uint8_t> calleeEffects = collectDirectArgumentEffects(callee);
   for (auto [argument, calleeEffect] :
        llvm::zip_equal(launch.getArgs(), calleeEffects)) {
-    if (calleeEffect == NoEffect)
+    if (calleeEffect == NoEffect) {
       continue;
+    }
     if (auto helperArgument = traceToFunctionArgument(argument, helper))
       effects[*helperArgument] |= calleeEffect;
     else
@@ -206,8 +209,9 @@ static bool addValidShapeRequirement(ValidShapeRequirements &requirements,
                                      func::FuncOp function,
                                      unsigned argumentIndex) {
   auto &indices = requirements[function.getOperation()];
-  if (llvm::is_contained(indices, argumentIndex))
+  if (llvm::is_contained(indices, argumentIndex)) {
     return false;
+  }
   indices.push_back(argumentIndex);
   llvm::sort(indices);
   return true;
@@ -238,8 +242,9 @@ collectTileOpValidShapeRequirements(func::FuncOp helper,
     }
 
     unsigned dimension = isa<TileValidRowsOp>(op) ? 0 : 1;
-    if (tileType.getValidShape()[dimension] < 0)
+    if (tileType.getValidShape()[dimension] < 0) {
       addValidShapeRequirement(requirements, helper, argument.getArgNumber());
+    }
     return WalkResult::advance();
   });
   return status;
@@ -257,11 +262,13 @@ propagateValidShapeRequirements(ModuleOp module,
     for (func::CallOp call : calls) {
       auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
           call.getOperation(), call.getCalleeAttr());
-      if (!callee)
+      if (!callee) {
         continue;
+      }
       auto required = requirements.find(callee.getOperation());
-      if (required == requirements.end())
+      if (required == requirements.end()) {
         continue;
+      }
       SmallVector<unsigned, 2> requiredArguments(required->second);
 
       auto caller = call->getParentOfType<func::FuncOp>();
@@ -270,17 +277,20 @@ propagateValidShapeRequirements(ModuleOp module,
             "cannot propagate Tile valid-shape metadata without a caller "
             "function");
       for (unsigned calleeArgument : requiredArguments) {
-        if (calleeArgument >= call.getNumOperands())
+        if (calleeArgument >= call.getNumOperands()) {
           return call.emitOpError(
               "TileOp call has fewer operands than its helper ABI");
+        }
         auto callerArgument =
             traceToFunctionArgument(call.getOperand(calleeArgument), caller);
-        if (!callerArgument)
+        if (!callerArgument) {
           continue;
+        }
         auto tileType = dyn_cast<TileBufType>(
             caller.getArgument(*callerArgument).getType());
-        if (!tileType || !tileType.hasDynamicValid())
+        if (!tileType || !tileType.hasDynamicValid()) {
           continue;
+        }
         changed |=
             addValidShapeRequirement(requirements, caller, *callerArgument);
       }
@@ -335,8 +345,9 @@ static std::optional<std::pair<Value, Value>>
 resolveCallValidShape(Value tile, Operation *anchor, func::FuncOp caller,
                       const ExpandedValidShapeArguments &expandedArguments,
                       OpBuilder &builder) {
-  if (!tile)
+  if (!tile) {
     return std::nullopt;
+  }
 
   auto tileType = dyn_cast<TileBufType>(tile.getType());
   if (tileType && tileType.getValidShape().size() == 2 &&
@@ -357,8 +368,9 @@ resolveCallValidShape(Value tile, Operation *anchor, func::FuncOp caller,
     }
   }
 
-  if (!tileType || tileType.getValidShape().size() != 2)
+  if (!tileType || tileType.getValidShape().size() != 2) {
     return std::nullopt;
+  }
 
   // set_validshape mutates the Tile metadata in place. Reading it at the call
   // preserves the executed update across sequential and structured control
@@ -378,19 +390,22 @@ static LogicalResult expandValidShapeCallOperands(
   for (func::CallOp call : calls) {
     auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
         call.getOperation(), call.getCalleeAttr());
-    if (!callee)
+    if (!callee) {
       continue;
+    }
     auto required = requirements.find(callee.getOperation());
-    if (required == requirements.end())
+    if (required == requirements.end()) {
       continue;
+    }
 
     auto caller = call->getParentOfType<func::FuncOp>();
     OpBuilder builder(call);
     SmallVector<Value> metadataOperands;
     for (unsigned argumentIndex : required->second) {
-      if (argumentIndex >= call.getNumOperands())
+      if (argumentIndex >= call.getNumOperands()) {
         return call.emitOpError(
             "TileOp call has fewer operands than its helper ABI");
+      }
       auto metadata =
           resolveCallValidShape(call.getOperand(argumentIndex), call, caller,
                                 expandedArguments, builder);
@@ -479,14 +494,16 @@ materializeTileOpValidShapeABI(ModuleOp module,
 
 static LogicalResult verifyTileOpABI(func::FuncOp helper) {
   for (auto [index, type] : llvm::enumerate(helper.getArgumentTypes())) {
-    if (!isTileOrScalarType(type))
+    if (!isTileOrScalarType(type)) {
       return helper.emitOpError()
              << "tileop argument #" << index
              << " must be !pto.tile_buf or a PTO scalar, got " << type;
+    }
   }
-  if (helper.getNumResults() != 0)
+  if (helper.getNumResults() != 0) {
     return helper.emitOpError("tileop helpers must not return values; write "
                               "results through mutable Tile parameters");
+  }
   return success();
 }
 
@@ -584,8 +601,9 @@ static LogicalResult inferTileOpKind(func::FuncOp helper,
     return WalkResult::advance();
   });
 
-  if (failed(status))
+  if (failed(status)) {
     return failure();
+  }
   if (firstVector && firstCube) {
     InFlightDiagnostic diag = helper.emitOpError(
         "mixes Vector and Cube compute operations in one tileop helper");
@@ -593,9 +611,10 @@ static LogicalResult inferTileOpKind(func::FuncOp helper,
     diag.attachNote(firstCube->getLoc()) << "first Cube operation is here";
     return failure();
   }
-  if (!firstVector && !firstCube)
+  if (!firstVector && !firstCube) {
     return helper.emitOpError("contains no Vector or Cube compute operation "
                               "from which to infer tileop kind");
+  }
   kind = firstVector ? PhysicalSectionKind::Vector : PhysicalSectionKind::Cube;
   return success();
 }
@@ -610,10 +629,12 @@ static LogicalResult materializeTileOpSection(func::FuncOp helper,
     return helper.emitOpError("requires a func.return terminator");
 
   SmallVector<Operation *> roots;
-  for (Operation &op : entry.without_terminator())
+  for (Operation &op : entry.without_terminator()) {
     roots.push_back(&op);
-  if (roots.empty())
+  }
+  if (roots.empty()) {
     return helper.emitOpError("contains no materializable compute body");
+  }
 
   OpBuilder builder(roots.front());
   Operation *sectionOperation =
@@ -626,8 +647,9 @@ static LogicalResult materializeTileOpSection(func::FuncOp helper,
   auto *sectionBlock = new Block();
   sectionBody.push_back(sectionBlock);
 
-  for (Operation *root : roots)
+  for (Operation *root : roots) {
     root->moveBefore(sectionBlock, sectionBlock->end());
+  }
   helper->setAttr(
       kTileOpKindAttr,
       StringAttr::get(helper.getContext(),

@@ -4,7 +4,7 @@ PTODSL uses a **tracing** compilation model. When you call `kernel.compile(...)`
 
 This has one critical implication for how you write loops and branches:
 
-- **Python native `for`/`if`** is rewritten to device-side control flow by default in `@pto.jit` bodies and named `@pto.tileop` / `@pto.simt` helpers. A `for i in range(rows)` loop records a device loop, and a runtime `if` records both branches.
+ - **Python native `for`/`if`** is rewritten to device-side control flow by default in `@pto.jit` bodies, `@pto.func` helpers, and named `@pto.tileop` / `@pto.simt` helpers. A `for i in range(rows)` loop records a device loop, and a runtime `if` records both branches.
 - **Assign-form Python conditional expressions** such as `x = a if cond else b` are normalized through the same AST rewrite path, so runtime conditions lower to device-side branches before the assignment is merged back into `x`.
 - **`pto.const_expr` / `pto.static_range`** keep compile-time Python behavior when you want trace-time specialization or unrolling.
 - **`pto.for_` / `pto.if_`** produce device-side control flow. The loop bound or branch condition can be a runtime value, and the hardware will execute the loop or take the branch dynamically.
@@ -213,6 +213,11 @@ conditional closes, `br.val` is the SSA-merged result seen by downstream code.
 This surface avoids explicit result-type declarations and explicit
 `pto.yield_(...)` in user code while still keeping the merge contract explicit.
 
+When one branch yields `pto.i1` and the other yields an integer-like scalar,
+the integer value is normalized to `i1` with nonzero truthiness (`0` is false;
+any nonzero value is true). Other incompatible branch result types still
+require an explicit conversion.
+
 ## 5.4 `pto.const_expr` and tracing
 
 `pto.const_expr` parameters (Section 3.6) are compile-time constants. They are fixed at `.compile()` time and cannot change between launches of the same compiled kernel. Because their values are known during tracing, they interact naturally with Python control flow:
@@ -250,10 +255,19 @@ This lets you write a single kernel that specializes into different strategies b
 
 ## 5.5 Native Python control-flow rewrite
 
-`@pto.jit` rewrites supported native Python control flow before tracing. In the
-default mode, plain Python `if` and `for range(...)` in the rewritten scope
-become device-side control flow. Use `pto.const_expr(...)` and
+`@pto.jit`, `@pto.func`, and named `@pto.tileop` / `@pto.simt`
+callables rewrite supported native Python control flow before tracing their
+bodies. In the default mode, plain Python `if` and `for range(...)` in the
+rewritten scope become device-side control flow. Use `pto.const_expr(...)` and
 `pto.static_range(...)` when you want trace-time behavior.
+
+PTODSL does not recursively rewrite arbitrary undecorated Python callees. If an
+external helper should contain runtime native control flow, decorate it with
+`@pto.func` or one of the other PTODSL callable decorators. `@pto.func` helpers
+must explicitly declare their return type with `returns=...` or a Python return
+annotation. A plain Python helper is still executed during tracing; static
+`range(...)` loops in such a helper unroll at trace time, and runtime loop
+bounds or branch conditions are not converted into `scf.for` / `scf.if`.
 
 ### Runtime branches
 
@@ -276,6 +290,27 @@ def ast_rewrite_branch_kernel():
 
 The assigned value `total` is live after the branch, so PTODSL rewrites the
 branch into a `pto.if_` with automatic merge.
+
+Static list slots can also be live across a rewritten branch. The subscript
+index must be an integer that can be resolved during AST rewriting, including
+compile-time constants and `pto.const_expr` values:
+
+```python
+@pto.jit(target="a5")
+def ast_rewrite_static_slot_kernel(*, SLOT: pto.const_expr = 0):
+    values = [pto.const(0, dtype=pto.i32)]
+
+    if pto.const(1, dtype=pto.i1):
+        values[SLOT] = pto.const(1, dtype=pto.i32)
+
+    if values[SLOT]:
+        pto.pipe_barrier(pto.Pipe.ALL)
+```
+
+The rewritten slot is merged as an `scf.if` result, just like a named scalar
+value. Dynamic indices and container aliases remain unsupported; use an
+explicit `pto.if_`/`pto.for_` state value or a real buffer load/store for those
+cases.
 
 If a live-out value is assigned in only one branch, PTODSL keeps the old value
 on the missing branch:

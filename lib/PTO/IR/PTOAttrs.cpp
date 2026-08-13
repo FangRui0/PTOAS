@@ -55,11 +55,21 @@ bool TileBufConfigAttr::isDefault() const {
 }
 
 static int32_t getLayoutInt(Attribute a, int32_t def) {
-  if (auto bl = mlir::dyn_cast<BLayoutAttr>(a)) return static_cast<int32_t>(bl.getValue());
-  if (auto sl = mlir::dyn_cast<SLayoutAttr>(a)) return static_cast<int32_t>(sl.getValue());
-  if (auto pv = mlir::dyn_cast<PadValueAttr>(a)) return static_cast<int32_t>(pv.getValue());
-  if (auto cm = mlir::dyn_cast<CompactModeAttr>(a)) return static_cast<int32_t>(cm.getValue());
-  if (auto ia = mlir::dyn_cast<IntegerAttr>(a)) return static_cast<int32_t>(ia.getInt());
+  if (auto bl = mlir::dyn_cast<BLayoutAttr>(a)) {
+    return static_cast<int32_t>(bl.getValue());
+  }
+  if (auto sl = mlir::dyn_cast<SLayoutAttr>(a)) {
+    return static_cast<int32_t>(sl.getValue());
+  }
+  if (auto pv = mlir::dyn_cast<PadValueAttr>(a)) {
+    return static_cast<int32_t>(pv.getValue());
+  }
+  if (auto cm = mlir::dyn_cast<CompactModeAttr>(a)) {
+    return static_cast<int32_t>(cm.getValue());
+  }
+  if (auto ia = mlir::dyn_cast<IntegerAttr>(a)) {
+    return static_cast<int32_t>(ia.getInt());
+  }
   return def;
 }
 
@@ -83,7 +93,7 @@ LogicalResult TileBufConfigAttr::verify(function_ref<InFlightDiagnostic()> emitE
   if (!sFractalSize || !sFractalSize.getType().isInteger(kI32BitWidth))
     return emitError() << "s_fractal_size must be i32", failure();
 
-  int32_t s = (int32_t)sFractalSize.getInt();
+  int32_t s = static_cast<int32_t>(sFractalSize.getInt());
   if (s != kFractalMxSize && s != kFractalABSize && s != kFractalCSize)
     return emitError() << "unsupported s_fractal_size: " << s
                        << ", must be one of {"
@@ -112,24 +122,39 @@ LogicalResult TileBufConfigAttr::verify(function_ref<InFlightDiagnostic()> emitE
 
 // Helper: parse Attribute and convert to BLayoutAttr/SLayoutAttr/PadValueAttr
 static BLayoutAttr toBLayoutAttr(MLIRContext *ctx, Attribute a) {
-  if (auto bl = mlir::dyn_cast<BLayoutAttr>(a)) return bl;
-  if (auto ia = mlir::dyn_cast<IntegerAttr>(a)) return BLayoutAttr::get(ctx, static_cast<BLayout>(ia.getInt()));
+  if (auto bl = mlir::dyn_cast<BLayoutAttr>(a)) {
+    return bl;
+  }
+  if (auto ia = mlir::dyn_cast<IntegerAttr>(a)) {
+    return BLayoutAttr::get(ctx, static_cast<BLayout>(ia.getInt()));
+  }
   return {};
 }
 static SLayoutAttr toSLayoutAttr(MLIRContext *ctx, Attribute a) {
-  if (auto sl = mlir::dyn_cast<SLayoutAttr>(a)) return sl;
-  if (auto ia = mlir::dyn_cast<IntegerAttr>(a)) return SLayoutAttr::get(ctx, static_cast<SLayout>(ia.getInt()));
+  if (auto sl = mlir::dyn_cast<SLayoutAttr>(a)) {
+    return sl;
+  }
+  if (auto ia = mlir::dyn_cast<IntegerAttr>(a)) {
+    return SLayoutAttr::get(ctx, static_cast<SLayout>(ia.getInt()));
+  }
   return {};
 }
 static PadValueAttr toPadValueAttr(MLIRContext *ctx, Attribute a) {
-  if (auto pv = mlir::dyn_cast<PadValueAttr>(a)) return pv;
-  if (auto ia = mlir::dyn_cast<IntegerAttr>(a)) return PadValueAttr::get(ctx, static_cast<PadValue>(ia.getInt()));
+  if (auto pv = mlir::dyn_cast<PadValueAttr>(a)) {
+    return pv;
+  }
+  if (auto ia = mlir::dyn_cast<IntegerAttr>(a)) {
+    return PadValueAttr::get(ctx, static_cast<PadValue>(ia.getInt()));
+  }
   return {};
 }
 static CompactModeAttr toCompactModeAttr(MLIRContext *ctx, Attribute a) {
-  if (auto cm = mlir::dyn_cast<CompactModeAttr>(a)) return cm;
-  if (auto ia = mlir::dyn_cast<IntegerAttr>(a))
+  if (auto cm = mlir::dyn_cast<CompactModeAttr>(a)) {
+    return cm;
+  }
+  if (auto ia = mlir::dyn_cast<IntegerAttr>(a)) {
     return CompactModeAttr::get(ctx, static_cast<CompactMode>(ia.getInt()));
+  }
   return {};
 }
 
@@ -142,50 +167,78 @@ Attribute TileBufConfigAttr::parse(AsmParser &p, Type) {
   PadValueAttr pv = def.getPad();
   CompactModeAttr compact = def.getCompactMode();
 
-  if (p.parseLess()) return {};
+  if (p.parseLess()) {
+    return {};
+  }
 
-  if (succeeded(p.parseOptionalGreater()))
+  if (succeeded(p.parseOptionalGreater())) {
     return TileBufConfigAttr::get(ctx, bl, sl, sz, pv, compact);
+  }
 
   bool parsedGreater = false;
   while (!parsedGreater) {
     StringRef key;
-    if (p.parseKeyword(&key)) return {};
-    if (p.parseEqual()) return {};
+    if (p.parseKeyword(&key)) {
+      return {};
+    }
+    if (p.parseEqual()) {
+      return {};
+    }
 
     if (key == "blayout") {
       Attribute a;
-      if (p.parseAttribute(a)) return {};
+      if (p.parseAttribute(a)) {
+        return {};
+      }
       bl = toBLayoutAttr(ctx, a);
-      if (!bl) return {};
+      if (!bl) {
+        return {};
+      }
     } else if (key == "slayout") {
       Attribute a;
-      if (p.parseAttribute(a)) return {};
+      if (p.parseAttribute(a)) {
+        return {};
+      }
       sl = toSLayoutAttr(ctx, a);
-      if (!sl) return {};
+      if (!sl) {
+        return {};
+      }
     } else if (key == "s_fractal_size") {
       int32_t v = 0;
-      if (p.parseInteger(v)) return {};
+      if (p.parseInteger(v)) {
+        return {};
+      }
       sz = IntegerAttr::get(IntegerType::get(ctx, kI32BitWidth), v);
     } else if (key == "pad") {
       Attribute a;
-      if (p.parseAttribute(a)) return {};
+      if (p.parseAttribute(a)) {
+        return {};
+      }
       pv = toPadValueAttr(ctx, a);
-      if (!pv) return {};
+      if (!pv) {
+        return {};
+      }
     } else if (key == "compact") {
       Attribute a;
-      if (p.parseAttribute(a)) return {};
+      if (p.parseAttribute(a)) {
+        return {};
+      }
       compact = toCompactModeAttr(ctx, a);
-      if (!compact) return {};
+      if (!compact) {
+        return {};
+      }
     } else {
       p.emitError(p.getCurrentLocation(), "unknown key in tile_buf_config: ") << key;
       return {};
     }
 
     parsedGreater = succeeded(p.parseOptionalGreater());
-    if (parsedGreater)
+    if (parsedGreater) {
       break;
-    if (p.parseComma()) return {};
+    }
+    if (p.parseComma()) {
+      return {};
+    }
   }
 
   return TileBufConfigAttr::get(ctx, bl, sl, sz, pv, compact);
@@ -195,7 +248,7 @@ void TileBufConfigAttr::print(AsmPrinter &p) const {
   p << "<";
   p << "blayout=" << getBLayout();
   p << ", slayout=" << getSLayout();
-  p << ", s_fractal_size=" << (int32_t)getSFractalSize().getInt();
+  p << ", s_fractal_size=" << static_cast<int32_t>(getSFractalSize().getInt());
   p << ", pad=" << getPad();
   p << ", compact=" << getCompactMode();
   p << ">";

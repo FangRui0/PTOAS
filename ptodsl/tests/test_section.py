@@ -9,6 +9,8 @@
 
 """Focused tracing coverage for explicit physical section hints."""
 
+import re
+
 from ptodsl import pto
 from ptodsl._ast_rewrite import PTODSLAstRewriteError
 from ptodsl._context import make_context
@@ -200,6 +202,34 @@ def lexical_section_sibling_single_sided_conditional_rebinding_probe():
 
 
 @pto.jit(target="a5", mode="explicit")
+def lexical_section_sequential_single_sided_conditional_probe():
+    m_tile = pto.const(0, dtype=pto.i64)
+    n_tile = pto.const(0, dtype=pto.i64)
+    with pto.section("cube"):
+        if pto.get_block_idx() < 16:
+            m_tile = pto.get_block_idx() & 3
+            n_tile = pto.get_block_idx() // 4
+        if 16 <= pto.get_block_idx():
+            m_tile = (pto.get_block_idx() & 3) + 4
+            n_tile = (pto.get_block_idx() // 4) - 4
+        if 15 < pto.get_block_idx():
+            n_tile = 3 - n_tile
+        pto.wait_flag("S", "MTE2", event_id=m_tile + n_tile)
+
+
+@pto.jit(target="a5", mode="explicit")
+def lexical_section_single_sided_read_before_rebinding_probe():
+    value = pto.const(0, dtype=pto.i64)
+    with pto.section("cube"):
+        if pto.get_block_idx() < 16:
+            previous_value = value
+            value = pto.get_block_idx()
+        else:
+            previous_value = value
+        pto.wait_flag("S", "MTE2", event_id=previous_value + value)
+
+
+@pto.jit(target="a5", mode="explicit")
 def lexical_section_uninitialized_conditional_probe():
     one = pto.const(1, dtype=pto.i32)
     with pto.section("cube"):
@@ -340,6 +370,33 @@ def main() -> None:
     assert sibling_single_sided_text.count("scf.if") == 4
     with make_context() as context:
         module = Module.parse(sibling_single_sided_text, context)
+        module.operation.verify()
+
+    sequential_single_sided_text = lexical_section_sequential_single_sided_conditional_probe.compile().mlir_text()
+    if_results = re.findall(r"^\s*(%\d+)(?::\d+)? = scf\.if", sequential_single_sided_text, re.MULTILINE)
+    assert len(if_results) == 3
+    second_if_text = sequential_single_sided_text.split(f"{if_results[1]}:2 = scf.if", 1)[1]
+    second_if_text = second_if_text.split(f"{if_results[2]} = scf.if", 1)[0]
+    assert re.search(
+        rf"else \{{\s+scf\.yield {re.escape(if_results[0])}#0, {re.escape(if_results[0])}#1 : i64, i64",
+        second_if_text,
+    )
+    third_if_text = sequential_single_sided_text.split(f"{if_results[2]} = scf.if", 1)[1]
+    assert re.search(
+        rf"else \{{\s+scf\.yield {re.escape(if_results[1])}#1 : i64",
+        third_if_text,
+    )
+    with make_context() as context:
+        module = Module.parse(sequential_single_sided_text, context)
+        module.operation.verify()
+
+    read_before_rebinding_text = lexical_section_single_sided_read_before_rebinding_probe.compile().mlir_text()
+    assert re.search(
+        r"scf\.yield %c0_i64, %[\d]+ : i64, i64",
+        read_before_rebinding_text,
+    )
+    with make_context() as context:
+        module = Module.parse(read_before_rebinding_text, context)
         module.operation.verify()
 
     nested_conditional_text = lexical_section_nested_conditional_rebinding_probe.compile().mlir_text()

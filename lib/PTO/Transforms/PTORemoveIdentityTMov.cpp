@@ -49,42 +49,48 @@ static std::optional<APInt> tryEvalIntegerLikeConstant(Value value);
 static std::optional<APInt> evalSignedCast(Value input, Type resultType) {
   std::optional<APInt> inputValue = tryEvalIntegerLikeConstant(input);
   std::optional<unsigned> resultWidth = getIntegerLikeBitWidth(resultType);
-  if (!inputValue || !resultWidth)
+  if (!inputValue || !resultWidth) {
     return std::nullopt;
+  }
   return inputValue->sextOrTrunc(*resultWidth);
 }
 
 static std::optional<APInt> evalUnsignedCast(Value input, Type resultType) {
   std::optional<APInt> inputValue = tryEvalIntegerLikeConstant(input);
   std::optional<unsigned> resultWidth = getIntegerLikeBitWidth(resultType);
-  if (!inputValue || !resultWidth)
+  if (!inputValue || !resultWidth) {
     return std::nullopt;
+  }
   return inputValue->zextOrTrunc(*resultWidth);
 }
 
 static std::optional<APInt> evalTruncCast(Value input, Type resultType) {
   std::optional<APInt> inputValue = tryEvalIntegerLikeConstant(input);
   std::optional<unsigned> resultWidth = getIntegerLikeBitWidth(resultType);
-  if (!inputValue || !resultWidth || *resultWidth > inputValue->getBitWidth())
+  if (!inputValue || !resultWidth || *resultWidth > inputValue->getBitWidth()) {
     return std::nullopt;
+  }
   return inputValue->trunc(*resultWidth);
 }
 
 static std::optional<APInt> tryEvalIntegerLikeConstant(Value value) {
-  if (!value)
+  if (!value) {
     return std::nullopt;
+  }
 
   APInt apInt;
   if (matchPattern(value, m_ConstantInt(&apInt))) {
     std::optional<unsigned> width = getIntegerLikeBitWidth(value.getType());
-    if (!width)
+    if (!width) {
       return std::nullopt;
+    }
     return apInt.sextOrTrunc(*width);
   }
 
   Operation *defOp = value.getDefiningOp();
-  if (!defOp)
+  if (!defOp) {
     return std::nullopt;
+  }
 
   if (auto castOp = dyn_cast<arith::IndexCastOp>(defOp))
     return evalSignedCast(castOp.getIn(), castOp.getType());
@@ -102,8 +108,9 @@ static std::optional<APInt> tryEvalIntegerLikeConstant(Value value) {
 
 static std::optional<int64_t> tryEvalI64Constant(Value value) {
   std::optional<APInt> apInt = tryEvalIntegerLikeConstant(value);
-  if (!apInt || apInt->getBitWidth() > 64)
+  if (!apInt || apInt->getBitWidth() > 64) {
     return std::nullopt;
+  }
   return apInt->getSExtValue();
 }
 
@@ -125,22 +132,26 @@ static bool isDeadDstTMov(TMovOp op) {
 static const BaseMemInfo *
 getSingleMemInfo(const Buffer2MemInfoMap &buffer2MemInfoMap, Value value) {
   auto it = buffer2MemInfoMap.find(value);
-  if (it == buffer2MemInfoMap.end() || it->second.size() != 1)
+  if (it == buffer2MemInfoMap.end() || it->second.size() != 1) {
     return nullptr;
+  }
   return it->second.front().get();
 }
 
 static std::optional<int64_t>
 tryGetConcreteRootAddress(const BaseMemInfo *info) {
-  if (!info)
+  if (!info) {
     return std::nullopt;
+  }
 
-  if (auto direct = tryEvalI64Constant(info->rootBuffer))
+  if (auto direct = tryEvalI64Constant(info->rootBuffer)) {
     return direct;
+  }
 
   Operation *defOp = info->rootBuffer.getDefiningOp();
-  if (!defOp)
+  if (!defOp) {
     return std::nullopt;
+  }
 
   if (auto alloc = dyn_cast<pto::AllocTileOp>(defOp))
     return tryEvalI64Constant(alloc.getAddr());
@@ -158,20 +169,23 @@ static bool isStaticallyAddressableValue(Value value) {
   constexpr int kMaxDepth = 32;
   while (value && depth++ < kMaxDepth) {
     Operation *defOp = value.getDefiningOp();
-    if (!defOp)
+    if (!defOp) {
       return false;
+    }
 
     if (auto subView = dyn_cast<memref::SubViewOp>(defOp)) {
       if (hasDynamicStaticList(subView.getStaticOffsets()) ||
           hasDynamicStaticList(subView.getStaticSizes()) ||
-          hasDynamicStaticList(subView.getStaticStrides()))
+          hasDynamicStaticList(subView.getStaticStrides())) {
         return false;
+      }
       value = subView.getSource();
       continue;
     }
 
-    if (isa<memref::ReinterpretCastOp>(defOp))
+    if (isa<memref::ReinterpretCastOp>(defOp)) {
       return false;
+    }
 
     if (auto cast = dyn_cast<memref::CastOp>(defOp)) {
       value = cast.getSource();
@@ -186,8 +200,9 @@ static bool isStaticallyAddressableValue(Value value) {
       continue;
     }
     if (auto view = dyn_cast<memref::ViewOp>(defOp)) {
-      if (view.getByteShift())
+      if (view.getByteShift()) {
         return false;
+      }
       value = view.getSource();
       continue;
     }
@@ -200,27 +215,35 @@ static bool isStaticallyAddressableValue(Value value) {
 
 static bool hasExactSameAddressRange(const BaseMemInfo *srcInfo,
                                      const BaseMemInfo *dstInfo) {
-  if (!srcInfo || !dstInfo)
+  if (!srcInfo || !dstInfo) {
     return false;
-  if (srcInfo->scope != dstInfo->scope)
+  }
+  if (srcInfo->scope != dstInfo->scope) {
     return false;
-  if (srcInfo->allocateSize == 0 || dstInfo->allocateSize == 0)
+  }
+  if (srcInfo->allocateSize == 0 || dstInfo->allocateSize == 0) {
     return false;
-  if (srcInfo->allocateSize != dstInfo->allocateSize)
+  }
+  if (srcInfo->allocateSize != dstInfo->allocateSize) {
     return false;
-  if (srcInfo->baseAddresses.empty() || dstInfo->baseAddresses.empty())
+  }
+  if (srcInfo->baseAddresses.empty() || dstInfo->baseAddresses.empty()) {
     return false;
-  if (srcInfo->baseAddresses != dstInfo->baseAddresses)
+  }
+  if (srcInfo->baseAddresses != dstInfo->baseAddresses) {
     return false;
+  }
   return true;
 }
 
 static bool hasSameConcreteAddressRange(const BaseMemInfo *srcInfo,
                                         const BaseMemInfo *dstInfo) {
-  if (!hasExactSameAddressRange(srcInfo, dstInfo))
+  if (!hasExactSameAddressRange(srcInfo, dstInfo)) {
     return false;
-  if (srcInfo->rootBuffer == dstInfo->rootBuffer)
+  }
+  if (srcInfo->rootBuffer == dstInfo->rootBuffer) {
     return true;
+  }
   auto srcRootAddr = tryGetConcreteRootAddress(srcInfo);
   auto dstRootAddr = tryGetConcreteRootAddress(dstInfo);
   return srcRootAddr && dstRootAddr && *srcRootAddr == *dstRootAddr;
@@ -228,8 +251,9 @@ static bool hasSameConcreteAddressRange(const BaseMemInfo *srcInfo,
 
 static Operation *getAncestorInBlock(Operation *op, Block *block) {
   for (Operation *cur = op; cur; cur = cur->getParentOp()) {
-    if (cur->getBlock() == block)
+    if (cur->getBlock() == block) {
       return cur;
+    }
   }
   return nullptr;
 }
@@ -238,13 +262,16 @@ static bool hasUseAfterOp(Value value, Operation *currentOp) {
   Block *block = currentOp->getBlock();
   for (OpOperand &use : value.getUses()) {
     Operation *owner = use.getOwner();
-    if (owner == currentOp)
+    if (owner == currentOp) {
       continue;
+    }
     Operation *ancestor = getAncestorInBlock(owner, block);
-    if (!ancestor)
+    if (!ancestor) {
       return true;
-    if (ancestor != currentOp && currentOp->isBeforeInBlock(ancestor))
+    }
+    if (ancestor != currentOp && currentOp->isBeforeInBlock(ancestor)) {
       return true;
+    }
   }
   return false;
 }
@@ -254,13 +281,15 @@ static bool hasLaterUseOfSameAddressRange(
     const Buffer2MemInfoMap &buffer2MemInfoMap) {
   for (const auto &entry : buffer2MemInfoMap) {
     // Later reads of the source itself do not make this no-op TMOV a bridge.
-    if (entry.first == op.getSrc())
+    if (entry.first == op.getSrc()) {
       continue;
+    }
     bool sameRange = llvm::any_of(entry.second, [&](const auto &info) {
       return hasSameConcreteAddressRange(info.get(), dstInfo);
     });
-    if (sameRange && hasUseAfterOp(entry.first, op))
+    if (sameRange && hasUseAfterOp(entry.first, op)) {
       return true;
+    }
   }
   return false;
 }
@@ -271,11 +300,13 @@ static bool hasPlainTMovSemantics(TMovOp op) {
 }
 
 static bool hasCompatibleIdentityTypes(TMovOp op) {
-  if (op.getSrc().getType() != op.getDst().getType())
+  if (op.getSrc().getType() != op.getDst().getType()) {
     return false;
+  }
   for (OpResult result : op->getResults()) {
-    if (result.getType() != op.getDst().getType())
+    if (result.getType() != op.getDst().getType()) {
       return false;
+    }
   }
   return true;
 }
@@ -305,13 +336,15 @@ isIdentityTMovByMemInfo(TMovOp op, const Buffer2MemInfoMap &buffer2MemInfoMap) {
   Value src = op.getSrc();
   Value dst = op.getDst();
 
-  if (!isStaticallyAddressableValue(src) || !isStaticallyAddressableValue(dst))
+  if (!isStaticallyAddressableValue(src) || !isStaticallyAddressableValue(dst)) {
     return false;
+  }
 
   const BaseMemInfo *srcInfo = getSingleMemInfo(buffer2MemInfoMap, src);
   const BaseMemInfo *dstInfo = getSingleMemInfo(buffer2MemInfoMap, dst);
-  if (!hasSameConcreteAddressRange(srcInfo, dstInfo))
+  if (!hasSameConcreteAddressRange(srcInfo, dstInfo)) {
     return false;
+  }
 
   return isDeadDstTMov(op) &&
          !hasLaterUseOfSameAddressRange(op, dstInfo, buffer2MemInfoMap);
@@ -327,8 +360,9 @@ struct PTORemoveIdentityTMovPass
 
     func.walk([&](TMovOp op) {
       if (!hasPlainTMovSemantics(op) || !hasCompatibleIdentityTypes(op) ||
-          touchesLowPrecisionElement(op))
+          touchesLowPrecisionElement(op)) {
         return;
+      }
       if (op.getSrc() == op.getDst()) {
         identityMoves.push_back(op);
         return;
@@ -345,14 +379,16 @@ struct PTORemoveIdentityTMovPass
       translator.Build();
 
       for (TMovOp op : memInfoCandidates) {
-        if (isIdentityTMovByMemInfo(op, buffer2MemInfoMap))
+        if (isIdentityTMovByMemInfo(op, buffer2MemInfoMap)) {
           identityMoves.push_back(op);
+        }
       }
     }
 
     for (TMovOp op : identityMoves) {
-      for (OpResult result : op->getResults())
+      for (OpResult result : op->getResults()) {
         result.replaceAllUsesWith(op.getDst());
+      }
       op.erase();
     }
   }

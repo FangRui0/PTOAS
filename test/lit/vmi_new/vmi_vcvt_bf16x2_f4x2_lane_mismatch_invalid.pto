@@ -5,15 +5,17 @@
 // THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
-// RUN: not ptoas --pto-arch=a3 %s 2>&1 | FileCheck %s
+
+// RUN: not ptoas --emit-pto-ir %s 2>&1 | FileCheck %s
 
 module {
-  func.func @tprint_format_requires_tmp() attributes {pto.entry} {
-    %src = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    pto.tprint ins(%src : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              {printFormat = #pto<print_format width8_precision2>}
+  func.func @bf16x2_f4x2_lane_mismatch(
+      %source: !pto.vmi.vreg<64x!pto.bf16x2>) {
+    %result = pto.vmi.vcvt %source {rounding = "R"}
+        : !pto.vmi.vreg<64x!pto.bf16x2>
+       -> !pto.vmi.vreg<128x!pto.f4E1M2x2>
     return
   }
 }
 
-// CHECK: error: 'pto.tprint' op expects printFormat only when tmp is present
+// CHECK: requires source and result logical lane counts to match

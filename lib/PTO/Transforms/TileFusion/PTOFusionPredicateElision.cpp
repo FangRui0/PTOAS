@@ -9,6 +9,7 @@
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Dominance.h"
@@ -121,24 +122,35 @@ static std::optional<PltCandidate> buildPltCandidate(Operation *op) {
 
 static std::optional<ForIterArgInfo> getForIterArgInfo(Value value) {
   auto arg = dyn_cast<BlockArgument>(value);
-  if (!arg || arg.getArgNumber() == 0)
+  if (!arg || arg.getArgNumber() == 0) {
     return std::nullopt;
+  }
 
   auto forOp =
       dyn_cast_or_null<scf::ForOp>(arg.getParentRegion()->getParentOp());
-  if (!forOp || arg.getOwner() != forOp.getBody())
+  if (!forOp || arg.getOwner() != forOp.getBody()) {
     return std::nullopt;
+  }
 
   unsigned iterArgIndex = arg.getArgNumber() - 1;
-  if (iterArgIndex >= forOp.getInitArgs().size())
+  if (iterArgIndex >= forOp.getInitArgs().size()) {
     return std::nullopt;
+  }
   return ForIterArgInfo{forOp, iterArgIndex};
 }
 
 static std::optional<PltScalarOutInfo> getPltScalarOutInfo(Value value) {
+  // Element-wise templates keep the remaining element count as index while
+  // plt consumes and returns an integer scalar. Look through the cast used to
+  // feed the scalar result back to scf.for.
+  if (auto indexCast = value.getDefiningOp<arith::IndexCastOp>()) {
+    value = indexCast.getIn();
+  }
+
   auto result = dyn_cast<OpResult>(value);
-  if (!result || result.getResultNumber() != 1)
+  if (!result || result.getResultNumber() != 1) {
     return std::nullopt;
+  }
 
   if (auto plt = dyn_cast<pto::PltB8Op>(result.getOwner()))
     return PltScalarOutInfo{plt.getScalar(), 8};
@@ -153,10 +165,12 @@ static bool areEquivalentLoopCarriedValues(Value lhs, Value rhs,
                                            ValueEquivalenceContext &context) {
   std::optional<ForIterArgInfo> lhsInfo = getForIterArgInfo(lhs);
   std::optional<ForIterArgInfo> rhsInfo = getForIterArgInfo(rhs);
-  if (!lhsInfo || !rhsInfo)
+  if (!lhsInfo || !rhsInfo) {
     return false;
-  if (lhsInfo->forOp != rhsInfo->forOp)
+  }
+  if (lhsInfo->forOp != rhsInfo->forOp) {
     return false;
+  }
 
   if (lhsInfo->forOp.getRegionIterArgs().size() !=
       lhsInfo->forOp.getInitArgs().size())
@@ -175,16 +189,29 @@ static bool areEquivalentLoopCarriedValues(Value lhs, Value rhs,
       getPltScalarOutInfo(yieldedValues[lhsInfo->iterArgIndex]);
   std::optional<PltScalarOutInfo> rhsYieldInfo =
       getPltScalarOutInfo(yieldedValues[rhsInfo->iterArgIndex]);
-  if (!lhsYieldInfo || !rhsYieldInfo)
+  if (!lhsYieldInfo || !rhsYieldInfo) {
     return false;
-  if (lhsYieldInfo->bitWidth != rhsYieldInfo->bitWidth)
+  }
+  if (lhsYieldInfo->bitWidth != rhsYieldInfo->bitWidth) {
     return false;
+  }
+
+  Value lhsRecurrenceInput = lhsYieldInfo->scalar;
+  Value rhsRecurrenceInput = rhsYieldInfo->scalar;
+  if (auto indexCast = lhsRecurrenceInput.getDefiningOp<arith::IndexCastOp>()) {
+    lhsRecurrenceInput = indexCast.getIn();
+  }
+  if (auto indexCast = rhsRecurrenceInput.getDefiningOp<arith::IndexCastOp>()) {
+    rhsRecurrenceInput = indexCast.getIn();
+  }
 
   // Stay conservative on unsupported cyclic proofs. The only accepted
   // recurrence cycle is the direct iter_arg -> plt.scalar_out self recursion
-  // for the same value pair; more complex cycles remain unsupported.
-  if (areSameValuePair(lhs, rhs, lhsYieldInfo->scalar, rhsYieldInfo->scalar))
+  // for the same value pair, optionally bridged by the index casts required by
+  // the plt/scf type boundary; more complex cycles remain unsupported.
+  if (areSameValuePair(lhs, rhs, lhsRecurrenceInput, rhsRecurrenceInput)) {
     return true;
+  }
 
   return areEquivalentValues(lhsYieldInfo->scalar, rhsYieldInfo->scalar,
                              context);
@@ -192,39 +219,51 @@ static bool areEquivalentLoopCarriedValues(Value lhs, Value rhs,
 
 static bool areEquivalentOperations(Operation *lhs, Operation *rhs,
                                     ValueEquivalenceContext &context) {
-  if (!lhs || !rhs)
+  if (!lhs || !rhs) {
     return false;
-  if (lhs->getName() != rhs->getName())
+  }
+  if (lhs->getName() != rhs->getName()) {
     return false;
-  if (lhs->getNumRegions() != 0 || rhs->getNumRegions() != 0)
+  }
+  if (lhs->getNumRegions() != 0 || rhs->getNumRegions() != 0) {
     return false;
-  if (lhs->getNumResults() != rhs->getNumResults())
+  }
+  if (lhs->getNumResults() != rhs->getNumResults()) {
     return false;
-  if (lhs->getNumOperands() != rhs->getNumOperands())
+  }
+  if (lhs->getNumOperands() != rhs->getNumOperands()) {
     return false;
-  if (lhs->getAttrDictionary() != rhs->getAttrDictionary())
+  }
+  if (lhs->getAttrDictionary() != rhs->getAttrDictionary()) {
     return false;
-  if (!isMemoryEffectFree(lhs) || !isMemoryEffectFree(rhs))
+  }
+  if (!isMemoryEffectFree(lhs) || !isMemoryEffectFree(rhs)) {
     return false;
-  if (!llvm::equal(lhs->getResultTypes(), rhs->getResultTypes()))
+  }
+  if (!llvm::equal(lhs->getResultTypes(), rhs->getResultTypes())) {
     return false;
+  }
 
   for (auto [lhsOperand, rhsOperand] :
        llvm::zip(lhs->getOperands(), rhs->getOperands())) {
-    if (!areEquivalentValues(lhsOperand, rhsOperand, context))
+    if (!areEquivalentValues(lhsOperand, rhsOperand, context)) {
       return false;
+    }
   }
   return true;
 }
 
 static bool areEquivalentValues(Value lhs, Value rhs,
                                 ValueEquivalenceContext &context) {
-  if (lhs == rhs)
+  if (lhs == rhs) {
     return true;
-  if (!lhs || !rhs)
+  }
+  if (!lhs || !rhs) {
     return false;
-  if (lhs.getType() != rhs.getType())
+  }
+  if (lhs.getType() != rhs.getType()) {
     return false;
+  }
 
   if (std::optional<EquivalenceState> state =
           lookupEquivalenceState(context, lhs, rhs)) {
@@ -258,13 +297,15 @@ static void populateDominatingCandidateIndices(
     MutableArrayRef<PltCandidate> candidates, DominanceInfo &dominanceInfo) {
   for (unsigned current = 0; current < candidates.size(); ++current) {
     for (unsigned previous = 0; previous < current; ++previous) {
-      if (candidates[previous].bitWidth != candidates[current].bitWidth)
+      if (candidates[previous].bitWidth != candidates[current].bitWidth) {
         continue;
+      }
       // Only reuse an earlier plt when its whole result pair dominates the
       // later one. This keeps replacement local and SSA-safe.
       if (!dominanceInfo.properlyDominates(candidates[previous].op,
-                                           candidates[current].op))
+                                           candidates[current].op)) {
         continue;
+      }
       candidates[current].dominatingCandidates.push_back(previous);
     }
   }
@@ -277,8 +318,9 @@ buildFusionRegionPredicateContext(pto::FusionRegionOp fusionRegion,
   context.fusionRegion = fusionRegion;
 
   fusionRegion.walk([&](Operation *op) -> WalkResult {
-    if (op != fusionRegion.getOperation() && isa<pto::FusionRegionOp>(op))
+    if (op != fusionRegion.getOperation() && isa<pto::FusionRegionOp>(op)) {
       return WalkResult::skip();
+    }
 
     if (std::optional<PltCandidate> candidate = buildPltCandidate(op))
       context.pltCandidates.push_back(std::move(*candidate));
@@ -301,8 +343,9 @@ findEquivalentDominatingCandidate(FusionRegionPredicateContext &context,
   const PltCandidate &current = context.pltCandidates[currentIndex];
   Value currentScalar = getCurrentScalarOperand(current);
   for (unsigned previousIndex : current.dominatingCandidates) {
-    if (erased.contains(previousIndex))
+    if (erased.contains(previousIndex)) {
       continue;
+    }
     const PltCandidate &previous = context.pltCandidates[previousIndex];
     // Equivalence is checked on the scalar input; when it holds, both plt
     // results are reused as a pair.
@@ -322,14 +365,16 @@ elideEquivalentPltCandidates(FusionRegionPredicateContext &context) {
 
   for (unsigned currentIndex = 0; currentIndex < context.pltCandidates.size();
        ++currentIndex) {
-    if (erased.contains(currentIndex))
+    if (erased.contains(currentIndex)) {
       continue;
+    }
 
     std::optional<unsigned> previousIndex =
         findEquivalentDominatingCandidate(context, valueContext, currentIndex,
                                           erased);
-    if (!previousIndex)
+    if (!previousIndex) {
       continue;
+    }
 
     PltCandidate &current = context.pltCandidates[currentIndex];
     PltCandidate &previous = context.pltCandidates[*previousIndex];
@@ -340,8 +385,9 @@ elideEquivalentPltCandidates(FusionRegionPredicateContext &context) {
     changed = true;
   }
 
-  for (Operation *op : opsToErase)
+  for (Operation *op : opsToErase) {
     op->erase();
+  }
 
   return changed;
 }
@@ -354,24 +400,28 @@ struct PTOFusionPredicateElisionPass
 
   void runOnOperation() override {
     func::FuncOp func = getOperation();
-    if (func.isExternal())
+    if (func.isExternal()) {
       return;
+    }
 
     DominanceInfo &dominanceInfo = getAnalysis<DominanceInfo>();
     SmallVector<FusionRegionPredicateContext, 4> fusionContexts;
     func.walk([&](pto::FusionRegionOp fusionRegion) {
       FusionRegionPredicateContext context =
           buildFusionRegionPredicateContext(fusionRegion, dominanceInfo);
-      if (!context.pltCandidates.empty())
+      if (!context.pltCandidates.empty()) {
         fusionContexts.push_back(std::move(context));
+      }
     });
 
     bool changed = false;
-    for (FusionRegionPredicateContext &context : fusionContexts)
+    for (FusionRegionPredicateContext &context : fusionContexts) {
       changed |= elideEquivalentPltCandidates(context);
+    }
 
-    if (!changed)
+    if (!changed) {
       markAllAnalysesPreserved();
+    }
   }
 };
 

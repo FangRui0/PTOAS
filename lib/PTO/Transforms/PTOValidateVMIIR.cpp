@@ -41,8 +41,9 @@ namespace {
 bool isVMIType(Type type) { return isa<VMIVRegType, VMIMaskType>(type); }
 
 bool containsVMIType(Type type) {
-  if (isVMIType(type))
+  if (isVMIType(type)) {
     return true;
+  }
 
   if (auto functionType = dyn_cast<FunctionType>(type)) {
     return llvm::any_of(functionType.getInputs(),
@@ -52,51 +53,63 @@ bool containsVMIType(Type type) {
            });
   }
 
-  if (auto shapedType = dyn_cast<ShapedType>(type))
+  if (auto shapedType = dyn_cast<ShapedType>(type)) {
     return containsVMIType(shapedType.getElementType());
+  }
 
   return false;
 }
 
 bool containsVMIType(Attribute attr) {
-  if (!attr)
+  if (!attr) {
     return false;
+  }
 
-  if (auto typeAttr = dyn_cast<TypeAttr>(attr))
-    if (containsVMIType(typeAttr.getValue()))
+  if (auto typeAttr = dyn_cast<TypeAttr>(attr)) {
+    if (containsVMIType(typeAttr.getValue())) {
       return true;
+    }
+  }
 
-  if (auto typedAttr = dyn_cast<TypedAttr>(attr))
-    if (containsVMIType(typedAttr.getType()))
+  if (auto typedAttr = dyn_cast<TypedAttr>(attr)) {
+    if (containsVMIType(typedAttr.getType())) {
       return true;
+    }
+  }
 
-  if (auto arrayAttr = dyn_cast<ArrayAttr>(attr))
+  if (auto arrayAttr = dyn_cast<ArrayAttr>(attr)) {
     return llvm::any_of(arrayAttr, [](Attribute element) {
       return containsVMIType(element);
     });
+  }
 
-  if (auto dictAttr = dyn_cast<DictionaryAttr>(attr))
+  if (auto dictAttr = dyn_cast<DictionaryAttr>(attr)) {
     return llvm::any_of(dictAttr, [](NamedAttribute namedAttr) {
       return containsVMIType(namedAttr.getValue());
     });
+  }
 
   return false;
 }
 
 bool isSurfaceVMIType(Type type) {
-  if (auto vregType = dyn_cast<VMIVRegType>(type))
+  if (auto vregType = dyn_cast<VMIVRegType>(type)) {
     return !vregType.getLayout();
-  if (auto maskType = dyn_cast<VMIMaskType>(type))
+  }
+  if (auto maskType = dyn_cast<VMIMaskType>(type)) {
     return maskType.isPred() && !maskType.getLayout();
+  }
   return false;
 }
 
 bool isLayoutAssignedVMIType(Type type) {
-  if (auto vregType = dyn_cast<VMIVRegType>(type))
+  if (auto vregType = dyn_cast<VMIVRegType>(type)) {
     return static_cast<bool>(vregType.getLayoutAttr());
-  if (auto maskType = dyn_cast<VMIMaskType>(type))
+  }
+  if (auto maskType = dyn_cast<VMIMaskType>(type)) {
     return maskType.getLayoutAttr() &&
            VMIMaskType::isConcreteGranularity(maskType.getGranularity());
+  }
   return false;
 }
 
@@ -132,16 +145,18 @@ bool hasVMIType(Operation *op) {
     return true;
   for (Region &region : op->getRegions()) {
     for (Block &block : region) {
-      if (llvm::any_of(block.getArgumentTypes(), isVMIType))
+      if (llvm::any_of(block.getArgumentTypes(), isVMIType)) {
         return true;
+      }
     }
   }
   return false;
 }
 
 void mirrorDiagnostic(llvm::raw_ostream *diagOS, Twine message) {
-  if (diagOS)
+  if (diagOS) {
     *diagOS << message << "\n";
+  }
 }
 
 LogicalResult emitInvariant(Operation *op, llvm::raw_ostream *diagOS,
@@ -171,8 +186,9 @@ LogicalResult emitLayoutSupportContract(Operation *op,
 
   bool printedAny = false;
   auto printValueType = [&](StringRef kind, int64_t index, Type type) {
-    if (!isVMIType(type))
+    if (!isVMIType(type)) {
       return;
+    }
     if (!printedAny) {
       os << "; VMI types:";
       printedAny = true;
@@ -180,10 +196,12 @@ LogicalResult emitLayoutSupportContract(Operation *op,
     os << " " << kind << "#" << index << "=" << type;
   };
 
-  for (auto [index, operand] : llvm::enumerate(op->getOperands()))
+  for (auto [index, operand] : llvm::enumerate(op->getOperands())) {
     printValueType("operand", static_cast<int64_t>(index), operand.getType());
-  for (auto [index, result] : llvm::enumerate(op->getResults()))
+  }
+  for (auto [index, result] : llvm::enumerate(op->getResults())) {
     printValueType("result", static_cast<int64_t>(index), result.getType());
+  }
 
   os.flush();
   return emitLayoutContract(op, diagOS, text);
@@ -200,8 +218,9 @@ emitHelperMaterializationContract(Operation *helper, Type sourceType,
             " has no registered materialization support: " + reason);
   };
 
-  if (helper->getNumResults() != 1 || !helper->getResult(0).hasOneUse())
+  if (helper->getNumResults() != 1 || !helper->getResult(0).hasOneUse()) {
     return emitFallback();
+  }
 
   OpOperand &use = *helper->getResult(0).use_begin();
   Operation *requester = use.getOwner();
@@ -234,20 +253,26 @@ LogicalResult verifyBoundaryType(Operation *owner, Type type,
 
 LogicalResult verifyBoundaryTypeTree(Operation *owner, Type type,
                                      llvm::raw_ostream *diagOS) {
-  if (failed(verifyBoundaryType(owner, type, diagOS)))
+  if (failed(verifyBoundaryType(owner, type, diagOS))) {
     return failure();
-
-  if (auto functionType = dyn_cast<FunctionType>(type)) {
-    for (Type input : functionType.getInputs())
-      if (failed(verifyBoundaryTypeTree(owner, input, diagOS)))
-        return failure();
-    for (Type result : functionType.getResults())
-      if (failed(verifyBoundaryTypeTree(owner, result, diagOS)))
-        return failure();
   }
 
-  if (auto shapedType = dyn_cast<ShapedType>(type))
+  if (auto functionType = dyn_cast<FunctionType>(type)) {
+    for (Type input : functionType.getInputs()) {
+      if (failed(verifyBoundaryTypeTree(owner, input, diagOS))) {
+        return failure();
+      }
+    }
+    for (Type result : functionType.getResults()) {
+      if (failed(verifyBoundaryTypeTree(owner, result, diagOS))) {
+        return failure();
+      }
+    }
+  }
+
+  if (auto shapedType = dyn_cast<ShapedType>(type)) {
     return verifyBoundaryTypeTree(owner, shapedType.getElementType(), diagOS);
+  }
 
   return success();
 }
@@ -265,21 +290,27 @@ LogicalResult verifyLayoutAssignedType(Operation *owner, Type type,
 
 LogicalResult verifyLayoutAssignedTypeTree(Operation *owner, Type type,
                                            llvm::raw_ostream *diagOS) {
-  if (failed(verifyLayoutAssignedType(owner, type, diagOS)))
+  if (failed(verifyLayoutAssignedType(owner, type, diagOS))) {
     return failure();
-
-  if (auto functionType = dyn_cast<FunctionType>(type)) {
-    for (Type input : functionType.getInputs())
-      if (failed(verifyLayoutAssignedTypeTree(owner, input, diagOS)))
-        return failure();
-    for (Type result : functionType.getResults())
-      if (failed(verifyLayoutAssignedTypeTree(owner, result, diagOS)))
-        return failure();
   }
 
-  if (auto shapedType = dyn_cast<ShapedType>(type))
+  if (auto functionType = dyn_cast<FunctionType>(type)) {
+    for (Type input : functionType.getInputs()) {
+      if (failed(verifyLayoutAssignedTypeTree(owner, input, diagOS))) {
+        return failure();
+      }
+    }
+    for (Type result : functionType.getResults()) {
+      if (failed(verifyLayoutAssignedTypeTree(owner, result, diagOS))) {
+        return failure();
+      }
+    }
+  }
+
+  if (auto shapedType = dyn_cast<ShapedType>(type)) {
     return verifyLayoutAssignedTypeTree(owner, shapedType.getElementType(),
                                         diagOS);
+  }
 
   return success();
 }
@@ -288,28 +319,37 @@ template <typename TypeVerifier>
 LogicalResult verifyAttributeTypes(Operation *owner, Attribute attr,
                                    llvm::raw_ostream *diagOS,
                                    TypeVerifier verifyType) {
-  if (!attr)
+  if (!attr) {
     return success();
+  }
 
-  if (auto typeAttr = dyn_cast<TypeAttr>(attr))
-    if (failed(verifyType(owner, typeAttr.getValue(), diagOS)))
+  if (auto typeAttr = dyn_cast<TypeAttr>(attr)) {
+    if (failed(verifyType(owner, typeAttr.getValue(), diagOS))) {
       return failure();
+    }
+  }
 
-  if (auto typedAttr = dyn_cast<TypedAttr>(attr))
-    if (failed(verifyType(owner, typedAttr.getType(), diagOS)))
+  if (auto typedAttr = dyn_cast<TypedAttr>(attr)) {
+    if (failed(verifyType(owner, typedAttr.getType(), diagOS))) {
       return failure();
+    }
+  }
 
   if (auto arrayAttr = dyn_cast<ArrayAttr>(attr)) {
-    for (Attribute element : arrayAttr)
-      if (failed(verifyAttributeTypes(owner, element, diagOS, verifyType)))
+    for (Attribute element : arrayAttr) {
+      if (failed(verifyAttributeTypes(owner, element, diagOS, verifyType))) {
         return failure();
+      }
+    }
   }
 
   if (auto dictAttr = dyn_cast<DictionaryAttr>(attr)) {
-    for (NamedAttribute namedAttr : dictAttr)
+    for (NamedAttribute namedAttr : dictAttr) {
       if (failed(verifyAttributeTypes(owner, namedAttr.getValue(), diagOS,
-                                      verifyType)))
+                                      verifyType))) {
         return failure();
+      }
+    }
   }
 
   return success();
@@ -321,45 +361,58 @@ bool isFunctionTypeAttr(Operation *op, NamedAttribute attr) {
 
 LogicalResult verifyNoHiddenVMIAttributeType(Operation *op, NamedAttribute attr,
                                              llvm::raw_ostream *diagOS) {
-  if (isFunctionTypeAttr(op, attr))
+  if (isFunctionTypeAttr(op, attr)) {
     return success();
-  if (containsVMIType(attr.getValue()))
+  }
+  if (containsVMIType(attr.getValue())) {
     return emitInvariant(op, diagOS,
                          "VMI type appears in a non-signature attribute");
+  }
   return success();
 }
 
 LogicalResult verifyOperationTypes(Operation *op, llvm::raw_ostream *diagOS) {
   if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
     FunctionType functionType = funcOp.getFunctionType();
-    for (Type type : functionType.getInputs())
-      if (failed(verifyBoundaryTypeTree(op, type, diagOS)))
+    for (Type type : functionType.getInputs()) {
+      if (failed(verifyBoundaryTypeTree(op, type, diagOS))) {
         return failure();
-    for (Type type : functionType.getResults())
-      if (failed(verifyBoundaryTypeTree(op, type, diagOS)))
+      }
+    }
+    for (Type type : functionType.getResults()) {
+      if (failed(verifyBoundaryTypeTree(op, type, diagOS))) {
         return failure();
+      }
+    }
   }
 
-  for (Type type : op->getOperandTypes())
-    if (failed(verifyBoundaryTypeTree(op, type, diagOS)))
+  for (Type type : op->getOperandTypes()) {
+    if (failed(verifyBoundaryTypeTree(op, type, diagOS))) {
       return failure();
-  for (Type type : op->getResultTypes())
-    if (failed(verifyBoundaryTypeTree(op, type, diagOS)))
+    }
+  }
+  for (Type type : op->getResultTypes()) {
+    if (failed(verifyBoundaryTypeTree(op, type, diagOS))) {
       return failure();
+    }
+  }
   for (Region &region : op->getRegions()) {
     for (Block &block : region) {
       for (Type type : block.getArgumentTypes()) {
-        if (failed(verifyBoundaryTypeTree(op, type, diagOS)))
+        if (failed(verifyBoundaryTypeTree(op, type, diagOS))) {
           return failure();
+        }
       }
     }
   }
   for (NamedAttribute attr : op->getAttrs()) {
-    if (failed(verifyNoHiddenVMIAttributeType(op, attr, diagOS)))
+    if (failed(verifyNoHiddenVMIAttributeType(op, attr, diagOS))) {
       return failure();
+    }
     if (failed(verifyAttributeTypes(op, attr.getValue(), diagOS,
-                                    verifyBoundaryTypeTree)))
+                                    verifyBoundaryTypeTree))) {
       return failure();
+    }
   }
   return success();
 }
@@ -368,34 +421,45 @@ LogicalResult verifyLayoutAssignedOperationTypes(Operation *op,
                                                  llvm::raw_ostream *diagOS) {
   if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
     FunctionType functionType = funcOp.getFunctionType();
-    for (Type type : functionType.getInputs())
-      if (failed(verifyLayoutAssignedTypeTree(op, type, diagOS)))
+    for (Type type : functionType.getInputs()) {
+      if (failed(verifyLayoutAssignedTypeTree(op, type, diagOS))) {
         return failure();
-    for (Type type : functionType.getResults())
-      if (failed(verifyLayoutAssignedTypeTree(op, type, diagOS)))
+      }
+    }
+    for (Type type : functionType.getResults()) {
+      if (failed(verifyLayoutAssignedTypeTree(op, type, diagOS))) {
         return failure();
+      }
+    }
   }
 
-  for (Type type : op->getOperandTypes())
-    if (failed(verifyLayoutAssignedTypeTree(op, type, diagOS)))
+  for (Type type : op->getOperandTypes()) {
+    if (failed(verifyLayoutAssignedTypeTree(op, type, diagOS))) {
       return failure();
-  for (Type type : op->getResultTypes())
-    if (failed(verifyLayoutAssignedTypeTree(op, type, diagOS)))
+    }
+  }
+  for (Type type : op->getResultTypes()) {
+    if (failed(verifyLayoutAssignedTypeTree(op, type, diagOS))) {
       return failure();
+    }
+  }
   for (Region &region : op->getRegions()) {
     for (Block &block : region) {
       for (Type type : block.getArgumentTypes()) {
-        if (failed(verifyLayoutAssignedTypeTree(op, type, diagOS)))
+        if (failed(verifyLayoutAssignedTypeTree(op, type, diagOS))) {
           return failure();
+        }
       }
     }
   }
   for (NamedAttribute attr : op->getAttrs()) {
-    if (failed(verifyNoHiddenVMIAttributeType(op, attr, diagOS)))
+    if (failed(verifyNoHiddenVMIAttributeType(op, attr, diagOS))) {
       return failure();
+    }
     if (failed(verifyAttributeTypes(op, attr.getValue(), diagOS,
-                                    verifyLayoutAssignedTypeTree)))
+                                    verifyLayoutAssignedTypeTree))) {
       return failure();
+    }
   }
   return success();
 }
@@ -408,19 +472,23 @@ LogicalResult verifyLayoutSemanticSupport(Operation *op,
 
 LogicalResult verifyOperationBoundary(Operation *op,
                                       llvm::raw_ostream *diagOS) {
-  if (failed(verifyOperationTypes(op, diagOS)))
+  if (failed(verifyOperationTypes(op, diagOS))) {
     return failure();
+  }
 
-  if (!hasVMIType(op))
+  if (!hasVMIType(op)) {
     return success();
+  }
 
-  if (isVMIHelperOp(op))
+  if (isVMIHelperOp(op)) {
     return emitInvariant(
         op, diagOS,
         "VMI helper op appears before layout assignment or VMI-to-VPTO");
+  }
 
-  if (isVMISemanticOp(op) || isStructuralOp(op))
+  if (isVMISemanticOp(op) || isStructuralOp(op)) {
     return success();
+  }
 
   return emitInvariant(op, diagOS,
                        "VMI typed value is used by a non-VMI semantic op");
@@ -429,25 +497,30 @@ LogicalResult verifyOperationBoundary(Operation *op,
 LogicalResult verifyLayoutAssignedOperation(Operation *op,
                                             llvm::raw_ostream *diagOS,
                                             bool verifyHelperSupports = true) {
-  if (failed(verifyLayoutAssignedOperationTypes(op, diagOS)))
+  if (failed(verifyLayoutAssignedOperationTypes(op, diagOS))) {
     return failure();
+  }
 
-  if (!hasVMIType(op))
+  if (!hasVMIType(op)) {
     return success();
+  }
 
   if (isVMIHelperOp(op)) {
-    if (isVMILayoutHelperOp(op))
+    if (isVMILayoutHelperOp(op)) {
       return verifyHelperSupports ? verifyLayoutHelperSupport(op, diagOS)
                                   : success();
+    }
     return emitInvariant(
         op, diagOS,
         "VMI pack/unpack helper appears before VMI-to-VPTO physicalization");
   }
 
-  if (isVMISemanticOp(op))
+  if (isVMISemanticOp(op)) {
     return verifyLayoutSemanticSupport(op, diagOS);
-  if (isStructuralOp(op))
+  }
+  if (isStructuralOp(op)) {
     return success();
+  }
 
   return emitInvariant(op, diagOS,
                        "VMI typed value is used by a non-VMI semantic op");
@@ -461,9 +534,10 @@ LogicalResult verifyLayoutHelperSupport(Operation *op,
     auto sourceType = cast<VMIVRegType>(ensure.getSource().getType());
     auto resultType = cast<VMIVRegType>(ensure.getResult().getType());
     std::string reason;
-    if (failed(supports.getEnsureLayoutFact(sourceType, resultType, &reason)))
+    if (failed(supports.getEnsureLayoutFact(sourceType, resultType, &reason))) {
       return emitHelperMaterializationContract(
           op, sourceType, resultType, "pto.vmi.ensure_layout", reason, diagOS);
+    }
     return success();
   }
 
@@ -472,10 +546,11 @@ LogicalResult verifyLayoutHelperSupport(Operation *op,
     auto resultType = cast<VMIMaskType>(ensure.getResult().getType());
     std::string reason;
     if (failed(
-            supports.getEnsureMaskLayoutFact(sourceType, resultType, &reason)))
+            supports.getEnsureMaskLayoutFact(sourceType, resultType, &reason))) {
       return emitHelperMaterializationContract(op, sourceType, resultType,
                                                "pto.vmi.ensure_mask_layout",
                                                reason, diagOS);
+    }
     return success();
   }
 
@@ -489,8 +564,9 @@ LogicalResult verifyLayoutSemanticSupport(Operation *op,
   if (auto store = dyn_cast<VMIStoreOp>(op)) {
     auto valueType = cast<VMIVRegType>(store.getValue().getType());
     VMILayoutAttr layout = valueType.getLayoutAttr();
-    if (!layout || layout.isContiguous())
+    if (!layout || layout.isContiguous()) {
       return success();
+    }
 
     std::string reason;
     if (failed(supports.getStoreLayoutFact(valueType, &reason)))
@@ -504,8 +580,9 @@ LogicalResult verifyLayoutSemanticSupport(Operation *op,
   if (auto load = dyn_cast<VMIGroupLoadOp>(op)) {
     auto resultType = cast<VMIVRegType>(load.getResult().getType());
     VMILayoutAttr layout = resultType.getLayoutAttr();
-    if (!layout)
+    if (!layout) {
       return success();
+    }
 
     std::string reason;
     if (failed(supports.getGroupLoadLayoutFact(load, &reason)))
@@ -539,8 +616,9 @@ LogicalResult verifyLayoutSemanticSupport(Operation *op,
   if (auto store = dyn_cast<VMIGroupStoreOp>(op)) {
     auto valueType = cast<VMIVRegType>(store.getValue().getType());
     VMILayoutAttr layout = valueType.getLayoutAttr();
-    if (!layout || !layout.isGroupSlots())
+    if (!layout || !layout.isGroupSlots()) {
       return success();
+    }
 
     std::string reason;
     if (failed(supports.getGroupStoreLayoutFact(
@@ -555,8 +633,9 @@ LogicalResult verifyLayoutSemanticSupport(Operation *op,
   if (auto reduce = dyn_cast<VMIGroupReduceAddFOp>(op)) {
     auto resultType = cast<VMIVRegType>(reduce.getResult().getType());
     VMILayoutAttr layout = resultType.getLayoutAttr();
-    if (!layout || !layout.isGroupSlots())
+    if (!layout || !layout.isGroupSlots()) {
       return success();
+    }
 
     std::string reason;
     if (failed(supports.getGroupReduceAddFSupport(reduce, &reason)))
@@ -571,8 +650,9 @@ LogicalResult verifyLayoutSemanticSupport(Operation *op,
   if (auto reduce = dyn_cast<VMIGroupReduceMaxFOp>(op)) {
     auto resultType = cast<VMIVRegType>(reduce.getResult().getType());
     VMILayoutAttr layout = resultType.getLayoutAttr();
-    if (!layout || !layout.isGroupSlots())
+    if (!layout || !layout.isGroupSlots()) {
       return success();
+    }
 
     std::string reason;
     if (failed(supports.getGroupReduceMaxFSupport(reduce, &reason)))
@@ -587,8 +667,9 @@ LogicalResult verifyLayoutSemanticSupport(Operation *op,
   if (auto reduce = dyn_cast<VMIGroupReduceMinFOp>(op)) {
     auto resultType = cast<VMIVRegType>(reduce.getResult().getType());
     VMILayoutAttr layout = resultType.getLayoutAttr();
-    if (!layout || !layout.isGroupSlots())
+    if (!layout || !layout.isGroupSlots()) {
       return success();
+    }
 
     std::string reason;
     if (failed(supports.getGroupReduceMinFSupport(reduce, &reason)))
@@ -603,8 +684,9 @@ LogicalResult verifyLayoutSemanticSupport(Operation *op,
   if (auto reduce = dyn_cast<VMIGroupReduceAddIOp>(op)) {
     auto resultType = cast<VMIVRegType>(reduce.getResult().getType());
     VMILayoutAttr layout = resultType.getLayoutAttr();
-    if (!layout || !layout.isGroupSlots())
+    if (!layout || !layout.isGroupSlots()) {
       return success();
+    }
 
     std::string reason;
     if (failed(supports.getGroupReduceAddISupport(reduce, &reason)))
@@ -619,8 +701,9 @@ LogicalResult verifyLayoutSemanticSupport(Operation *op,
   if (auto reduce = dyn_cast<VMIGroupReduceMaxIOp>(op)) {
     auto resultType = cast<VMIVRegType>(reduce.getResult().getType());
     VMILayoutAttr layout = resultType.getLayoutAttr();
-    if (!layout || !layout.isGroupSlots())
+    if (!layout || !layout.isGroupSlots()) {
       return success();
+    }
 
     std::string reason;
     if (failed(supports.getGroupReduceMaxISupport(reduce, &reason)))
@@ -635,8 +718,9 @@ LogicalResult verifyLayoutSemanticSupport(Operation *op,
   if (auto reduce = dyn_cast<VMIGroupReduceMinIOp>(op)) {
     auto resultType = cast<VMIVRegType>(reduce.getResult().getType());
     VMILayoutAttr layout = resultType.getLayoutAttr();
-    if (!layout || !layout.isGroupSlots())
+    if (!layout || !layout.isGroupSlots()) {
       return success();
+    }
 
     std::string reason;
     if (failed(supports.getGroupReduceMinISupport(reduce, &reason)))
@@ -651,8 +735,9 @@ LogicalResult verifyLayoutSemanticSupport(Operation *op,
   if (auto broadcast = dyn_cast<VMIGroupBroadcastOp>(op)) {
     auto sourceType = cast<VMIVRegType>(broadcast.getSource().getType());
     VMILayoutAttr layout = sourceType.getLayoutAttr();
-    if (!layout || !layout.isGroupSlots() || layout.getSlots() <= 0)
+    if (!layout || !layout.isGroupSlots() || layout.getSlots() <= 0) {
       return success();
+    }
 
     std::string reason;
     if (failed(supports.getGroupBroadcastSupport(broadcast, &reason)))
@@ -714,8 +799,9 @@ struct PTOValidateVMIIRPass
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PTOValidateVMIIRPass)
 
   void runOnOperation() override {
-    if (failed(validateVMIProducerBoundaryIR(getOperation(), &llvm::errs())))
+    if (failed(validateVMIProducerBoundaryIR(getOperation(), &llvm::errs()))) {
       signalPassFailure();
+    }
   }
 };
 
@@ -725,8 +811,9 @@ struct PTOValidateVMILayoutIRPass
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PTOValidateVMILayoutIRPass)
 
   void runOnOperation() override {
-    if (failed(validateVMILayoutAssignedIR(getOperation(), &llvm::errs())))
+    if (failed(validateVMILayoutAssignedIR(getOperation(), &llvm::errs()))) {
       signalPassFailure();
+    }
   }
 };
 
@@ -736,8 +823,9 @@ LogicalResult
 mlir::pto::validateVMIProducerBoundaryIR(ModuleOp module,
                                          llvm::raw_ostream *diagOS) {
   WalkResult result = module.walk([&](Operation *op) {
-    if (failed(verifyOperationBoundary(op, diagOS)))
+    if (failed(verifyOperationBoundary(op, diagOS))) {
       return WalkResult::interrupt();
+    }
     return WalkResult::advance();
   });
   return failure(result.wasInterrupted());
@@ -746,8 +834,9 @@ mlir::pto::validateVMIProducerBoundaryIR(ModuleOp module,
 LogicalResult mlir::pto::validateVMILayoutAssignedIR(
     ModuleOp module, llvm::raw_ostream *diagOS, bool verifyHelperSupports) {
   WalkResult result = module.walk([&](Operation *op) {
-    if (failed(verifyLayoutAssignedOperation(op, diagOS, verifyHelperSupports)))
+    if (failed(verifyLayoutAssignedOperation(op, diagOS, verifyHelperSupports))) {
       return WalkResult::interrupt();
+    }
     return WalkResult::advance();
   });
   return failure(result.wasInterrupted());

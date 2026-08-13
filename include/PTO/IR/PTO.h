@@ -147,6 +147,17 @@ enum class PTOArch {
   A5,
 };
 
+/// The semantic form selected by the optional third tile of pto.tmov.  The
+/// public operand remains named `fp` for API compatibility; address space is
+/// the sole discriminator between legacy FP and exponent X-to-ZZ lowering.
+enum class TMovForm {
+  NoTileAux,
+  Fp,
+  XToZz,
+};
+
+TMovForm classifyTMovForm(Value fp);
+
 /// Resolve the effective PTO target architecture from module-level IR state.
 PTOArch getTargetArch(ModuleOp module);
 PTOArch getTargetArch(Operation *op);
