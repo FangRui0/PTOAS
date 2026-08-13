@@ -321,6 +321,9 @@ CompoundInstanceElement::getUnitFlagCond(Location loc, OpBuilder &rewriter) {
 namespace mlir::pto {
 
 bool checkAllParentLoopsAreForLoops(Operation *op) {
+  // This helper guards counted-loop-only unit-flag logic. Generic while
+  // synchronization is handled by the loop translator and must not enter
+  // this IV-based path.
   while ((op = op->getParentOfType<LoopLikeOpInterface>())) {
     if (!isa<scf::ForOp>(op)) {
       return false;

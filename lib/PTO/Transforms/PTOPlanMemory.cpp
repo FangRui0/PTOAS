@@ -543,6 +543,9 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
     } else if (auto forOp = dyn_cast<scf::ForOp>(op)) {
       RecursiveForOp(forOp, live);
       return WalkResult::skip();
+    } else if (auto whileOp = dyn_cast<scf::WhileOp>(op)) {
+      RecursiveWhileOp(whileOp, live);
+      return WalkResult::skip();
     } else if (auto fusionRegion = dyn_cast<pto::FusionRegionOp>(op)) {
       RecursiveFusionRegionOp(fusionRegion, live);
       return WalkResult::skip();
@@ -752,6 +755,36 @@ void MemLivenessAnalysis::UpdateForOpBufferAlias(scf::ForOp forOp) {
   }
 }
 
+void MemLivenessAnalysis::UpdateWhileOpBufferAlias(scf::WhileOp whileOp) {
+  if (whileOp.getResults().size() != whileOp.getYieldedValues().size())
+    llvm::report_fatal_error("scf.while result/yield sizes are inconsistent");
+
+  // The before region receives the initial values and the after region
+  // receives the values forwarded by scf.condition.  The after-region yield
+  // is the back-edge which becomes the next before-region argument and the
+  // scf.while result on exit.
+  for (auto [i, init] : llvm::enumerate(whileOp.getInits())) {
+    if (i < whileOp.getBeforeArguments().size())
+      UpdateBufferAlias(whileOp.getBeforeArguments()[i], init);
+  }
+
+  auto conditionArgs = whileOp.getConditionOp().getArgs();
+  for (auto [i, arg] : llvm::enumerate(whileOp.getAfterArguments())) {
+    if (i < conditionArgs.size())
+      UpdateBufferAlias(arg, conditionArgs[i]);
+  }
+
+  for (auto [i, yielded] : llvm::enumerate(whileOp.getYieldedValues())) {
+    if (i < whileOp.getBeforeArguments().size())
+      UpdateBufferAlias(whileOp.getBeforeArguments()[i], yielded);
+    if (i < whileOp.getConditionOp().getArgs().size())
+      UpdateBufferAlias(whileOp.getResult(i),
+                        whileOp.getConditionOp().getArgs()[i]);
+    if (i < whileOp.getResults().size())
+      UpdateBufferAlias(whileOp.getResult(i), yielded);
+  }
+}
+
 void MemLivenessAnalysis::RecursiveForOp(scf::ForOp forOp, Liveness live) {
   // Model loop-carried tile handles as aliases of the yielded roots.
   auto forBeginSeq = UpdateLinearOperation(forOp.getOperation());
@@ -761,6 +794,20 @@ void MemLivenessAnalysis::RecursiveForOp(scf::ForOp forOp, Liveness live) {
   UpdateForOpBufferAlias(forOp);
   auto forEndSeq = UpdateLinearOperation(forOp.getOperation());
   OpKillHandle(forEndSeq, live, forOp->getBlock());
+}
+
+void MemLivenessAnalysis::RecursiveWhileOp(scf::WhileOp whileOp,
+                                           Liveness live) {
+  auto whileBeginSeq = UpdateLinearOperation(whileOp.getOperation());
+  UpdateOpGenInfo(whileBeginSeq, GetLiveBuffersInLoop(whileOp.getOperation(), live));
+
+  UpdateWhileOpBufferAlias(whileOp);
+  RecursionIR(&whileOp.getBefore(), live);
+  RecursionIR(&whileOp.getAfter(), live);
+  UpdateWhileOpBufferAlias(whileOp);
+
+  auto whileEndSeq = UpdateLinearOperation(whileOp.getOperation());
+  OpKillHandle(whileEndSeq, live, whileOp->getBlock());
 }
 
 void MemLivenessAnalysis::UpdateForOpInitArgsAlias(scf::ForOp forOp) {
@@ -836,12 +883,12 @@ void MemLivenessAnalysis::RecursiveFusionRegionOp(pto::FusionRegionOp fusionRegi
   OpKillHandle(regionEnd, live, fusionRegion->getBlock());
 }
 
-SmallVector<Value> MemLivenessAnalysis::GetLiveBuffersInLoop(scf::ForOp forOp,
+SmallVector<Value> MemLivenessAnalysis::GetLiveBuffersInLoop(Operation *loopOp,
                                                              Liveness live) {
   SmallVector<Value> allocBeforeLoopBuffers;
-  const auto *liveBlockInfo = live.getLiveness(forOp->getBlock());
+  const auto *liveBlockInfo = live.getLiveness(loopOp->getBlock());
   auto currentLiveValues =
-      liveBlockInfo->currentlyLiveValues(forOp.getOperation());
+      liveBlockInfo->currentlyLiveValues(loopOp);
   if (currentLiveValues.empty()) {
     return allocBeforeLoopBuffers;
   }
@@ -2013,7 +2060,8 @@ MemPlan::GetBufferParentLoop(const SmallVector<Value> &buffers) {
   llvm::SmallSet<LoopLikeOpInterface, 1> parentLoopVec;
   for (auto buffer : buffers) {
     if (!buffer.getDefiningOp()) {
-      if (!isa<scf::ForOp>(buffer.getParentBlock()->getParentOp())) {
+      if (!isa<scf::ForOp, scf::WhileOp>(
+              buffer.getParentBlock()->getParentOp())) {
         llvm::report_fatal_error("expected loop-carried block argument");
       }
       // Init args and region iter arg are inplace, ignore Region Iter Arg

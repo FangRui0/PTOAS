@@ -391,8 +391,9 @@ std::string op2str(Operation *op) {
   return os.str();
 }
 
-// Verify that all loop-like parents of `op` are SCF ForOps. Used to ensure
-// certain multi-buffer/loop transformations are safe to apply.
+// Verify that all loop-like parents of `op` are SCF ForOps. Used only by
+// counted-loop multi-buffer transformations; scf.while is intentionally
+// rejected so callers can fall back to ordinary synchronization.
 bool checkAllParentLoopsAreForLoops(Operation *op) {
   while (op != nullptr) {
     auto parLoop = op->getParentOfType<LoopLikeOpInterface>();

@@ -685,6 +685,17 @@ static Value tracebackImpl(Value memrefVal) {
         return forOp.getInitArgs()[arg.getArgNumber() - 1];
       }
     }
+    if (auto whileOp =
+            dyn_cast<scf::WhileOp>(arg.getParentRegion()->getParentOp())) {
+      if (arg.getParentRegion() == &whileOp.getBefore() &&
+          arg.getArgNumber() < whileOp.getInits().size())
+        return whileOp.getInits()[arg.getArgNumber()];
+      if (arg.getParentRegion() == &whileOp.getAfter()) {
+        auto conditionArgs = whileOp.getConditionOp().getArgs();
+        if (arg.getArgNumber() < conditionArgs.size())
+          return conditionArgs[arg.getArgNumber()];
+      }
+    }
   }
 
   Value result;
@@ -721,6 +732,10 @@ static Value tracebackImpl(Value memrefVal) {
   } else if (auto op = dyn_cast<scf::ForOp>(def)) {
     // trace back memref.alloc support scf.for
     result = op.getInitArgs()[cast<OpResult>(memrefVal).getResultNumber()];
+  } else if (auto op = dyn_cast<scf::WhileOp>(def)) {
+    unsigned resultNo = cast<OpResult>(memrefVal).getResultNumber();
+    if (resultNo < op.getInits().size())
+      result = op.getInits()[resultNo];
   }
 
   if (result) {

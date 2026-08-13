@@ -40,17 +40,17 @@ void BufidSyncIdAlloc::collectPipeSignature(
 unsigned BufidSyncIdAlloc::getOutermostLoopBegin(Operation *op) const {
   unsigned begin = UINT_MAX;
   Operation *current = op;
-  while (auto forOp = current->getParentOfType<scf::ForOp>()) {
-    Operation *forOpOp = forOp.getOperation();
+  while (auto loop = current->getParentOfType<LoopLikeOpInterface>()) {
+    Operation *loopOp = loop.getOperation();
     for (auto &e : syncIR_) {
       auto *loop = dyn_cast<LoopInstanceElement>(e.get());
       if (loop && loop->getLoopKind() == KindOfLoop::LOOP_BEGIN &&
-          loop->elementOp == forOpOp) {
+          loop->elementOp == loopOp) {
         begin = std::min(begin, loop->beginId);
         break;
       }
     }
-    current = forOpOp;
+    current = loopOp;
   }
   return begin;
 }
@@ -58,17 +58,17 @@ unsigned BufidSyncIdAlloc::getOutermostLoopBegin(Operation *op) const {
 unsigned BufidSyncIdAlloc::getOutermostLoopEnd(Operation *op) const {
   unsigned end = 0;
   Operation *current = op;
-  while (auto forOp = current->getParentOfType<scf::ForOp>()) {
-    Operation *forOpOp = forOp.getOperation();
+  while (auto loop = current->getParentOfType<LoopLikeOpInterface>()) {
+    Operation *loopOp = loop.getOperation();
     for (auto &e : syncIR_) {
       auto *loop = dyn_cast<LoopInstanceElement>(e.get());
       if (loop && loop->getLoopKind() == KindOfLoop::LOOP_END &&
-          loop->elementOp == forOpOp) {
+          loop->elementOp == loopOp) {
         end = std::max(end, loop->endId);
         break;
       }
     }
-    current = forOpOp;
+    current = loopOp;
   }
   return end;
 }
