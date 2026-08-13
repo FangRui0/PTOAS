@@ -361,13 +361,13 @@ These are core-level (SU) operations — `wait_cross_block` stalls the entire co
 
 #### `pto.set_cross_block(pipe, event_id)`
 
-**Description**: Signal an FFTS cross-block event on a synchronization endpoint. The DSL lowers to `pto.set_cross_block`, which is normalized to `pto.sync.set` with `ffts_mode = 0` for the VPTO path.
+**Description**: Signal a cross-block event on a synchronization endpoint.
 
 **Parameters**:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `pipe` | `Pipe` | Producing endpoint for the synchronization event. The public DSL accepts `Pipe.FIX` here. |
+| `pipe` | `Pipe` | Producing endpoint: `Pipe.FIX`, `Pipe.MTE1`, `Pipe.MTE2`, `Pipe.MTE3`, or `Pipe.V`. |
 | `event_id` | `int` | Cross-core event identifier (`0`–`15`) |
 
 **Returns**: None (side-effect operation).
@@ -382,13 +382,13 @@ pto.set_cross_block(pto.Pipe.FIX, 0)
 
 #### `pto.wait_cross_block(pipe, event_id)`
 
-**Description**: Wait for an FFTS cross-block event. The DSL lowers to `pto.wait_cross_block`, which is normalized to `pto.sync.wait` with `ffts_mode = 0` for the VPTO path.
+**Description**: Wait for a cross-block event.
 
 **Parameters**:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `pipe` | `Pipe` | Waiting endpoint for the synchronization event. The public DSL accepts `Pipe.FIX` here. |
+| `pipe` | `Pipe` | Waiting endpoint: `Pipe.FIX`, `Pipe.MTE1`, `Pipe.MTE2`, `Pipe.MTE3`, or `Pipe.V`. |
 | `event_id` | `int` | Event identifier to wait on (`0`–`15`) |
 
 **Returns**: None (side-effect operation).
@@ -405,8 +405,8 @@ pto.wait_cross_block(pto.Pipe.FIX, 0)
 
 The intra-block sync channel is separate from the standard pipe-flag mechanism used by cross-core sync. `set_intra_block` and `wait_intra_block` synchronize the relevant producer/consumer pipes within the same block, ensuring that shared UB tile data is not accessed before the producer finishes.
 
-Cross-core flags use the public `0`-`7` event range. A5 intra-block sync uses a separate
-physical event range, described below.
+Cross-block event IDs use the public `0`-`15` range. Static intra-block event IDs use
+`0`-`31` on A5 and `0`-`15` on A2 and A3.
 
 Unlike `wait_cross_block`, `wait_intra_block` only stalls the specified pipeline — the SU and other pipelines continue executing.
 

@@ -402,6 +402,10 @@ class VectorCubeSurfaceTest(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertFalse(hasattr(pto, name), name)
 
+    def test_cross_block_sync_rejects_ffts_mode(self):
+        with self.assertRaises(TypeError):
+            _ops.set_cross_block(pto.Pipe.FIX, 0, ffts_mode=2)
+
     def test_direct_vector_wrappers_dispatch_to_generated_ops(self):
         lhs = SimpleNamespace(type="vec_ty")
         rhs = SimpleNamespace(type="vec_ty")

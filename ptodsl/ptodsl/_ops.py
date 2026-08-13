@@ -6710,7 +6710,7 @@ def _flag_event_id_operand(event_id, *, context: str):
     return _coerce_index(event_id, context=context), False
 
 
-def set_cross_block(pipe, event_id, *, ffts_mode=0):
+def set_cross_block(pipe, event_id):
     """``pto.set_cross_block(pipe, event_id)`` – emits ``pto.set_cross_block``."""
     _validate_sync_pipe(
         pipe,
@@ -6720,7 +6720,7 @@ def set_cross_block(pipe, event_id, *, ffts_mode=0):
     event_operand = _sync_event_id_operand_in_range(
         event_id, context="set_cross_block(..., event_id=...)", lo=0, hi=15
     )
-    _pto.set_cross_block(_pipe_attr(pipe), event_operand, ffts_mode=ffts_mode)
+    _pto.set_cross_block(_pipe_attr(pipe), event_operand)
 
 
 def wait_cross_block(pipe, event_id):

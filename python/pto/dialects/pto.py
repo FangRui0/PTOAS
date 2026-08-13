@@ -651,12 +651,10 @@ def sync_wait(pipe, event_id, ffts_mode=2, *, loc=None, ip=None):
 # Named cross-/intra-block synchronization instructions.
 # -----------------------------------------------------------------------------
 
-def _named_sync_event_op(name, pipe, event_id, *, ffts_mode=None, loc=None, ip=None):
+def _named_sync_event_op(name, pipe, event_id, *, loc=None, ip=None):
     ctx = loc.context if loc else _ods_ir.Context.current
     pipe_attr = _ensure_pipe_attr(pipe, ctx)
     attrs = {"pipe": pipe_attr}
-    if ffts_mode is not None and ffts_mode != 2:
-        attrs["ffts_mode"] = _ensure_i32_attr(ffts_mode, "ffts_mode", ctx)
     if _is_static_i32_event_id(event_id):
         attrs["event_id"] = _ensure_i32_attr(event_id, "event_id", ctx)
         return _ods_ir.Operation.create(name, attributes=attrs, loc=loc, ip=ip)
@@ -665,11 +663,9 @@ def _named_sync_event_op(name, pipe, event_id, *, ffts_mode=None, loc=None, ip=N
     )
 
 
-def set_cross_block(pipe, event_id, ffts_mode=0, *, loc=None, ip=None):
+def set_cross_block(pipe, event_id, *, loc=None, ip=None):
     """Emit ``pto.set_cross_block`` (FFTS cross-block signal)."""
-    return _named_sync_event_op(
-        "pto.set_cross_block", pipe, event_id, ffts_mode=ffts_mode, loc=loc, ip=ip
-    )
+    return _named_sync_event_op("pto.set_cross_block", pipe, event_id, loc=loc, ip=ip)
 
 
 def wait_cross_block(pipe, event_id, *, loc=None, ip=None):
