@@ -8,12 +8,15 @@
 
 //===- PTOResolveBufferSelect.cpp -----------------------------------------===//
 //
-// Lowering for multi-buffer slot selection.
+// Lowering for tile-native buffer views and multi-buffer slot selection.
 //
-// Consumes tile-native `pto.multi_tile_get` operations after memory planning.
-// Constant slots become addressed `pto.alloc_tile` handles directly; dynamic
-// slots select an address through an N-way `arith.select` chain. The user SSA
-// remains the slot selector; this pass does not synthesize `iv mod N`.
+// Consumes tile-native `pto.subview` and `pto.multi_tile_get` operations after
+// memory planning. Subviews rooted at `pto.alloc_tile` reuse the planned
+// address, while subviews rooted at `pto.declare_tile` materialize the runtime
+// address assigned by a preceding pipe operation. Constant multi-buffer slots
+// become addressed `pto.alloc_tile` handles directly; dynamic slots select an
+// address through an N-way `arith.select` chain. The user SSA remains the slot
+// selector; this pass does not synthesize `iv mod N`.
 //
 //===----------------------------------------------------------------------===//
 
@@ -168,6 +171,22 @@ static Value computeTileAddress(Value value, IRRewriter &rewriter,
   if (auto alloc = value.getDefiningOp<pto::AllocTileOp>()) {
     return ensureI64(alloc.getAddr(), rewriter, loc);
   }
+  if (value.getDefiningOp<pto::DeclareTileOp>()) {
+    auto tileType = dyn_cast<pto::TileBufType>(value.getType());
+    if (!tileType) {
+      return {};
+    }
+    auto memorySpace =
+        dyn_cast_or_null<pto::AddressSpaceAttr>(tileType.getMemorySpace());
+    if (!memorySpace) {
+      return {};
+    }
+    auto ptrType = pto::PtrType::get(rewriter.getContext(),
+                                     tileType.getElementType(), memorySpace);
+    Value ptr =
+        rewriter.create<pto::TileBufAddrOp>(loc, ptrType, value).getDst();
+    return rewriter.create<pto::PtrToIntOp>(loc, ptr).getResult();
+  }
   if (auto subview = value.getDefiningOp<pto::SubViewOp>()) {
     Value base = computeTileAddress(subview.getSource(), rewriter, loc);
     auto sourceType = subview.getSource().getType();
@@ -256,8 +275,8 @@ static LogicalResult resolveTileNativeSubviews(ModuleOp module,
     rewriter.setInsertionPoint(op);
     Value addr = computeTileAddress(op.getResult(), rewriter, op.getLoc());
     // A tile function argument is a symbolic runtime-bound handle. Keep its
-    // subview tile-native; only planned local roots can be normalized to an
-    // addressed alloc_tile here.
+    // subview tile-native; only planned local roots and declare_tile handles
+    // assigned by preceding pipe operations can be normalized here.
     if (!addr) {
       continue;
     }
