@@ -103,3 +103,110 @@ def div_i32_soft(vec, scalar_vec, mask):
     negative_quotient = pto.vneg(signed_bits, active_mask)
     signed_quotient = pto.vsel(signed_bits, negative_quotient, positive)
     return pto.vsel(pto.vbr(neg_one), signed_quotient, zero_mask)
+
+
+def div_i16_soft(vec, scalar_vec, mask):
+    """Compute signed i16 division without relying on integer ``vdiv``.
+
+    Each 128-lane i16 operand is widened into two 64-lane u32 halves through
+    b16 interleave plus a 2:1 ``vcvt`` (the VPTO vcvt contract conserves total
+    vector bits, so a straight i16->f32 conversion at the same lane count is
+    not expressible). The quotient magnitude is estimated from a 65536-scaled
+    f32 reciprocal in the u32 domain, narrowed back to u16 through ``vdintlv``,
+    and corrected against the exact remainder. The result is exact for every
+    nonzero int16 divisor; division by zero is intentionally undefined.
+    """
+    result_dtype = pto.si16 if str(vec.type).endswith("xsi16>") else pto.i16
+    zero = result_dtype(0)
+    neg_one = result_dtype(-1)
+    ui16_zero = pto.ui16(0)
+    ui16_one = pto.ui16(1)
+    fp32_one = pto.f32(1.0)
+    fp32_65536 = pto.f32(65536.0)
+    full_b16 = pto.pset_b16(pto.PAT.ALL)
+    full_b32 = pto.pset_b32(pto.PAT.ALL)
+
+    zero_mask = pto.vcmps(scalar_vec, zero, mask, pto.CmpMode.EQ)
+    active_mask = pto.pnot(zero_mask, mask)
+
+    abs_x = pto.vbitcast(pto.vabs(vec, active_mask), pto.ui16)
+    abs_y = pto.vbitcast(pto.vabs(scalar_vec, active_mask), pto.ui16)
+    x_xor_y = pto.vxor(vec, scalar_vec, active_mask)
+    positive = pto.vcmps(x_xor_y, zero, active_mask, pto.CmpMode.GE)
+
+    zero_u16 = pto.vbr(ui16_zero)
+    false_mask = pto.pset_b16(pto.PAT.ALLF)
+    # The even/odd 2:1 cvt below consumes the interleaved b16 predicate in the
+    # interleaved lane order, so the active mask must be re-interleaved the same
+    # way the data is: bit 2k of low_mask / high_mask maps to original lane k
+    # (mirrors pintlv_b32 in div_i32_soft).
+    low_mask, high_mask = pto.pintlv_b16(active_mask, false_mask)
+    vy_lower_u16, vy_higher_u16 = pto.vintlv(abs_y, zero_u16)
+    vx_lower_u16, vx_higher_u16 = pto.vintlv(abs_x, zero_u16)
+    vy_lower_u32 = pto.vcvt(
+        vy_lower_u16, pto.ui32, low_mask, part=pto.VcvtPartMode.EVEN
+    )
+    vy_higher_u32 = pto.vcvt(
+        vy_higher_u16, pto.ui32, high_mask, part=pto.VcvtPartMode.EVEN
+    )
+    vx_lower_u32 = pto.vcvt(
+        vx_lower_u16, pto.ui32, low_mask, part=pto.VcvtPartMode.EVEN
+    )
+    vx_higher_u32 = pto.vcvt(
+        vx_higher_u16, pto.ui32, high_mask, part=pto.VcvtPartMode.EVEN
+    )
+    active_low = pto.vcmps(
+        vy_lower_u32, pto.ui32(0), full_b32, pto.CmpMode.NE
+    )
+    active_high = pto.vcmps(
+        vy_higher_u32, pto.ui32(0), full_b32, pto.CmpMode.NE
+    )
+
+    lower_f32 = pto.vcvt(
+        pto.vbitcast(vy_lower_u32, pto.i32), pto.f32, active_low,
+        rnd=pto.VcvtRoundMode.F,
+    )
+    higher_f32 = pto.vcvt(
+        pto.vbitcast(vy_higher_u32, pto.i32), pto.f32, active_high,
+        rnd=pto.VcvtRoundMode.F,
+    )
+    lower_recip = pto.vdiv(pto.vbr(fp32_one), lower_f32, active_low)
+    higher_recip = pto.vdiv(pto.vbr(fp32_one), higher_f32, active_high)
+    lower_scaled = pto.vmul(lower_recip, pto.vbr(fp32_65536), active_low)
+    higher_scaled = pto.vmul(higher_recip, pto.vbr(fp32_65536), active_high)
+    lower_v = pto.vbitcast(
+        pto.vcvt(
+            lower_scaled, pto.i32, active_low,
+            rnd=pto.VcvtRoundMode.F, sat=pto.VcvtSatMode.NOSAT,
+        ),
+        pto.ui32,
+    )
+    higher_v = pto.vbitcast(
+        pto.vcvt(
+            higher_scaled, pto.i32, active_high,
+            rnd=pto.VcvtRoundMode.F, sat=pto.VcvtSatMode.NOSAT,
+        ),
+        pto.ui32,
+    )
+    q_lower = pto.vmul(lower_v, vx_lower_u32, active_low)
+    q_higher = pto.vmul(higher_v, vx_higher_u32, active_high)
+    _, q_tmp = pto.vdintlv(
+        pto.vbitcast(q_lower, pto.ui16),
+        pto.vbitcast(q_higher, pto.ui16),
+    )
+
+    yq = pto.vmul(q_tmp, abs_y, active_mask)
+    remainder = pto.vsub(abs_x, yq, active_mask)
+    for _ in range(2):
+        ge = pto.vcmp(remainder, abs_y, active_mask, pto.CmpMode.GE)
+        remainder = pto.vsel(
+            pto.vsub(remainder, abs_y, active_mask), remainder, ge
+        )
+        q_tmp = pto.vsel(
+            pto.vadds(q_tmp, ui16_one, active_mask), q_tmp, ge
+        )
+
+    signed_bits = pto.vbitcast(q_tmp, result_dtype)
+    negative_quotient = pto.vneg(signed_bits, active_mask)
+    signed_quotient = pto.vsel(signed_bits, negative_quotient, positive)
+    return pto.vsel(pto.vbr(neg_one), signed_quotient, zero_mask)
