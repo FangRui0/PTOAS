@@ -13169,10 +13169,12 @@ struct SCFWhileToCF : public OpRewritePattern<scf::WhileOp> {
                                     Location loc, Block *afterWhileBlock) {
     SmallVector<Value> exitArgs;
     exitArgs.reserve(op.getNumResults());
-    for (Type type : op.getResultTypes())
+    for (Type type : op.getResultTypes()) {
       exitArgs.push_back(afterWhileBlock->addArgument(type, loc));
-    for (auto result : llvm::enumerate(op.getResults()))
+    }
+    for (auto result : llvm::enumerate(op.getResults())) {
       result.value().replaceAllUsesWith(exitArgs[result.index()]);
+    }
   }
 
   LogicalResult matchAndRewrite(scf::WhileOp op,
@@ -13888,8 +13890,9 @@ static AICORE inline void PTOAS__DCCI_SINGLE_CACHE_LINE(Ptr ptr) {
             [](Operation *) { return true; });
 
         for (func::FuncOp func : functions) {
-          if (!needsWholeFunctionSCFToCF(func))
+          if (!needsWholeFunctionSCFToCF(func)) {
             continue;
+          }
           if (failed(applyPartialConversion(func, scfToCfTarget,
                                             frozenSCFToCF))) {
             func.emitError()
