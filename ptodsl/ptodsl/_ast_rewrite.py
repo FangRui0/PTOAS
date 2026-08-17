@@ -2073,16 +2073,29 @@ class _ControlFlowRewriter:
             )
         test_info = _name_info(stmt.test)
         control = _loop_control_flags(stmt.body)
-        if (control["break"] or control["continue"] or stmt.orelse) and not (
-            body_info.stores & (test_info.loads | body_info.loads | set(live_after))
-        ):
+        # A loop-carried name must be one whose pre-iteration value is needed:
+        # it is read by the test before each iteration, it is read before any
+        # assignment inside the body (so it depends on the previous iteration's
+        # value), or it stays live after the loop.  ``body_info.loads`` is
+        # deliberately not used here: it includes loop-local temporaries that
+        # are written before they are read each iteration (e.g.
+        # ``col = base + index``), which are not live across iterations and
+        # would be read while still unbound at the pto._while(...) setup.
+        # This mirrors the loop_carried criterion used by ``_rewrite_for``.
+        reads_before = _read_before_assignment_names(stmt.body)
+        required_carries = test_info.loads | reads_before | set(live_after)
+        # A controlled loop (break/continue/else) may legitimately need no
+        # user-level carry: its test reads only loop-invariant names and every
+        # body store is a loop-local temporary.  The active/did_break control
+        # flags then provide the loop-carried state themselves.  Only a
+        # completely store-less body is rejected, since it cannot carry the
+        # control transfer at all.
+        if (control["break"] or control["continue"] or stmt.orelse) and not body_info.stores:
             raise PTODSLAstRewriteError(
                 "ast_rewrite=True runtime while break/continue requires explicit control-state lowering"
             )
-        carry_names = tuple(sorted(
-            body_info.stores & (test_info.loads | body_info.loads | set(live_after))
-        ))
-        if not carry_names:
+        carry_names = tuple(sorted(body_info.stores & required_carries))
+        if not carry_names and not (control["break"] or control["continue"] or stmt.orelse):
             raise PTODSLAstRewriteError(
                 "ast_rewrite=True runtime while requires at least one loop-carried value"
             )
@@ -2102,6 +2115,16 @@ class _ControlFlowRewriter:
                                       ctx=ast.Load()), node)
                 return node
 
+        class _ConditionLiteralRewriter(ast.NodeTransformer):
+            # A literal test condition (``while True:`` / ``while False:``)
+            # must be materialized as an i1 constant, not a Python bool: the
+            # controlled condition is combined with ``and``, whose runtime
+            # scalar operator would otherwise reject the bool literal.
+            def visit_Constant(inner, node):
+                if isinstance(node.value, bool):
+                    return ast.copy_location(_flag_const(node.value), node)
+                return node
+
         condition = _ConditionStateRewriter().visit(copy.deepcopy(stmt.test))
         if controlled:
             condition = ast.BinOp(
@@ -2113,6 +2136,7 @@ class _ControlFlowRewriter:
                 ),
             )
             condition = _ConditionStateRewriter().visit(condition)
+        condition = _ConditionLiteralRewriter().visit(condition)
         ast.fix_missing_locations(condition)
         condition_fn = ast.Lambda(
             args=ast.arguments(
