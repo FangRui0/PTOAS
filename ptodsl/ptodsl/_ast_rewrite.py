@@ -1156,8 +1156,8 @@ class _ControlFlowRewriter:
         self._counter += 1
         return value
 
-    def _current_value(self, name):
-        if name in self._section_uninitialized_aliases:
+    def _current_value(self, name, *, requires_pre_if_value=False):
+        if requires_pre_if_value and name in self._section_uninitialized_aliases:
             raise PTODSLAstRewriteError(
                 "ast_rewrite=True runtime if reads a section-local value before it is initialized; "
                 f"initialize {name!r} before the conditional"
@@ -1548,7 +1548,7 @@ class _ControlFlowRewriter:
         result.extend(
             ast.Assign(
                 targets=[_name(old_name, ast.Store())],
-                value=self._current_value(name),
+                value=self._current_value(name, requires_pre_if_value=True),
             )
             for name, old_name in old_value_names.items()
         )
