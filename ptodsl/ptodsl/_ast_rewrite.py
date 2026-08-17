@@ -968,6 +968,32 @@ def _loop_control_flags(stmts):
     return result
 
 
+def _drop_unreachable_tails(stmts):
+    """Truncate each statement list after a bare break/continue and recurse.
+
+    Statements following an unconditional break/continue are unreachable in
+    Python semantics.  Dropping them before name/slot analysis keeps dead
+    names out of the carry computation and, more importantly, keeps the
+    tracer from executing bodies that reference locals Python itself would
+    never bind (``while ...: break; dead = dead + 1`` is legal Python yet
+    raised UnboundLocalError when the dead tail was still analyzed/traced).
+
+    The recursion stops at nested loops' own statements only in the sense of
+    ownership: their bodies are cleaned too, since each list is truncated at
+    its own control transfers.
+    """
+    cleaned = []
+    for stmt in stmts:
+        cleaned.append(stmt)
+        for field in ("body", "orelse", "finalbody"):
+            value = getattr(stmt, field, None)
+            if isinstance(value, list) and value and isinstance(value[0], ast.stmt):
+                setattr(stmt, field, _drop_unreachable_tails(value))
+        if isinstance(stmt, (ast.Break, ast.Continue)):
+            return cleaned
+    return cleaned
+
+
 def _loop_has_return(stmts):
     """Check returns in the current loop body, excluding nested functions."""
     class Visitor(ast.NodeVisitor):
@@ -1703,6 +1729,9 @@ class _ControlFlowRewriter:
     def _rewrite_for(self, stmt, *, live_after, live_after_slots=None, allow_loop_control=False, static_iters=None):
         live_after_slots = set(live_after_slots or ())
         static_iters = dict(static_iters or {})
+        # Drop statically dead tails of unconditional break/continue before
+        # any analysis or tracing (they are unreachable in Python semantics).
+        stmt.body = _drop_unreachable_tails(stmt.body)
         if _is_pto_attr_call(stmt.iter, "static_range"):
             next_static_iters = dict(static_iters)
             if isinstance(stmt.target, ast.Name):
@@ -2134,6 +2163,10 @@ class _ControlFlowRewriter:
     def _rewrite_while(self, stmt, *, live_after, live_after_slots=None,
                        allow_loop_control=False, static_iters=None):
         """Lower runtime ``while`` using named state and explicit control flags."""
+        # Drop statically dead tails of unconditional break/continue before
+        # any analysis or tracing (they are unreachable in Python semantics),
+        # so dead names never enter the carry computation or get traced.
+        stmt.body = _drop_unreachable_tails(stmt.body)
         if _loop_has_return(stmt.body):
             raise PTODSLAstRewriteError(
                 "ast_rewrite=True does not support dynamic return inside runtime while"
