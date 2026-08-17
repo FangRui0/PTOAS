@@ -6059,9 +6059,12 @@ struct PTOSyncSetToEmitC : public OpConversionPattern<mlir::pto::SyncSetOp> {
     if (IntegerAttr fftsModeAttr = op.getFftsModeAttr())
       fftsMode = getIntegerAttrSignedValue(fftsModeAttr);
 
-    if ((eventIdAttr != nullptr) == static_cast<bool>(eventIdDyn))
+    const bool hasStaticEventId = eventIdAttr != nullptr;
+    const bool hasDynamicEventId = static_cast<bool>(eventIdDyn);
+    if (hasStaticEventId == hasDynamicEventId) {
       return rewriter.notifyMatchFailure(
           op, "expects exactly one of static event_id attr or dynamic event_id operand");
+    }
 
     InterCoreSyncCallDesc desc;
     if (eventIdAttr) {
@@ -6131,9 +6134,12 @@ struct PTONamedIntraSyncToEmitC : public OpConversionPattern<SyncOp> {
     auto loc = op->getLoc();
     IntegerAttr eventIdAttr = op.getEventIdAttr();
     Value eventIdDyn = adaptor.getEventIdDyn();
-    if ((eventIdAttr != nullptr) == static_cast<bool>(eventIdDyn))
+    const bool hasStaticEventId = eventIdAttr != nullptr;
+    const bool hasDynamicEventId = static_cast<bool>(eventIdDyn);
+    if (hasStaticEventId == hasDynamicEventId) {
       return rewriter.notifyMatchFailure(
           op, "expects exactly one of static event_id attr or dynamic event_id operand");
+    }
 
     if (targetArch != PTOArch::A5) {
       InterCoreSyncCallDesc desc;
@@ -6158,14 +6164,16 @@ struct PTONamedIntraSyncToEmitC : public OpConversionPattern<SyncOp> {
     auto *ctx = rewriter.getContext();
     std::string pipeTok = pipeTokFromPipeAttr(op.getPipe());
     Value eventValue;
-    if (eventIdDyn)
+    if (eventIdDyn) {
       eventValue = castInterCoreEventIdToI32(rewriter, loc, eventIdDyn);
+    }
 
     StringRef callee;
-    if constexpr (std::is_same_v<SyncOp, mlir::pto::SetIntraBlockOp>)
+    if constexpr (std::is_same_v<SyncOp, mlir::pto::SetIntraBlockOp>) {
       callee = "__builtin_cce_set_intra_block";
-    else
+    } else {
       callee = "__builtin_cce_wait_intra_block";
+    }
 
     auto args = rewriter.getArrayAttr({
         emitc::OpaqueAttr::get(ctx, pipeTok),

@@ -639,8 +639,15 @@ def sync_wait(pipe, event_id, ffts_mode=2, *, loc=None, ip=None):
         except TypeError:
             return _ods_ir.Operation.create(
                 "pto.sync.wait",
-                attributes={"pipe": pipe_attr, "event_id": event_attr,
-                            **({} if ffts_mode == 2 else {"ffts_mode": _ensure_i32_attr(ffts_mode, "ffts_mode", ctx)}),},
+                attributes={
+                    "pipe": pipe_attr,
+                    "event_id": event_attr,
+                    **(
+                        {}
+                        if ffts_mode == 2
+                        else {"ffts_mode": _ensure_i32_attr(ffts_mode, "ffts_mode", ctx)}
+                    ),
+                },
                 loc=loc,
                 ip=ip,
             )

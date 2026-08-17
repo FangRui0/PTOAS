@@ -11151,17 +11151,19 @@ public:
       SyncOp op, typename SyncOp::Adaptor adaptor,
       ConversionPatternRewriter &rewriter) const override {
     auto pipe = parsePipeImmediate(stringifyPIPE(op.getPipe().getPipe()));
-    if (!pipe)
+    if (!pipe) {
       return rewriter.notifyMatchFailure(op, "unsupported sync pipe");
+    }
     Value pipeValue = getI64Constant(rewriter, op.getLoc(), *pipe);
     Value eventValue;
-    if (IntegerAttr attr = op.getEventIdAttr())
+    if (IntegerAttr attr = op.getEventIdAttr()) {
       eventValue = getI64Constant(rewriter, op.getLoc(), attr.getInt());
-    else {
+    } else {
       eventValue = castIntegerLikeTo(op, adaptor.getEventIdDyn(),
                                      rewriter.getI64Type());
-      if (!eventValue)
+      if (!eventValue) {
         return rewriter.notifyMatchFailure(op, "missing event-id operand");
+      }
     }
     StringRef callee = buildSyncCallee<SyncOp>(op.getContext());
     auto fnTy = rewriter.getFunctionType(
@@ -11283,7 +11285,9 @@ public:
     SmallVector<Value> args{pipeValue, eventValue};
     if constexpr (std::is_same_v<SyncOp, pto::SyncSetOp>) {
       int64_t mode = 2;
-      if (IntegerAttr attr = op.getFftsModeAttr()) mode = attr.getInt();
+      if (IntegerAttr attr = op.getFftsModeAttr()) {
+        mode = attr.getInt();
+      }
       Value modeValue = getI64Constant(rewriter, op.getLoc(), mode);
       Value one = getI64Constant(rewriter, op.getLoc(), 1);
       Value modeMask = getI64Constant(rewriter, op.getLoc(), 0x3);

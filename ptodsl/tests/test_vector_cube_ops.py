@@ -1302,10 +1302,34 @@ class VectorCubeSurfaceTest(unittest.TestCase):
 
     def test_sync_facades_reject_illegal_pipe_endpoints(self):
         cases = [
-            (_ops.set_cross_block, ("M", 0), "set_cross_block(pipe, event_id)", "<PIPE_FIX>, <PIPE_MTE1>, <PIPE_MTE2>, <PIPE_MTE3>, <PIPE_V>", "<PIPE_M>"),
-            (_ops.wait_cross_block, (pto.Pipe.M, 0), "wait_cross_block(pipe, event_id)", "<PIPE_FIX>, <PIPE_MTE1>, <PIPE_MTE2>, <PIPE_MTE3>, <PIPE_V>", "<PIPE_M>"),
-            (_ops.set_intra_block, ("M", 0), "set_intra_block(pipe, event_id)", "<PIPE_FIX>, <PIPE_MTE1>, <PIPE_MTE2>, <PIPE_MTE3>, <PIPE_V>", "<PIPE_M>"),
-            (_ops.wait_intra_block, (pto.Pipe.M, 0), "wait_intra_block(pipe, event_id)", "<PIPE_FIX>, <PIPE_MTE1>, <PIPE_MTE2>, <PIPE_MTE3>, <PIPE_V>", "<PIPE_M>"),
+            (
+                _ops.set_cross_block,
+                ("M", 0),
+                "set_cross_block(pipe, event_id)",
+                "<PIPE_FIX>, <PIPE_MTE1>, <PIPE_MTE2>, <PIPE_MTE3>, <PIPE_V>",
+                "<PIPE_M>",
+            ),
+            (
+                _ops.wait_cross_block,
+                (pto.Pipe.M, 0),
+                "wait_cross_block(pipe, event_id)",
+                "<PIPE_FIX>, <PIPE_MTE1>, <PIPE_MTE2>, <PIPE_MTE3>, <PIPE_V>",
+                "<PIPE_M>",
+            ),
+            (
+                _ops.set_intra_block,
+                ("M", 0),
+                "set_intra_block(pipe, event_id)",
+                "<PIPE_FIX>, <PIPE_MTE1>, <PIPE_MTE2>, <PIPE_MTE3>, <PIPE_V>",
+                "<PIPE_M>",
+            ),
+            (
+                _ops.wait_intra_block,
+                (pto.Pipe.M, 0),
+                "wait_intra_block(pipe, event_id)",
+                "<PIPE_FIX>, <PIPE_MTE1>, <PIPE_MTE2>, <PIPE_MTE3>, <PIPE_V>",
+                "<PIPE_M>",
+            ),
         ]
 
         with patch.object(_ops._pto, "sync_set") as sync_set_op, \

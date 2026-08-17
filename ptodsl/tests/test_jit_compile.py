@@ -7590,19 +7590,46 @@ def main() -> None:
         explicit_runtime_index_integer_bitwise_event_text.count("pto.set_flag_dyn") == 1,
         "index/integer bitwise event ids should lower sets to pto.set_flag_dyn",
     )
-    expect("arith.andi" in ast_runtime_index_bitwise_event_text, "AST rewritten range loop index & event id should lower to arith.andi")
+    expect(
+        "arith.andi" in ast_runtime_index_bitwise_event_text,
+        "AST rewritten range loop index & event id should lower to arith.andi",
+    )
     expect(
         ast_runtime_index_bitwise_event_text.count("pto.wait_flag_dyn") == 1,
         "AST rewritten range loop index bitwise event id should lower to pto.wait_flag_dyn",
     )
-    expect("pto.set_cross_block <PIPE_FIX>, 0" in sync_surface_text, "set_cross_block(Pipe.FIX, 0) should lower to pto.set_cross_block")
-    expect("pto.wait_cross_block <PIPE_FIX>, 0" in sync_surface_text, "wait_cross_block(Pipe.FIX, 0) should lower to pto.wait_cross_block")
-    expect("pto.set_intra_block <PIPE_MTE3>, %c3" in sync_surface_text, "set_intra_block(Pipe.MTE3, dynamic_event) should lower to pto.set_intra_block")
-    expect("pto.set_intra_block <PIPE_FIX>, 4" in sync_surface_text, "set_intra_block(Pipe.FIX, 4) should preserve physical event ids")
-    expect("pto.wait_intra_block <PIPE_V>, %c3" in sync_surface_text, "wait_intra_block(Pipe.V, dynamic_event) should lower to pto.wait_intra_block")
-    expect("pto.wait_intra_block <PIPE_FIX>, 20" in sync_surface_text, "wait_intra_block(Pipe.FIX, 20) should preserve physical event ids")
-    expect("pto.wait_intra_block <PIPE_MTE3>, %c3" in sync_surface_text, "wait_intra_block(Pipe.MTE3, dynamic_event) should lower to pto.wait_intra_block")
-    expect("pto.wait_intra_block <PIPE_MTE3>, 31" in sync_surface_text, "wait_intra_block(Pipe.MTE3, 31) should preserve static physical event ids")
+    expect(
+        "pto.set_cross_block <PIPE_FIX>, 0" in sync_surface_text,
+        "set_cross_block(Pipe.FIX, 0) should lower to pto.set_cross_block",
+    )
+    expect(
+        "pto.wait_cross_block <PIPE_FIX>, 0" in sync_surface_text,
+        "wait_cross_block(Pipe.FIX, 0) should lower to pto.wait_cross_block",
+    )
+    expect(
+        "pto.set_intra_block <PIPE_MTE3>, %c3" in sync_surface_text,
+        "set_intra_block(Pipe.MTE3, dynamic_event) should lower to pto.set_intra_block",
+    )
+    expect(
+        "pto.set_intra_block <PIPE_FIX>, 4" in sync_surface_text,
+        "set_intra_block(Pipe.FIX, 4) should preserve physical event ids",
+    )
+    expect(
+        "pto.wait_intra_block <PIPE_V>, %c3" in sync_surface_text,
+        "wait_intra_block(Pipe.V, dynamic_event) should lower to pto.wait_intra_block",
+    )
+    expect(
+        "pto.wait_intra_block <PIPE_FIX>, 20" in sync_surface_text,
+        "wait_intra_block(Pipe.FIX, 20) should preserve physical event ids",
+    )
+    expect(
+        "pto.wait_intra_block <PIPE_MTE3>, %c3" in sync_surface_text,
+        "wait_intra_block(Pipe.MTE3, dynamic_event) should lower to pto.wait_intra_block",
+    )
+    expect(
+        "pto.wait_intra_block <PIPE_MTE3>, 31" in sync_surface_text,
+        "wait_intra_block(Pipe.MTE3, 31) should preserve static physical event ids",
+    )
     expect(data_movement_surface_text.count("pto.mte_gm_ub") == 2, "public grouped GM->UB wrappers should lower to pto.mte_gm_ub")
     expect("pto.mte_ub_gm" in data_movement_surface_text, "public grouped UB->GM wrapper should lower to pto.mte_ub_gm")
     expect(

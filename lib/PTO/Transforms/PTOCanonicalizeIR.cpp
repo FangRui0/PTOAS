@@ -400,7 +400,8 @@ struct PTOCanonicalizeIRPass
     SmallVector<WaitIntraBlockOp> intraWaits;
     func.walk([&](SetCrossBlockOp op) { crossSets.push_back(op); });
     func.walk([&](WaitCrossBlockOp op) { crossWaits.push_back(op); });
-    if (getTargetArch(func) != PTOArch::A5) {
+    PTOArch targetArch = getTargetArch(func);
+    if (targetArch != PTOArch::A5) {
       func.walk([&](SetIntraBlockOp op) { intraSets.push_back(op); });
       func.walk([&](WaitIntraBlockOp op) { intraWaits.push_back(op); });
     }

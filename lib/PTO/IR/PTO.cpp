@@ -4236,13 +4236,19 @@ static LogicalResult verifyNamedSyncEventOp(Operation *op, PipeAttr pipe,
                                             Value eventIdDyn,
                                             int64_t maxEventId,
                                             StringRef opName) {
-  if ((eventIdAttr != nullptr) == static_cast<bool>(eventIdDyn))
+  const bool hasStaticEventId = eventIdAttr != nullptr;
+  const bool hasDynamicEventId = static_cast<bool>(eventIdDyn);
+  if (hasStaticEventId == hasDynamicEventId) {
     return op->emitOpError()
            << "expects exactly one event-id form: static attr or dynamic index operand";
-  if (eventIdAttr && (eventIdAttr.getInt() < 0 ||
-                      eventIdAttr.getInt() > maxEventId))
+  }
+  const bool staticEventIdOutOfRange =
+      hasStaticEventId &&
+      (eventIdAttr.getInt() < 0 || eventIdAttr.getInt() > maxEventId);
+  if (staticEventIdOutOfRange) {
     return op->emitOpError() << "expects static event_id in [0, " << maxEventId
                              << "], but got " << eventIdAttr.getInt();
+  }
   switch (pipe.getPipe()) {
   case PIPE::PIPE_FIX:
   case PIPE::PIPE_MTE1:
@@ -4271,10 +4277,13 @@ void mlir::pto::SetCrossBlockOp::print(OpAsmPrinter &p) {
 }
 
 LogicalResult mlir::pto::SetCrossBlockOp::verify() {
-  if (IntegerAttr mode = getFftsModeAttr())
-    if (mode.getInt() != 0)
+  if (IntegerAttr mode = getFftsModeAttr()) {
+    int64_t modeValue = mode.getInt();
+    if (modeValue != 0) {
       return emitOpError() << "requires ffts_mode 0, but got "
-                           << mode.getInt();
+                           << modeValue;
+    }
+  }
   return verifyNamedSyncEventOp(getOperation(), getPipe(), getEventIdAttr(),
                                 getEventIdDyn(), 15, "pto.set_cross_block");
 }
