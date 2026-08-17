@@ -19,6 +19,26 @@ def _while_iter_arg_count(mlir_text: str) -> int:
     return len([part for part in match.group(1).split(",") if part.strip()])
 
 
+def _assert_tail_guarded(mlir_text: str, tail_op_pattern: str):
+    """Lock the break/continue tail-skip contract in the emitted IR.
+
+    Statements after a break/continue (or after an if containing one) must be
+    predicated on the merged ``active`` flag: a result-producing ``scf.if``
+    whose condition is the merge result of the preceding break/continue
+    ``scf.if`` (``%X`` or ``%X#0``, never a constant) must open before the
+    tail operation, and the dead constant-true whole-body guard must be gone.
+    """
+    assert not re.search(r"scf\.if %true", mlir_text), (
+        "constant-true guard still present; break/continue tails are unpredicated")
+    guards = [m for m in re.finditer(r"= scf\.if %\w+(?:#\d+)? -> \(", mlir_text)]
+    assert guards, "no active-guarded tail region found"
+    tail = re.search(tail_op_pattern, mlir_text)
+    assert tail is not None, f"tail op {tail_op_pattern!r} not found in MLIR"
+    assert tail.start() > guards[-1].end(), (
+        "tail op appears before the active guard; statements after "
+        "break/continue would execute unconditionally")
+
+
 @pto.jit(target="a5")
 def runtime_while_probe(limit: pto.i32):
     value = pto.const(0, dtype=pto.i32)
@@ -205,6 +225,80 @@ def issue_1256_exact_while_branch_cond(limit: pto.i32, pivot: pto.i32):
     _ = low
 
 
+# ---------------------------------------------------------------------------
+# Break/continue tail predication: statements after a control transfer must
+# only execute while the iteration is still active.  Before the fix the whole
+# body was wrapped in a single guard on the entry value of ``active`` (a
+# constant true, since the prologue resets it), so a tail statement such as
+# ``value = value + 1`` after ``if should_break: break`` executed
+# unconditionally in the breaking iteration (issue #1256 follow-up).
+# ---------------------------------------------------------------------------
+
+
+@pto.jit(target="a5")
+def while_continue_skips_tail(limit: pto.i32):
+    value = pto.const(0, dtype=pto.i32)
+    while value < limit:
+        value = value + pto.const(1, dtype=pto.i32)
+        if value == pto.const(2, dtype=pto.i32):
+            continue
+        value = value + pto.const(10, dtype=pto.i32)
+    _ = value
+
+
+@pto.jit(target="a5")
+def while_continue_then_break_flags(limit: pto.i32):
+    # The continue guard's tail contains a break: the guard must merge
+    # active/did_break back out, or the break would be lost (or its SSA
+    # value would leak out of the guard region).
+    value = pto.const(0, dtype=pto.i32)
+    while value < limit:
+        if value == pto.const(1, dtype=pto.i32):
+            continue
+        if value == pto.const(3, dtype=pto.i32):
+            break
+        value = value + pto.const(1, dtype=pto.i32)
+    _ = value
+
+
+@pto.jit(target="a5")
+def while_nested_if_break_tail(limit: pto.i32):
+    # Tails must be predicated at every block level: inside the branch that
+    # contains the break, and in the enclosing loop body after the if.
+    value = pto.const(0, dtype=pto.i32)
+    while value < limit:
+        if value > pto.const(0, dtype=pto.i32):
+            if value == pto.const(3, dtype=pto.i32):
+                break
+            value = value + pto.const(1, dtype=pto.i32)
+        value = value + pto.const(10, dtype=pto.i32)
+    _ = value
+
+
+@pto.jit(target="a5")
+def while_unconditional_break_dead_tail(limit: pto.i32):
+    # The tail of an unconditional break is statically dead; it is guarded
+    # uniformly (constant-false active) instead of being diagnosed, matching
+    # Python's tolerance for unreachable code.
+    value = pto.const(0, dtype=pto.i32)
+    while value < limit:
+        value = value + pto.const(1, dtype=pto.i32)
+        break
+        value = value + pto.const(10, dtype=pto.i32)
+    _ = value
+
+
+@pto.jit(target="a5")
+def for_break_tail_guard(limit: pto.i32):
+    # The controlled for-loop lowering shares the same predication scheme.
+    value = pto.const(0, dtype=pto.i32)
+    for i in range(limit):
+        if i == pto.const(3, dtype=pto.i32):
+            break
+        value = value + pto.const(1, dtype=pto.i32)
+    _ = value
+
+
 def unsupported_while_subscript(limit: pto.i32):
     values = [0]
     value = pto.const(0, dtype=pto.i32)
@@ -251,6 +345,61 @@ def main():
         assert actual == expected_carries, (
             f"{fn.__name__}: expected {expected_carries} loop-carried slots, got {actual}; "
             "loop-local temporaries must not enter the carry state")
+
+    # Break/continue tail predication: the statement after a control transfer
+    # must sit inside a region guarded by the merged active flag.
+    # issue_1256_exact_while_true_break is the reporter's kernel: the addi
+    # after ``if should_break: break`` used to execute unconditionally.
+    _assert_tail_guarded(
+        issue_1256_exact_while_true_break.compile().mlir_text(),
+        r"arith\.addi %[\w#]+, %c1_i32")
+    _assert_tail_guarded(
+        while_continue_skips_tail.compile().mlir_text(),
+        r"arith\.addi %[\w#]+, %c10_i32")
+    _assert_tail_guarded(
+        while_nested_if_break_tail.compile().mlir_text(),
+        r"arith\.addi %[\w#]+, %c10_i32")
+    _assert_tail_guarded(
+        for_break_tail_guard.compile().mlir_text(),
+        r"arith\.addi %[\w#]+, %c1_i32")
+
+    # The continue-guard's tail contains a break: the guard must merge both
+    # control flags back out (value + active + did_break).
+    flags_text = while_continue_then_break_flags.compile().mlir_text()
+    _assert_tail_guarded(flags_text, r"arith\.addi %[\w#]+, %c1_i32")
+    assert re.search(r"= scf\.if %\w+(?:#\d+)? -> \(i1, i1, i32\)", flags_text), (
+        "outer guard must merge value + active + did_break so the nested "
+        "break survives the guard region")
+
+    # Nested branch tail: the +1 addi inside the branch must also be guarded.
+    nested_text = while_nested_if_break_tail.compile().mlir_text()
+    inner_addi = re.search(r"arith\.addi %[\w#]+, %c1_i32", nested_text)
+    assert inner_addi is not None
+    assert [m for m in re.finditer(r"= scf\.if %\w+(?:#\d+)? -> \(", nested_text)
+            if m.end() < inner_addi.start()], (
+        "branch-level tail after a nested break is not predicated")
+
+    # The dead tail of an unconditional break is guarded by constant false.
+    dead_text = while_unconditional_break_dead_tail.compile().mlir_text()
+    dead_guard = re.search(r"= scf\.if %false(?:_\d+)? -> \(", dead_text)
+    assert dead_guard is not None, "unconditional-break tail must be guarded by constant false"
+    dead_addi = re.search(r"arith\.addi %[\w#]+, %c10_i32", dead_text)
+    assert dead_addi is not None and dead_addi.start() > dead_guard.end()
+
+    # The new kernels also lock their carry counts (value + control flags;
+    # the for-loop additionally carries its induction variable).
+    tail_carry_contract = {
+        while_continue_skips_tail: 3,
+        while_continue_then_break_flags: 3,
+        while_nested_if_break_tail: 3,
+        while_unconditional_break_dead_tail: 3,
+        for_break_tail_guard: 4,  # iv + value + control flags
+    }
+    for fn, expected_carries in tail_carry_contract.items():
+        loop_text = fn.compile().mlir_text()
+        actual = _while_iter_arg_count(loop_text)
+        assert actual == expected_carries, (
+            f"{fn.__name__}: expected {expected_carries} loop-carried slots, got {actual}")
 
     def unsupported_break(limit: pto.i32):
         value = pto.const(0, dtype=pto.i32)
