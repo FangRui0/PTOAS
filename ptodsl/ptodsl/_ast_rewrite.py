@@ -2115,6 +2115,16 @@ class _ControlFlowRewriter:
                                       ctx=ast.Load()), node)
                 return node
 
+        class _ConditionLiteralRewriter(ast.NodeTransformer):
+            # A literal test condition (``while True:`` / ``while False:``)
+            # must be materialized as an i1 constant, not a Python bool: the
+            # controlled condition is combined with ``and``, whose runtime
+            # scalar operator would otherwise reject the bool literal.
+            def visit_Constant(inner, node):
+                if isinstance(node.value, bool):
+                    return ast.copy_location(_flag_const(node.value), node)
+                return node
+
         condition = _ConditionStateRewriter().visit(copy.deepcopy(stmt.test))
         if controlled:
             condition = ast.BinOp(
@@ -2126,6 +2136,7 @@ class _ControlFlowRewriter:
                 ),
             )
             condition = _ConditionStateRewriter().visit(condition)
+        condition = _ConditionLiteralRewriter().visit(condition)
         ast.fix_missing_locations(condition)
         condition_fn = ast.Lambda(
             args=ast.arguments(

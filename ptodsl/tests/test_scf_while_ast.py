@@ -153,6 +153,49 @@ def issue_1256_while_continue_else_flags_only(
     _ = running
 
 
+# Issue #1256 exact repros (https://github.com/hw-native-sys/PTOAS/issues/1256).
+# Case 2 uses a literal ``while True:`` test; the generated condition must
+# materialize the literal as an i1 constant so the break/continue guard
+# (``active/did_break``) can combine with it through the runtime ``and`` op.
+
+
+@pto.jit(target="a5")
+def issue_1256_exact_while_local_temp(limit: pto.i32, base: pto.i32):
+    index = pto.const(0, dtype=pto.i32)
+    total = pto.const(0, dtype=pto.i32)
+    while index < limit:
+        col = base + index
+        total = total + col
+        index = index + pto.const(1, dtype=pto.i32)
+    _ = total
+
+
+@pto.jit(target="a5")
+def issue_1256_exact_while_true_break(limit: pto.i32):
+    value = pto.const(0, dtype=pto.i32)
+    while True:
+        should_break = value >= limit
+        if should_break:
+            break
+        value = value + pto.const(1, dtype=pto.i32)
+    _ = value
+
+
+@pto.jit(target="a5")
+def issue_1256_exact_while_branch_cond(limit: pto.i32, pivot: pto.i32):
+    low = pto.const(0, dtype=pto.i32)
+    high = limit
+    mid = pto.const(0, dtype=pto.i32)
+    while low < high:
+        mid = (low + high) // pto.const(2, dtype=pto.i32)
+        take_upper = mid < pivot
+        if take_upper:
+            low = mid + pto.const(1, dtype=pto.i32)
+        else:
+            high = mid
+    _ = low
+
+
 def unsupported_while_subscript(limit: pto.i32):
     values = [0]
     value = pto.const(0, dtype=pto.i32)
@@ -183,7 +226,9 @@ def main():
     for fn in (issue_1256_while_local_temp, issue_1256_while_break_flag,
                issue_1256_while_branch_temp, issue_1256_while_conditional_carry,
                issue_1256_while_break_flags_only,
-               issue_1256_while_continue_else_flags_only):
+               issue_1256_while_continue_else_flags_only,
+               issue_1256_exact_while_local_temp, issue_1256_exact_while_true_break,
+               issue_1256_exact_while_branch_cond):
         loop_text = fn.compile().mlir_text()
         assert "scf.while" in loop_text
         assert "scf.condition" in loop_text
