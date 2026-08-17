@@ -746,9 +746,13 @@ def PTOValidateIntToPtrUses : Pass<"pto-validate-inttoptr-uses", "func::FuncOp">
 }
 
 def PTOResolveBufferSelect : Pass<"pto-resolve-buffer-select", "ModuleOp"> {
-  let summary = "Resolve multi-buffer slot selections to addressed tile handles";
+  let summary = "Resolve tile views and multi-buffer selections to addressed handles";
   let description = [{
-    Primarily consumes tile-native `pto.multi_tile_get %src[%k]` operations.
+    Consumes tile-native `pto.subview` operations rooted at an addressed
+    `pto.alloc_tile` or a runtime-bound `pto.declare_tile`, and
+    `pto.multi_tile_get %src[%k]` operations. Subviews become zero-copy
+    addressed `pto.alloc_tile` handles after folding their physical offset.
+
     The source `pto.alloc_multi_tile` carries either planner-assigned physical
     slot addresses or a level3 base address. Each selection is replaced by a
     `pto.alloc_tile` carrying the selected address; constant slots select one
