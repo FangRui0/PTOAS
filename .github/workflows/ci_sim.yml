@@ -344,7 +344,7 @@ jobs:
           "${CI_SIM_VENV}/bin/python" -m pip install --upgrade pip
           "${CI_SIM_VENV}/bin/pip" install \
             setuptools wheel 'scikit-build-core>=0.12.2,<2' 'pybind11<3' \
-            nanobind 'numpy>=2' ml-dtypes ninja pytest pytest-xdist PyYAML cloudpickle
+            nanobind numpy ml-dtypes ninja pytest pytest-xdist PyYAML cloudpickle
 
           TORCH_DEVICE_BACKEND_AUTOLOAD=0 "${CI_SIM_VENV}/bin/python" - <<'PY'
           import sys
@@ -533,7 +533,9 @@ jobs:
       - name: Run PyPTO PTOAS end-to-end simulator smoke
         shell: bash
         env:
-          PTOAS_ROOT: ${{ env.CI_SIM_VENV }}/bin
+          # PyPTO expects PTOAS_ROOT to be the complete PTOAS build output
+          # directory, not merely the venv console-script directory.
+          PTOAS_ROOT: ${{ github.workspace }}/build/tools/ptoas
           PTO_ISA_ROOT: ${{ env.PTO_ISA_ROOT }}
           TORCH_DEVICE_BACKEND_AUTOLOAD: "0"
         run: |
