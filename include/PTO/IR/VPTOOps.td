@@ -3079,6 +3079,100 @@ def PTO_MteGmL1FracOp : PTO_MteOp<"mte_gm_l1_frac", [
   ];
 }
 
+def PTO_RawFillL1Op : PTO_MicroOp<"raw_fill_l1", [
+    CubeMicroOpInterface,
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let summary = "Fill a strided L1/MAT region with a raw bit pattern";
+  let description = [{
+    Public wrapper for filling a strided L1 matrix-buffer region with a raw
+    bit pattern. `dst` may be a memref or `!pto.ptr` buffer-like value and is
+    expanded to the canonical `pto.create_cbuf_matrix` micro-op by the
+    wrapper-expansion pass.
+
+    Fields (in order):
+    - `dst`: destination buffer; after expansion must resolve to the MAT/L1
+      address space.
+    - `byte_offset`: non-negative byte distance applied to `dst` before the
+      fill; it must be a multiple of 32 bytes.
+    - `raw_value`: raw fill pattern. For a 16-bit fill, the low 16 bits are
+      repeated in every 16-bit word; for a 32-bit fill, all 32 bits are used.
+    - `repeat_times`: number of fill repetitions.
+    - `block_num_32b`: number of 32-byte blocks per repeat.
+    - `dst_gap_32b`: destination gap between repeats, in 32-byte blocks.
+    - `fill_word_bits`: static i64 attribute selecting the compile-time fill
+      word width, exactly 16 or 32.
+
+    `repeat_times`, `block_num_32b`, and `dst_gap_32b` must each be in the
+    inclusive range [0, 32767], including when dynamically computed. The
+    verifier diagnoses known constants outside that range.
+
+    The effective destination address (`dst + byte_offset`) must be aligned to
+    32 bytes. The verifier diagnoses known constant offsets that are not
+    multiples of 32; dynamic offsets are a caller precondition.
+  }];
+
+  let arguments = (ins
+    PTO_BufferLikeType:$dst,
+    I64:$byte_offset,
+    I32:$raw_value,
+    I64:$repeat_times,
+    I64:$block_num_32b,
+    I64:$dst_gap_32b,
+    I64Attr:$fill_word_bits
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $dst `,` $byte_offset `,` $raw_value `,` $repeat_times `,` $block_num_32b `,`
+    $dst_gap_32b attr-dict `:` type($dst) `,` type($byte_offset) `,`
+    type($raw_value) `,` type($repeat_times) `,` type($block_num_32b) `,`
+    type($dst_gap_32b)
+  }];
+}
+
+def PTO_CreateCbufMatrixOp : PTO_CubeMicroOp<"create_cbuf_matrix", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let summary = "Canonical L1 raw-pattern fill micro-op";
+  let description = [{
+    Canonical micro-op for filling a strided L1/CBUF matrix region with a raw
+    bit pattern. Produced by the `pto.raw_fill_l1` wrapper expansion.
+
+    `dst` must be a 32-byte-aligned
+    `!pto.ptr<ui16|ui32, #pto.address_space<mat>>` pointer that already
+    includes `byte_offset`. For a 16-bit fill, the low 16 bits of
+    `raw_value` are repeated in every 16-bit word; for a 32-bit fill, all 32
+    bits are used. The static `fill_word_bits` i64 attribute selects the fill
+    word width, exactly 16 or 32, and must match the destination view width.
+    `repeat_times` counts repetitions; `block_num_32b` and `dst_gap_32b`
+    count 32-byte blocks. All three geometry operands must be in the
+    inclusive range [0, 32767].
+  }];
+
+  let arguments = (ins
+    PTO_BufferType:$dst,
+    I32:$raw_value,
+    I64:$repeat_times,
+    I64:$block_num_32b,
+    I64:$dst_gap_32b,
+    I64Attr:$fill_word_bits
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $dst `,` $raw_value `,` $repeat_times `,` $block_num_32b `,`
+    $dst_gap_32b attr-dict `:` type($dst) `,` type($raw_value) `,`
+    type($repeat_times) `,` type($block_num_32b) `,` type($dst_gap_32b)
+  }];
+}
+
 def PTO_MteL1L0aOp : PTO_MteOp<"mte_l1_l0a", [
     AttrSizedOperandSegments,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>

@@ -5169,6 +5169,97 @@ private:
   LoweringState &state;
 };
 
+class LowerCreateCbufMatrixOpPattern final
+    : public OpConversionPattern<pto::CreateCbufMatrixOp> {
+public:
+  explicit LowerCreateCbufMatrixOpPattern(TypeConverter &typeConverter,
+                                          MLIRContext *context,
+                                          LoweringState &state)
+      : OpConversionPattern<pto::CreateCbufMatrixOp>(typeConverter, context),
+        state(state) {}
+
+  LogicalResult
+  matchAndRewrite(pto::CreateCbufMatrixOp op,
+                  pto::CreateCbufMatrixOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Value destinationRaw = adaptor.getDst();
+    Value rawValue = adaptor.getRawValue();
+    Value repeatTimes = adaptor.getRepeatTimes();
+    Value blockNum32b = adaptor.getBlockNum_32b();
+    Value dstGap32b = adaptor.getDstGap_32b();
+    if (!destinationRaw || !rawValue || !repeatTimes || !blockNum32b ||
+        !dstGap32b) {
+      return rewriter.notifyMatchFailure(op, "expected converted operands");
+    }
+    if (!isa<LLVM::LLVMPointerType>(destinationRaw.getType())) {
+      return rewriter.notifyMatchFailure(op, "expected LLVM pointer destination");
+    }
+
+    Type i32Ty = rewriter.getI32Type();
+    Type i64Ty = rewriter.getI64Type();
+    const bool validControlTypes =
+        rawValue.getType() == i32Ty && repeatTimes.getType() == i64Ty &&
+        blockNum32b.getType() == i64Ty && dstGap32b.getType() == i64Ty;
+    if (!validControlTypes) {
+      return rewriter.notifyMatchFailure(op, "expected i32 value and i64 controls");
+    }
+
+    constexpr unsigned cbufAddressSpace =
+        static_cast<unsigned>(pto::AddressSpace::MAT);
+    FailureOr<Value> destination = reinterpretPointerToAddrSpace(
+        op, destinationRaw, cbufAddressSpace);
+    if (failed(destination)) {
+      return rewriter.notifyMatchFailure(op,
+                                         "failed to map destination to mat/l1");
+    }
+
+    Location loc = op.getLoc();
+    const uint64_t fillWordWidth = static_cast<uint64_t>(op.getFillWordBits());
+    StringRef calleeName;
+    Value fillPattern;
+    if (fillWordWidth == 16) {
+      Value wordMask = getI32Constant(rewriter, loc, 0xFFFFU);
+      Value lowWord = rewriter.create<arith::AndIOp>(loc, rawValue, wordMask);
+      Value wordBits = rewriter.create<arith::TruncIOp>(
+          loc, rewriter.getI16Type(), lowWord);
+      fillPattern =
+          rewriter.create<LLVM::BitcastOp>(loc, rewriter.getF16Type(), wordBits);
+      calleeName = "llvm.hivm.CREATE.CBUF.MATRIX.v3.u16.h";
+    } else if (fillWordWidth == 32) {
+      fillPattern = rewriter.create<arith::ExtUIOp>(loc, i64Ty, rawValue);
+      calleeName = "llvm.hivm.CREATE.CBUF.MATRIX.v3.u32";
+    } else {
+      return rewriter.notifyMatchFailure(op, "expected a 16-bit or 32-bit fill word");
+    }
+
+    Value fieldMask = getI64Constant(rewriter, loc, 0x7FFFU);
+    auto maskField = [&](Value value) -> Value {
+      return rewriter.create<arith::AndIOp>(loc, value, fieldMask);
+    };
+    auto shiftField = [&](Value value, uint64_t amount) -> Value {
+      return rewriter.create<arith::ShLIOp>(
+          loc, value, getI64Constant(rewriter, loc, amount));
+    };
+
+    Value config = maskField(repeatTimes);
+    config = rewriter.create<arith::OrIOp>(
+        loc, config, shiftField(maskField(blockNum32b), 16));
+    config = rewriter.create<arith::OrIOp>(
+        loc, config, shiftField(maskField(dstGap32b), 32));
+
+    auto funcType = rewriter.getFunctionType(
+        TypeRange{destination->getType(), i64Ty, fillPattern.getType()}, TypeRange{});
+    rewriter.create<func::CallOp>(loc, calleeName, TypeRange{},
+                                  ValueRange{*destination, config, fillPattern});
+    state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  LoweringState &state;
+};
+
 static LogicalResult lowerMadRawOp(pto::MadRawOpInterface op,
                                    ValueRange convertedOperands,
                                    ConversionPatternRewriter &rewriter,
@@ -11141,7 +11232,8 @@ static void populateVPTOOpLoweringPatterns(VPTOTypeConverter &typeConverter,
                LowerCopyOpPattern<pto::CopyUbufToGmOp>,
                LowerCopyUbufToUbufOpPattern,
                LowerCopyCbufToUbufOpPattern,
-               LowerCopyUbufToCbufOpPattern>(
+               LowerCopyUbufToCbufOpPattern,
+               LowerCreateCbufMatrixOpPattern>(
       typeConverter, patterns.getContext(), state);
 }
 
@@ -11242,7 +11334,8 @@ static void configureVPTOOpLoweringTarget(ConversionTarget &target,
                       pto::CopyGmToUbufOp, pto::CopyUbufToGmOp,
                       pto::CopyUbufToUbufOp, pto::CopyCbufToUbufOp,
                       pto::CopyUbufToCbufOp,
-                      pto::CopyGmToCbufOp, pto::LoadCbufToCaOp,
+                      pto::CopyGmToCbufOp, pto::CreateCbufMatrixOp,
+                      pto::LoadCbufToCaOp,
                       pto::LoadCbufToCbOp, pto::LoadCbufToCaS4Op,
                       pto::LoadCbufToCbS4Op, pto::LoadCbufToCaMxOp,
                       pto::LoadCbufToCbMxOp, pto::CopyMatrixCcToGmOp,

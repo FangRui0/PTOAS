@@ -122,7 +122,7 @@ from ._ops import (             # noqa: F401
     alloc_buffer, alloc_tile,
     tsort32, tmrgsort, tgather, tscatter, tprint,
     mte_load, mte_store, mte_gm_ub, mte_ub_gm, mte_ub_ub, mte_ub_l1,
-    mte_gm_l1, mte_l1_ub, mte_gm_l1_frac, mte_l1_bt, mte_l1_fb, mem_bar,
+    mte_gm_l1, raw_fill_l1, mte_l1_ub, mte_gm_l1_frac, mte_l1_bt, mte_l1_fb, mem_bar,
     set_store_atomic_cfg,
     set_atomic_add, set_atomic_max, set_atomic_min, set_atomic_none,
     set_atomic_f32, set_atomic_f16, set_atomic_bf16,
