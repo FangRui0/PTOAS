@@ -7,7 +7,16 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
+import re
+
 from ptodsl import pto
+
+
+def _while_iter_arg_count(mlir_text: str) -> int:
+    """Count the loop-carried state slots of the top-level scf.while op."""
+    match = re.search(r"scf\.while\s*\([^)]*\)\s*:\s*\(([^)]*)\)", mlir_text)
+    assert match is not None, "scf.while signature not found in MLIR"
+    return len([part for part in match.group(1).split(",") if part.strip()])
 
 
 @pto.jit(target="a5")
@@ -219,19 +228,29 @@ def main():
 
     # Issue #1256 regressions: loop-local temporaries must not be carried.
     # issue_1256_while_local_temp / break_flag / branch_temp all used to raise
-    # UnboundLocalError at the pto._while(...) setup; the conditional-carry
-    # case must keep value loop-carried and still compile.  The flags-only
-    # case must compile through the control-state flags even with no
-    # user-level carry.
-    for fn in (issue_1256_while_local_temp, issue_1256_while_break_flag,
-               issue_1256_while_branch_temp, issue_1256_while_conditional_carry,
-               issue_1256_while_break_flags_only,
-               issue_1256_while_continue_else_flags_only,
-               issue_1256_exact_while_local_temp, issue_1256_exact_while_true_break,
-               issue_1256_exact_while_branch_cond):
+    # UnboundLocalError at the pto._while(...) setup.  Besides compiling, each
+    # case also locks the exact number of loop-carried slots of the emitted
+    # scf.while, so a future regression that re-adds a loop-local temporary to
+    # the carry state (the #1256 defect) fails this contract.
+    carry_contract = {
+        issue_1256_while_local_temp: 2,               # index, total
+        issue_1256_while_break_flag: 3,               # value + control flags
+        issue_1256_while_branch_temp: 2,              # low, high
+        issue_1256_while_conditional_carry: 1,        # value
+        issue_1256_while_break_flags_only: 2,         # active, did_break
+        issue_1256_while_continue_else_flags_only: 2, # active, did_break
+        issue_1256_exact_while_local_temp: 2,         # index, total
+        issue_1256_exact_while_true_break: 3,         # value + control flags
+        issue_1256_exact_while_branch_cond: 2,        # low, high
+    }
+    for fn, expected_carries in carry_contract.items():
         loop_text = fn.compile().mlir_text()
         assert "scf.while" in loop_text
         assert "scf.condition" in loop_text
+        actual = _while_iter_arg_count(loop_text)
+        assert actual == expected_carries, (
+            f"{fn.__name__}: expected {expected_carries} loop-carried slots, got {actual}; "
+            "loop-local temporaries must not enter the carry state")
 
     def unsupported_break(limit: pto.i32):
         value = pto.const(0, dtype=pto.i32)

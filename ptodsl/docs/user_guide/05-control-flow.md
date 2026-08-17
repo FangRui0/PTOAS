@@ -404,8 +404,14 @@ are assigned in the loop and used by the condition, by later iterations, or
 after the loop. Each such value must have a stable type and a well-defined
 initial value before the loop. Loop-local temporaries that are written before
 they are read inside every iteration (e.g. `col = base + index`) are not
-loop-carried and need no initial value outside the loop. If you need a more
-complex loop state pattern, use the explicit API:
+loop-carried and need no initial value outside the loop.
+
+Because loop-local temporaries stay iteration-local, an `else:` clause of a
+runtime `while` must not read them: the clause runs after the rewrite's
+single traced execution, so it would observe the trace-time value instead of
+the value of the final iteration. Read only genuinely loop-carried names
+(or values that are live after the loop) from an `else:` clause. If you need
+a more complex loop state pattern, use the explicit API:
 
 ```python
 loop = pto.for_(0, rows, step=1).carry(acc=acc)
