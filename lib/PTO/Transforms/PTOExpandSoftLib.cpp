@@ -46,25 +46,44 @@ namespace {
 static constexpr llvm::StringLiteral kSoftLibInstanceAttr =
     "pto.softlib.instance";
 
-static bool isSignedI32VReg(Type type) {
+// Element widths the A5 Software Library implements for pto.vdiv.  Signed and
+// signless forms are both accepted; unsigned vectors are intentionally not.
+static bool isSoftLibVdivIntegerVReg(Type type) {
   auto vreg = dyn_cast<VRegType>(type);
-  if (!vreg)
+  if (!vreg) {
     return false;
+  }
   auto integer = dyn_cast<IntegerType>(vreg.getElementType());
-  return integer && integer.getWidth() == 32 &&
+  if (!integer) {
+    return false;
+  }
+  return (integer.getWidth() == 16 || integer.getWidth() == 32) &&
          (integer.isSigned() || integer.isSignless());
 }
 
-static StringRef getIntegerDtype(VdivOp op) {
+// Integer-element pto.vdiv on A5 must be handled here (SoftOps or an explicit
+// compile-time rejection).  Floating-point vdiv is native and is left alone.
+static bool isIntegerVdiv(Operation *op) {
+  auto vdiv = dyn_cast<VdivOp>(op);
+  if (!vdiv) {
+    return false;
+  }
+  auto vreg = dyn_cast<VRegType>(vdiv.getResult().getType());
+  if (!vreg) {
+    return false;
+  }
+  return isa<IntegerType>(vreg.getElementType());
+}
+
+static std::string getIntegerDtype(VdivOp op) {
   auto vreg = cast<VRegType>(op.getLhs().getType());
   auto integer = cast<IntegerType>(vreg.getElementType());
-  return integer.isSigned() ? StringRef("si32") : StringRef("i32");
+  return (integer.isSigned() ? "si" : "i") + std::to_string(integer.getWidth());
 }
 
 static std::string buildVdivRequestJson(VdivOp op) {
   auto vreg = cast<VRegType>(op.getLhs().getType());
-  std::string json = "{\"dtype\":\"" + getIntegerDtype(op).str() +
-                     "\",\"lanes\":";
+  std::string json = "{\"dtype\":\"" + getIntegerDtype(op) + "\",\"lanes\":";
   json += std::to_string(vreg.getElementCount());
   json += ",\"mask\":\"";
   json += cast<MaskType>(op.getMask().getType()).getGranularity().str();
@@ -76,8 +95,9 @@ static std::string uniqueSoftLibName(ModuleOp module, StringRef base) {
   std::string stem = std::string("__pto_soft_") + base.str();
   unsigned suffix = 0;
   std::string name = stem;
-  while (module.lookupSymbol<func::FuncOp>(name))
+  while (module.lookupSymbol<func::FuncOp>(name)) {
     name = stem + "_" + std::to_string(++suffix);
+  }
   return name;
 }
 
@@ -114,24 +134,30 @@ struct PTOExpandSoftLibPass
     func::FuncOp importedEntry;
     LogicalResult materializationResult = service->materialize(
         request, context, [&](ModuleOp source, StringRef entrySymbol) {
-          if (!source || source.getContext() != &context)
+          bool materializeSourceReady =
+              source && source.getContext() == &context;
+          if (!materializeSourceReady) {
             return failure();
+          }
           func::FuncOp sourceEntry = source.lookupSymbol<func::FuncOp>(entrySymbol);
-          if (!sourceEntry)
+          if (!sourceEntry) {
             return failure();
+          }
 
           SymbolTable symbols(module);
           SmallVector<func::FuncOp> sourceFunctions;
-          for (func::FuncOp fn : source.getOps<func::FuncOp>())
+          for (func::FuncOp fn : source.getOps<func::FuncOp>()) {
             sourceFunctions.push_back(fn);
+          }
 
           llvm::StringMap<std::string> renames;
           for (func::FuncOp fn : sourceFunctions) {
             std::string name = fn == sourceEntry
                                    ? functionName
                                    : functionName + "__" + fn.getSymName().str();
-            if (symbols.lookup(name))
+            if (symbols.lookup(name)) {
               return failure();
+            }
             renames[fn.getSymName()] = name;
           }
 
@@ -145,19 +171,24 @@ struct PTOExpandSoftLibPass
             copy->setAttr(kSoftLibInstanceAttr, UnitAttr::get(&context));
             cloned.push_back(copy);
           }
-          for (func::FuncOp fn : cloned)
-            for (const auto &rename : renames)
+          for (func::FuncOp fn : cloned) {
+            for (const auto &rename : renames) {
               if (failed(SymbolTable::replaceAllSymbolUses(
                       StringAttr::get(&context, rename.getKey()),
-                      StringAttr::get(&context, rename.getValue()), fn)))
+                      StringAttr::get(&context, rename.getValue()), fn))) {
                 return failure();
+              }
+            }
+          }
           importedEntry = module.lookupSymbol<func::FuncOp>(functionName);
           return importedEntry ? success() : failure();
         });
-    if (failed(materializationResult) || !importedEntry)
+    bool softLibReady = succeeded(materializationResult) && importedEntry;
+    if (!softLibReady) {
       return op->emitError() << "failed to materialize SoftOps implementation for "
                              << requestOp,
              failure();
+    }
 
     OpBuilder builder(op);
     auto call = builder.create<func::CallOp>(op->getLoc(), importedEntry,
@@ -181,7 +212,7 @@ struct PTOExpandSoftLibPass
                                 MLIRContext &context, StringRef target,
                                 const std::shared_ptr<SoftLibService> &service) {
     auto vreg = cast<VRegType>(op.getLhs().getType());
-    std::string stem = "vdiv_" + getIntegerDtype(op).str() + "_" +
+    std::string stem = "vdiv_" + getIntegerDtype(op) + "_" +
                        std::to_string(vreg.getElementCount());
     return materializeCall(op, module, context, target, "pto.vdiv",
                            buildVdivRequestJson(op), stem,
@@ -192,19 +223,23 @@ struct PTOExpandSoftLibPass
   void runOnOperation() override {
     ModuleOp module = getOperation();
     ModuleOp topLevel = getTopLevelModuleOp(module);
-    if (!isTargetArchA5(topLevel))
+    if (!isTargetArchA5(topLevel)) {
       return;
+    }
     StringRef targetArch = "a5";
-    if (auto attr = topLevel->getAttrOfType<StringAttr>("pto.target_arch"))
+    if (auto attr = topLevel->getAttrOfType<StringAttr>("pto.target_arch")) {
       targetArch = attr.getValue();
+    }
     SmallVector<Operation *> candidates;
     module.walk([&](Operation *op) {
-      if (isa<SinOp, CosOp>(op) ||
-          (isa<VdivOp>(op) && isSignedI32VReg(op->getResult(0).getType())))
+      bool isSoftLibCandidate = isa<SinOp, CosOp>(op) || isIntegerVdiv(op);
+      if (isSoftLibCandidate) {
         candidates.push_back(op);
+      }
     });
-    if (candidates.empty())
+    if (candidates.empty()) {
       return;
+    }
     auto service = SoftLibRuntime::getService();
     if (!service) {
       module.emitError("PTOExpandSoftLib requires an initialized PTODSL SoftLib runtime");
@@ -213,19 +248,37 @@ struct PTOExpandSoftLibPass
     }
     for (Operation *op : candidates) {
       if (auto vdiv = dyn_cast<VdivOp>(op)) {
-        if (!isSignedI32VReg(vdiv.getLhs().getType()) ||
-            !isSignedI32VReg(vdiv.getRhs().getType()) ||
-            vdiv.getLhs().getType() != vdiv.getRhs().getType() ||
-            vdiv.getLhs().getType() != vdiv.getResult().getType() ||
-            vdiv.getMask().getType() != MaskType::get(&getContext(), "b32")) {
-          vdiv.emitError(
-              "A5 SoftOps pto.vdiv requires matching signed i32 vectors and a b32 mask");
+        auto resultVreg = dyn_cast<VRegType>(vdiv.getResult().getType());
+        if (!resultVreg) {
+          vdiv.emitError("A5 pto.vdiv requires a vector result");
+          signalPassFailure();
+          continue;
+        }
+        auto integer = dyn_cast<IntegerType>(resultVreg.getElementType());
+        auto expectedMask = integer && integer.getWidth() == 16
+                                ? "b16"
+                                : "b32";
+        bool lhsLegal = isSoftLibVdivIntegerVReg(vdiv.getLhs().getType());
+        bool rhsLegal = isSoftLibVdivIntegerVReg(vdiv.getRhs().getType());
+        bool sameType = vdiv.getLhs().getType() == vdiv.getRhs().getType() &&
+                        vdiv.getLhs().getType() == vdiv.getResult().getType();
+        bool maskMatches =
+            vdiv.getMask().getType() == MaskType::get(&getContext(), expectedMask);
+        if (!lhsLegal || !rhsLegal || !sameType || !maskMatches) {
+          vdiv.emitError() << "A5 integer pto.vdiv is not supported for "
+                           << vdiv.getResult().getType() << " with mask "
+                           << vdiv.getMask().getType() << "; only signed or "
+                           << "signless i16 vectors with a b16 mask and i32 "
+                           << "vectors with a b32 mask are materialized through "
+                           << "the A5 Software Library, and f16/f32 pto.vdiv "
+                           << "uses the native vector instruction";
           signalPassFailure();
           continue;
         }
         if (failed(materializeVdiv(vdiv, module, getContext(), targetArch,
-                                   service)))
+                                   service))) {
           signalPassFailure();
+        }
         continue;
       }
       if (!op->getResult(0).getType().isF32() || !op->getOperand(0).getType().isF32()) {
@@ -235,8 +288,9 @@ struct PTOExpandSoftLibPass
       }
       StringRef opName = isa<SinOp>(op) ? "pto.sin" : "pto.cos";
       if (failed(materializeTrig(op, module, getContext(), targetArch, opName,
-                                 service)))
+                                 service))) {
         signalPassFailure();
+      }
     }
   }
 };

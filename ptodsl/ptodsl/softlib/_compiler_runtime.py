@@ -38,13 +38,17 @@ def materialize(target: str, op: str, operand_specs_json: str, context):
         specs = json.loads(operand_specs_json)
     except json.JSONDecodeError as exc:
         raise ValueError(f"invalid SoftLib materialization request: {exc}") from exc
-    if op == "pto.vdiv" and specs.get("dtype") in {"i32", "si32"}:
-        lanes = int(specs.get("lanes", 64))
-        mask_bits = specs.get("mask", "b32")
-        module_name = "div_i32_soft"
-        helper = getattr(importlib.import_module("SoftOps"), module_name)
+    if op == "pto.vdiv" and specs.get("dtype") in {"i16", "si16", "i32", "si32"}:
         dtype = specs["dtype"]
-        integer_dtype = pto.si32 if dtype == "si32" else pto.i32
+        lanes = int(specs.get("lanes", 128 if dtype in {"i16", "si16"} else 64))
+        mask_bits = specs.get("mask", "b16" if dtype in {"i16", "si16"} else "b32")
+        module_name = "div_i16_soft" if dtype in {"i16", "si16"} else "div_i32_soft"
+        helper = getattr(importlib.import_module("SoftOps"), module_name)
+        integer_dtype = (
+            (pto.si16 if dtype == "si16" else pto.i16)
+            if dtype in {"i16", "si16"}
+            else (pto.si32 if dtype == "si32" else pto.i32)
+        )
         arg_types = [
             vreg_type(lanes, integer_dtype),
             vreg_type(lanes, integer_dtype),
