@@ -8588,13 +8588,13 @@ struct OneToNVMIBinaryOpPattern : OneToNOpConversionPattern<SourceOp> {
 // signedness of the value being shifted. Preserve the count bits with a
 // bitcast before creating the physical shift operation.
 template <typename SourceOp, typename TargetOp>
-struct OneToNVMIShiftOpPattern : OpConversionPattern<SourceOp> {
-  using OpConversionPattern<SourceOp>::OpConversionPattern;
+struct OneToNVMIShiftOpPattern : OneToNOpConversionPattern<SourceOp> {
+  using OneToNOpConversionPattern<SourceOp>::OneToNOpConversionPattern;
 
   LogicalResult matchAndRewrite(
       SourceOp op,
-      typename OpConversionPattern<SourceOp>::OneToNOpAdaptor adaptor,
-      ConversionPatternRewriter &rewriter) const override {
+      typename OneToNOpConversionPattern<SourceOp>::OpAdaptor adaptor,
+      OneToNPatternRewriter &rewriter) const override {
     ValueRange lhsParts = adaptor.getLhs();
     ValueRange rhsParts = adaptor.getRhs();
     FailureOr<SmallVector<Type>> maybeResultTypes =
