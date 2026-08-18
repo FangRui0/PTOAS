@@ -6,7 +6,7 @@
 
 1. 本地最小复现：`build -> runop -> 生成 pto/cpp`
 2. GitHub Actions：`Build Wheel` 与 `CI`
-3. A5 self-hosted runner 每日板测
+3. A3/A5 self-hosted runner 每日板测
 4. PR 评论触发的 A3/A5 手动板测
 
 本文只描述当前仓库已经存在、并且日常开发会直接用到的流程，不展开板测机器人内部实现。
@@ -46,12 +46,12 @@
 
 - 在 GitHub runner 上构建 LLVM/MLIR 与 PTOAS
 - 执行 `test/samples/runop.sh --enablebc all`
-- 在 `workflow_dispatch` / `schedule` 时打包 payload，并把样例和脚本发到远端板机执行 `run_remote_npu_validation.sh`
+- 在 `workflow_dispatch` / `schedule` 时打包 payload，由 A3 self-hosted runner 通过 `task-submit` 执行 `run_remote_npu_validation.sh`
 
 触发差异：
 
 - `push` / `pull_request`：只跑 GitHub runner 上的构建和样例生成
-- `workflow_dispatch` / `schedule`：除上述步骤外，还会跑远端板测 job `remote-npu-validation`
+- `workflow_dispatch` / `schedule`：除上述步骤外，还会在 A3 runner 跑板测 job `remote-npu-validation`
 
 ### 2.3 `A5 Nightly Board`
 
@@ -224,9 +224,21 @@ gh workflow run build_wheel.yml \
 gh run list --repo hw-native-sys/PTOAS --workflow 'Build Wheel' --limit 5
 ```
 
-### 4.3 手动触发 `CI` 远端板测
+### 4.3 配置和触发 A3 每日板测
 
 `CI` 的 `remote-npu-validation` 只会在 `workflow_dispatch` 或定时任务下执行。
+它固定使用以下 self-hosted runner 标签：
+
+- `self-hosted`
+- `Linux`
+- `ARM64`
+- `ptoas-a3`
+
+runner 用户需要能够执行 `task-submit`，并提供 `cmake`、`git`、`make`、
+`python3`、`tar` 和 Python `numpy`。workflow 不再使用 `SSH_KEY`、
+`SSH_KNOWN_HOSTS` 或远端主机参数；payload 会下载到 A3 runner 的临时目录，
+通过 TaskQueue 获取设备后在本机执行。默认 `device_id=auto`，由 TaskQueue
+选择空闲卡并通过 `TASK_DEVICE` 传给板测脚本。
 
 命令行例子：
 
@@ -236,35 +248,24 @@ gh workflow run ci.yml \
   --ref main \
   -f stage=run \
   -f run_mode=npu \
-  -f soc_version=Ascend910B1 \
-  -f device_id=2 \
+  -f soc_version=Ascend910 \
+  -f device_id=auto \
   -f skip_cases='mix_kernel,vadd_validshape,vadd_validshape_dynamic,print,storefp' \
   -f run_only_cases=''
-```
-
-A5 例子：
-
-```bash
-gh workflow run ci.yml \
-  --repo hw-native-sys/PTOAS \
-  --ref main \
-  -f stage=run \
-  -f run_mode=npu \
-  -f soc_version=Ascend950 \
-  -f device_id=1 \
-  -f run_only_cases='qwen3_decode_layer_incore_0,qwen3_decode_layer_incore_1'
 ```
 
 关键输入解释：
 
 - `stage`：`build` 或 `run`
 - `run_mode`：`npu` 或 `sim`
-- `soc_version`：例如 `Ascend910B1`、`Ascend950`
-- `device_id`：远端 `aclrtSetDevice` 的 device id
+- `soc_version`：A3 编译目标，默认 `Ascend910`
+- `device_id`：传给 `task-submit --device` 的选择器，默认 `auto`
 - `skip_cases`：跳过列表
 - `run_only_cases`：只跑列表
 - `pto_isa_repo` / `pto_isa_commit`：指定板测使用的 `pto-isa`
-- `remote_host` / `remote_user` / `remote_port`：指定远端板机
+
+定时任务固定使用默认分支；GitHub cron 使用 UTC，因此配置为 `0 19 * * *`，
+对应北京时间次日 `03:00`。同一时间只允许一个 A3 nightly job，新的运行会排队且不会取消正在进行的板测。
 
 ### 4.4 配置和触发 A5 每日板测
 
