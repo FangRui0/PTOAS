@@ -1300,6 +1300,17 @@ class _ControlFlowRewriter:
         so slots never need to participate here.  ``rewrite_block`` and
         ``_rewrite_loop_body`` share this segmentation; nested branch bodies pick
         up the current loop's control from the stack top automatically.
+
+        Complexity note: a block with N control-transfer points produces N
+        nested guards (each transfer's guard wraps the already-guarded tail
+        behind it), with per-guard merge sets bounded by the names live at
+        that point.  This nesting is inherent to predicating the tail: once an
+        earlier transfer has fired, a later transfer statement must not even
+        evaluate its condition, so the guards cannot be flattened into sibling
+        regions without redesigning flag updates as data-flow (e.g.
+        ``did_break |= cond & active``).  Typical kernels have very few
+        transfer points per block, so the nesting is accepted deliberately
+        rather than capped or merged.
         """
         if control is None or not tail:
             return None
