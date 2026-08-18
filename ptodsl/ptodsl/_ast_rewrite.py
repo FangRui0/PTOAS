@@ -40,6 +40,8 @@ def rewrite_jit_function(
     """
     try:
         source = inspect.getsource(fn)
+        _, source_start_index = inspect.findsource(fn)
+        source_start_line = source_start_index + 1
     except (OSError, TypeError) as exc:
         # Dynamically-created functions from exec/REPL/notebook contexts may
         # not have retrievable source. Keep existing tracing behavior for those
@@ -54,6 +56,11 @@ def rewrite_jit_function(
     if function_def is None:
         return fn
 
+    # Preserve the first decorator line as the rewritten function's co_firstlineno.
+    function_first_lineno = min(
+        [function_def.lineno]
+        + [decorator.lineno for decorator in function_def.decorator_list]
+    )
     function_def.decorator_list = []
     closure_vars = inspect.getclosurevars(fn)
     static_env = dict(fn.__globals__)
@@ -72,8 +79,10 @@ def rewrite_jit_function(
             reject_bare_returns=reject_bare_returns,
         )
         function_def.body = rewriter.rewrite_block(function_def.body, live_after=set())
+    function_def.lineno = function_first_lineno
     tree = ast.Module(body=[function_def], type_ignores=[])
     ast.fix_missing_locations(tree)
+    ast.increment_lineno(tree, source_start_line - 1)
 
     locals_ns = {}
     try:
