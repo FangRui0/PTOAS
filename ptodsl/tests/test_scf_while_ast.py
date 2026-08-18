@@ -33,30 +33,62 @@ def _region_close(text: str, open_brace: int) -> int:
     raise AssertionError("unbalanced braces in MLIR text")
 
 
+def _is_flag_merge_result(mlir_text: str, cond_token: str) -> bool:
+    """True when cond_token (``%X`` or ``%X#k``) is defined by a
+    result-producing ``scf.if`` merging i1 control-flag state.
+
+    The break/continue predication contract requires the tail guard's
+    condition to be the *merged* ``active`` flag — a result of the
+    flag-merge ``scf.if`` — not an arbitrary dynamic condition (e.g. the
+    original ``if value > 0`` test, which would leave the tail
+    unpredicated).  Single-result merges print as ``%X = scf.if ... ->
+    (i1)``; multi-result merges as ``%X:N = scf.if ... -> (i1, ...)`` with
+    the condition referenced as ``%X#k``.
+    """
+    if "#" in cond_token:
+        base, idx = cond_token[1:].split("#", 1)
+        idx = int(idx)
+        m = re.search(
+            rf"%{re.escape(base)}:(\d+) = scf\.if [^\n]*-> \(([^)]*)\)", mlir_text)
+        if m is None or idx >= int(m.group(1)):
+            return False
+        types = [t.strip() for t in m.group(2).split(",")]
+        return idx < len(types) and types[idx] == "i1"
+    base = cond_token[1:]
+    m = re.search(
+        rf"%{re.escape(base)} = scf\.if [^\n]*-> \(([^)]*)\)", mlir_text)
+    return m is not None and m.group(1).strip() == "i1"
+
+
 def _assert_tail_guarded(mlir_text: str, tail_op_pattern: str):
     """Lock the break/continue tail-skip contract in the emitted IR.
 
     Statements after a break/continue (or after an if containing one) must be
     predicated on the merged ``active`` flag: the tail operation must appear
-    *inside the region* of a result-producing ``scf.if`` whose condition is a
-    real SSA value (``%X`` or ``%X#0``, never a constant true/false).  Region
-    containment is checked by brace depth, not mere text order, so a guard
-    that opens and closes before the tail cannot satisfy this contract.  The
+    *inside the region* of a result-producing ``scf.if`` whose condition is
+    the i1 result of an earlier flag-merge ``scf.if`` (never a constant, a
+    block argument, or an unrelated dynamic condition).  Region containment
+    is checked by brace depth, not mere text order, and the condition's
+    defining op is resolved, so a tail that merely sits inside the original
+    dynamic ``if value > 0`` region does not satisfy this contract.  The
     dead constant-true whole-body guard must be gone.
     """
     assert not re.search(r"scf\.if %true", mlir_text), (
         "constant-true guard still present; break/continue tails are unpredicated")
     tail = re.search(tail_op_pattern, mlir_text)
     assert tail is not None, f"tail op {tail_op_pattern!r} not found in MLIR"
-    guards = list(re.finditer(r"= scf\.if %(?!true|false)\w+(?:#\d+)? -> \(", mlir_text))
+    guards = list(re.finditer(r"= scf\.if (%(?!true|false)\w+(?:#\d+)?) -> \(", mlir_text))
     assert guards, "no active-guarded tail region found"
     for guard in guards:
+        if not _is_flag_merge_result(mlir_text, guard.group(1)):
+            continue
         open_brace = mlir_text.index("{", guard.end())
         if guard.start() < tail.start() < _region_close(mlir_text, open_brace):
             return
     raise AssertionError(
-        "tail op is not contained in any active-guarded scf.if region; "
-        "statements after break/continue would execute unconditionally")
+        "tail op is not contained in a region guarded by the merged active "
+        "flag (an i1 result of a flag-merge scf.if); statements after "
+        "break/continue would execute unconditionally")
 
 
 @pto.jit(target="a5")
@@ -359,6 +391,60 @@ def while_break_dead_slot_tail(limit: pto.i32):
     _ = value
 
 
+@pto.jit(target="a5")
+def while_if_else_break_dead_tail(limit: pto.i32):
+    # An if whose both branches break always exits the iteration, so the
+    # outer tail after it is dead and must be dropped even though the if
+    # itself is not a bare break/continue.
+    value = pto.const(0, dtype=pto.i32)
+    while value < limit:
+        value = value + pto.const(1, dtype=pto.i32)
+        if value > pto.const(2, dtype=pto.i32):
+            break
+        else:
+            break
+        dead = dead + pto.const(10, dtype=pto.i32)
+    _ = value
+
+
+class _NullContext:
+    def __enter__(self):
+        return None
+
+    def __exit__(self, *exc):
+        return False
+
+
+@pto.jit(target="a5")
+def while_with_break_dead_tail(limit: pto.i32):
+    # A with body that always breaks never falls through: the outer tail is
+    # dead (the context exit runs natively at trace time, then the transfer
+    # propagates).
+    value = pto.const(0, dtype=pto.i32)
+    while value < limit:
+        value = value + pto.const(1, dtype=pto.i32)
+        with _NullContext():
+            break
+        dead = dead + pto.const(10, dtype=pto.i32)
+    _ = value
+
+
+@pto.jit(target="a5")
+def while_try_break_dead_tail(limit: pto.i32):
+    # try/finally whose body always breaks: the finally block runs (here a
+    # real store to a carried name), then the transfer propagates and the
+    # outer tail is dead.
+    value = pto.const(0, dtype=pto.i32)
+    while value < limit:
+        value = value + pto.const(1, dtype=pto.i32)
+        try:
+            break
+        finally:
+            value = value + pto.const(0, dtype=pto.i32)
+        dead = dead + pto.const(10, dtype=pto.i32)
+    _ = value
+
+
 def unsupported_while_subscript(limit: pto.i32):
     values = [0]
     value = pto.const(0, dtype=pto.i32)
@@ -457,6 +543,9 @@ def main():
         while_break_dead_unbound_tail: 3,
         while_if_break_dead_branch_tail: 3,
         while_break_dead_slot_tail: 3,
+        while_if_else_break_dead_tail: 3,
+        while_with_break_dead_tail: 3,
+        while_try_break_dead_tail: 3,
         for_break_tail_guard: 4,  # iv + value + control flags
     }
     for fn, expected_carries in tail_carry_contract.items():
@@ -464,6 +553,15 @@ def main():
         actual = _while_iter_arg_count(loop_text)
         assert actual == expected_carries, (
             f"{fn.__name__}: expected {expected_carries} loop-carried slots, got {actual}")
+
+    # Compound-statement transfers (both-branches-break if, with/try bodies
+    # that always break) must also have their outer dead tails dropped.
+    for fn in (while_if_else_break_dead_tail, while_with_break_dead_tail,
+               while_try_break_dead_tail):
+        text = fn.compile().mlir_text()
+        assert not re.search(r"arith\.addi %[\w#]+, %c10_i32", text), (
+            f"{fn.__name__}: dead tail after a guaranteed compound transfer "
+            "must be dropped, not emitted")
 
     # Truncating the dead tail must not weaken the store-less-body diagnostic:
     # a controlled while whose only real statement is the transfer still has
@@ -517,6 +615,41 @@ def main():
         pass
     else:
         raise AssertionError("unbound loop-local used after while must not compile")
+
+    # Negative fixtures for the checker itself: a tail that merely sits
+    # inside an *unrelated* dynamic scf.if (condition is a block argument or
+    # an arith result, not the merged active flag) must be rejected — the
+    # reviewer's "if value > 0 region without an active guard" case.
+    unguarded_fixtures = [
+        # condition is a plain block argument
+        "func.func @k(%cond: i1) {\n"
+        "  %c1_i32 = arith.constant 1 : i32\n"
+        "  %0 = scf.if %cond -> (i32) {\n"
+        "    %1 = arith.addi %c1_i32, %c1_i32 : i32\n"
+        "    scf.yield %1 : i32\n"
+        "  }\n"
+        "  return\n"
+        "}\n",
+        # condition is an arith.cmpi result, not a flag-merge scf.if result
+        "func.func @k(%a: i32, %b: i32) {\n"
+        "  %c1_i32 = arith.constant 1 : i32\n"
+        "  %cmp = arith.cmpi slt, %a, %b : i32\n"
+        "  %0 = scf.if %cmp -> (i32) {\n"
+        "    %1 = arith.addi %c1_i32, %c1_i32 : i32\n"
+        "    scf.yield %1 : i32\n"
+        "  }\n"
+        "  return\n"
+        "}\n",
+    ]
+    for fixture in unguarded_fixtures:
+        try:
+            _assert_tail_guarded(fixture, r"arith\.addi %[\w#]+, %c1_i32")
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(
+                "checker accepted a tail guarded by an unrelated dynamic if "
+                "(condition is not the merged active flag)")
 
 
 if __name__ == "__main__":

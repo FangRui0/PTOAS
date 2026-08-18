@@ -968,15 +968,46 @@ def _loop_control_flags(stmts):
     return result
 
 
-def _drop_unreachable_tails(stmts):
-    """Truncate each statement list after a bare break/continue and recurse.
+def _stmt_always_transfers(stmt):
+    """True when *stmt* cannot complete normally in the current iteration.
 
-    Statements following an unconditional break/continue are unreachable in
-    Python semantics.  Dropping them before name/slot analysis keeps dead
-    names out of the carry computation and, more importantly, keeps the
-    tracer from executing bodies that reference locals Python itself would
-    never bind (``while ...: break; dead = dead + 1`` is legal Python yet
-    raised UnboundLocalError when the dead tail was still analyzed/traced).
+    A bare break/continue, or a compound statement whose every path exits
+    the iteration: an ``if`` whose both branches always transfer, or a
+    ``with``/``try`` whose body always transfers (the context exit /
+    ``finally`` block still runs, then the transfer propagates, so the
+    statement as a whole never falls through).  Nested loops belong to
+    themselves: a break inside one says nothing about the outer iteration.
+    """
+    if isinstance(stmt, (ast.Break, ast.Continue)):
+        return True
+    if isinstance(stmt, ast.If):
+        return (
+            bool(stmt.orelse)
+            and _block_always_transfers(stmt.body)
+            and _block_always_transfers(stmt.orelse)
+        )
+    if isinstance(stmt, (ast.With, ast.AsyncWith)):
+        return _block_always_transfers(stmt.body)
+    if isinstance(stmt, ast.Try) or type(stmt).__name__ == "TryStar":
+        return _block_always_transfers(stmt.body)
+    return False
+
+
+def _block_always_transfers(stmts):
+    return any(_stmt_always_transfers(stmt) for stmt in stmts)
+
+
+def _drop_unreachable_tails(stmts):
+    """Truncate each statement list after a guaranteed transfer and recurse.
+
+    Statements following a statement that always exits the current iteration
+    (bare break/continue, both-branches-transfer if, transfer-bodied
+    with/try) are unreachable in Python semantics.  Dropping them before
+    name/slot analysis keeps dead names out of the carry computation and,
+    more importantly, keeps the tracer from executing bodies that reference
+    locals Python itself would never bind (``while ...: break; dead = dead +
+    1`` is legal Python yet raised UnboundLocalError when the dead tail was
+    still analyzed/traced).
 
     The recursion stops at nested loops' own statements only in the sense of
     ownership: their bodies are cleaned too, since each list is truncated at
@@ -989,7 +1020,9 @@ def _drop_unreachable_tails(stmts):
             value = getattr(stmt, field, None)
             if isinstance(value, list) and value and isinstance(value[0], ast.stmt):
                 setattr(stmt, field, _drop_unreachable_tails(value))
-        if isinstance(stmt, (ast.Break, ast.Continue)):
+        for handler in getattr(stmt, "handlers", []):
+            handler.body = _drop_unreachable_tails(handler.body)
+        if _stmt_always_transfers(stmt):
             return cleaned
     return cleaned
 
