@@ -50,7 +50,8 @@
 
 触发差异：
 
-- `push` / `pull_request`：只跑 GitHub runner 上的构建和样例生成
+- `push`：只跑 GitHub runner 上的构建和样例生成
+- `pull_request`：除构建和样例生成外，受信任的仓库成员/协作者 PR 还会在 A3 runner 执行不占 NPU 的 TaskQueue smoke test；外部贡献者 PR 会跳过该 self-hosted job
 - `workflow_dispatch` / `schedule`：除上述步骤外，还会在 A3 runner 跑板测 job `remote-npu-validation`
 
 ### 2.3 `A5 Nightly Board`
@@ -239,6 +240,10 @@ runner 用户需要能够执行 `task-submit`，并提供 `cmake`、`git`、`mak
 `SSH_KNOWN_HOSTS` 或远端主机参数；payload 会下载到 A3 runner 的临时目录，
 通过 TaskQueue 获取设备后在本机执行。默认 `device_id=auto`，由 TaskQueue
 选择空闲卡并通过 `TASK_DEVICE` 传给板测脚本。
+
+受信任的 `OWNER`、`MEMBER`、`COLLABORATOR` PR 会运行
+`a3-taskqueue-smoke`。该 job 不 checkout PR 源码、不申请 NPU，只验证
+`task-submit --env-file`、任务 ID 解析、`--wait`、`--status` 和退出码传播。
 
 命令行例子：
 
