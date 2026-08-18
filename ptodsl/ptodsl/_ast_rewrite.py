@@ -972,10 +972,9 @@ def _stmt_always_transfers(stmt):
     """True when *stmt* cannot complete normally in the current iteration.
 
     A bare break/continue, or a compound statement whose every path exits
-    the iteration: an ``if`` whose both branches always transfer, or a
-    ``with``/``try`` whose body always transfers (the context exit /
-    ``finally`` block still runs, then the transfer propagates, so the
-    statement as a whole never falls through).  Nested loops belong to
+    the iteration: an ``if`` whose both branches always transfer, a ``with``
+    whose body always transfers, or a ``try`` whose body and caught handlers
+    transfer (or whose ``finally`` transfers).  Nested loops belong to
     themselves: a break inside one says nothing about the outer iteration.
     """
     if isinstance(stmt, (ast.Break, ast.Continue)):
@@ -989,12 +988,24 @@ def _stmt_always_transfers(stmt):
     if isinstance(stmt, (ast.With, ast.AsyncWith)):
         return _block_always_transfers(stmt.body)
     if isinstance(stmt, ast.Try) or type(stmt).__name__ == "TryStar":
-        return _block_always_transfers(stmt.body)
+        # A transfer in the try body does not cover an exception path caught
+        # by a handler.  A finally transfer, on the other hand, overrides
+        # every normal or exceptional path through the statement.
+        if _block_always_transfers(stmt.finalbody):
+            return True
+        return (
+            _block_always_transfers(stmt.body)
+            and all(_block_always_transfers(handler.body) for handler in stmt.handlers)
+        )
     return False
 
 
 def _block_always_transfers(stmts):
-    return any(_stmt_always_transfers(stmt) for stmt in stmts)
+    # _drop_unreachable_tails has already removed everything after the first
+    # guaranteed transfer in each child block.  Looking only at the final
+    # reachable statement keeps this helper correct when called independently
+    # and avoids treating an earlier conditional transfer as unconditional.
+    return bool(stmts) and _stmt_always_transfers(stmts[-1])
 
 
 def _drop_unreachable_tails(stmts):

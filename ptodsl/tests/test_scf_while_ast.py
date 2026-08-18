@@ -7,9 +7,11 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
+import ast
 import re
 
 from ptodsl import pto
+from ptodsl._ast_rewrite import _drop_unreachable_tails
 
 
 def _while_iter_arg_count(mlir_text: str) -> int:
@@ -454,6 +456,39 @@ def unsupported_while_subscript(limit: pto.i32):
 
 
 def main():
+    # Dead-tail truncation must account for exception paths.  A break in the
+    # try body does not make the statement transfer on an exception caught by
+    # a falling-through handler, while a transferring handler (or finally)
+    # does make the whole statement non-fallthrough.
+    def cleaned_loop_body(source):
+        loop = ast.parse(source).body[0]
+        return _drop_unreachable_tails(loop.body)
+
+    assert len(cleaned_loop_body(
+        "while cond:\n"
+        "    try:\n"
+        "        break\n"
+        "    except Exception:\n"
+        "        value = value + one\n"
+        "    dead = dead + ten\n"
+    )) == 2, "falling-through except handler must keep the outer tail"
+    assert len(cleaned_loop_body(
+        "while cond:\n"
+        "    try:\n"
+        "        break\n"
+        "    except Exception:\n"
+        "        continue\n"
+        "    dead = dead + ten\n"
+    )) == 1, "transferring except handlers must drop the outer tail"
+    assert len(cleaned_loop_body(
+        "while cond:\n"
+        "    try:\n"
+        "        value = value + one\n"
+        "    finally:\n"
+        "        continue\n"
+        "    dead = dead + ten\n"
+    )) == 1, "transferring finally blocks must drop the outer tail"
+
     text = runtime_while_probe.compile().mlir_text()
     assert "scf.while" in text
     assert "scf.condition" in text
