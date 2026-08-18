@@ -8584,6 +8584,79 @@ struct OneToNVMIBinaryOpPattern : OneToNOpConversionPattern<SourceOp> {
   }
 };
 
+// VPTO vector shifts require a signed shift-count carrier regardless of the
+// signedness of the value being shifted. Preserve the count bits with a
+// bitcast before creating the physical shift operation.
+template <typename SourceOp, typename TargetOp>
+struct OneToNVMIShiftOpPattern : OneToNOpConversionPattern<SourceOp> {
+  using OneToNOpConversionPattern<SourceOp>::OneToNOpConversionPattern;
+
+  LogicalResult matchAndRewrite(
+      SourceOp op,
+      typename OneToNOpConversionPattern<SourceOp>::OpAdaptor adaptor,
+      OneToNPatternRewriter &rewriter) const override {
+    ValueRange lhsParts = adaptor.getLhs();
+    ValueRange rhsParts = adaptor.getRhs();
+    FailureOr<SmallVector<Type>> maybeResultTypes =
+        getConvertedResultTypes(op, 0, *this->getTypeConverter());
+    if (failed(maybeResultTypes)) {
+      return failure();
+    }
+    SmallVector<Type> resultTypes = std::move(*maybeResultTypes);
+    const bool hasMismatchedPhysicalArity =
+        lhsParts.size() != rhsParts.size() ||
+        lhsParts.size() != resultTypes.size();
+    if (hasMismatchedPhysicalArity) {
+      return rewriter.notifyMatchFailure(op, "physical shift arity mismatch");
+    }
+
+    SmallVector<Value> results;
+    results.reserve(resultTypes.size());
+    for (auto [lhs, rhs, resultType] :
+         llvm::zip_equal(lhsParts, rhsParts, resultTypes)) {
+      auto resultVRegType = dyn_cast<VRegType>(resultType);
+      auto rhsVRegType = dyn_cast<VRegType>(rhs.getType());
+      auto rhsElementType =
+          rhsVRegType ? dyn_cast<IntegerType>(rhsVRegType.getElementType())
+                      : IntegerType();
+      const bool hasInvalidPhysicalPart =
+          !resultVRegType || lhs.getType() != resultType || !rhsElementType;
+      if (hasInvalidPhysicalPart) {
+        return rewriter.notifyMatchFailure(
+            op, "physical shift part type mismatch");
+      }
+
+      auto signedElementType = IntegerType::get(
+          rewriter.getContext(), rhsElementType.getWidth(),
+          IntegerType::SignednessSemantics::Signed);
+      auto signedRhsType = VRegType::get(
+          rewriter.getContext(), rhsVRegType.getElementCount(),
+          signedElementType);
+      FailureOr<Value> signedRhs =
+          bitcastVReg(op.getLoc(), rhs, signedRhsType, rewriter);
+      if (failed(signedRhs)) {
+        return rewriter.notifyMatchFailure(
+            op, "unable to normalize physical shift-count type");
+      }
+
+      FailureOr<Value> mask =
+          createAllTrueMaskForVReg(op.getLoc(), resultVRegType, rewriter);
+      if (failed(mask)) {
+        return rewriter.notifyMatchFailure(
+            op, "unsupported element type for all-true shift mask");
+      }
+      results.push_back(
+          rewriter
+              .create<TargetOp>(op.getLoc(), resultType, lhs, *signedRhs, *mask)
+              .getResult());
+    }
+
+    replaceOpWithFlatConvertedValues(rewriter, op, results,
+                                     *this->getTypeConverter());
+    return success();
+  }
+};
+
 template <typename SourceOp, typename TargetOp>
 struct OneToNVMIVecScalarOpPattern : OneToNOpConversionPattern<SourceOp> {
   using OneToNOpConversionPattern<SourceOp>::OneToNOpConversionPattern;
@@ -12397,9 +12470,9 @@ void populateVMIConversionPatterns(
       OneToNVMIBinaryOpPattern<VMIAndIOp, VandOp>,
       OneToNVMIBinaryOpPattern<VMIOrIOp, VorOp>,
       OneToNVMIBinaryOpPattern<VMIXOrIOp, VxorOp>,
-      OneToNVMIBinaryOpPattern<VMIShLIOp, VshlOp>,
-      OneToNVMIBinaryOpPattern<VMIShRUIOp, VshrOp>,
-      OneToNVMIBinaryOpPattern<VMIShRSIOp, VshrOp>,
+      OneToNVMIShiftOpPattern<VMIShLIOp, VshlOp>,
+      OneToNVMIShiftOpPattern<VMIShRUIOp, VshrOp>,
+      OneToNVMIShiftOpPattern<VMIShRSIOp, VshrOp>,
       OneToNVMIUnaryOpPattern<VMINotOp, VnotOp>,
       OneToNVMICmpOpPattern<VMICmpFOp>, OneToNVMICmpOpPattern<VMICmpIOp>,
       OneToNVMISelectOpPattern, OneToNVMIVselrOpPattern,

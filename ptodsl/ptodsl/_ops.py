@@ -1859,6 +1859,37 @@ def _emit_binary_vec_op(op_ctor, lhs, rhs, mask):
     )
 
 
+def _normalize_shift_count_vector(rhs, *, context: str):
+    """Reinterpret an integer shift-count vector as its signed type."""
+    raw_type = unwrap_surface_value(rhs).type
+    # Preserve generated-wrapper dispatch tests, which intentionally use mock
+    # values instead of MLIR SSA values. Real PTODSL values always carry Type.
+    if not isinstance(raw_type, Type):
+        return rhs
+    _, element_type = _infer_vreg_metadata(rhs)
+    if not IntegerType.isinstance(element_type):
+        raise TypeError(f"{context} requires an integer shift-count vector")
+    integer_type = IntegerType(element_type)
+    signed_type = IntegerType.get_signed(integer_type.width)
+    if element_type == signed_type:
+        return rhs
+    return vbitcast(rhs, signed_type)
+
+
+def _emit_shift_vec_op(op_ctor, lhs, rhs, mask):
+    context = f"pto.{_surface_name_for_op_ctor(op_ctor)}(...)"
+    _reject_low_precision_vreg_operands(lhs, rhs, context=context)
+    normalized_rhs = _normalize_shift_count_vector(rhs, context=context)
+    return wrap_surface_value(
+        op_ctor(
+            unwrap_surface_value(lhs).type,
+            unwrap_surface_value(lhs),
+            unwrap_surface_value(normalized_rhs),
+            unwrap_surface_value(mask),
+        ).result
+    )
+
+
 def _emit_vec_scalar_masked_op(op_ctor, inp, scalar, mask, *, context: str):
     _reject_low_precision_vreg_operands(inp, context=f"pto.{context}(...)")
     scalar_value = _coerce_scalar_like_vector_element(inp, scalar, context=context)
@@ -1941,12 +1972,12 @@ def vtrc(inp, mask, *, rnd="Z"):
 
 def vshl(lhs, rhs, mask):
     """``pto.vshl`` – element-wise shift left."""
-    return _emit_binary_vec_op(_pto.VshlOp, lhs, rhs, mask)
+    return _emit_shift_vec_op(_pto.VshlOp, lhs, rhs, mask)
 
 
 def vshr(lhs, rhs, mask):
     """``pto.vshr`` – element-wise shift right."""
-    return _emit_binary_vec_op(_pto.VshrOp, lhs, rhs, mask)
+    return _emit_shift_vec_op(_pto.VshrOp, lhs, rhs, mask)
 
 
 def vcmax(v, mask):
