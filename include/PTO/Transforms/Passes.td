@@ -1008,6 +1008,23 @@ def VMILayoutAssignment : Pass<"vmi-layout-assignment", "ModuleOp"> {
                            "mlir::scf::SCFDialect"];
 }
 
+def VMILayoutRematerializeWeakProducers
+    : Pass<"vmi-layout-rematerialize-weak-producers", "ModuleOp"> {
+  let summary = "Rematerialize weak layout producers before layout assignment";
+  let description = [{
+    Clones pure layout-polymorphic producers at their multiple uses before
+    layout assignment. This keeps independent consumer dataflows from being
+    connected only by a shared rematerializable SSA value. Strong dataflow
+    layout propagation remains the responsibility of vmi-layout-assignment.
+  }];
+  let constructor = "mlir::pto::createVMILayoutRematerializeWeakProducersPass()";
+  let dependentDialects = ["mlir::cf::ControlFlowDialect",
+                           "mlir::func::FuncDialect",
+                           "mlir::pto::PTODialect",
+                           "mlir::memref::MemRefDialect",
+                           "mlir::scf::SCFDialect"];
+}
+
 def VMIMaskGranularityAssignment
     : Pass<"vmi-mask-granularity-assignment", "ModuleOp"> {
   let summary = "Assign concrete VMI mask granularities";
