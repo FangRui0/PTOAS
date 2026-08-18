@@ -285,30 +285,30 @@ module {
 
 // CHECK-LABEL: func.func @vmi_to_vpto_extui_u8_to_u32(
 // CHECK-SAME: %[[INPUT:.*]]: !pto.vreg<256xui8>
-// CHECK: %[[U16_LO:.*]] = pto.vzunpack %[[INPUT]], {{.*}} : !pto.vreg<256xui8> -> !pto.vreg<128xui16>
-// CHECK: %[[U16_HI:.*]] = pto.vzunpack %[[INPUT]], {{.*}} : !pto.vreg<256xui8> -> !pto.vreg<128xui16>
-// CHECK: pto.vzunpack %[[U16_LO]], {{.*}} : !pto.vreg<128xui16> -> !pto.vreg<64xui32>
-// CHECK: pto.vzunpack %[[U16_HI]], {{.*}} : !pto.vreg<128xui16> -> !pto.vreg<64xui32>
+// CHECK: %[[MASK:.*]] = pto.pset_b8 "PAT_ALL" : !pto.mask<b8>
+// CHECK: pto.vcvt %[[INPUT]], %[[MASK]] {part = "P0"} : !pto.vreg<256xui8>, !pto.mask<b8> -> !pto.vreg<64xui32>
+// CHECK: pto.vcvt %[[INPUT]], %[[MASK]] {part = "P1"} : !pto.vreg<256xui8>, !pto.mask<b8> -> !pto.vreg<64xui32>
+// CHECK: pto.vcvt %[[INPUT]], %[[MASK]] {part = "P2"} : !pto.vreg<256xui8>, !pto.mask<b8> -> !pto.vreg<64xui32>
+// CHECK: pto.vcvt %[[INPUT]], %[[MASK]] {part = "P3"} : !pto.vreg<256xui8>, !pto.mask<b8> -> !pto.vreg<64xui32>
+// CHECK-NOT: pto.vzunpack
 // CHECK-NOT: pto.vmi.
 // CHECK-NOT: !pto.vmi.
 // CHECK-NOT: unrealized_conversion_cast
 
 // CHECK-LABEL: func.func @vmi_to_vpto_extui_u8_to_u16(
 // CHECK-SAME: %[[INPUT:.*]]: !pto.vreg<256xui8>
-// CHECK: pto.vzunpack %[[INPUT]], {{.*}} : !pto.vreg<256xui8> -> !pto.vreg<128xui16>
-// CHECK: pto.vzunpack %[[INPUT]], {{.*}} : !pto.vreg<256xui8> -> !pto.vreg<128xui16>
+// CHECK: %[[MASK:.*]] = pto.pset_b8 "PAT_ALL" : !pto.mask<b8>
+// CHECK: pto.vcvt %[[INPUT]], %[[MASK]] {part = "EVEN"} : !pto.vreg<256xui8>, !pto.mask<b8> -> !pto.vreg<128xui16>
+// CHECK: pto.vcvt %[[INPUT]], %[[MASK]] {part = "ODD"} : !pto.vreg<256xui8>, !pto.mask<b8> -> !pto.vreg<128xui16>
+// CHECK-NOT: pto.vzunpack
 // CHECK-NOT: pto.vmi.
 // CHECK-NOT: !pto.vmi.
 // CHECK-NOT: unrealized_conversion_cast
 
 // CHECK-LABEL: func.func @vmi_to_vpto_extui_deint2_u16_to_deint4_u32(
-// CHECK: %[[EVEN:.*]], %[[ODD:.*]] = pto.vdintlv %arg0, %arg1 : !pto.vreg<128xui16>, !pto.vreg<128xui16> -> !pto.vreg<128xui16>, !pto.vreg<128xui16>
-// CHECK: %[[P0:.*]] = pto.vzunpack %[[EVEN]], %[[PART0:.*]] : !pto.vreg<128xui16> -> !pto.vreg<64xui32>
-// CHECK: %[[P1:.*]] = pto.vzunpack %[[EVEN]], %[[PART1:.*]] : !pto.vreg<128xui16> -> !pto.vreg<64xui32>
-// CHECK: %[[P2:.*]] = pto.vzunpack %[[ODD]], %[[PART2:.*]] : !pto.vreg<128xui16> -> !pto.vreg<64xui32>
-// CHECK: %[[P3:.*]] = pto.vzunpack %[[ODD]], %[[PART3:.*]] : !pto.vreg<128xui16> -> !pto.vreg<64xui32>
-// CHECK: return %[[P0]], %[[P1]], %[[P2]], %[[P3]]
-// CHECK-NOT: pto.vcvt
+// CHECK: %[[MASK:.*]] = pto.pset_b16 "PAT_ALL" : !pto.mask<b16>
+// CHECK-COUNT-4: pto.vcvt
+// CHECK-NOT: pto.vzunpack
 // CHECK-NOT: pto.vmi.
 // CHECK-NOT: !pto.vmi.
 // CHECK-NOT: unrealized_conversion_cast

@@ -42,13 +42,13 @@ module {
   }
 
   func.func @gs8_extsi_i8_to_i32(
-      %src: !pto.vmi.vreg<8xi8, #pto.vmi.layout<num_groups = 8, slots = 8>>)
-      -> !pto.vmi.vreg<8xi32, #pto.vmi.layout<num_groups = 8, slots = 8>> {
+      %src: !pto.vmi.vreg<8xsi8, #pto.vmi.layout<num_groups = 8, slots = 8>>)
+      -> !pto.vmi.vreg<8xsi32, #pto.vmi.layout<num_groups = 8, slots = 8>> {
     %result = pto.vmi.extsi %src
-        : !pto.vmi.vreg<8xi8, #pto.vmi.layout<num_groups = 8, slots = 8>>
-        -> !pto.vmi.vreg<8xi32, #pto.vmi.layout<num_groups = 8, slots = 8>>
+        : !pto.vmi.vreg<8xsi8, #pto.vmi.layout<num_groups = 8, slots = 8>>
+        -> !pto.vmi.vreg<8xsi32, #pto.vmi.layout<num_groups = 8, slots = 8>>
     return %result
-        : !pto.vmi.vreg<8xi32, #pto.vmi.layout<num_groups = 8, slots = 8>>
+        : !pto.vmi.vreg<8xsi32, #pto.vmi.layout<num_groups = 8, slots = 8>>
   }
 }
 
@@ -66,6 +66,6 @@ module {
 // CHECK-NOT: pto.vcvt
 
 // CHECK-LABEL: func.func @gs8_extsi_i8_to_i32(
-// CHECK: %[[S16:.*]] = pto.vsunpack {{.*}} : !pto.vreg<256xi8> -> !pto.vreg<128xi16>
-// CHECK: pto.vsunpack %[[S16]], {{.*}} : !pto.vreg<128xi16> -> !pto.vreg<64xi32>
+// CHECK: %[[S16:.*]] = pto.vsunpack {{.*}} : !pto.vreg<256xsi8> -> !pto.vreg<128xsi16>
+// CHECK: pto.vsunpack %[[S16]], {{.*}} : !pto.vreg<128xsi16> -> !pto.vreg<64xsi32>
 // CHECK-NOT: pto.vcvt
