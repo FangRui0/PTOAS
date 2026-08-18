@@ -6072,22 +6072,24 @@ public:
           loc, v, rewriter.create<arith::ConstantOp>(
                        loc, rewriter.getI64IntegerAttr(amount)));
     };
+    constexpr bool isVaddRelu = std::is_same_v<UBOp, pto::UBVaddReluOp>;
+    constexpr uint64_t strideShiftOffset = isVaddRelu ? 0 : 8;
     Value config = rewriter.create<arith::ConstantOp>(
-        loc, rewriter.getI64IntegerAttr(1LL << 56));
-    config = rewriter.create<arith::OrIOp>(
-        loc, config, maskByte(getI64(adaptor.getRepeat())));
-    config = rewriter.create<arith::OrIOp>(
-        loc, config, shl(maskByte(getI64(adaptor.getDstBlockStride())), 8));
-    config = rewriter.create<arith::OrIOp>(
-        loc, config, shl(maskByte(getI64(adaptor.getSrc0BlockStride())), 16));
-    config = rewriter.create<arith::OrIOp>(
-        loc, config, shl(maskByte(getI64(adaptor.getSrc1BlockStride())), 24));
-    config = rewriter.create<arith::OrIOp>(
-        loc, config, shl(maskByte(getI64(adaptor.getDstRepeatStride())), 32));
-    config = rewriter.create<arith::OrIOp>(
-        loc, config, shl(maskByte(getI64(adaptor.getSrc0RepeatStride())), 40));
-    config = rewriter.create<arith::OrIOp>(
-        loc, config, shl(maskByte(getI64(adaptor.getSrc1RepeatStride())), 48));
+        loc, rewriter.getI64IntegerAttr(isVaddRelu ? 0 : (1LL << 56)));
+    auto addConfigByte = [&](Value value, uint64_t shift) {
+      Value byte = maskByte(getI64(value));
+      if (shift != 0) {
+        byte = shl(byte, shift);
+      }
+      config = rewriter.create<arith::OrIOp>(loc, config, byte);
+    };
+    addConfigByte(adaptor.getRepeat(), isVaddRelu ? 56 : 0);
+    addConfigByte(adaptor.getDstBlockStride(), strideShiftOffset);
+    addConfigByte(adaptor.getSrc0BlockStride(), strideShiftOffset + 8);
+    addConfigByte(adaptor.getSrc1BlockStride(), strideShiftOffset + 16);
+    addConfigByte(adaptor.getDstRepeatStride(), strideShiftOffset + 24);
+    addConfigByte(adaptor.getSrc0RepeatStride(), strideShiftOffset + 32);
+    addConfigByte(adaptor.getSrc1RepeatStride(), strideShiftOffset + 40);
 
     auto funcType = rewriter.getFunctionType(
         TypeRange{dst.getType(), src0.getType(), src1.getType(),

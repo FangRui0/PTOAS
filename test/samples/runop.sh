@@ -75,7 +75,7 @@ lcfirst() {
 # Declare directory-wide requirements here so `all` can filter before counting cases.
 sample_dir_arch() {
   case "$1" in
-    Qwen*A3|Deepseek*A3) printf 'a3\n' ;;
+    A3SingleOps|Qwen*A3|Deepseek*A3) printf 'a3\n' ;;
     Qwen*A5|Deepseek*A5|TquantMx|TquantMxDn) printf 'a5\n' ;;
   esac
 }
@@ -239,7 +239,7 @@ process_one_dir() {
       ptoas_flags+=(--pto-level=level3)
     fi
   elif [[ "${required_arch}" == "a3" ]]; then
-    if [[ $has_pto_level_override -eq 0 ]]; then
+    if [[ -n "${model_arch}" && $has_pto_level_override -eq 0 ]]; then
       ptoas_flags+=(--pto-level=level3)
     fi
   fi

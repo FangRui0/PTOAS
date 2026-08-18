@@ -19,6 +19,7 @@ WORK_SPACE="${WORK_SPACE:-}"
 ASCEND_HOME_PATH="${ASCEND_HOME_PATH:-}"
 PTOAS_BIN="${PTOAS_BIN:-${ROOT_DIR}/install/bin/ptoas}"
 PTOAS_FLAGS="${PTOAS_FLAGS:---pto-arch a5 --pto-backend=vpto}"
+AICORE_ARCH="${AICORE_ARCH:-dav-c310}"
 # set he HOST_RUNNER to "ssh root@localhost" if must change user to root to access the device 
 HOST_RUNNER="${HOST_RUNNER:-}"
 CASE_NAME="${CASE_NAME:-}"
@@ -234,7 +235,7 @@ build_launch_object() {
     -mllvm -cce-aicore-record-overflow=true \
     -mllvm -cce-aicore-addr-transform \
     -mllvm -cce-aicore-dcci-insert-for-scalar=false \
-    --cce-aicore-arch=dav-c310 \
+    --cce-aicore-arch="${AICORE_ARCH}" \
     -DREGISTER_BASE \
     -std=c++17 \
     -Wno-macro-redefined -Wno-ignored-attributes \
