@@ -270,7 +270,8 @@ jobs:
           export PYTHONPATH="${PTO_INSTALL_DIR}:${MLIR_PYTHON_ROOT}:${PYTHONPATH:-}"
           export LD_LIBRARY_PATH="${LLVM_BUILD_DIR}/lib:${PTO_INSTALL_DIR}/lib:${LD_LIBRARY_PATH:-}"
 
-          bash test/samples/runop.sh --enablebc all 2>&1 | tee "${SAMPLE_BUILD_LOG}"
+          PTOAS_SKIP_CASES="${A3_ONLY_CASES}" \
+            bash test/samples/runop.sh --enablebc all 2>&1 | tee "${SAMPLE_BUILD_LOG}"
           cp test/npu_validation/scripts/generate_testcase.py \
             "${PAYLOAD_DIR}/test/npu_validation/scripts/"
           cp test/npu_validation/scripts/run_remote_npu_validation.sh \
@@ -360,7 +361,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          report_python="${BOARD_PYTHON:-python3}"
+          if [[ -n "${BOARD_PYTHON:-}" && -x "${BOARD_PYTHON}" ]]; then
+            report_python="${BOARD_PYTHON}"
+          elif report_python="$(command -v python3 2>/dev/null)" && [[ -x "${report_python}" ]]; then
+            echo "BOARD_PYTHON is unavailable; using ${report_python} for failure reporting"
+          else
+            echo "ERROR: no executable Python is available for failure reporting" >&2
+            exit 1
+          fi
           results_tsv="${RESULTS_TSV:-${RUNNER_TEMP}/a5-board-results-missing.tsv}"
           "${report_python}" .github/scripts/report_a5_board_results.py \
             --results "${results_tsv}" \
