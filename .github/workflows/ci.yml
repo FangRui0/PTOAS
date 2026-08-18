@@ -627,7 +627,12 @@ jobs:
             --env-file "${env_file}" \
             "${board_command}")"
           printf '%s\n' "${submit_output}" | tee "${BOARD_LOG}"
-          task_id="$(printf '%s\n' "${submit_output}" | awk '/^task_[0-9]{8}_[0-9]{6}_[0-9]+$/ { id=$0 } END { print id }')"
+          task_id="$(printf '%s\n' "${submit_output}" | awk '
+            match($0, /task_[0-9]{8}_[0-9]{6}_[0-9]+/) {
+              id = substr($0, RSTART, RLENGTH)
+            }
+            END { print id }
+          ')"
           [[ -n "${task_id}" ]] || {
             echo "ERROR: task-submit did not return a task id" | tee -a "${BOARD_LOG}" >&2
             exit 1
