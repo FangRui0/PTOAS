@@ -73,8 +73,9 @@ lowering、verifier、TileLib template 或回归测试；后续实现拟在同�
    implementation 的后继提交。pin 更新必须逐 remote 做 ancestry、API 和编译验证，不允许
    跨 remote 比较 SHA；只含公开 API、缺少 CPU implementation 的 revision 不能宣称 CPU-sim 支持。
 11. partial-valid/odd/`1x1` 是定义明确的 TEXTRACT/UB-only 支持，不自动获得 NZ TSTORE
-    支持；driver 的 post-planning safety helper 按静态 physical range 而不是 SSA use chain
-    拒绝 partial destination 的所有 alias TSTORE。首版没有 test-only escape hatch。
+    支持；driver 的 post-planning safety helper 按静态 physical range 而不是 SSA use chain，
+    在同一 direct-call graph component 内拒绝 partial destination 的所有 alias TSTORE，不能因
+    producer 和 TSTORE 位于不同函数而漏检。首版没有 test-only escape hatch。
 12. CPU-sim、cost-model 和其他 optional backend 对该 overload 的 unsupported 判断必须来自 driver 注入的
     capability manifest，并在最终 backend lowering 前失败，不能依赖后期 C++ 实例化。
 13. GraphSyncSolver 必须为普通 `AllocTileOp` 建立基于静态 `addr`、physical footprint 和
@@ -190,14 +191,17 @@ partial descriptor、经 view 派生后使用，或者另建同址 full-valid `a
 
 ```text
 pto.tstore source physical byte range aliases a partial-valid ND-to-2xNZ
-destination; undefined NZ padding cannot be stored
+destination in the same call component; undefined NZ padding cannot be stored
 ```
 
 首版故意不提供 CMake test hook、hidden CLI flag 或输入 IR attribute escape。post-planning
-helper 采用函数级保守规则：只要函数内任一 `TStoreOp.src` 的 physical range 与 partial
-destination 相交就拒绝，不考虑文本顺序、控制流支配关系或中间的 full overwrite。这会过拒绝
-少量理论上可证明安全的程序，但避免为首版引入任何新的 CFG/dataflow validation pass、fixed
-point 和测试专用语义。
+helper 采用调用图分量级保守规则：只要同一 direct-call graph weakly connected component 内任一
+`TStoreOp.src` 的 physical range 与 partial destination 相交就拒绝，不考虑函数内文本顺序、
+caller/callee 方向、控制流支配关系或中间的 full overwrite。含 partial producer 的分量若存在
+`func.call_indirect`、external/unresolved direct callee 或无法解析 range 的 TSTORE source，也
+保守拒绝；互不连通的独立 kernel/function component 可以复用相同数值的 UB 地址。这会过拒绝
+少量理论上可证明安全的程序，但避免为首版引入任何新的 interprocedural CFG/dataflow validation
+pass、call-summary fixed point 和测试专用语义。
 
 NPU partial-valid 覆盖若需要导出 UB，必须使用独立 `test/npu_validation` raw-buffer harness，
 通过 backend-native UB-to-GM byte copy 导出 physical footprint 和紧贴其前后的 redzone；该
@@ -865,13 +869,30 @@ driver 在 main pass manager 成功后、`TSTORE`/EmitC/VPTO 最终 lowering 前
    `PTOResolveBufferSelect` materialize。range 一律使用 physical byte footprint，不能使用 valid shape。
 2. helper 要求 `src`、`dst0`、`dst1` 都能解析到 non-negative static absolute range，并复核
    三组 pairwise no-alias；常量 cast 和纯常量 `arith.addi` 可折叠，动态 root 拒绝。
-3. 对每个 partial-valid destination，helper 扫描同一函数内所有 `TStoreOp.src`。static range
-   相交即拒绝；TSTORE source range 无法解析时也保守拒绝。
-4. 首版检查与操作文本顺序、CFG、dominance 和 full overwrite 无关。即使 TSTORE 位于
-   TEXTRACT 前，或中间存在完整覆盖，只要函数内 physical range 相交仍拒绝。这是有意的
-   conservative rule，用可预期的过拒绝换取无需新增 CFG/dataflow validation pass 或 fixed
-   point 的安全边界。
-5. 不提供 test-only flag、module attribute 或其他 escape hatch。
+3. helper 必须在任何 `func.call` lowering/inlining 之前解析同一 symbol table 中的 direct internal
+   `func.call`，以函数为节点构造 weakly connected components。对每个含 partial-valid
+   ND-to-2xNZ destination 的 component，先汇总所有 producer 的 physical ranges，再扫描该
+   component 内所有函数的 `TStoreOp.src`；不能只在 producer 所属函数内找 TSTORE，也不能因
+   call site 没有传递 tile operand 就跳过 caller/callee edge。
+4. 任一 TSTORE source static range 与任一 partial destination range 相交即拒绝。TSTORE source
+   是 block argument/call operand 派生值而无法解析为唯一 static absolute range 时也保守拒绝；
+   首版不为此建立 argument-effect/range summary fixed point。
+5. 含 partial producer 的 component 必须是 closed direct-call component。component 中出现
+   `func.call_indirect`、callee declaration/external function、无法解析的 direct callee symbol 或
+   除已解析 internal `func.call` 之外的 `CallOpInterface` 时拒绝，因为其 body 可能隐藏 alias
+   TSTORE。诊断必须指出 producer function、call site/callee 和无法证明 closed 的原因。
+6. component 之间不比较 physical ranges；两个没有调用关系的独立 entry/kernel 可以合法复用
+   相同数值的 UB 地址。component 内则与操作文本顺序、caller/callee 方向、CFG、dominance 和
+   full overwrite 无关：即使 TSTORE 位于调用前、producer 位于 callee、TSTORE 位于 caller，
+   或中间存在完整覆盖，只要 static range 相交仍拒绝。
+7. alias 诊断必须同时指出 producer function、TSTORE function 和两个 half-open physical ranges：
+
+   ```text
+   pto.tstore source physical byte range aliases a partial-valid ND-to-2xNZ
+   destination in the same call component; undefined NZ padding cannot be stored
+   ```
+
+8. 不提供 test-only flag、module attribute 或其他 escape hatch。
 
 这样 partial-valid op 本身仍可用于不含 generic TSTORE 的 UB-only 测试，不会在 debug PTO-ISA
 上晚期触发 TSTORE assertion，也不能通过复制一个同址 full-valid allocation 绕过限制。
@@ -1353,7 +1374,13 @@ PTOAS 当前三个 pin 都早于 8 月 14 日功能提交：
   legacy properties 回归。
 - driver post-planning safety helper 分别拒绝 partial descriptor 的直接/view TSTORE、同址不同
   SSA full-valid `alloc_tile` alias TSTORE 和部分重叠 alias；即使 TSTORE 文本上位于 TEXTRACT 前
-  或中间存在 overwrite，首版函数级保守规则仍拒绝；
+  或中间存在 overwrite，首版 component 级保守规则仍拒绝；
+- 增加跨函数负向：callee 产生 partial、caller 用同址 allocation TSTORE；caller 产生 partial、
+  direct callee TSTORE；`entry -> helper -> leaf` 三级调用中 producer/TSTORE 分居两端；tile block
+  argument 使 TSTORE source range unresolved；含 partial producer 的 component 存在 indirect、
+  external 或 unresolved call；这些 case 都必须在 post-planning helper 稳定失败；
+- 增加 component scope 正向：两个互不连通的 entry/kernel function 使用相同 UB 数值地址，只有
+  一个 component 含 partial producer、另一个含 TSTORE，不得因 module-wide 全局扫描而误拒绝；
 - production/test build 使用同一规则；不存在 hidden option、test-only module attribute 或
   canonical fixture escape。
 
@@ -1411,9 +1438,12 @@ PTOBC v0 兼容测试单列，不并入普通 MLIR bytecode 假设：
   alloc-backed 正向 case 继续进入对应 planner；
 - level3 三组 pair 分别使用同一动态 `%base` 时拒绝，`%base + constant` 的动态派生地址也
   拒绝；三个静态非重叠常量地址通过，静态重叠地址继续由 range verifier 拒绝；
-- post-planning helper 覆盖 direct/view/same-address allocation/partial-overlap TSTORE；函数内
-  任意相交都拒绝，不做 branch/loop dataflow，也不因 full overwrite 清除；unresolved TSTORE
-  source range 同样保守拒绝；
+- post-planning helper 覆盖 direct/view/same-address allocation/partial-overlap TSTORE；同一
+  direct-call graph component 内任意相交都拒绝，不做 branch/loop/interprocedural summary
+  dataflow，也不因 full overwrite 清除；unresolved TSTORE source range 同样保守拒绝；
+- 跨函数 `_post_planning_safety` 回归覆盖 callee-producer/caller-store、caller-producer/callee-store、
+  三级 transitive call、block-argument unresolved source，以及 indirect/external/unresolved callee
+  拒绝；另有 disconnected entry components 同址正向，锁定检查不能退化为 module-wide 地址并集；
 - 独立 GraphSync `_gss` 回归覆盖：同址不同
   `AllocTileOp` root 产生 MTE2-to-V WAW 和 V-to-MTE3 RAW；静态 physical range 部分重叠也产生
   同步；不重叠 range 不产生误同步；相同数字地址但不同 address space 不冲突。该 test 必须
@@ -1500,8 +1530,8 @@ full-store group 必须经过完整链路，partial-valid group 必须保留明�
 - PTOBC v0 legacy TEXTRACT fixture 与双输出 generic round-trip 全部通过；
 - PTOAS unit/lit 全量通过；
 - A3/A5 compile-only；
-- post-planning safety helper 的 direct/view/same-address/partial-overlap/unresolved-range 正负向
-  回归通过；production/test build 没有行为差异；GraphSync `_gss`
+- post-planning safety helper 的 direct/view/same-address/partial-overlap/unresolved-range 和
+  interprocedural call-component 正负向回归通过；production/test build 没有行为差异；GraphSync `_gss`
   exact/overlap/disjoint/different-address-space 回归通过；
 - capability validation 的正负向 lit 全部通过；CPU backend 存在时执行 CPU-sim 双输出
   数值测试，缺失时 manifest 明确标记 unsupported 并链接 upstream dependency，不伪造
@@ -1517,7 +1547,7 @@ full-store group 必须经过完整链路，partial-valid group 必须保留明�
 |---|---|---|
 | 0 | rebase、逐 target pin/backend 探测、CMake manifest 生成与 driver 注入 | NPU probe 生成正向 capability；CPU/cost-model 失败生成稳定负向 capability；manifest path/root/revision 校验可执行 |
 | 1 | 扩展 `TExtractOp` ODS ranges、inherent-property schema validator/form classifier、custom assembly、精确兼容 builder/accessor、DPS、pipe、effects、PTOBC shim | property conversion、generated invariants、custom verifier 各阶段负向测试不崩溃；src=0/2 等可到达 classifier 的 schema 稳定失败且 effects 保守；旧 C++ API compile-only、legacy/new parse-print、binding、v0 bytecode 兼容和 range-based adaptor 编译测试通过，且没有新增 op 名 |
-| 2 | shared emitted-dimension helper、A5 partial-valid physical-stride gate、IR verifier，以及 driver input-provenance/post-planning-safety helper | 架构矩阵包含 A3/A5/VPTO `32/13` counterexample；A5 gate diagnostic 可执行；bounds、direct/alias TSTORE、provenance、动态/静态地址 lit 通过，且没有新增 validation pass/test escape |
+| 2 | shared emitted-dimension helper、A5 partial-valid physical-stride gate、IR verifier，以及 driver input-provenance/post-planning-safety helper | 架构矩阵包含 A3/A5/VPTO `32/13` counterexample；A5 gate diagnostic 可执行；bounds、direct/alias/cross-function TSTORE、closed call-component、provenance、动态/静态地址 lit 通过，且没有新增 validation pass/test escape |
 | 3 | no-alias、GraphSync `AllocTileOp` single-address model 与 planner/GSS 回归 | 三组 alias 被拒绝，declared/tpop provenance 在 planner 前失败，动态 level3 地址失败，双输出 liveness 正确，同址/overlap/disjoint/address-space GSS edge 正确 |
 | 4 | EmitC pattern | A3/A5 精确文本与 pin compile-only 通过 |
 | 5 | A5 TileLib/VPTO template 与 Python facade | physical-stride/stride gate、aligned/unaligned/tail/enabled-lowp 展开通过；legacy free function/property/constructor smoke 通过；NZ+1/FP4 随 gate 开启 |
@@ -1574,7 +1604,9 @@ public syntax；实现只承诺 canonical `pto.textract ins(...) outs(...)` 文�
   校验并由 driver 注入；CPU/cost-model backend 缺失时
   不得宣称对应模拟或性能模型支持；
 - driver post-planning safety helper 能拒绝 direct、view、同址/重叠 allocation alias 和
-  unresolved source range 的 partial TSTORE；检查是函数级保守规则且没有 test-only escape；
+  unresolved source range 的 partial TSTORE；检查覆盖同一 direct-call graph component 的
+  caller/callee/transitive helper，拒绝 indirect/external/unresolved call 隐藏 effects，允许互不连通
+  component 复用地址；该 component 级保守规则没有 test-only escape；
 - A3/A5 至少各有一条 full-valid 端到端双输出数值链路；partial-valid/odd/`1x1` 只计入
   通过 simulator UB dump 或独立 raw-buffer harness 观测的 UB-only TEXTRACT
   coverage，不能直接进入 generic NZ TSTORE；NPU partial coverage 必须实际导出并逐 byte 比较
