@@ -1484,8 +1484,11 @@ class _ControlFlowRewriter:
         if tail_flags["break"]:
             flag_names.add(control["did_break"])
         forced_merge_names = set(forced_merge_names)
-        merge_names = sorted(((set(tail_assigned) & (set(live) | forced_merge_names)) | flag_names) &
-                             (set(live) | forced_merge_names))
+        forced_or_live = set(live) | forced_merge_names
+        value_merge_names = set(tail_assigned) & forced_or_live
+        if value_merge_names:
+            flag_names.add(control["active"])
+        merge_names = sorted((value_merge_names | flag_names) & forced_or_live)
         return self._guard_block(
             _name(control["active"]),
             tail,
