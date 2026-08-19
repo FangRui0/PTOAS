@@ -26,11 +26,16 @@ module attributes {pto.target_arch = "a3"} {
 }
 
 // CHECK-LABEL: func.func @pipev_reuse_cost_state_update
-// CHECK-DAG: %[[TMP0_ADDR:.*]] = arith.constant 8192 : i64
-// CHECK-DAG: %[[TMP1_ADDR:.*]] = arith.constant 12288 : i64
-// CHECK: pto.alloc_tile addr = {{.*}} : !pto.tile_buf<vec, 32x32xf32>
-// CHECK: pto.alloc_tile addr = {{.*}} : !pto.tile_buf<vec, 32x32xf32>
-// CHECK: %[[TMP0:.*]] = pto.alloc_tile addr = %[[TMP0_ADDR]] : !pto.tile_buf<vec, 32x32xf32>
-// CHECK: %[[TMP1:.*]] = pto.alloc_tile addr = %[[TMP1_ADDR]] : !pto.tile_buf<vec, 32x32xf32>
+// The deterministic priority model no longer spends capacity to keep PIPE_V
+// producers apart, so tmp1 reuses src0's slot: src0's last read and tmp1's
+// first write are the same op (tmul), so their lifetimes do not strictly
+// overlap and the reuse is liveness-legal (matches legacy max-reuse).
+// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : i64
+// CHECK-DAG: %[[C4096:.*]] = arith.constant 4096 : i64
+// CHECK-DAG: %[[C8192:.*]] = arith.constant 8192 : i64
+// CHECK: pto.alloc_tile addr = %[[C0]] : !pto.tile_buf<vec, 32x32xf32>
+// CHECK: pto.alloc_tile addr = %[[C4096]] : !pto.tile_buf<vec, 32x32xf32>
+// CHECK: %[[TMP0:.*]] = pto.alloc_tile addr = %[[C8192]] : !pto.tile_buf<vec, 32x32xf32>
+// CHECK: %[[TMP1:.*]] = pto.alloc_tile addr = %[[C0]] : !pto.tile_buf<vec, 32x32xf32>
 // CHECK: pto.tadd {{.*}} outs(%[[TMP0]]
 // CHECK: pto.tmul {{.*}} outs(%[[TMP1]]

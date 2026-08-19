@@ -1,6 +1,6 @@
 # PTOAS Largest-First-Fit 与四道冲突闸门内存规划设计
 
-## 总体方案
+## 1. 总体方案
 
 PTOAS 当前保留两套 local memory planner：
 
@@ -22,127 +22,73 @@ pto.alloc_tile(no addr)
 
 用户显式写 `pto.alloc_tile addr` 时，level 语义仍由 memplan 校验：level1/level2 禁止显式 addr，level3 要求显式 local addr。也就是说，`pto.alloc_tile` 不再通过 `memref.alloc -> pto.bind_tile` 这类中间链路表达地址；普通 local tile allocation 由 memplan 直接把常量地址回写到 `pto.alloc_tile addr`。历史 `pto.pointer_cast` bridge 已删除，不再作为 memplan materialize 结果。
 
-## 目标
+
+
+
+### 1.1 当前实现状态
+
+| 能力 | 状态 | 说明 |
+| --- | --- | --- |
+| modern planner | 已实现 | `--plan-memory-impl=modern` |
+| largest-first | 已实现 | modern 未显式指定时默认打开；cube local space 例外 |
+| 生命周期、phi family、target hazard、semantic no-alias | 已实现 | 见第 3 章四道闸门 |
+| MTE3 -> MTE2 ranking | 已实现 | Phase 1，使用确定性优先级 |
+| capacity escalation | 已实现 | level 2 -> 1 -> 0 逐档整趟重算 |
+| PIPE_V、bank conflict、hot cluster | 预留 | 当前不参与 candidate ranking |
+| pipeline stage load conflict | 预留 | 显式 multi-buffer 仍由 slot 分离保证 |
+
+legacy planner 的默认行为不由本文改变。
+
+
+## 2. 设计目标与非目标
+
+### 2.1 设计目标
 
 本设计目标如下：
 
 - 复用 PTOAS 已有 `--plan-memory-order-by-size` largest-first 能力。
 - 将复用判定收敛为统一的 `canShare(a, b)` 谓词。
 - 引入统一的扁平冲突闸门模型，避免不安全复用。
-- 当前实现范围不包含 PyPTO 闸门 4；PTOAS 显式 multibuffer 已覆盖 ping-pong slot 分离语义。
 - 保持按 AddressSpace 独立规划。
-- 保持不回滚、不降级的 deterministic 策略。
-- 保持 `pto.alloc_tile(no addr)` tile-native 路径：memplan 直接补 `addr`。
+- 不做性能驱动的投机回滚与 per-entry 降级；容量兜底仅用**溢出触发、单调收敛、有限档位**的确定性全局退让（见“容量退让：单调优先档位”节），不撤销部分已提交规划、不需防重入补丁。
+- 性能优化采用**确定性优先级策略**替代加权打分 cost model：在四道闸门正确性之上，按固定优先级依次规避冲突，最优先 pipeline conflict，其次 bank conflict，层间严格字典序、不做魔数加权。
+- 分阶段落地：Phase 1 只做 MTE pipeline conflict 规避，Phase 2 再引入 bank conflict；PIPE_V 同 pipe 共址与 hot cluster 聚集暂不纳入。
 - 保持 legacy memplan 默认行为不变。
 
-## 非目标
+
+
+### 2.2 非目标
 
 本设计不包含以下内容：
 
 - 不修改 legacy memplan 的 StorageEntry / SPEC_LEVEL_1 / SPEC_LEVEL_2 逻辑。
 - 不在 legacy memplan 中实现四道闸门。
-- 不恢复旧版回滚式投机规划。
+- 不恢复旧版 per-entry 逐级降级与部分撤销式投机回滚（新版仅保留溢出触发、整趟重算的单调档位退让）。
 - 不把 modern memplan 作为默认实现。
 - 不在本阶段实现跨函数、跨 module 的全局内存规划。
 
-## 核心思想
-
-将每个 plannable local allocation root 抽象成一个待装箱 item。这里的 item 对应当前 modern memplan 中的 `RootInfo`，不是所有 local SSA value：
-
-`pto.bind_tile`、`pto.slot_marker`、`memref.subview`、`memref.cast` 等 alias/view value 不会成为新的 item，而是通过 `valueToRoots` 归属到已有 root。四道闸门需要的额外约束数据不放进 `RootInfo`，而是由 `ConflictFacts` 这类 side table 提供。
 
 
-## 算法流程
 
-### 1. Root 收集
-
-modern memplan 继续收集以下 local root：
-
-- `pto.alloc_tile(no addr)`。
-- plannable local `memref.alloc`。
-- 后续如有其它明确的 local address root，可扩展到同一 root 表。
-
-不参与 local memplan 的 root：
-
-- GM space。
-- `AddressSpace::Zero`。
-- 已经由 level3 显式指定地址的 local `pto.alloc_tile addr`。
-- 非静态 shape 或无法计算 element byte size 的 root。
-
-### 2. LifetimeInterval
-
-每个 root 生成一个 `LifetimeInterval`：
-
-```text
-  Value root;
-  Operation *defOp;
-  AddressSpace space;
-  uint64_t slotBytes;
-  uint64_t totalBytes;
-  uint64_t alignmentBytes;
-  uint64_t slotCount;
-  unsigned allocIndex;
-  unsigned freeIndex;
-  unsigned stableOrder;
-  SmallVector<uint64_t> offsets;
-```
-
-现代 planner 中已有线性化 walk 和 root alias 传播，本设计在此基础上补齐：
-
-- loop-aware lifetime extension。
-- branch / yield / iter_arg alias family 信息。
-- per-root semantic metadata。
-
-### 3. 按 AddressSpace 分桶
-
-复用只允许发生在同一 AddressSpace 内：
-
-```text
-Vec 只和 Vec 复用
-Mat 只和 Mat 复用
-Left/Right/Acc/Bias/Scaling 各自独立
-GM 不参与 local memplan
-```
-
-分桶是硬约束，在进入装箱前完成。
-
-### 4. Largest-First-Fit 排序与装箱
-
-PTOAS 已有 `--plan-memory-order-by-size` 对应的 largest-first 排序能力。打开该选项后，每个 AddressSpace 桶内排序：
-
-```text
-sizeBytes 降序
-sizeBytes 相同则按 defIndex 升序
-defIndex 相同则按 stableOrder 升序
-```
-
-这样先让大 buffer 更早参与规划，再把生命周期不冲突的小 buffer 放入可复用位置，避免 definition-order greedy 只能“小复用先出现的大”的单向问题。
-
-将一个物理 local buffer 抽象成一个 bin：
-
-```text
-ReuseGroup
-  representative root
-  members
-  slot size bytes
-  address space
-  chosen offset
-```
-
-因此，本设计不是重新新增一个独立的 largest-first 开关，而是要求四道闸门的 `canShare` 判定接入现有 `--plan-memory-order-by-size` 路径。
-
-特点：
-
-- 不回滚。
-- 不降级。
-- 装进第一个可容纳 group 后立即停止。
-- 后续容量超限直接报错，不为了适配容量放松闸门。
-
-## 四道禁止内存复用的闸门
+## 3. 正确性模型（四道闸门）
 
 四道闸门是扁平 AND 关系，任意一道闸门失败，两个 root 就不能进入同一个 `ReuseGroup`，也就不能复用同一个 base offset。
 
-### 闸门 1：生命周期
+在 root/alias 归约后，复用合法性可以抽象为：
+
+```text
+canShare(a, b) =
+    sameAddressSpace(a, b)
+    && aliasAndShapeAreRepresentable(a, b)
+    && lifetimeCompatibleOrBranchExclusive(a, b)
+    && !targetHazard(a, b)
+    && !semanticNoAlias(a, b)
+```
+
+`fits` 是 candidate 的容量可行性检查，不是可以放宽的性能条件；它在 candidate ranking
+中优先于性能层，并在每个 capacity level 完成后再次检查。
+
+### 3.1 Root 与 alias、生命周期
 
 **目的：** 禁止两个运行时可能同时存活的 local root 复用同一块物理地址。
 
@@ -189,7 +135,7 @@ use(%b)
 
 此时 `%a` 和 `%b` 的生命周期重叠，闸门 1 直接失败，必须分配不同 offset。
 
-### 闸门 2：phi family
+### 3.2 phi family
 
 **目的：** 处理互斥控制流分支，避免过度保守的 liveness extension 阻止本来安全的复用。
 
@@ -273,7 +219,7 @@ consume(%r)
 `%then_buf` 和 `%else_buf` 之间可以因为 phi family 互斥而复用；但它们不能借这个豁免和 `%outer` 这种外部 live root 错误复用。
 
 
-### 闸门 3：target-specific load/tpop hazard
+### 3.3 target-specific load/tpop hazard
 
 **目的：** 表达特定 target 上的局部硬件/后端 hazard。它不是通用生命周期问题，而是某些 load-derived buffer 与 consumes-tpop writer 在 touching 点复用会触发目标相关错误。
 
@@ -385,7 +331,7 @@ tpopConsumerRoots:
 ```
 
 
-### 闸门 4：op semantic no-alias
+### 3.4 op semantic no-alias
 
 **目的：** 表达“从生命周期看可以复用，但从 op 语义看不能 alias”的约束。闸门 4 对应 PyPTO 的 inplace 机制：`not_inplace_safe()` 与 `forbid_output_alias(i)`，并覆盖 PTOAS legacy memplan 中已有的 scratch-output conflict。
 
@@ -397,7 +343,7 @@ forbidAlias[root] = forbiddenRootSet
 
 这里的 `root` 是 plannable local allocation root，而不是任意 SSA value。收集时需要先通过 `valueToRoots` 把 operand、view、alias value 归约到 root，再记录 root 与 root 之间的禁止复用关系。
 
-#### 4.1 scratch-output conflict
+#### 3.4.1 scratch-output conflict
 
 PTOAS legacy memplan 的 semantic conflict 主要就是 scratch-output conflict。modern memplan 应继续覆盖这类场景：
 
@@ -427,14 +373,14 @@ for scratch in scratchOperands:
 pto.ttrans ins(%src, %tmp) outs(%dst)
 ```
 
-`%tmp` 是 op 执行过程中的 scratch workspace，`%dst` 是最终 output。即使未来 liveness 把 `%dst` 看作在 op 上定义、从而让 `%tmp.lastUse == %dst.def` 成为 touching，二者也不能复用，否则 scratch 写入可能覆盖 output。闸门 3 记录：
+`%tmp` 是 op 执行过程中的 scratch workspace，`%dst` 是最终 output。即使未来 liveness 把 `%dst` 看作在 op 上定义、从而让 `%tmp.lastUse == %dst.def` 成为 touching，二者也不能复用，否则 scratch 写入可能覆盖 output。闸门 4 记录：
 
 ```text
 forbidAlias[%tmp].insert(%dst)
 forbidAlias[%dst].insert(%tmp)
 ```
 
-#### 4.2 not_inplace_safe
+#### 3.4.2 not_inplace_safe
 
 PyPTO 中 `not_inplace_safe()` 表示该 op 不能做 `src == dst` 的 inplace 执行。映射到 PTOAS 时，规则是：
 
@@ -472,13 +418,13 @@ pto.tsort32 / pto.tmrgsort
 pto.tfmod ins(%x, %rhs) outs(%y)
 ```
 
-`tfmod` 的实现可能会在计算中间覆盖某个源值，但后续仍需要原始源值。因此 `%y` 不能复用 `%x` 的物理地址。即使生命周期或 touching 规则允许，也必须由闸门 3 禁止：
+`tfmod` 的实现可能会在计算中间覆盖某个源值，但后续仍需要原始源值。因此 `%y` 不能复用 `%x` 的物理地址。即使生命周期或 touching 规则允许，也必须由闸门 4 禁止：
 
 ```text
 forbidAlias[%x].insert(%y)
 ```
 
-#### 4.3 forbid_output_alias(i)
+#### 3.4.3 forbid_output_alias(i)
 
 PyPTO 中 `forbid_output_alias(i)` 表示 op 整体可以对某些 value operand 做 inplace，但 output 不能 alias 第 `i` 个特定 operand。PTOAS 中需要按 PTO IR 的 DPS operand 布局映射到具体 operand。
 
@@ -505,7 +451,7 @@ pto.trowexpand* / pto.tcolexpand*:
 pto.trowexpand ins(%row) outs(%dst)
 ```
 
-`%row` 会被重复读取并广播到 `%dst` 的多个位置。如果 `%dst` 复用 `%row` 的地址，写 output 的过程中可能覆盖后续仍要读取的 broadcast source。因此闸门 3 记录：
+`%row` 会被重复读取并广播到 `%dst` 的多个位置。如果 `%dst` 复用 `%row` 的地址，写 output 的过程中可能覆盖后续仍要读取的 broadcast source。因此闸门 4 记录：
 
 ```text
 forbidAlias[%row].insert(%dst)
@@ -521,14 +467,14 @@ forbidAlias[%row].insert(%dst)
 pto.tsel ins(%mask, %lhs, %rhs, %tmp) outs(%dst)
 ```
 
-`%lhs` / `%rhs` 是否允许和 `%dst` inplace 取决于 op 语义；但 `%mask` 和 `%tmp` 是被 op 读取或作为 scratch 使用的特殊 operand，不能被 `%dst` 覆盖。闸门 3 记录：
+`%lhs` / `%rhs` 是否允许和 `%dst` inplace 取决于 op 语义；但 `%mask` 和 `%tmp` 是被 op 读取或作为 scratch 使用的特殊 operand，不能被 `%dst` 覆盖。闸门 4 记录：
 
 ```text
 forbidAlias[%mask].insert(%dst)
 forbidAlias[%tmp].insert(%dst)
 ```
 
-#### 4.4 闸门 4 判定
+#### 3.4.4 闸门 4 判定
 
 `canShare(a, b)` 中的闸门 4 是双向检查：
 
@@ -547,35 +493,213 @@ for value in op operands / dpsInits:
 
 如果一个 value 通过 alias closure 对应多个 root，则需要记录所有 root 组合。这样后续 `ReuseGroup` 只需要比较 root 与 root，不需要在装箱阶段重新理解每个 op 的 operand 语义。
 
-## PIPE_V 物理共址性能代价模型
 
-四道闸门只回答“两个 root 复用是否语义安全”。但对 A2/A3 这类 PIPE_V、MTE2、MTE3 可以重叠执行的后端，语义安全不等价于性能最优。若 modern memplan 为了最小化 local footprint，把本来分开的 scratch live range 压到同一小段物理 UB 地址，后续 InsertSync 会基于物理地址重叠补出更强的流水依赖；即使显式同步数量没有增加，MTE3 store 与下一段 MTE2 load、连续 PIPE_V producer/consumer 的可重叠窗口也会变窄。
 
-因此，modern memplan 在通过四道安全闸门之后，还需要引入一个非硬约束的性能代价模型：
+## 4. 规划算法
+
+### 4.1 Root 收集
+
+modern memplan 继续收集以下 local root：
+
+- `pto.alloc_tile(no addr)`。
+- plannable local `memref.alloc`。
+- 后续如有其它明确的 local address root，可扩展到同一 root 表。
+
+不参与 local memplan 的 root：
+
+- GM space。
+- `AddressSpace::Zero`。
+- 已经由 level3 显式指定地址的 local `pto.alloc_tile addr`。
+- 非静态 shape 或无法计算 element byte size 的 root。
+
+### 4.2 LifetimeInterval
+
+每个 root 生成一个 `LifetimeInterval`：
 
 ```text
-canShare(a, b) == true
-  只表示允许复用。
-
-reuseCost(a, b, candidateOffset)
-  表示复用该 offset 可能带来的流水串行化代价。
+  Value root;
+  Operation *defOp;
+  AddressSpace space;
+  uint64_t slotBytes;
+  uint64_t totalBytes;
+  uint64_t alignmentBytes;
+  uint64_t slotCount;
+  unsigned allocIndex;
+  unsigned freeIndex;
+  unsigned stableOrder;
+  SmallVector<uint64_t> offsets;
 ```
 
-装箱策略不应只做“第一个可容纳地址即复用”，而应在容量允许时优先选择低代价地址：
+现代 planner 中已有线性化 walk 和 root alias 传播，本设计在此基础上补齐：
+
+- loop-aware lifetime extension。
+- branch / yield / iter_arg alias family 信息。
+- per-root semantic metadata。
+
+### 4.3 按 AddressSpace 分桶
+
+复用只允许发生在同一 AddressSpace 内：
 
 ```text
-1. 先过滤所有违反四道闸门的 candidate。
-2. 对剩余 candidate 计算 reuseCost。
-3. 优先选择 cost 最小的 candidate。
-4. 若存在 cost=0 的 fresh/near-fresh 地址，优先保留流水并行。
-5. 只有容量压力确实需要压缩时，才接受高 cost 的复用。
+Vec 只和 Vec 复用
+Mat 只和 Mat 复用
+Left/Right/Acc/Bias/Scaling 各自独立
+GM 不参与 local memplan
 ```
 
-该模型不是第五道正确性闸门：容量不足时仍允许选择高 cost 复用，只要四道闸门全部通过；但在容量充足时，它应避免把高频 loop 内的 scratch 过度挤压到同一物理地址。
+分桶是硬约束，在进入装箱前完成。
 
-### 1. 物理区间建模
+### 4.4 Largest-First-Fit 排序与装箱
 
-判断“连续 PIPE_V op 是否共址”不能只看 SSA value 是否相同，而要看 memplan materialize 后的物理 local 区间：
+PTOAS 已有 `--plan-memory-order-by-size` 对应的 largest-first 排序能力。打开该选项后，每个 AddressSpace 桶内排序：
+
+```text
+sizeBytes 降序
+sizeBytes 相同则按 defIndex 升序
+defIndex 相同则按 stableOrder 升序
+```
+
+这样先让大 buffer 更早参与规划，再把生命周期不冲突的小 buffer 放入可复用位置，避免 definition-order greedy 只能“小复用先出现的大”的单向问题。
+
+将一个物理 local buffer 抽象成一个 bin：
+
+```text
+ReuseGroup
+  representative root
+  members
+  slot size bytes
+  address space
+  chosen offset
+```
+
+因此，本设计不是重新新增一个独立的 largest-first 开关，而是要求四道闸门的 `canShare` 判定接入现有 `--plan-memory-order-by-size` 路径。
+
+特点：
+
+- 不做 per-entry 降级、不撤销部分已提交规划。
+- 在所有可容纳该 item 的 candidate（含 fresh 地址）中，按确定性优先级比较键选择，而不是"第一个可容纳即复用"，也不做加权打分。
+- 单趟规划溢出时，按“容量退让：单调优先档位”对该 AddressSpace 整趟升档重算；触及终点档位（最大复用）仍溢出才报错。任何情况下都不为了适配容量放松四道闸门。
+
+
+
+## 5. 性能模型
+
+四道闸门只回答“两个 root 复用是否语义安全”。但对 A2/A3 这类 PIPE_V、MTE2、MTE3 可以重叠执行的后端，语义安全不等价于性能最优。若 modern memplan 为了最小化 local footprint，把本来分开的 scratch live range 压到同一小段物理 UB 地址，后续 InsertSync 会基于物理地址重叠补出更强的流水依赖；即使显式同步数量没有增加，MTE3 store 与下一段 MTE2 load 的可重叠窗口也会变窄。
+
+因此，modern memplan 在通过四道安全闸门之后，还需要在合法 candidate 之间做性能取舍。本设计**不采用加权打分的 cost model**，而是使用一套**确定性优先级策略**：把性能关注点表达成一组从高到低的优先级层，用字典序比较，逐层严格压制、层间不做加权求和。这样决策可预测、可解释，且不依赖任何需要调参的魔数权重。
+
+
+
+### 5.1 MTE access 收集
+
+对每个可能影响流水的 op，收集其 pipe 与内存访问集合：
+
+```text
+OpAccess {
+  Operation *op;
+  Pipe pipe;
+  unsigned opIndex;
+  SmallVector<PhysicalInterval> reads;
+  SmallVector<PhysicalInterval> writes;
+}
+```
+
+`reads` / `writes` 来自 `MemoryEffectsOpInterface`，并通过 `valueToRoots` 归约到 root。规则与 InsertSync 保持一致：
+
+`opIndex` 使用 pipe/memory-access op 的序号，而不是完整 IR linear op 序号；这样中间夹着 `arith.constant`、`pto.alloc_tile addr`、`TASSIGN` materialization 或结构性 op 时，仍能识别真正相邻的 PIPE_V/MTE 访问。
+
+- DPS input 是 read。
+- DPS output 是 write；若 op 明确 read-modify-write，则同时是 read + write。
+- scratch/tmp operand 若被 MemoryEffects 建模为 write，则进入 writes；若接口语义要求 scratch 读旧值，则进入 reads + writes。
+- 控制流 result、`pto.fusion_region` result、`pto.subview`、`pto.treshape`、`pto.bitcast`、`pto.multi_tile_get` 等 alias value 必须穿透到 root。
+
+Phase 1 只有 `pipe == PIPE_MTE2` / `pipe == PIPE_MTE3` 的 op 参与 MTE 共址判定；PIPE_V op 的 access 可以一并收集，但 PIPE_V 同 pipe 共址判定留待后续阶段，本阶段不参与比较键。
+
+
+
+### 5.2 PIPE_V、bank、hot cluster 预留
+
+连续 PIPE_V producer/consumer 共址会收窄同 pipe 内的流水窗口，但 legacy pipe conflict 模型本身就不建模纯 vector-vector 复用（同 pipe 顺序执行，无跨 pipe overlap 可失去），且其收益相对 MTE 跨 pipe 串行化更小。因此本设计**Phase 1 不实现 PIPE_V 共址判定**，比较键中也不含 PIPE_V 项。
+
+若后续阶段确认需要，可按如下形态引入（仅作预留，不属于当前范围）：
+
+```text
+pipeVCoLocated(opA, opB):
+  opA.pipe == PIPE_V
+  opB.pipe == PIPE_V
+  distance(opA, opB) <= pipeVLookahead
+  && (
+       overlap(any opA.writes, any opB.reads)
+    || overlap(any opA.writes, any opB.writes)
+    || overlap(any opA.reads,  any opB.writes)
+  )
+```
+
+届时以布尔形式接入比较键（是否制造 PIPE_V 共址），与 MTE 层同样保持纯布尔、层间字典序，不引入加权。
+
+
+
+### 5.3 总体优先级
+
+从高到低：
+
+```text
+1. 正确性     —— 四道闸门（硬约束，不可放松）
+2. 容量可行   —— fits：加入该 candidate 后不超出 AddressSpace 容量
+3. pipeline conflict 规避
+4. bank conflict 规避
+5. 紧凑度 / 确定性 tie-break —— projectedBytes、offset、stableOrder
+```
+
+层间是严格字典序：只有前一层完全打平，才由后一层决定。性能层（3/4）永远压不过容量可行（2），容量可行永远压不过正确性（1）。该策略不是第五道正确性闸门——它只在合法 candidate 之间排序，绝不为了性能放松四道闸门。
+
+
+
+### 5.4 分阶段实施
+
+本设计分阶段落地，避免一次性引入过多性能维度：
+
+```text
+Phase 1（本次实现）：只做 MTE pipeline conflict
+  - 仅识别 MTE3-store 源 tile → MTE2-load 目的 tile 的物理共址。
+  - 循环体内的 MTE 共址单独排一档，优先于直线代码的 MTE 共址。
+  - PIPE_V 同 pipe 共址、hot cluster 聚集本阶段不做。
+
+Phase 2（后续）：bank conflict 规避
+  - 在 pipeline 层之下、tie-break 之上引入 bank conflict 层。
+
+暂不纳入（后续可选）：
+  - PIPE_V 同 pipe producer/consumer 窗口收窄。
+  - hot cluster 过度聚集惩罚。
+```
+
+
+
+### 5.5 Phase 1 确定性比较键
+
+每个 candidate（已通过四道闸门）计算如下比较键，选字典序**最小**者（布尔 false < true，因此 `!fits`、`hasLoopMteConflict`、`hasMteConflict` 都是越 false 越好）：
+
+```text
+candidateKey = (
+  !fits,                // 容量可行优先：放不下最差
+  hasLoopMteConflict,   // 在循环体内制造 MTE3→MTE2 共址（bool）
+  hasMteConflict,       // 制造任意 MTE3→MTE2 共址（bool，含循环内）
+  projectedBytes,       // 紧凑度：占用越小越好
+  offset,               // 确定性 tie-break
+  stableOrder           // 确定性 tie-break
+)
+```
+
+- `hasLoopMteConflict` 与 `hasMteConflict` 都是**纯布尔**，不统计冲突数量；层内不做计数比较。
+- 循环内 MTE 共址排在直线代码 MTE 共址之前：`(loop=true, any=true)` 比 `(loop=false, any=true)` 更差，因此 planner 会优先拆开循环体内的 MTE 共址。
+- fresh（全新地址）天然不与任何已放置成员同址，`hasLoopMteConflict = hasMteConflict = false`；一个零冲突的 reuse 与 fresh 在 pipeline 层打平，再由 `projectedBytes` 让更紧凑的 reuse 胜出——因此真正零冲突的复用仍保留紧凑布局，只有当复用会制造 MTE 共址时，planner 才更倾向 fresh 地址来保住 DMA 流水并行。
+- 容量压力下的兜底见后文“容量退让：单调优先档位”：单趟规划始终按当前档位比较键选择，`!fits` 已把放不下的 candidate 排到最差；若整趟仍溢出，则整趟升档重算，而不是在单个 candidate 处做局部回退。
+
+
+
+### 5.6 物理区间建模
+
+判断“两个 op 是否共址”不能只看 SSA value 是否相同，而要看 memplan materialize 后的物理 local 区间：
 
 ```text
 PhysicalInterval {
@@ -605,52 +729,11 @@ overlap(a, b):
   && b.startByte < a.endByte
 ```
 
-### 2. PIPE_V access 收集
 
-对每个可能影响流水的 op，收集其 pipe 与内存访问集合：
 
-```text
-OpAccess {
-  Operation *op;
-  Pipe pipe;
-  unsigned opIndex;
-  SmallVector<PhysicalInterval> reads;
-  SmallVector<PhysicalInterval> writes;
-}
-```
+### 5.7 MTE3 -> MTE2 共址判定（Phase 1 核心）
 
-`reads` / `writes` 来自 `MemoryEffectsOpInterface`，并通过 `valueToRoots` 归约到 root。规则与 InsertSync 保持一致：
-
-`opIndex` 使用 pipe/memory-access op 的序号，而不是完整 IR linear op 序号；这样中间夹着 `arith.constant`、`pto.alloc_tile addr`、`TASSIGN` materialization 或结构性 op 时，仍能识别真正相邻的 PIPE_V/MTE 访问。
-
-- DPS input 是 read。
-- DPS output 是 write；若 op 明确 read-modify-write，则同时是 read + write。
-- scratch/tmp operand 若被 MemoryEffects 建模为 write，则进入 writes；若接口语义要求 scratch 读旧值，则进入 reads + writes。
-- 控制流 result、`pto.fusion_region` result、`pto.subview`、`pto.treshape`、`pto.bitcast`、`pto.multi_tile_get` 等 alias value 必须穿透到 root。
-
-只有 `pipe == PIPE_V` 的 op 参与 PIPE_V 共址代价；MTE2/MTE3 相关代价单独建模。
-
-### 3. 连续 PIPE_V 共址判定
-
-两个 PIPE_V op 若在局部 op 序上相邻或近邻，并且存在 write/read-write 区间重叠，就认为该 candidate 会压缩 PIPE_V 流水窗口：
-
-```text
-pipeVCoLocated(opA, opB):
-  opA.pipe == PIPE_V
-  opB.pipe == PIPE_V
-  distance(opA, opB) <= pipeVLookahead
-  && (
-       overlap(any opA.writes, any opB.reads)
-    || overlap(any opA.writes, any opB.writes)
-    || overlap(any opA.reads,  any opB.writes)
-  )
-```
-
-`pipeVLookahead` 初始可以取 1，仅覆盖真正连续的 PIPE_V op；若后续发现短距离 MTE/arith op 夹在中间也会造成同类串行化，可以扩展到 2 或 3。该值是性能启发式，不影响四道安全闸门的正确性。
-
-### 4. MTE3 -> MTE2 共址代价
-
-对 store-heavy kernel，还需要识别同一物理 UB 区间被 MTE3 store 源 tile 使用后，又马上作为 MTE2 load 目的 tile 复用的场景。此时 InsertSync 往往需要建立更强的 `MTE3 -> MTE2` 依赖，后续 load 不能像不同地址时那样提前发起：
+对 store-heavy kernel，需要识别同一物理 UB 区间被 MTE3 store 源 tile 使用后，又马上作为 MTE2 load 目的 tile 复用的场景。此时 InsertSync 往往需要建立更强的 `MTE3 -> MTE2` 依赖，后续 load 不能像不同地址时那样提前发起，DMA 跨 pipe 流水被串行化：
 
 ```text
 mteStoreThenLoadCoLocated(opA, opB):
@@ -660,55 +743,136 @@ mteStoreThenLoadCoLocated(opA, opB):
   && overlap(any opA.reads, any opB.writes)
 ```
 
-该代价对 `tstore` 后接下一段 `tload` 的 loop 尤其敏感。若 candidate offset 导致 `opA.reads` 与 `opB.writes` 共址，应给该 candidate 加较高 penalty。
+`mteLookahead` 初始取 1，仅覆盖真正近邻的 store→load；它是识别范围参数，不影响四道安全闸门。
 
-### 5. Candidate 评分
-
-建议使用简单可解释的 penalty 累加：
+该判定按 candidate 聚合成比较键里的两个布尔：
 
 ```text
-reuseCost(candidate):
-  cost = 0
+hasMteConflict(candidate):
+  存在任意一对 (opA, opB) 满足 mteStoreThenLoadCoLocated，
+  且该共址由“把当前 root 放到此 candidate offset”引入。
 
-  if creates PIPE_V write/read or write/write co-location:
-    cost += pipeVOverlapPenalty
-
-  if creates MTE3-store-source -> MTE2-load-dst co-location:
-    cost += mte3ToMte2Penalty
-
-  if joins a hot loop scratch root into an already hot reuse group:
-    cost += hotClusterPenalty + rootHotness
-
-  if the candidate implies exact co-location for hot UB/L1 roots:
-    cost += sameBankRiskPenalty
-
-  if conflict is inside a loop body:
-    cost *= loopWeight
-
-  if root size is small and current AddressSpace has enough remaining capacity:
-    prefer fresh offset by subtracting freshAddressBonus
+hasLoopMteConflict(candidate):
+  上述 (opA, opB) 中至少有一处发生在循环体内。
 ```
 
-推荐初始权重：
+- 两者都是**纯布尔**，不统计共址对的数量。
+- 循环体内的 store→load 共址会在每次迭代重复触发串行化，危害显著大于直线代码，因此 `hasLoopMteConflict` 单独排一档、优先于 `hasMteConflict`（见比较键定义）。这取代了旧模型中 `loopWeight` 的加权做法：不再乘系数，而是用更高的优先级层严格压制。
+- `tstore` 后接下一段 `tload` 的 loop 是最典型的敏感场景。
+
+
+
+### 5.8 确定性 candidate 选择
+
+不使用 penalty 累加，而是对每个已过四道闸门的 candidate 构造前文定义的比较键，取字典序最小者：
 
 ```text
-pipeVOverlapPenalty = 10
-mte3ToMte2Penalty   = 20
-hotClusterPenalty   = 6
-sameBankRiskPenalty = 4
-loopWeight          = 4
-freshAddressBonus   = 1
+选择流程：
+  candidates = 已有 ReuseGroup 的复用 offset + fresh offset
+  candidates = filterByFourGates(candidates)         // 正确性硬过滤
+  for c in candidates:
+    key(c) = (
+      !fits(c),
+      hasLoopMteConflict(c),
+      hasMteConflict(c),
+      projectedBytes(c),
+      offset(c),
+      stableOrder(c)
+    )
+  choose argmin key(c)                                // 字典序最小
 ```
 
-这些权重只决定多个可行 candidate 的选择顺序，不改变 safety gate。若没有任何低 cost candidate，planner 仍可选择高 cost candidate 并保持正确性。
+要点：
 
-`hotClusterPenalty` 使用 root 的访问统计，而不是硬编码 op 名称。一个 root 若在 loop 内被 PIPE_V/MTE 访问、在 loop 内有多次 read/write，或即使没有显式 `scf.for` 但存在多次 PIPE_V/MTE local 访问，就视为 hot scratch。后者覆盖 PTODSL 通过 task/block 并行表达重复工作的 kernel。把 hot root 继续并入已有 hot group 虽然可能语义安全，但容易把多个高频阶段压到同一小段 UB/L1 地址，导致同步分析保守化、bank/cache 热点或流水 overlap 窗口缩小。`sameBankRiskPenalty` 首版只建模最强信号：candidate reuse 会让两个 hot root 精确同址，因此一定落入同一 bank pattern；后续若 planner 在 materialize 前具备精确 offset/stride interval，可扩展为 `offset % bankModulo` 的更细判断。
+- 层间严格字典序、层内纯布尔，没有任何魔数权重；给定输入，选择结果唯一确定。
+- pipeline 层（`hasLoopMteConflict` / `hasMteConflict`）优先于紧凑度（`projectedBytes`）：为避免 MTE 共址宁可多占字节，只要仍 `fits`。
+- 零冲突的 reuse 与 fresh 在 pipeline 层打平，由 `projectedBytes` 让更紧凑的 reuse 胜出，保持紧凑布局。
 
-容量压力仍优先于性能 hint：若 fresh group 会让剩余 local 空间低于 planner 的保守 reserve，则必须选择合法 reuse group，避免为了展开 hot scratch 造成后续 root overflow。
+单趟规划不做任何 per-item 局部容量回退：始终按当前档位比较键取 argmin。容量兜底完全交给跨趟的“容量退让：单调优先档位”（§5.2），保持单一机制、便于推理与测试。
 
-Cube 相关 local space（`MAT` / `LEFT` / `RIGHT` / `ACC`）不使用 largest-first 排序，即使用户显式选择 modern planner 默认的 `orderBySize`。这些空间的性能更依赖计算流附近的 L1/L0A/L0B/ACC 地址规律；把大 tile 全部提前规划会打散 `TLOAD -> TEXTRACT -> TMATMUL` 周边的 operand 地址模式，可能触发不利 bank pattern。`VEC` 仍保留 largest-first，因为 VEC scratch 的主要风险通常是容量压力和跨 PIPE_V/MTE 热点复用，而不是 cube operand 的固定 L0 bank 节奏。
+Cube 相关 local space（`MAT` / `LEFT` / `RIGHT` / `ACC`）不使用 largest-first 排序，即使用户显式选择 modern planner 默认的 `orderBySize`。这些空间的性能更依赖计算流附近的 L1/L0A/L0B/ACC 地址规律；把大 tile 全部提前规划会打散 `TLOAD -> TEXTRACT -> TMATMUL` 周边的 operand 地址模式，可能触发不利 bank pattern。`VEC` 仍保留 largest-first，因为 VEC scratch 的主要风险通常是容量压力和跨 MTE store/load 复用，而不是 cube operand 的固定 L0 bank 节奏。
 
-### 6. prefill_c4_state_update 类场景
+
+
+### 5.9 Phase 2 预留：bank conflict 层
+
+Phase 2 在 pipeline 层之下、`projectedBytes` tie-break 之上插入 bank conflict 布尔层，比较键扩展为：
+
+```text
+(!fits, hasLoopMteConflict, hasMteConflict, hasBankConflict, projectedBytes, offset, stableOrder)
+```
+
+`hasBankConflict` 首版只建模最强信号：candidate reuse 会让两个 hot root 精确同址，因此一定落入同一 bank pattern；后续若 planner 在 materialize 前具备精确 offset/stride interval，可扩展为 `offset % bankModulo` 的更细判断。该层同样保持纯布尔、层间字典序，不引入加权。Phase 1 不实现本层。
+
+
+
+### 5.10 容量退让：单调优先档位（overflow-triggered）
+
+§5 的比较键在容量充足时最大化性能（优先拆开 MTE 共址、倾向 fresh）。但贪心是逐个 item 处理的：早期 item 空间宽裕会抢到 fresh / 零冲突地址，把 footprint 抬高；等空间被占满，后期 item 只能退回“能 fits 就行”的压缩 reuse。这种**顺序偏置**会让性能优化不公平地倾斜给先处理的 item，甚至整体溢出。单趟规划内不做任何 per-item 局部回退，无法前瞻整个尾部需求，因此需要一层跨趟的全局兜底。
+
+为在**不引入魔数权重、不做 legacy 式投机回滚**的前提下兜住容量，引入**溢出触发、单调收敛、有限档位**的确定性容量退让：把比较键组织成从“最激进（性能最优）”到“最紧凑（最大复用）”的有限档位；乐观档先跑，若某个 AddressSpace 溢出，则**只对该空间**升一档整趟重算，直到放下或触及终点档位。
+
+**档位定义（Phase 1）**
+
+档位通过**逐层剥离 pipeline 层**来单调增强紧凑度，四道闸门与 `!fits` 始终保留：
+
+```text
+档位 0（性能态）：
+  (!fits, hasLoopMteConflict, hasMteConflict, projectedBytes, offset, stableOrder)
+  —— 拆开所有 MTE 共址，容量充足时倾向 fresh。
+
+档位 1（半压缩）：剥离 hasMteConflict，仅保护循环体
+  (!fits, hasLoopMteConflict, projectedBytes, offset, stableOrder)
+  —— 直线代码 MTE 共址不再逼向 fresh，只保护危害最大的循环内共址。
+
+档位 2（全压缩，≈ legacy L0）：剥离所有 pipeline 层
+  (!fits, projectedBytes, offset, stableOrder)
+  —— 纯紧凑：总是取占用最小的合法 reuse，fresh 仅在无 reuse 可用时选。
+     即四道闸门下的最大复用，为终点档位。
+```
+
+剥离顺序始终是“先弱信号、后强信号”：先放弃直线 MTE 保护，再放弃循环 MTE 保护，终点是纯紧凑。Phase 2 引入 bank 层后，在剥离所有 pipeline 层之后、剥离到纯 tie-break 之前，多一档“保留 bank 层、已剥离 pipeline”的中间档，终点不变。
+
+**单调性证明（为何一定收敛、无需防重入补丁）**
+
+- 档位 k+1 的比较键 = 档位 k 去掉最高一层“偏好 fresh”的 pipeline 判据。去掉一个偏好 fresh 的层，只会让紧凑 reuse 赢得更多或打平，绝不会让 footprint 变大——因此 footprint 随档位**单调不增**。
+- 档位号每次严格 +1，且档位数有限。过程必在有限步内停止：要么某档放下，要么在终点档（最大复用）仍溢出 → 判定为真 overflow 报错。
+- 因为档位号严格递增，绝不会回到已试过的档位，所以**不需要** legacy 的 `IsSamePlanAsLastRollBack` / `specStartIdx` 防重入机制——legacy 需要它，正是因为它的 per-entry 降级不是严格单调的。
+
+**退让循环（per-AddressSpace）**
+
+```text
+for each AddressSpace space:
+  level = 0
+  loop:
+    plan = runGreedyPlacement(space.items, keyForLevel(level))   // 整趟从头规划
+    if plan.maxRequiredBytes <= space.capacityBytes:
+      commit(plan); break                                        // 放下 → 成功
+    if level == MAX_LEVEL:
+      emitError("<space> overflow ..."); return failure          // 终点仍溢出 → 真 overflow
+    level = level + 1                                             // 严格 +1，单调升档
+```
+
+- **触发条件只有硬溢出**（`offset + size > capacity`），绝不由性能信号触发——保证它是容量可行性兜底，而非把加权打分从后门放回。
+- **每档整趟重算**，丢弃上一档的 group 分配，而不是 legacy 那样撤销部分已提交 PlanRecord。全量重算天然确定。
+- **per-AddressSpace 升档**：只升溢出的空间，其余空间保留在各自最优（性能）档位，比 legacy 单一全局 `specLevel` 更精确。
+- **确定性与代价**：档位序列与每档结果都是输入的纯函数，同输入必得同输出；代价是溢出空间最多跑 `MAX_LEVEL+1` 趟（档位数很小，约 2~3），每趟 O(items×groups)。
+
+**与 legacy 三级复用 + 回滚的对照**
+
+| 维度 | legacy | 本设计单调档位 |
+| --- | --- | --- |
+| 触发 | 溢出 | 溢出（相同） |
+| 单位 | 全局 `specLevel` + per-entry 降级 | per-AddressSpace 档位，无 per-entry |
+| 回滚方式 | 撤销部分已提交 PlanRecord | 整趟丢弃重算 |
+| 防死循环 | 需 `IsSamePlanAsLastRollBack` | 靠单调 + 有限档位天然保证 |
+| 性能表达 | SPEC_LEVEL_1/2 的分层投机 | 已由比较键表达；档位只做剥离 |
+
+
+
+
+
+### 5.11 prefill_c4_state_update 类场景
 
 典型退化模式：
 
@@ -736,30 +900,34 @@ modern aggressive:
 
 从四道闸门看，modern aggressive 规划可能是合法的：这些 scratch 的静态生命周期不重叠，op semantic no-alias 也未禁止它们复用。但从流水性能看，它把多个连续 V 计算和 store/load 交错阶段压到同一物理地址，使后续同步分析必须把本可 overlap 的阶段串起来。
 
-性能模型期望在 Vec 容量充足时选择更接近 legacy 的展开地址；只有当 Vec 容量确实不足时，才逐步接受 `0/256/512` 这类压缩复用。
+确定性策略在 Vec 容量充足时，通过 `hasLoopMteConflict` / `hasMteConflict` 层优先拆开 store→load 共址，选择更接近 legacy 的展开地址；只有当 Vec 容量确实不足（档位退让升到更紧凑档位）时，才逐步接受 `0/256/512` 这类压缩复用。其中连续 V 计算阶段的展开属于 PIPE_V 共址维度，由 Phase 2/预留项处理；Phase 1 只保证 store/load 的 MTE 共址被优先拆开。
 
-### 7. 与 largest-first-fit 的关系
 
-Largest-first 仍决定 item 处理顺序；性能代价模型只影响“当前 item 放入哪个 candidate offset”。推荐流程：
 
-```text
-for item in largestFirstOrder:
-  candidates = collectExistingReuseGroupsAndFreshOffsets(item)
-  candidates = filterByFourGates(candidates)
-  choose min(reuseCost(candidate), offset, stableOrder)
-```
+### 5.12 与 largest-first-fit 的关系
 
-其中 tie-breaker 仍保持 deterministic：
+Largest-first 仍决定 item 处理顺序；确定性优先级策略只影响“当前 item 放入哪个 candidate offset”。单趟规划外层再套一层单调档位退让（见 §5.2），推荐流程：
 
 ```text
-cost 升序
-offset 升序
-representative stableOrder 升序
+for space in addressSpaces:
+  for level in 0 .. MAX_LEVEL:               // 单调升档，仅在溢出时进入下一档
+    reset(space)                             // 整趟重算，丢弃上一档 group 分配
+    for item in largestFirstOrder(space):
+      candidates = collectExistingReuseGroupsAndFreshOffsets(item)
+      candidates = filterByFourGates(candidates)
+      choose argmin keyForLevel(level, candidate)
+        // level 0: (!fits, hasLoopMteConflict, hasMteConflict, projectedBytes, offset, stableOrder)
+        // level 1: (!fits, hasLoopMteConflict,                 projectedBytes, offset, stableOrder)
+        // level 2: (!fits,                                     projectedBytes, offset, stableOrder)
+    if fits(space): break                     // 放下 → 采用该档结果
+  if not fits(space): emitError(overflow)     // 终点档仍溢出 → 真 overflow
 ```
 
-这样既保留 largest-first 的确定性，也避免“第一个空洞”把高频 scratch 过早压到低地址。
+比较键整体保持 deterministic：容量可行 → 循环内 MTE 共址 → 任意 MTE 共址 → 占用字节 → offset → stableOrder，逐层升序（布尔 false 先于 true）。这样既保留 largest-first 的确定性，也避免“第一个空洞”把高频 scratch 过早压到低地址、制造 MTE 串行化。外层档位退让保证：容量充足时停在 level 0（性能最优），只有真正的容量压力才逐级放弃 pipeline 保护、换取更紧凑复用，且过程单调、可终止、可复现。
 
-## PTOAS 数据结构建议
+
+
+## 6. 实现映射
 
 ### RootInfo
 
@@ -815,7 +983,10 @@ struct ConflictFacts {
   DenseMap<Value, SmallVector<unsigned>> phiFamilyIds;
 
   // Performance-only facts. These do not decide whether reuse is legal; they
-  // only rank legal candidate offsets when modern memplan has spare capacity.
+  // feed the deterministic priority key that ranks already-legal candidate
+  // offsets. Phase 1 only populates MTE (PIPE_MTE2 / PIPE_MTE3) accesses used
+  // to detect MTE3-store -> MTE2-load co-location; PIPE_V co-location and bank
+  // conflict facts are deferred to Phase 2.
   SmallVector<OpAccess> opAccesses;
   DenseMap<Value, SmallVector<PhysicalInterval>> plannedIntervals;
 
@@ -829,14 +1000,29 @@ struct ConflictFacts {
 
 ### 说明：pipeline stage load conflict（预留，不纳入当前实现）
 
-- 当前不实现 PyPTO 闸门 4。
+- 当前不实现 pipeline stage load conflict；该项仍是后续预留能力。
 - 不新增 pipeline stage load 复用负例。
 - 保留设计占位：若未来 PTOAS 引入隐式 pipeline lowering，并能稳定提供 `pipelineMembership[root] = (group, stage)`，再接入该闸门。
 - 显式 `pto.alloc_multi_tile count=N` 继续由 multibuffer slot 分配保证 ping-pong 正确性。
 
-## 测试计划
 
-### lit 测试
+
+### 6.1 代码映射
+
+| 设计内容 | 当前实现 |
+| --- | --- |
+| modern planner | `lib/PTO/Transforms/PTOPlanMemoryModern.cpp` |
+| conflict facts / forbidAlias | `PTOPlanMemoryModern.cpp` 中的 `ConflictFacts` |
+| canShare / target hazard | `PTOPlanMemoryModern.cpp` 中的 gate helpers |
+| MTE candidate ranking | `PTOPlanMemoryModern.cpp` 中的 `MteConflict` / `ReuseKey` |
+| CLI planner selection | `tools/ptoas/ptoas.cpp` |
+| order-by-size option | `include/PTO/Transforms/Passes.td` |
+
+
+
+## 7. 测试与验证
+
+### 7.1 lit 测试
 
 新增或扩展以下测试：
 
@@ -845,14 +1031,15 @@ struct ConflictFacts {
 - `plan_memory_five_gates_phi_family.pto`
 - `plan_memory_five_gates_semantic_no_alias.pto`
 - `plan_memory_five_gates_target_hazard.pto`
-- `plan_memory_pipev_reuse_cost_state_update.pto`：构造多个连续 PIPE_V scratch，验证容量充足时 modern memplan 不把所有 touching live range 压到同一小段 Vec 地址。
-- `plan_memory_pipev_reuse_cost_capacity_pressure.pto`：构造 Vec 容量接近上限的场景，验证性能 cost 只影响 candidate 排序，不会因为偏好 fresh address 而错误拒绝合法复用。
-- `plan_memory_mte3_mte2_reuse_cost.pto`：构造 `tstore` 源 tile 后接 `tload` 目的 tile 的近邻复用场景，验证 planner 优先选择不会制造 `MTE3 -> MTE2` 共址依赖的地址。
+- `plan_memory_mte3_mte2_reuse_cost.pto`（**Phase 1 核心**）：构造 `tstore` 源 tile 后接 `tload` 目的 tile 的近邻复用场景，验证 planner 优先选择不会制造 `MTE3 -> MTE2` 共址依赖的地址；并补一条 loop-body 变体，验证循环内 MTE 共址被排在更高一档（`hasLoopMteConflict` 优先于 `hasMteConflict`）。
+- `plan_memory_pipev_reuse_cost_state_update.pto`（**Phase 2 预留**）：构造多个连续 PIPE_V scratch，验证容量充足时 modern memplan 不把所有 touching live range 压到同一小段 Vec 地址。Phase 1 不实现 PIPE_V 共址，暂不启用。
+- `plan_memory_pipev_reuse_cost_capacity_pressure.pto`（**Phase 2 预留**）：构造 Vec 容量接近上限的场景，验证性能层只影响 candidate 排序，不会因为偏好 fresh address 而错误拒绝合法复用。
+- `plan_memory_capacity_escalation_monotonic.pto`（**Phase 1 核心**）：构造 Vec 在 level 0（全展开）必溢出、level 1/2 逐步压缩后才放下的场景，验证 planner 按单调档位升档、最终得到确定且可放下的布局，而非直接报 overflow；再构造一个连终点档位都放不下的场景，验证报出真 overflow。
 - 暂不新增 `plan_memory_five_gates_pipeline_load.pto`；闸门 4 当前为预留设计。
 
 已有 `plan_memory_*.pto` 应继续保留 legacy + modern 双 RUN。
 
-### 验证命令
+### 7.2 验证命令
 
 ```bash
 cmake --build build --target ptoas -j8
@@ -865,14 +1052,21 @@ PATH=/Users/fangrui/workspace/huawei/llvm21-workspace/llvm-project/llvm/build-as
 ctest --test-dir build --output-on-failure -L PTODSL
 ```
 
-## 风险与注意事项
+
+
+## 8. 风险、限制与后续工作
 
 - `--plan-memory-order-by-size` 本身会改变 modern memplan 的 offset 分配顺序，测试应避免把 order-sensitive 预期错误地复用于默认路径。
 - 四道闸门是硬约束，不应为了容量不足而放松。
 - target hazard 需要先确认 PTOAS IR 中稳定的标记来源。
 - pipeline metadata 闸门当前不实现；如果未来启用，需要先定义稳定的 pipeline membership 来源。
 - phi family 豁免必须保守，不能让外部 live alias 借互斥分支错误复用。
-- PIPE_V 物理共址模型只是性能排序，不是安全闸门；容量不足时不能因为 cost 高而报错，除非四道安全闸门本身失败。
-- cost 权重会改变 modern memplan 的 offset 选择，测试应只检查关键“不应过度压缩”的相对关系，避免过度绑定完整地址布局。
-- 物理区间必须和 InsertSync 使用的 root/alias/MemoryEffects 视角保持一致；否则 planner 认为低 cost 的地址，后续同步分析仍可能补出强依赖。
+- 确定性优先级层只是性能排序，不是安全闸门；容量不足时不能因为存在 MTE 共址就报错，除非四道安全闸门本身失败。
+- 布尔层（`hasLoopMteConflict` / `hasMteConflict`）会丢失“多个小冲突 vs 一个大冲突”的定量权衡能力；这是刻意取舍，换取 deterministic 且无魔数加权。若后续确有需要，应新增独立布尔层而非退回加权打分。
+- Phase 1 的 MTE 识别范围（PIPE_MTE2 / PIPE_MTE3）必须与 InsertSync 的 pipe 归类保持一致；否则 planner 认为无冲突的地址，后续同步分析仍可能补出 MTE 串行依赖。
+- 物理区间必须和 InsertSync 使用的 root/alias/MemoryEffects 视角保持一致；否则 planner 认为低冲突的地址，后续同步分析仍可能补出强依赖。
+- 单调档位退让必须保证 footprint 随档位单调不增：新增或调整档位时，只能“剥离偏好 fresh 的层”，不得引入会让某些 item 反而更占空间的规则，否则收敛性与终止性不再成立。
+- 档位退让的触发条件必须严格限定为硬溢出，绝不能由性能信号触发；否则等于把加权/投机回滚从后门放回，违背 deterministic 目标。
+- 每档整趟重算而非部分撤销：实现时不要复用 legacy 的 PlanRecord 撤销路径；per-AddressSpace 升档需保证各空间档位相互独立、互不影响。
+- 档位数应保持很小（约 2~3）；档位过多会放大重跑代价，也说明性能层与紧凑度的边界没切干净。
 - legacy memplan 不应受该设计影响，默认行为保持不变。

@@ -1,0 +1,69 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Monotonic capacity escalation: at the top level (full pipeline performance)
+// the deterministic priority model prefers a fresh address for %B to avoid the
+// MTE3-store(%A) -> MTE2-load(%B) co-location, spending both large slots
+// (2 * 98304 == 196608 == VEC cap). The long-lived %C then cannot fit and
+// cannot reuse %A/%B, so the top level overflows. The planner steps down one
+// level, strips the "any MTE conflict" layer, and packs %B onto %A's slot,
+// leaving room for %C. This must NOT emit an overflow error.
+//
+// RUN: ptoas --pto-level=level2 --pto-arch=a3 --plan-memory-impl=modern \
+// RUN:   --emit-pto-ir --mlir-print-ir-after=pto-plan-memory %s 2>&1 \
+// RUN:   | FileCheck %s
+
+module attributes {pto.target_arch = "a3"} {
+  func.func @capacity_escalation_monotonic(
+      %gmAB: !pto.ptr<f32>, %gmC: !pto.ptr<f32>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c128 = arith.constant 128 : index
+    %c192 = arith.constant 192 : index
+
+    %viewAB = pto.make_tensor_view %gmAB,
+      shape = [%c1, %c1, %c1, %c192, %c128], strides = [%c128, %c128, %c128, %c128, %c1]
+      : !pto.tensor_view<1x1x1x192x128xf32>
+    %partAB = pto.partition_view %viewAB,
+      offsets = [%c0, %c0, %c0, %c0, %c0], sizes = [%c1, %c1, %c1, %c192, %c128]
+      : !pto.tensor_view<1x1x1x192x128xf32> -> !pto.partition_tensor_view<1x1x1x192x128xf32>
+
+    %viewC = pto.make_tensor_view %gmC,
+      shape = [%c1, %c1, %c1, %c128, %c128], strides = [%c128, %c128, %c128, %c128, %c1]
+      : !pto.tensor_view<1x1x1x128x128xf32>
+    %partC = pto.partition_view %viewC,
+      offsets = [%c0, %c0, %c0, %c0, %c0], sizes = [%c1, %c1, %c1, %c128, %c128]
+      : !pto.tensor_view<1x1x1x128x128xf32> -> !pto.partition_tensor_view<1x1x1x128x128xf32>
+
+    %A = pto.alloc_tile : !pto.tile_buf<vec, 192x128xf32>
+    %B = pto.alloc_tile : !pto.tile_buf<vec, 192x128xf32>
+    %C = pto.alloc_tile : !pto.tile_buf<vec, 128x128xf32>
+
+    pto.tload ins(%partAB : !pto.partition_tensor_view<1x1x1x192x128xf32>)
+              outs(%A : !pto.tile_buf<vec, 192x128xf32>)
+    pto.tload ins(%partC : !pto.partition_tensor_view<1x1x1x128x128xf32>)
+              outs(%C : !pto.tile_buf<vec, 128x128xf32>)
+    pto.tstore ins(%A : !pto.tile_buf<vec, 192x128xf32>)
+               outs(%partAB : !pto.partition_tensor_view<1x1x1x192x128xf32>)
+    pto.tload ins(%partAB : !pto.partition_tensor_view<1x1x1x192x128xf32>)
+              outs(%B : !pto.tile_buf<vec, 192x128xf32>)
+    pto.tstore ins(%B : !pto.tile_buf<vec, 192x128xf32>)
+               outs(%partAB : !pto.partition_tensor_view<1x1x1x192x128xf32>)
+    pto.tstore ins(%C : !pto.tile_buf<vec, 128x128xf32>)
+               outs(%partC : !pto.partition_tensor_view<1x1x1x128x128xf32>)
+    return
+  }
+}
+
+// CHECK-LABEL: func.func @capacity_escalation_monotonic
+// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : i64
+// CHECK-DAG: %[[C98304:.*]] = arith.constant 98304 : i64
+// CHECK: %[[A:.*]] = pto.alloc_tile addr = %[[C0]] : !pto.tile_buf<vec, 192x128xf32>
+// CHECK: %[[B:.*]] = pto.alloc_tile addr = %[[C0]] : !pto.tile_buf<vec, 192x128xf32>
+// CHECK: %[[C:.*]] = pto.alloc_tile addr = %[[C98304]] : !pto.tile_buf<vec, 128x128xf32>

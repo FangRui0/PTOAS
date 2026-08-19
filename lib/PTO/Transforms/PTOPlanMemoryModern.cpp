@@ -48,11 +48,6 @@ struct RootInfo {
   unsigned stableOrder = 0;
   bool hasWriter = false;
   bool hasUseBeforeFirstWrite = false;
-  unsigned accessCount = 0;
-  unsigned writeAccessCount = 0;
-  unsigned loopAccessCount = 0;
-  unsigned pipeVAccessCount = 0;
-  unsigned mteAccessCount = 0;
   SmallVector<uint64_t> offsets;
 };
 
@@ -764,30 +759,6 @@ struct PlannerAnalysis {
     }
   }
 
-  void recordRootAccessStats(ArrayRef<Value> accessRoots, PIPE pipe,
-                             bool isWrite, bool inLoop) {
-    for (Value root : accessRoots) {
-      auto found = rootIndexByValue.find(root);
-      if (found == rootIndexByValue.end()) {
-        continue;
-      }
-      RootInfo &info = roots[found->second];
-      ++info.accessCount;
-      if (isWrite) {
-        ++info.writeAccessCount;
-      }
-      if (inLoop) {
-        ++info.loopAccessCount;
-      }
-      if (pipe == PIPE::PIPE_V) {
-        ++info.pipeVAccessCount;
-      }
-      if (pipe == PIPE::PIPE_MTE2 || pipe == PIPE::PIPE_MTE3) {
-        ++info.mteAccessCount;
-      }
-    }
-  }
-
   void recordOpAccess(Operation *op, ValueRange dpsInits) {
     auto pipeOp = dyn_cast<pto::OpPipeInterface>(op);
     auto memEffect = dyn_cast<MemoryEffectOpInterface>(op);
@@ -824,10 +795,6 @@ struct PlannerAnalysis {
     }
 
     if (!access.reads.empty() || !access.writes.empty()) {
-      recordRootAccessStats(access.reads, access.pipe, /*isWrite=*/false,
-                            access.inLoop);
-      recordRootAccessStats(access.writes, access.pipe, /*isWrite=*/true,
-                            access.inLoop);
       facts.opAccesses.push_back(std::move(access));
     }
   }
@@ -1212,24 +1179,6 @@ static bool accessesRoot(const OpAccess &access, Value root) {
   return containsRoot(access.reads, root) || containsRoot(access.writes, root);
 }
 
-static bool accessPairHasMemoryDependency(const OpAccess &lhs,
-                                          const OpAccess &rhs, Value lhsRoot,
-                                          Value rhsRoot) {
-  auto depends = [&lhs, &rhs](Value writtenRoot, Value otherRoot) {
-    return containsRoot(lhs.writes, writtenRoot) &&
-           (containsRoot(rhs.reads, otherRoot) ||
-            containsRoot(rhs.writes, otherRoot));
-  };
-  auto reverseDepends = [&lhs, &rhs](Value readRoot, Value writtenRoot) {
-    return containsRoot(lhs.reads, readRoot) &&
-           containsRoot(rhs.writes, writtenRoot);
-  };
-
-  return depends(lhsRoot, rhsRoot) || depends(rhsRoot, lhsRoot) ||
-         reverseDepends(lhsRoot, rhsRoot) ||
-         reverseDepends(rhsRoot, lhsRoot);
-}
-
 static bool isNearNeighbor(const OpAccess &lhs, const OpAccess &rhs,
                            unsigned lookahead) {
   unsigned lhsIndex = lhs.opIndex;
@@ -1239,24 +1188,25 @@ static bool isNearNeighbor(const OpAccess &lhs, const OpAccess &rhs,
   return distance > 0 && distance <= lookahead;
 }
 
-static uint64_t loopWeightedPenalty(uint64_t penalty, const OpAccess &lhs,
-                                    const OpAccess &rhs) {
-  constexpr uint64_t kLoopWeight = 4;
-  return (lhs.inLoop || rhs.inLoop) ? penalty * kLoopWeight : penalty;
-}
+// Deterministic pipeline-conflict predicate (Phase 1). Instead of a weighted
+// scalar cost, reuse decisions are driven by boolean priority layers: whether
+// co-locating two roots creates a near-neighbor MTE3-store -> MTE2-load
+// physical hazard, and whether that hazard lives inside a loop body (the
+// higher-priority layer).
+struct MteConflict {
+  bool any = false;
+  bool inLoop = false;
+};
 
-static uint64_t getRootPairReuseCost(Value lhsRoot, Value rhsRoot,
-                                     const ConflictFacts &facts) {
+static MteConflict rootPairMteConflict(Value lhsRoot, Value rhsRoot,
+                                       const ConflictFacts &facts) {
+  MteConflict conflict;
   if (lhsRoot == rhsRoot) {
-    return 0;
+    return conflict;
   }
 
-  constexpr unsigned kPipeVLookahead = 1;
   constexpr unsigned kMteLookahead = 1;
-  constexpr uint64_t kPipeVOverlapPenalty = 10;
-  constexpr uint64_t kMte3ToMte2Penalty = 20;
 
-  uint64_t cost = 0;
   for (const OpAccess &lhs : facts.opAccesses) {
     if (!accessesRoot(lhs, lhsRoot) && !accessesRoot(lhs, rhsRoot)) {
       continue;
@@ -1270,12 +1220,6 @@ static uint64_t getRootPairReuseCost(Value lhsRoot, Value rhsRoot,
         continue;
       }
 
-      if (lhs.pipe == PIPE::PIPE_V && rhs.pipe == PIPE::PIPE_V &&
-          isNearNeighbor(lhs, rhs, kPipeVLookahead) &&
-          accessPairHasMemoryDependency(lhs, rhs, lhsRoot, rhsRoot)) {
-        cost += loopWeightedPenalty(kPipeVOverlapPenalty, lhs, rhs);
-      }
-
       if (lhs.pipe == PIPE::PIPE_MTE3 && rhs.pipe == PIPE::PIPE_MTE2 &&
           isNearNeighbor(lhs, rhs, kMteLookahead)) {
         bool storeSourceThenLoadDst =
@@ -1284,82 +1228,31 @@ static uint64_t getRootPairReuseCost(Value lhsRoot, Value rhsRoot,
             (containsRoot(lhs.reads, rhsRoot) &&
              containsRoot(rhs.writes, lhsRoot));
         if (storeSourceThenLoadDst) {
-          cost += loopWeightedPenalty(kMte3ToMte2Penalty, lhs, rhs);
+          conflict.any = true;
+          if (lhs.inLoop || rhs.inLoop) {
+            conflict.inLoop = true;
+            return conflict;
+          }
         }
       }
     }
   }
-  return cost;
+  return conflict;
 }
 
-static uint64_t getGroupReuseCost(const RootInfo &info,
-                                  const ReuseGroup &group,
-                                  const ConflictFacts &facts) {
-  uint64_t cost = 0;
+static MteConflict groupMteConflict(const RootInfo &info,
+                                    const ReuseGroup &group,
+                                    const ConflictFacts &facts) {
+  MteConflict conflict;
   for (const RootInfo *member : group.members) {
-    cost += getRootPairReuseCost(info.root, member->root, facts);
-  }
-  return cost;
-}
-
-static bool isHotRoot(const RootInfo &info) {
-  if (info.loopAccessCount > 0 &&
-      (info.accessCount >= mlir::pto::kValue2 || info.pipeVAccessCount > 0 ||
-       info.mteAccessCount > 0)) {
-    return true;
-  }
-
-  // Some PTODSL kernels express repeated work through task/block parallelism
-  // rather than an explicit scf.for in PTO IR. Repeated local accesses on
-  // PIPE_V/MTE are still hot enough that over-clustering can hurt scheduling.
-  return info.accessCount >= mlir::pto::kValue2 &&
-         (info.pipeVAccessCount > 0 || info.mteAccessCount > 0);
-}
-
-static uint64_t getRootHotness(const RootInfo &info) {
-  uint64_t hotness = info.accessCount;
-  hotness += static_cast<uint64_t>(info.loopAccessCount) * mlir::pto::kValue2;
-  hotness += static_cast<uint64_t>(info.writeAccessCount);
-  hotness += static_cast<uint64_t>(info.pipeVAccessCount) * mlir::pto::kValue2;
-  hotness += static_cast<uint64_t>(info.mteAccessCount) * mlir::pto::kValue2;
-  return hotness;
-}
-
-static uint64_t getHotClusterReuseCost(const RootInfo &info,
-                                       const ReuseGroup &group) {
-  if (!isHotRoot(info)) {
-    return 0;
-  }
-
-  constexpr uint64_t kHotClusterPenalty = 6;
-  constexpr uint64_t kLoopHotClusterPenalty = 12;
-  constexpr uint64_t kBankConflictPenalty = 4;
-  constexpr uint64_t kBankConflictModuloBytes = 8192;
-
-  uint64_t cost = 0;
-  uint64_t infoHotness = getRootHotness(info);
-  for (const RootInfo *member : group.members) {
-    if (!isHotRoot(*member)) {
-      continue;
-    }
-
-    uint64_t pairHotness =
-        std::min<uint64_t>(infoHotness, getRootHotness(*member));
-    cost += kHotClusterPenalty + pairHotness;
-    if (info.loopAccessCount > 0 && member->loopAccessCount > 0) {
-      cost += kLoopHotClusterPenalty;
-    }
-
-    // Exact co-location is the strongest possible same-bank signal. The
-    // planner does not materialize final byte intervals yet, so only model the
-    // bank pattern that is known for a reuse candidate: the new root would
-    // start at the same offset as every member in this group.
-    if (info.alignmentBytes <= kBankConflictModuloBytes &&
-        member->alignmentBytes <= kBankConflictModuloBytes) {
-      cost += kBankConflictPenalty;
+    MteConflict pair = rootPairMteConflict(info.root, member->root, facts);
+    conflict.any |= pair.any;
+    conflict.inLoop |= pair.inLoop;
+    if (conflict.inLoop) {
+      break;
     }
   }
-  return cost;
+  return conflict;
 }
 
 static uint64_t getProjectedPackedBytes(ArrayRef<ReuseGroup> groups,
@@ -1384,14 +1277,31 @@ static uint64_t getProjectedPackedBytes(ArrayRef<ReuseGroup> groups,
   return cursor;
 }
 
-static ReuseGroup *chooseReuseGroupByCost(
+// Deterministic priority selection with monotonic capacity levels. The
+// comparison key is a lexicographic boolean tuple; higher levels keep more
+// fresh-preferring conflict layers (better pipeline performance, larger
+// footprint), lower levels strip them (max reuse, smaller footprint). The
+// escalation loop starts at the top level and steps down on overflow, so the
+// packed footprint is non-increasing:
+//   level 2: (!fits, loopMte, anyMte, projectedBytes, order)  full performance
+//   level 1: (!fits, loopMte,      0, projectedBytes, order)
+//   level 0: (!fits,       0,      0, projectedBytes, order)  ~ legacy L0 reuse
+using ReuseKey = std::tuple<bool, bool, bool, uint64_t, unsigned>;
+
+static ReuseKey keyForLevel(unsigned level, bool fits, MteConflict mte,
+                            uint64_t projectedBytes, unsigned order) {
+  bool useLoop = level >= 1;
+  bool useAny = level == 2;
+  return ReuseKey(!fits, useLoop && mte.inLoop, useAny && mte.any,
+                  projectedBytes, order);
+}
+
+static ReuseGroup *chooseReuseGroupByLevel(
     RootInfo &info, SmallVectorImpl<ReuseGroup> &groups,
-    const PlannerAnalysis &analysis, const MemSpec &spec) {
+    const PlannerAnalysis &analysis, const MemSpec &spec, unsigned level) {
   ReuseGroup *bestGroup = nullptr;
-  uint64_t bestCost = std::numeric_limits<uint64_t>::max();
-  uint64_t bestProjectedBytes = std::numeric_limits<uint64_t>::max();
-  unsigned bestOrder = std::numeric_limits<unsigned>::max();
-  bool bestFits = false;
+  ReuseKey bestKey;
+  bool hasBest = false;
 
   for (auto [index, group] : llvm::enumerate(groups)) {
     if (!canJoinReuseGroup(info, group, analysis)) {
@@ -1401,54 +1311,23 @@ static ReuseGroup *chooseReuseGroupByCost(
     uint64_t projectedBytes =
         getProjectedPackedBytes(groups, info, static_cast<unsigned>(index));
     bool fits = projectedBytes <= spec.capacityBytes;
-    uint64_t cost = getGroupReuseCost(info, group, analysis.facts) +
-                    getHotClusterReuseCost(info, group);
-    if ((!bestGroup && !bestFits) || (fits != bestFits && fits) ||
-        (fits == bestFits &&
-         std::tie(cost, projectedBytes, index) <
-             std::tie(bestCost, bestProjectedBytes, bestOrder))) {
+    MteConflict mte = groupMteConflict(info, group, analysis.facts);
+    ReuseKey key = keyForLevel(level, fits, mte, projectedBytes,
+                               static_cast<unsigned>(index));
+    if (!hasBest || key < bestKey) {
       bestGroup = &group;
-      bestCost = cost;
-      bestProjectedBytes = projectedBytes;
-      bestOrder = static_cast<unsigned>(index);
-      bestFits = fits;
+      bestKey = key;
+      hasBest = true;
     }
   }
 
-  uint64_t freshProjectedBytes = getProjectedPackedBytes(groups, info,
-                                                         std::nullopt);
+  uint64_t freshProjectedBytes =
+      getProjectedPackedBytes(groups, info, std::nullopt);
   bool freshFits = freshProjectedBytes <= spec.capacityBytes;
-  uint64_t freshSlack =
-      freshFits ? spec.capacityBytes - freshProjectedBytes : 0;
-  uint64_t pressureReserve =
-      std::max(info.totalBytes, info.alignmentBytes);
-  // Fresh groups are not free: cost 1 lets true zero-cost reuse keep the old
-  // compact layout, while still avoiding positive-cost PIPE/MTE co-location
-  // when local capacity is available.
-  uint64_t freshCost = groups.empty() ? 0 : 1;
-  unsigned freshOrder = groups.size();
-  if (!bestGroup) {
-    return nullptr;
-  }
-
-  // The cost model is a performance hint, not a correctness gate. When local
-  // memory is already tight, do not let a fresh address outrank a legal reuse
-  // group; future roots may still need the remaining tail bytes.
-  if (bestFits && freshFits && freshSlack < pressureReserve) {
-    return bestGroup;
-  }
-
-  auto isBetter = [](bool lhsFits, uint64_t lhsCost, uint64_t lhsBytes,
-                     unsigned lhsOrder, bool rhsFits, uint64_t rhsCost,
-                     uint64_t rhsBytes, unsigned rhsOrder) {
-    if (lhsFits != rhsFits) {
-      return lhsFits;
-    }
-    return std::tie(lhsCost, lhsBytes, lhsOrder) <
-           std::tie(rhsCost, rhsBytes, rhsOrder);
-  };
-  if (isBetter(freshFits, freshCost, freshProjectedBytes, freshOrder, bestFits,
-               bestCost, bestProjectedBytes, bestOrder)) {
+  ReuseKey freshKey = keyForLevel(level, freshFits, MteConflict{},
+                                  freshProjectedBytes,
+                                  static_cast<unsigned>(groups.size()));
+  if (!bestGroup || freshKey < bestKey) {
     return nullptr;
   }
   return bestGroup;
@@ -1695,44 +1574,66 @@ static LogicalResult runModernPlanMemory(func::FuncOp func,
       return lhs->stableOrder < rhs->stableOrder;
     });
 
-    SmallVector<ReuseGroup> groups;
+    // Monotonic capacity escalation: retry placement at strictly decreasing
+    // levels, starting from the top (full pipeline performance) and stepping
+    // down on overflow. Each lower level strips a fresh-preferring conflict
+    // layer, so the packed footprint is non-increasing; level 0 maximizes
+    // reuse (~legacy L0). Only a level-0 overflow is a real capacity error.
+    constexpr unsigned kMaxLevel = 2;
     uint64_t scopeRequiredBytes = 0;
-    for (RootInfo *info : roots) {
-      ReuseGroup *chosen =
-          chooseReuseGroupByCost(*info, groups, analysis, spec);
-      if (!chosen) {
-        ReuseGroup group;
-        group.space = space;
-        group.alignmentBytes = info->alignmentBytes;
-        groups.push_back(std::move(group));
-        chosen = &groups.back();
+    bool placed = false;
+    for (int level = kMaxLevel; level >= 0; --level) {
+      for (RootInfo *info : roots) {
+        info->offsets.clear();
       }
 
-      chosen->members.push_back(info);
-      chosen->sizeBytes = std::max(chosen->sizeBytes, info->totalBytes);
-      chosen->alignmentBytes =
-          std::max(chosen->alignmentBytes, info->alignmentBytes);
-    }
+      SmallVector<ReuseGroup> groups;
+      for (RootInfo *info : roots) {
+        ReuseGroup *chosen = chooseReuseGroupByLevel(
+            *info, groups, analysis, spec, static_cast<unsigned>(level));
+        if (!chosen) {
+          ReuseGroup group;
+          group.space = space;
+          group.alignmentBytes = info->alignmentBytes;
+          groups.push_back(std::move(group));
+          chosen = &groups.back();
+        }
 
-    uint64_t cursor = 0;
-    for (ReuseGroup &group : groups) {
-      cursor = alignUp(cursor, group.alignmentBytes);
-      group.offsetBytes = cursor;
-      if (group.offsetBytes + group.sizeBytes > spec.capacityBytes) {
-        scopeRequiredBytes = group.offsetBytes + group.sizeBytes;
+        chosen->members.push_back(info);
+        chosen->sizeBytes = std::max(chosen->sizeBytes, info->totalBytes);
+        chosen->alignmentBytes =
+            std::max(chosen->alignmentBytes, info->alignmentBytes);
+      }
+
+      scopeRequiredBytes = 0;
+      bool overflow = false;
+      uint64_t cursor = 0;
+      for (ReuseGroup &group : groups) {
+        cursor = alignUp(cursor, group.alignmentBytes);
+        group.offsetBytes = cursor;
+        if (group.offsetBytes + group.sizeBytes > spec.capacityBytes) {
+          scopeRequiredBytes = group.offsetBytes + group.sizeBytes;
+          overflow = true;
+          break;
+        }
+
+        for (RootInfo *member : group.members) {
+          member->offsets = buildSlotOffsets(group.offsetBytes,
+                                             member->slotBytes,
+                                             member->slotCount);
+        }
+        scopeRequiredBytes =
+            std::max(scopeRequiredBytes, group.offsetBytes + group.sizeBytes);
+        cursor = group.offsetBytes + group.sizeBytes;
+      }
+
+      if (!overflow) {
+        placed = true;
         break;
       }
-
-      for (RootInfo *member : group.members) {
-        member->offsets = buildSlotOffsets(group.offsetBytes, member->slotBytes,
-                                           member->slotCount);
-      }
-      scopeRequiredBytes =
-          std::max(scopeRequiredBytes, group.offsetBytes + group.sizeBytes);
-      cursor = group.offsetBytes + group.sizeBytes;
     }
 
-    if (scopeRequiredBytes > spec.capacityBytes) {
+    if (!placed) {
       func.emitError() << stringifyEnum(space) << " overflow, requires "
                        << (scopeRequiredBytes * mlir::pto::kValue8) << " bits while "
                        << (spec.capacityBytes * mlir::pto::kValue8) << " bits available";
