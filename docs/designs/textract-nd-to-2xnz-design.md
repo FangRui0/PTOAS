@@ -897,6 +897,35 @@ driver 在 main pass manager 成功后、`TSTORE`/EmitC/VPTO 最终 lowering 前
 这样 partial-valid op 本身仍可用于不含 generic TSTORE 的 UB-only 测试，不会在 debug PTO-ISA
 上晚期触发 TSTORE assertion，也不能通过复制一个同址 full-valid allocation 绕过限制。
 
+#### 5.3.1 backend-partitioned module boundary
+
+`post-planning safety helper` 只在 child compile unit 内运行仍然不充分。mixed-backend driver
+会先把 outer module 拆成独立 child compile unit，再把跨 child `func.call` 的 callee 克隆成
+declaration；此后每个 child 分别调用 `compilePTOASModule()`。因此 producer 在 child A、
+caller/TSTORE 在 child B 时，两个 child 都看不到完整的 partial/TSTORE component。
+
+首版选择在拆分前增加一个普通 driver precheck，而不是传递跨 child range/effect summary：
+
+1. 在 `runPTOASJobs()` 调用 `collectChildJobs()`/`buildBackendChildCompileUnit()` 之前，对完整
+   outer module 建立 direct internal `func.call` graph。此时 symbol table 仍包含所有 child 的
+   function definitions，不能使用拆分后生成的 declaration 代替 definition。
+2. 为每个 function definition 记录其 immediate child owner；以同一套 weakly connected
+   component 规则收集 call component。component 中只要存在 partial-valid ND-to-2xNZ producer，
+   且其 function owner 集合包含两个或更多 child，就直接拒绝整个 module。即便目前没有发现
+   TSTORE、TSTORE 位于 caller 侧、或两个 child 使用相同 backend，也必须拒绝；这是首版对跨
+   compile-unit definedness 的保守边界。
+3. precheck 必须在任何 child clone、callee declaration materialization 或 child-level
+   `compilePTOASModule()` 之前失败，并报告 producer function、跨越的 child/backend、call site
+   和“partial-valid destination cannot cross backend child compile units”。这样不会把 opaque
+   declaration 当作已经完成 alias 检查，也不会把同一 component 拆成两个看似独立的检查域。
+4. component 完全属于一个 child 时，仍由该 child 的 post-planning helper 执行第 5.3 节的
+   component-wide range 检查。没有 partial producer 的跨 child component 不受此规则影响；两个
+   disconnected child component 复用相同数值地址仍按第 5.3 节的 component scope 规则处理。
+5. 该 precheck 是 driver 普通函数，不注册 MLIR pass，也不改变 `compilePTOASModule()` 的
+   单 child 契约。后续若要支持跨 child partial component，必须先定义 producer/TSTORE physical
+   range、call argument provenance、backend ownership 和 opaque-call effects 的稳定 summary
+   协议，再删除本首版拒绝规则。
+
 ### 5.4 compact mode
 
 - A2/A3：拒绝 `CompactMode::RowPlusOne`；`Null`/`Normal` 都按 plain NZ 处理。
@@ -1379,8 +1408,15 @@ PTOAS 当前三个 pin 都早于 8 月 14 日功能提交：
   direct callee TSTORE；`entry -> helper -> leaf` 三级调用中 producer/TSTORE 分居两端；tile block
   argument 使 TSTORE source range unresolved；含 partial producer 的 component 存在 indirect、
   external 或 unresolved call；这些 case 都必须在 post-planning helper 稳定失败；
+- 增加 mixed-backend partition 负向：child A 的 level3 `alloc_tile addr=0` 产生 partial
+  ND-to-2xNZ，child B 通过 `func.call @A` 后以同址 `alloc_tile addr=0` 执行 `TSTORE`；必须在
+  child clone/declaration 和任一 child compile 之前由 outer-module precheck 稳定拒绝。反向
+  caller/callee、三级跨 child component、同 backend 但分 child 的 case 也覆盖；
 - 增加 component scope 正向：两个互不连通的 entry/kernel function 使用相同 UB 数值地址，只有
   一个 component 含 partial producer、另一个含 TSTORE，不得因 module-wide 全局扫描而误拒绝；
+- 增加 partition scope 正向：partial producer/TSTORE component 完全位于 child A，child B 是
+  独立 non-partial component（即使复用地址）时，不得被 precheck 误拒绝；full-valid component
+  跨 child 也不因本规则失败；
 - production/test build 使用同一规则；不存在 hidden option、test-only module attribute 或
   canonical fixture escape。
 
@@ -1444,6 +1480,10 @@ PTOBC v0 兼容测试单列，不并入普通 MLIR bytecode 假设：
 - 跨函数 `_post_planning_safety` 回归覆盖 callee-producer/caller-store、caller-producer/callee-store、
   三级 transitive call、block-argument unresolved source，以及 indirect/external/unresolved callee
   拒绝；另有 disconnected entry components 同址正向，锁定检查不能退化为 module-wide 地址并集；
+- mixed-backend `_pre_partition_safety` 回归在 `collectChildJobs()` 之前覆盖跨 child partial
+  producer/TSTORE、反向调用、三级跨 child component 和同 backend 分 child 拒绝；child A/B 的
+  cloned declaration 不得成为绕过证据；partial component 单 child、full-valid cross-child 和
+  disconnected same-address child 正向通过；
 - 独立 GraphSync `_gss` 回归覆盖：同址不同
   `AllocTileOp` root 产生 MTE2-to-V WAW 和 V-to-MTE3 RAW；静态 physical range 部分重叠也产生
   同步；不重叠 range 不产生误同步；相同数字地址但不同 address space 不冲突。该 test 必须
@@ -1547,7 +1587,7 @@ full-store group 必须经过完整链路，partial-valid group 必须保留明�
 |---|---|---|
 | 0 | rebase、逐 target pin/backend 探测、CMake manifest 生成与 driver 注入 | NPU probe 生成正向 capability；CPU/cost-model 失败生成稳定负向 capability；manifest path/root/revision 校验可执行 |
 | 1 | 扩展 `TExtractOp` ODS ranges、inherent-property schema validator/form classifier、custom assembly、精确兼容 builder/accessor、DPS、pipe、effects、PTOBC shim | property conversion、generated invariants、custom verifier 各阶段负向测试不崩溃；src=0/2 等可到达 classifier 的 schema 稳定失败且 effects 保守；旧 C++ API compile-only、legacy/new parse-print、binding、v0 bytecode 兼容和 range-based adaptor 编译测试通过，且没有新增 op 名 |
-| 2 | shared emitted-dimension helper、A5 partial-valid physical-stride gate、IR verifier，以及 driver input-provenance/post-planning-safety helper | 架构矩阵包含 A3/A5/VPTO `32/13` counterexample；A5 gate diagnostic 可执行；bounds、direct/alias/cross-function TSTORE、closed call-component、provenance、动态/静态地址 lit 通过，且没有新增 validation pass/test escape |
+| 2 | shared emitted-dimension helper、A5 partial-valid physical-stride gate、IR verifier，以及 driver input-provenance/post-planning-safety helper | 架构矩阵包含 A3/A5/VPTO `32/13` counterexample；A5 gate diagnostic 可执行；bounds、direct/alias/cross-function/cross-child TSTORE、closed call-component、partition precheck、provenance、动态/静态地址 lit 通过，且没有新增 validation pass/test escape |
 | 3 | no-alias、GraphSync `AllocTileOp` single-address model 与 planner/GSS 回归 | 三组 alias 被拒绝，declared/tpop provenance 在 planner 前失败，动态 level3 地址失败，双输出 liveness 正确，同址/overlap/disjoint/address-space GSS edge 正确 |
 | 4 | EmitC pattern | A3/A5 精确文本与 pin compile-only 通过 |
 | 5 | A5 TileLib/VPTO template 与 Python facade | physical-stride/stride gate、aligned/unaligned/tail/enabled-lowp 展开通过；legacy free function/property/constructor smoke 通过；NZ+1/FP4 随 gate 开启 |
@@ -1607,6 +1647,10 @@ public syntax；实现只承诺 canonical `pto.textract ins(...) outs(...)` 文�
   unresolved source range 的 partial TSTORE；检查覆盖同一 direct-call graph component 的
   caller/callee/transitive helper，拒绝 indirect/external/unresolved call 隐藏 effects，允许互不连通
   component 复用地址；该 component 级保守规则没有 test-only escape；
+- backend-partitioned outer module 在 child 拆分前完成 component precheck；含 partial producer
+  的 component 跨 child 时稳定拒绝，不能依赖 child declaration 或最终链接阶段补救；完全位于
+  单 child 的 partial component、full-valid cross-child component 和 disconnected child component
+  保持各自既定规则；
 - A3/A5 至少各有一条 full-valid 端到端双输出数值链路；partial-valid/odd/`1x1` 只计入
   通过 simulator UB dump 或独立 raw-buffer harness 观测的 UB-only TEXTRACT
   coverage，不能直接进入 generic NZ TSTORE；NPU partial coverage 必须实际导出并逐 byte 比较
