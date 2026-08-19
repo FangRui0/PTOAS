@@ -210,6 +210,35 @@ inline constexpr llvm::StringLiteral kPTOVisibilityExternalValue = "external";
 inline constexpr llvm::StringLiteral kPTODSLLogicalNameAttrName =
     "pto.ptodsl.logical_name";
 
+/// Loop-unroll hint attributes carried on `scf.for` as discardable attrs.
+///
+/// `pto.unroll` is a string attribute with one of the values below;
+/// `pto.unroll_factor` is an integer attribute holding a positive unroll
+/// factor.  The two attributes are mutually exclusive on one loop.
+///
+/// Consumption contract:
+/// - "full" / `pto.unroll_factor`: `pto-unroll-loops` tries to unroll the
+///   loop natively; loops it cannot unroll keep the attribute and are
+///   degraded to LLVM loop metadata by `pto-lower-loop-hints`.
+/// - "enable" / "disable": never unrolled natively; translated to
+///   `llvm.loop.unroll.enable` / `llvm.loop.unroll.disable` metadata by
+///   `pto-lower-loop-hints`.
+inline constexpr llvm::StringLiteral kUnrollAttrName = "pto.unroll";
+inline constexpr llvm::StringLiteral kUnrollEnableValue = "enable";
+inline constexpr llvm::StringLiteral kUnrollDisableValue = "disable";
+inline constexpr llvm::StringLiteral kUnrollFullValue = "full";
+inline constexpr llvm::StringLiteral kUnrollFactorAttrName =
+    "pto.unroll_factor";
+
+/// Check whether a `pto.unroll_factor` attribute value satisfies the
+/// contract: a signless i32 holding a positive factor.  The factor is read
+/// back as a signed value and forwarded into 32-bit LLVM loop metadata, so
+/// anything wider or non-positive would silently truncate (e.g. an i64
+/// 2**31 becomes count=-2**31).
+inline bool isValidUnrollFactorAttr(IntegerAttr attr) {
+  return attr && attr.getType().isSignlessInteger(32) && attr.getInt() >= 1;
+}
+
 /// Return the PTODSL logical function name when present, otherwise fall back to
 /// the current symbol name. PTODSL uses this to mark ABI-specialized helper and
 /// kernel-module symbols without relying on symbol-name parsing.

@@ -771,25 +771,64 @@ def PTOResolveBufferSelect : Pass<"pto-resolve-buffer-select", "ModuleOp"> {
   ];
 }
 
-def PTOUnrollSIMTFor : Pass<"pto-unroll-simt-for", "func::FuncOp"> {
+def PTOUnrollLoops : Pass<"pto-unroll-loops", "func::FuncOp"> {
   let summary =
-      "Unroll explicitly annotated scf.for loops in SIMT contexts";
+      "Unroll explicitly annotated scf.for loops";
   let description = [{
-    Walks functions with the `pto.simt_entry` attribute or inline
-    `pto.section.simt` regions and fully unrolls `scf.for` loops that carry the
-    `{pto.unroll = "full"}` attribute. Annotated loops outside an inline SIMT
-    section in an ordinary function are left unchanged.
+    Fully or partially unrolls `scf.for` loops that carry an explicit unroll
+    annotation, regardless of whether they are inside a SIMT context:
 
-    Only loops with constant lower bound, upper bound, and positive step are
-    unrolled.  The annotation is opt-in: loops without the attribute are
-    left unchanged regardless of trip count.
+    - `{pto.unroll = "full"}`: fully unrolled via `loopUnrollFull`.  Only
+      loops with a constant trip count are unrolled; other loops keep the
+      attribute and are degraded to the `llvm.loop.unroll.full` metadata hint
+      by `pto-lower-loop-hints`.
+    - `{pto.unroll_factor = N}`: unrolled by N via `loopUnrollByFactor`,
+      which supports dynamic upper bounds and generates an epilogue
+      (remainder) loop that threads live-out loop-carried values.  The
+      epilogue loop is annotated `{pto.unroll = "disable"}` to prevent
+      further unrolling.  Only loops with a statically known positive step
+      are unrolled; other loops keep the attribute and are degraded to the
+      `llvm.loop.unroll.count` metadata hint by `pto-lower-loop-hints`.
+    - `{pto.unroll = "enable"}` / `{pto.unroll = "disable"}`: never unrolled
+      natively; left for `pto-lower-loop-hints` to translate into LLVM loop
+      metadata.
+
+    The annotation is opt-in: loops without an attribute are left unchanged
+    regardless of trip count.
 
     Full unrolling enables subsequent canonicalize/sccp/cse to constant-fold
-    induction-variable-dependent conditionals (e.g. `scf.if i < 10`), eliminating
-    divergent branches inside SIMTVF kernels.
+    induction-variable-dependent conditionals (e.g. `scf.if i < 10`),
+    eliminating divergent branches inside SIMTVF kernels.
 
     This pass must run before `createConvertSCFToCFPass` (i.e. before LLVM
-    lowering) so that the unrolled structured control flow can be canonicalized.
+    lowering) so that the unrolled structured control flow can be
+    canonicalized.
+  }];
+  let constructor = "mlir::pto::createPTOUnrollLoopsPass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::scf::SCFDialect",
+    "mlir::pto::PTODialect",
+    "mlir::arith::ArithDialect"
+  ];
+  let options = [
+    Option<"maxFullUnrollTripCount", "max-full-unroll-trip-count", "int64_t",
+           /*default=*/"1024",
+           "Emit a warning when fully unrolling a loop whose static trip "
+           "count exceeds this threshold.  The loop is still unrolled.">,
+  ];
+}
+
+// Legacy alias for PTOUnrollLoops.  Kept so existing pipelines and tests
+// that reference "pto-unroll-simt-for" keep working; the behavior is
+// identical to "pto-unroll-loops".
+def PTOUnrollSIMTFor : Pass<"pto-unroll-simt-for", "func::FuncOp"> {
+  let summary =
+      "Alias of pto-unroll-loops kept for backward compatibility";
+  let description = [{
+    Behaves exactly like `pto-unroll-loops`.  Historically this pass only
+    unrolled `{pto.unroll = "full"}` loops inside SIMT contexts; the SIMT
+    restriction has been lifted because the annotation is always explicit.
   }];
   let constructor = "mlir::pto::createPTOUnrollSIMTForPass()";
   let dependentDialects = [
@@ -797,6 +836,50 @@ def PTOUnrollSIMTFor : Pass<"pto-unroll-simt-for", "func::FuncOp"> {
     "mlir::scf::SCFDialect",
     "mlir::pto::PTODialect",
     "mlir::arith::ArithDialect"
+  ];
+  let options = [
+    Option<"maxFullUnrollTripCount", "max-full-unroll-trip-count", "int64_t",
+           /*default=*/"1024",
+           "Emit a warning when fully unrolling a loop whose static trip "
+           "count exceeds this threshold.  The loop is still unrolled.">,
+  ];
+}
+
+def PTOLowerLoopHints : Pass<"pto-lower-loop-hints", "func::FuncOp"> {
+  let summary =
+      "Translate pto.unroll/pto.unroll_factor loop hints into LLVM loop "
+      "annotations";
+  let description = [{
+    Translates leftover loop-unroll hint attributes on `scf.for` into
+    `#llvm.loop_annotation` attributes so that the corresponding
+    `!llvm.loop` metadata (`llvm.loop.unroll.enable/disable/full/count`)
+    reaches the emitted LLVM IR:
+
+    - `{pto.unroll = "enable"}`  -> `#llvm.loop_annotation<unroll = <disable = false>>`
+    - `{pto.unroll = "disable"}` -> `#llvm.loop_annotation<unroll = <disable = true>>`
+    - `{pto.unroll = "full"}`    -> `#llvm.loop_annotation<unroll = <full = true>>`
+      (degradation: the loop could not be unrolled natively)
+    - `{pto.unroll_factor = N}`  -> `#llvm.loop_annotation<unroll = <count = N>>`
+      (degradation: the loop could not be unrolled natively)
+
+    An existing `llvm.loop_annotation` attribute on the loop is merged rather
+    than overwritten.  Unknown `pto.unroll` values, non-positive factors, or
+    both attributes on the same loop are hard errors.
+
+    The stock LLVM 19 `convert-scf-to-cf` does not propagate
+    `llvm.loop_annotation` from `scf.for` to the loop latch, so this pass also
+    lowers each annotated `scf.for` to control-flow ops itself (mirroring
+    `ForLowering`) and attaches the annotation to the latch `cf.br`.
+    Unannotated loops are left for the regular conversion pass.    This pass must run immediately before `createConvertSCFToCFPass` so that
+    no intermediate pass can drop the discardable attributes.
+  }];
+  let constructor = "mlir::pto::createPTOLowerLoopHintsPass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::scf::SCFDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::cf::ControlFlowDialect",
+    "mlir::LLVM::LLVMDialect"
   ];
 }
 

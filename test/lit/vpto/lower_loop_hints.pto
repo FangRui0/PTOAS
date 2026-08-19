@@ -1,0 +1,100 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Test pto-lower-loop-hints pass: pto.unroll / pto.unroll_factor translation
+// into LLVM loop metadata.
+//
+// RUN-LINE-1 prints the IR right after pto-lower-loop-hints: annotated loops
+// are lowered to cf.* by the pass itself (LLVM 19's convert-scf-to-cf would
+// drop the annotation), with the annotation attached to the latch cf.br under
+// the bare ODS name "loop_annotation" (the MLIR-to-LLVM-IR translation looks
+// it up via BrOp::getLoopAnnotationAttr()).
+// RUN-LINE-2 checks the final translated LLVM IR carries the corresponding
+// !llvm.loop.unroll.* metadata.
+//
+// Covers:
+//   1. pto.unroll="enable"  -> unroll = <disable = false> -> llvm.loop.unroll.enable
+//   2. pto.unroll="disable" -> unroll = <disable = true>  -> llvm.loop.unroll.disable
+//   3. pto.unroll="full" with a dynamic trip count (Pass A cannot unroll)
+//      -> degrades to llvm.loop.unroll.full
+//   4. pto.unroll_factor=8 with a dynamic step (Pass A cannot unroll)
+//      -> degrades to llvm.loop.unroll.count = 8
+
+// RUN: pto-test-opt --pto-lower-loop-hints %s 2>&1 | FileCheck %s
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto-llvm-ir %s -o - 2>&1 | FileCheck %s --check-prefix=LLVMIR
+
+// The unroll entries print as numbered aliases at the top (the enclosing
+// loop_annotation aliases reference them).
+// CHECK-DAG: #llvm.loop_unroll<disable = false>
+// CHECK-DAG: #llvm.loop_unroll<disable = true>
+// CHECK-DAG: #llvm.loop_unroll<full = true>
+// CHECK-DAG: #llvm.loop_unroll<count = 8 : i32>
+
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  // Case 1: enable.
+  // CHECK-LABEL: func.func @hint_enable
+  // CHECK-NOT:     scf.for
+  // CHECK:         cf.br {{.*}} {loop_annotation = #loop_annotation
+  // LLVMIR:        br {{.*}}!llvm.loop
+  // LLVMIR:        !{!"llvm.loop.unroll.enable"}
+  func.func @hint_enable(%dst: !pto.ptr<i32, ub>, %n: index) attributes {pto.kernel} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    scf.for %i = %c0 to %n step %c1 {
+      %value = arith.index_cast %i : index to i32
+      pto.store %value, %dst[%i] : !pto.ptr<i32, ub>, i32
+    } {pto.unroll = "enable"}
+    return
+  }
+
+  // Case 2: disable.
+  // CHECK-LABEL: func.func @hint_disable
+  // CHECK-NOT:     scf.for
+  // CHECK:         cf.br {{.*}} {loop_annotation = #loop_annotation
+  // LLVMIR:        !{!"llvm.loop.unroll.disable"}
+  func.func @hint_disable(%dst: !pto.ptr<i32, ub>, %n: index) attributes {pto.kernel} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    scf.for %i = %c0 to %n step %c1 {
+      %value = arith.index_cast %i : index to i32
+      pto.store %value, %dst[%i] : !pto.ptr<i32, ub>, i32
+    } {pto.unroll = "disable"}
+    return
+  }
+
+  // Case 3: "full" that could not be unrolled natively (dynamic trip count)
+  // degrades to the llvm.loop.unroll.full metadata hint.
+  // CHECK-LABEL: func.func @hint_full_degraded
+  // CHECK-NOT:     scf.for
+  // CHECK:         cf.br {{.*}} {loop_annotation = #loop_annotation
+  // LLVMIR:        !{!"llvm.loop.unroll.full"}
+  func.func @hint_full_degraded(%dst: !pto.ptr<i32, ub>, %n: index) attributes {pto.kernel} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    scf.for %i = %c0 to %n step %c1 {
+      %value = arith.index_cast %i : index to i32
+      pto.store %value, %dst[%i] : !pto.ptr<i32, ub>, i32
+    } {pto.unroll = "full"}
+    return
+  }
+
+  // Case 4: factor that could not be unrolled natively (dynamic step)
+  // degrades to the llvm.loop.unroll.count metadata hint.
+  // CHECK-LABEL: func.func @hint_factor_degraded
+  // CHECK-NOT:     scf.for
+  // CHECK:         cf.br {{.*}} {loop_annotation = #loop_annotation
+  // LLVMIR:        !{!"llvm.loop.unroll.count", i32 8}
+  func.func @hint_factor_degraded(%dst: !pto.ptr<i32, ub>, %n: index, %s: index) attributes {pto.kernel} {
+    %c0 = arith.constant 0 : index
+    scf.for %i = %c0 to %n step %s {
+      %value = arith.index_cast %i : index to i32
+      pto.store %value, %dst[%i] : !pto.ptr<i32, ub>, i32
+    } {pto.unroll_factor = 8 : i32}
+    return
+  }
+}

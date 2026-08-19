@@ -11872,6 +11872,10 @@ static LogicalResult runPipeline(ModuleOp module, llvm::raw_ostream &diagOS,
   kernelModulePM.addPass(
       std::make_unique<NormalizeFuncSignaturesForLLVMLoweringPass>());
   kernelModulePM.addPass(arith::createArithExpandOpsPass());
+  // Translate leftover pto.unroll / pto.unroll_factor loop hints into
+  // llvm.loop_annotation attributes immediately before scf.for is
+  // lowered, so the loop metadata reaches the emitted LLVM IR.
+  kernelModulePM.addNestedPass<func::FuncOp>(pto::createPTOLowerLoopHintsPass());
   kernelModulePM.addPass(createConvertSCFToCFPass());
   kernelModulePM.addPass(createArithToLLVMConversionPass());
   kernelModulePM.addPass(createConvertIndexToLLVMPass());
