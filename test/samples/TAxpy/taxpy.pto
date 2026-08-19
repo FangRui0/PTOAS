@@ -7,7 +7,7 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 module {
-  func.func @taxpy_tsync_a3(%src_ptr: !pto.ptr<f16>, %dst_ptr: !pto.ptr<f32>)
+  func.func @taxpy_a3(%src_ptr: !pto.ptr<f16>, %dst_ptr: !pto.ptr<f32>)
       attributes {pto.entry} {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -35,7 +35,6 @@ module {
     pto.tload ins(%dst_part : !pto.partition_tensor_view<16x16xf32>)
       outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16,
             v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    "pto.tsync"() : () -> ()
     pto.taxpy ins(%src, %scale : !pto.tile_buf<loc=vec, dtype=f16, rows=16,
                     cols=16, v_row=16, v_col=16, blayout=row_major,
                     slayout=none_box, fractal=512, pad=0>, f16)
