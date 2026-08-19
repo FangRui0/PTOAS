@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # This program is free software, you can redistribute it and/or modify it under the terms and conditions of
 # CANN Open Software License Agreement Version 2.0 (the "License").
@@ -7,11 +6,7 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-import sys
-import numpy as np
+from ir.loader import print_case
 
-golden = np.fromfile("golden_v3.bin", dtype=np.float32)
-output = np.fromfile("v3.bin", dtype=np.float32)
-if golden.shape != output.shape or not np.allclose(golden, output, atol=1e-5, rtol=1e-5):
-    sys.exit(2)
-print("[INFO] compare passed")
+if __name__ == "__main__":
+    print_case(__file__)

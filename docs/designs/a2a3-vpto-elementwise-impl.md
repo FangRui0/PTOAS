@@ -59,7 +59,7 @@
 
 ## Config Word Layouts
 
-### Binary Tile-Tile Config (VADD/VSUB/VMUL/VDIV/VMAX/VMIN/VAND/VOR)
+### Binary Tile-Tile Config (VADD/VSUB/VMUL/VDIV/VMAX/VMIN/VAND/VOR/VADDRELU)
 
 ```
  7:0   repeat
@@ -70,19 +70,6 @@
 47:40  src0 repeat stride
 55:48  src1 repeat stride
 63:56  simd flag (=1)
-```
-
-### VADDRELU Config
-
-```
- 7:0   dst block stride
-15:8   src0 block stride
-23:16  src1 block stride
-31:24  dst repeat stride
-39:32  src0 repeat stride
-47:40  src1 repeat stride
-55:48  reserved (=0)
-63:56  repeat
 ```
 
 ### Unary Config (VABS/VRELU/VNOT/VEXP/VLN/VSQRT/VRSQRT)

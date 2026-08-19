@@ -6,18 +6,20 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-#ifndef __VEC_SCOPE__
-#define __VEC_SCOPE__
-#endif
-#include <stdint.h>
-#ifndef __CPU_SIM
-#include "acl/acl.h"
-#endif
+// RUN: ptoas --pto-level=level3 --pto-arch=a3 --enable-insert-sync %s -o - | FileCheck %s
 
-extern "C" __global__ [aicore] void taddrelu_a3_kernel(
-    __gm__ float *src0, __gm__ float *src1, __gm__ float *dst);
-
-void LaunchTaddreluA3(float *src0, float *src1, float *dst, void *stream) {
-  taddrelu_a3_kernel<<<1, nullptr, stream>>>(
-      (__gm__ float *)src0, (__gm__ float *)src1, (__gm__ float *)dst);
+module {
+  func.func private @taddrelu_a3(%src0: !pto.tile_buf<vec, 1x16xf32>,
+      %src1: !pto.tile_buf<vec, 1x16xf32>,
+      %dst: !pto.tile_buf<vec, 1x16xf32>) {
+    pto.taddrelu ins(%src0, %src1 : !pto.tile_buf<vec, 1x16xf32>,
+      !pto.tile_buf<vec, 1x16xf32>)
+      outs(%dst : !pto.tile_buf<vec, 1x16xf32>)
+    return
+  }
 }
+
+// CHECK-LABEL: taddrelu_a3(
+// CHECK: TADD([[DST:v[0-9]+]], [[SRC0:v[0-9]+]], [[SRC1:v[0-9]+]]);
+// CHECK-NEXT: pipe_barrier(PIPE_V);
+// CHECK-NEXT: TRELU([[DST]], [[DST]]);
