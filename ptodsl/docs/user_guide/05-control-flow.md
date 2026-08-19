@@ -406,6 +406,12 @@ initial value before the loop. Loop-local temporaries that are written before
 they are read inside every iteration (e.g. `col = base + index`) are not
 loop-carried and need no initial value outside the loop.
 
+For a value assigned only on some iterations but used after the loop, the
+default path preserves the entering value and therefore requires that value to
+be definitely bound before the `while`. Otherwise AST rewrite reports the
+value as `last-iteration-only`; initialize it before the loop or use explicit
+loop state.
+
 Because loop-local temporaries stay iteration-local, an `else:` clause of a
 runtime `while` must not read them: the clause runs after the rewrite's
 single traced execution, so it would observe the trace-time value instead of
@@ -448,8 +454,10 @@ def ast_rewrite_static_loop_kernel():
         pto.pipe_barrier(pto.Pipe.ALL)
 ```
 
-`pto.static_range(...)` keeps Python `for` semantics. The loop target remains
-available after the loop:
+`pto.static_range(...)` keeps Python `for` semantics. Bindings created or
+deleted by the unrolled body and `else` clause remain in effect after tracing.
+The loop target remains available after a non-empty loop unless the body
+deletes it:
 
 <!-- ptodsl-doc-test: {"mode":"compile","symbol":"ast_rewrite_static_loop_target_kernel","compile":{}} -->
 ```python

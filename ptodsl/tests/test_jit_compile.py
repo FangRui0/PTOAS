@@ -39,6 +39,585 @@ from ptodsl._tracing import current_session
 from ptoas.mlir.ir import InsertionPoint, Location, Module
 
 
+@pto.jit(target='a5')
+def ast_nested_partial_assign_entry_isolated_probe(cond3: pto.i1, cond1: pto.i1):
+    # Sibling branch isolation: the outer then-branch rebinds lo_bits before the
+    # inner conditional is traced, so the inner else (which never assigns lo_bits)
+    # must still fall back to the value captured before the outer if.
+    lo_bits = pto.const(0, dtype=pto.ui32)
+    hi_bits = pto.const(0x40000000, dtype=pto.ui32)
+
+    q1_bits = pto.const(0x10000000, dtype=pto.ui32)
+    q2_bits = pto.const(0x20000000, dtype=pto.ui32)
+
+    if cond3:
+        lo_bits = q2_bits
+    else:
+        if cond1:
+            lo_bits = q1_bits
+            hi_bits = q2_bits
+        # else: lo_bits/hi_bits must remain at their pre-if values.
+
+    _ = hi_bits
+    _ = lo_bits
+
+
+@pto.jit(target='a5')
+def ast_nested_partial_assign_loop_carry_probe(
+    rows: pto.i32,
+    cond3: pto.i1,
+    cond2: pto.i1,
+    cond1: pto.i1,
+):
+    # Issue 1252 structure: three nested conditionals inside a runtime loop,
+    # where the innermost else only assigns hi_bits. On that path lo_bits must
+    # remain the loop-carried value from the previous iteration.
+    lo_bits = pto.const(0, dtype=pto.ui32)
+    hi_bits = pto.const(0x40000000, dtype=pto.ui32)
+
+    q1_bits = pto.const(0x10000000, dtype=pto.ui32)
+    q2_bits = pto.const(0x20000000, dtype=pto.ui32)
+    q3_bits = pto.const(0x30000000, dtype=pto.ui32)
+
+    for _ in range(rows):
+        if cond3:
+            lo_bits = q3_bits
+        else:
+            if cond2:
+                lo_bits = q2_bits
+                hi_bits = q3_bits
+            else:
+                if cond1:
+                    lo_bits = q1_bits
+                    hi_bits = q2_bits
+                else:
+                    hi_bits = q1_bits  # lo_bits must remain unchanged
+
+    _ = hi_bits
+    _ = lo_bits
+
+
+@pto.jit(target='a5')
+def ast_nested_partial_assign_slot_entry_isolated_probe(cond3: pto.i1, cond1: pto.i1):
+    # Static-subscript analogue of the entry isolation probe: the slot value is
+    # rewritten into a shared Python temporary, so the same sibling pollution
+    # would leak unless the temporary is restored at each branch entry.
+    zero = pto.const(0, dtype=pto.ui32)
+    q1_bits = pto.const(0x10000000, dtype=pto.ui32)
+    q2_bits = pto.const(0x20000000, dtype=pto.ui32)
+
+    values = [zero]
+    if cond3:
+        values[0] = q2_bits
+    else:
+        if cond1:
+            values[0] = q1_bits
+        # else: values[0] must remain at its pre-if value.
+
+    out = values[0]
+    _ = out
+
+
+@pto.jit(target='a5')
+def ast_unbound_partial_liveout_loop_probe(rows: pto.i32, cond: pto.i1):
+    # value is never bound before the loop, so it must stay on the
+    # last-iteration-only diagnostics path instead of becoming an implicit carry.
+    for _ in range(rows):
+        if cond:
+            value = 0
+    _ = value
+
+
+@pto.jit(target='a5')
+def ast_unbound_partial_liveout_controlled_loop_probe(rows: pto.i32, cond: pto.i1, stop: pto.i1):
+    # break/continue/for-else loops must apply the same definite-binding gate.
+    one = pto.const(1, dtype=pto.i32)
+    for _ in range(rows):
+        if cond:
+            value = one
+        if stop:
+            break
+    _ = value
+
+
+@pto.jit(target='a5')
+def ast_param_bound_partial_liveout_loop_probe(rows: pto.i32, cond: pto.i1, value: pto.i32):
+    one = pto.const(1, dtype=pto.i32)
+    for _ in range(rows):
+        if cond:
+            value = one
+    _ = value
+
+
+@pto.jit(target='a5')
+def ast_outer_bound_partial_liveout_loop_probe(rows: pto.i32, cond: pto.i1, outer: pto.i1):
+    one = pto.const(1, dtype=pto.i32)
+    zero = pto.const(0, dtype=pto.i32)
+    value = zero
+    if outer:
+        for _ in range(rows):
+            if cond:
+                value = one
+    _ = value
+
+
+@pto.jit(target='a5')
+def ast_both_branch_bound_partial_liveout_loop_probe(rows: pto.i32, cond: pto.i1, choose: pto.i1):
+    one = pto.const(1, dtype=pto.i32)
+    zero = pto.const(0, dtype=pto.i32)
+    if choose:
+        value = zero
+    else:
+        value = one
+    for _ in range(rows):
+        if cond:
+            value = one
+    _ = value
+
+
+@pto.jit(target='a5')
+def ast_slot_partial_assign_loop_carry_probe(rows: pto.i32, cond: pto.i1):
+    zero = pto.const(0, dtype=pto.ui32)
+    one = pto.const(1, dtype=pto.ui32)
+    values = [zero]
+    for _ in range(rows):
+        if cond:
+            values[0] = one
+    _ = values[0]
+
+
+@pto.jit(target='a5', backend='vpto', mode='explicit')
+def ast_with_entry_bound_partial_liveout_probe(rows: pto.i32, cond: pto.i1, value: pto.i32):
+    # A function parameter must remain definitely bound inside a vecscope body.
+    one = pto.const(1, dtype=pto.i32)
+    with pto.vecscope():
+        for _ in range(rows):
+            if cond:
+                value = one
+        _ = value
+    _ = value
+
+
+@pto.jit(target='a5', backend='vpto', mode='explicit')
+def ast_with_body_bound_partial_liveout_probe(rows: pto.i32, cond: pto.i1):
+    # A name bound inside the with body is definite after the with statement.
+    one = pto.const(1, dtype=pto.i32)
+    zero = pto.const(0, dtype=pto.i32)
+    with pto.vecscope():
+        value = zero
+    for _ in range(rows):
+        if cond:
+            value = one
+    _ = value
+
+
+@pto.jit(target='a5', backend='vpto', mode='explicit')
+def ast_with_as_bound_partial_liveout_probe(rows: pto.i32, cols: pto.i32, cond: pto.i1):
+    # The with-as target is definitely bound inside the body; an inner runtime
+    # loop that partially rebinds it must see it as a valid partial carry.
+    with pto.for_(0, rows, step=1) as value:
+        for replacement in range(cols):
+            if cond:
+                value = replacement
+        pto.wait_flag(pto.Pipe.V, pto.Pipe.MTE2, event_id=value)
+
+
+@pto.jit(target='a5', backend='vpto', mode='explicit')
+def ast_for_iv_bound_partial_liveout_probe(rows: pto.i32, cols: pto.i32, cond: pto.i1):
+    # The runtime for induction variable is bound at the top of its own body;
+    # an inner loop that partially rebinds it must see it as a valid carry.
+    for value in range(rows):
+        for replacement in range(cols):
+            if cond:
+                value = replacement
+        pto.wait_flag(pto.Pipe.V, pto.Pipe.MTE2, event_id=value)
+
+
+@pto.jit(target='a5', backend='vpto', mode='explicit')
+def ast_for_iv_augassign_probe(rows: pto.i32):
+    # Augmenting the induction variable must not infer it as a loop carry (it
+    # is re-bound at the top of every iteration) and must not read it before
+    # the loop is entered.
+    for value in range(rows):
+        value += 1
+        pto.wait_flag(pto.Pipe.V, pto.Pipe.MTE2, event_id=value)
+
+
+@pto.jit(target='a5', backend='vpto', mode='explicit')
+def ast_static_range_empty_orelse_partial_probe(rows: pto.i32, cond: pto.i1):
+    # An empty static range jumps straight to the else clause with the target
+    # unbound; the inner partial live-out must keep the explicit diagnostics.
+    for value in pto.static_range(0):
+        pass
+    else:
+        for replacement in range(rows):
+            if cond:
+                value = replacement
+        pto.wait_flag(pto.Pipe.V, pto.Pipe.MTE2, event_id=value)
+
+
+@pto.jit(target='a5', backend='vpto', mode='explicit')
+def ast_static_range_subscript_target_probe(rows: pto.i32):
+    # Non-Name static_range targets keep their trace-time semantics and must
+    # not crash the rewrite with an AttributeError.
+    zero = pto.const(0, dtype=pto.i32)
+    values = [zero]
+    for values[0] in pto.static_range(1):
+        pto.wait_flag(pto.Pipe.V, pto.Pipe.MTE2, event_id=values[0])
+    _ = values[0]
+
+
+def ast_static_range_nonempty_definite_gate_fn(rows, cond):
+    # Source-only helper for the rewrite-level gate assertion: the static_range
+    # target must be credited as definitely bound once it has run, so the later
+    # partial loop can carry the value without being rejected.
+    for value in pto.static_range(1):
+        pass
+    for replacement in range(rows):
+        if cond:
+            value = replacement
+    _ = value
+
+
+def ast_static_range_body_init_definite_gate_fn(rows, cond, seed):
+    for _ in pto.static_range(1):
+        value = seed
+    for replacement in range(rows):
+        if cond:
+            value = replacement
+    _ = value
+
+
+def ast_static_range_delete_target_gate_fn(rows, cond, seed):
+    value = seed
+    for value in pto.static_range(1):
+        del value
+    for replacement in range(rows):
+        if cond:
+            value = replacement
+    _ = value
+
+
+def ast_static_range_empty_orelse_init_gate_fn(rows, cond, seed):
+    for _ in pto.static_range(0):
+        pass
+    else:
+        value = seed
+    for replacement in range(rows):
+        if cond:
+            value = replacement
+    _ = value
+
+
+def ast_static_range_orelse_delete_gate_fn(rows, cond, seed):
+    value = seed
+    for _ in pto.static_range(1):
+        pass
+    else:
+        del value
+    for replacement in range(rows):
+        if cond:
+            value = replacement
+    _ = value
+
+
+@pto.jit(target='a5', backend='vpto', mode='explicit')
+def ast_del_then_partial_liveout_probe(rows: pto.i32, cond: pto.i1):
+    zero = pto.const(0, dtype=pto.i32)
+    one = pto.const(1, dtype=pto.i32)
+    value = zero
+    del value
+    for _ in range(rows):
+        if cond:
+            value = one
+    _ = value
+
+
+def _all_operations(operation):
+    yield operation
+    for region in operation.regions:
+        for block in region.blocks:
+            for nested in block.operations:
+                yield from _all_operations(nested)
+
+
+def _ui32_const_results(operation, value):
+    # The frontend materializes ui32 scalars as i32 constants wrapped in
+    # builtin.unrealized_conversion_cast ops, so match constants by value only.
+    results = []
+    for op in _all_operations(operation):
+        if op.operation.name == 'arith.constant':
+            attr = op.attributes['value']
+            if attr.value == value:
+                results.append(op.results[0])
+    return results
+
+
+def _cast_result_of_const(const_result):
+    # Resolve the ui32 value of a constant through its feeding conversion cast.
+    for use in const_result.uses:
+        user = getattr(use, 'owner', None)
+        if user is not None and user.operation.name == 'builtin.unrealized_conversion_cast':
+            return user.results[0]
+    return const_result
+
+
+def _same_ssa(a, b):
+    try:
+        return a == b
+    except Exception:
+        return str(a) == str(b)
+
+
+def _scf_if_count(block):
+    if_ops = [op for op in block.operations if op.operation.name == 'scf.if']
+    if not if_ops:
+        return 0
+    return 1 + _scf_if_count(if_ops[0].regions[1].blocks[0])
+
+
+def _innermost_else_yield_operands(block):
+    if_ops = [op for op in block.operations if op.operation.name == 'scf.if']
+    if not if_ops:
+        for op in block.operations:
+            if op.operation.name == 'scf.yield':
+                return list(op.operands)
+        return []
+    return _innermost_else_yield_operands(if_ops[0].regions[1].blocks[0])
+
+
+def _find_op(region, name):
+    for block in region.blocks:
+        for op in block.operations:
+            if op.operation.name == name:
+                return op
+    return None
+
+
+def _find_op_anywhere(operation, name):
+    for op in _all_operations(operation):
+        if op.operation.name == name:
+            return op
+    return None
+
+
+def _assert_ast_rewrite_nested_partial_assign_ssa_identity():
+    # Focused probe 1: sibling-tracing isolation without a loop.
+    isolated_text = ast_nested_partial_assign_entry_isolated_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        isolated_text,
+        'AST-rewritten nested partial assignment entry isolation',
+    )
+    with make_context() as ctx:
+        isolated_module = Module.parse(isolated_text, ctx)
+        isolated_func = _find_op_anywhere(isolated_module.operation, 'func.func')
+        expect(isolated_func is not None, 'entry isolation probe should contain a func.func op')
+        func_block = isolated_func.regions[0].blocks[0]
+        zero_consts = _ui32_const_results(isolated_module.operation, 0)
+        expect(len(zero_consts) >= 1, 'entry isolation probe should materialize the pre-if 0 constant')
+        zero_value = _cast_result_of_const(zero_consts[0])
+        q2_consts = _ui32_const_results(isolated_module.operation, 0x20000000)
+        expect(len(q2_consts) >= 1, 'entry isolation probe should materialize the q2 constant')
+        expect(
+            _scf_if_count(func_block) == 2,
+            'entry isolation probe should contain two nested scf.if ops',
+        )
+        yield_operands = _innermost_else_yield_operands(func_block)
+        expect(len(yield_operands) == 2, 'innermost else should yield two values')
+        expect(
+            _same_ssa(yield_operands[1], zero_value),
+            'innermost else must yield the pre-if lo_bits value, not the sibling branch rebinding',
+        )
+        q2_cast = [_cast_result_of_const(q) for q in q2_consts]
+        expect(
+            not any(_same_ssa(yield_operands[1], q) for q in q2_cast),
+            'innermost else must not yield the sibling branch q2 value',
+        )
+
+    # Focused probe 2: the issue-1252 runtime loop structure.
+    loop_text = ast_nested_partial_assign_loop_carry_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        loop_text,
+        'AST-rewritten issue-1252 nested partial assignment loop',
+    )
+    with make_context() as ctx:
+        loop_module = Module.parse(loop_text, ctx)
+        loop_func = _find_op_anywhere(loop_module.operation, 'func.func')
+        expect(loop_func is not None, 'issue-1252 probe should contain a func.func op')
+        for_op = _find_op(loop_func.regions[0], 'scf.for')
+        expect(for_op is not None, 'issue-1252 probe should lower to a runtime scf.for')
+        loop_body = for_op.regions[0].blocks[0]
+        arguments = list(loop_body.arguments)
+        expect(
+            len(arguments) == 3,
+            'scf.for should carry the induction variable plus two ui32 iter_args',
+        )
+        expect(
+            str(arguments[1].type) == 'ui32' and str(arguments[2].type) == 'ui32',
+            'both loop iter_args should be ui32',
+        )
+        expect(
+            _scf_if_count(loop_body) == 3,
+            'issue-1252 probe should contain three nested scf.if ops',
+        )
+        yield_operands = _innermost_else_yield_operands(loop_body)
+        expect(len(yield_operands) == 2, 'innermost else should yield two values')
+        expect(
+            _same_ssa(yield_operands[1], arguments[2]),
+            'innermost else must yield the lo_bits loop-carried block argument',
+        )
+        q2_consts = _ui32_const_results(loop_module.operation, 0x20000000)
+        q2_cast = [_cast_result_of_const(q) for q in q2_consts]
+        expect(
+            not any(_same_ssa(yield_operands[1], q) for q in q2_cast),
+            'innermost else must not yield the sibling branch q2 constant',
+        )
+        init_operands = list(for_op.operands)[3:]
+        expect(len(init_operands) == 2, 'scf.for should have exactly two iter_arg init operands')
+        hi_consts = _ui32_const_results(loop_module.operation, 0x40000000)
+        lo_consts = _ui32_const_results(loop_module.operation, 0)
+        expect(
+            hi_consts and _same_ssa(init_operands[0], _cast_result_of_const(hi_consts[0])),
+            'first iter_arg should be hi_bits initialized to 0x40000000',
+        )
+        expect(
+            lo_consts and _same_ssa(init_operands[1], _cast_result_of_const(lo_consts[0])),
+            'second iter_arg should be lo_bits initialized to 0',
+        )
+
+    # Focused probe 3: static-subscript partial assignment keeps the entry slot.
+    slot_text = ast_nested_partial_assign_slot_entry_isolated_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        slot_text,
+        'AST-rewritten nested static-subscript partial assignment isolation',
+    )
+    with make_context() as ctx:
+        slot_module = Module.parse(slot_text, ctx)
+        slot_func = _find_op_anywhere(slot_module.operation, 'func.func')
+        expect(slot_func is not None, 'slot isolation probe should contain a func.func op')
+        slot_block = slot_func.regions[0].blocks[0]
+        zero_consts = _ui32_const_results(slot_module.operation, 0)
+        expect(len(zero_consts) >= 1, 'slot isolation probe should materialize the entry 0 constant')
+        zero_value = _cast_result_of_const(zero_consts[0])
+        q2_consts = _ui32_const_results(slot_module.operation, 0x20000000)
+        q2_cast = [_cast_result_of_const(q) for q in q2_consts]
+        expect(
+            _scf_if_count(slot_block) == 2,
+            'slot isolation probe should contain two nested scf.if ops',
+        )
+        slot_yield = _innermost_else_yield_operands(slot_block)
+        expect(len(slot_yield) == 1, 'innermost else of the slot probe should yield one value')
+        expect(
+            _same_ssa(slot_yield[0], zero_value),
+            'innermost else of the slot probe must yield the entry slot value',
+        )
+        expect(
+            not any(_same_ssa(slot_yield[0], q) for q in q2_cast),
+            'innermost else of the slot probe must not yield the sibling branch q2 value',
+        )
+
+    # Augmenting the induction variable must not invent a carry for it.
+    iv_augassign_text = ast_for_iv_augassign_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(iv_augassign_text, 'AST-rewritten induction-variable augment-assignment')
+    expect(
+        'iter_args(' not in iv_augassign_text,
+        'augmenting the induction variable should not infer a spurious loop carry',
+    )
+
+    # Non-Name static_range targets keep trace-time semantics (no scf.for).
+    subscript_target_text = ast_static_range_subscript_target_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(subscript_target_text, 'AST-rewritten static-range subscript target')
+
+    # A known non-empty static_range definitely binds its target afterwards, so
+    # the rewrite gate must credit it for a later implicit loop carry instead of
+    # rejecting it as last-iteration-only (verified at the rewrite level).
+    import ast as _ast
+    import inspect as _inspect
+    import textwrap as _textwrap
+    from ptodsl._ast_rewrite import _ControlFlowRewriter as _CFR
+    def rewrite_gate(fn):
+        gate_src = _textwrap.dedent(_inspect.getsource(fn))
+        gate_tree = _ast.parse(gate_src)
+        gate_fn = next(
+            n
+            for n in _ast.walk(gate_tree)
+            if isinstance(n, _ast.FunctionDef) and n.name == fn.__name__
+        )
+        gate_rewriter = _CFR(static_env={})
+        gate_body = gate_rewriter.rewrite_block(
+            gate_fn.body,
+            live_after={'value'},
+            bound_on_entry={arg.arg for arg in gate_fn.args.args},
+        )
+        gate_module = _ast.Module(body=gate_body, type_ignores=[])
+        _ast.fix_missing_locations(gate_module)
+        return _ast.unparse(gate_module)
+
+    gate_text = rewrite_gate(ast_static_range_nonempty_definite_gate_fn)
+    expect(
+        'carry(value=value)' in gate_text,
+        'known non-empty static_range target should be credited as bound for an implicit carry',
+    )
+    body_init_text = rewrite_gate(ast_static_range_body_init_definite_gate_fn)
+    expect(
+        'carry(value=value)' in body_init_text,
+        'known non-empty static_range body initialization should make an implicit carry safe',
+    )
+    empty_orelse_text = rewrite_gate(ast_static_range_empty_orelse_init_gate_fn)
+    expect(
+        'carry(value=value)' in empty_orelse_text,
+        'known empty static_range else initialization should make an implicit carry safe',
+    )
+    expect_raises(
+        PTODSLAstRewriteError,
+        lambda: rewrite_gate(ast_static_range_delete_target_gate_fn),
+        'last-iteration-only',
+    )
+    expect_raises(
+        PTODSLAstRewriteError,
+        lambda: rewrite_gate(ast_static_range_orelse_delete_gate_fn),
+        'last-iteration-only',
+    )
+    del _ast, _inspect, _textwrap, _CFR
+
+    # Unbound partial live-outs must stay on the explicit diagnostics path.
+    expect_raises(
+        PTODSLAstRewriteError,
+        lambda: ast_unbound_partial_liveout_loop_probe.compile(),
+        'last-iteration-only',
+    )
+    expect_raises(
+        PTODSLAstRewriteError,
+        lambda: ast_unbound_partial_liveout_controlled_loop_probe.compile(),
+        'last-iteration-only',
+    )
+    expect_raises(
+        PTODSLAstRewriteError,
+        lambda: ast_static_range_empty_orelse_partial_probe.compile(),
+        'last-iteration-only',
+    )
+    expect_raises(
+        PTODSLAstRewriteError,
+        lambda: ast_del_then_partial_liveout_probe.compile(),
+        'last-iteration-only',
+    )
+
+    # Definitely-bound partial live-outs (parameters, outer blocks, both branches
+    # of a prior conditional, and static subscript slots) are loop carries.
+    for probe_text, label in (
+        (ast_param_bound_partial_liveout_loop_probe.compile().mlir_text(), 'parameter-bound partial live-out'),
+        (ast_outer_bound_partial_liveout_loop_probe.compile().mlir_text(), 'outer-block-bound partial live-out'),
+        (ast_both_branch_bound_partial_liveout_loop_probe.compile().mlir_text(), 'both-branches-bound partial live-out'),
+        (ast_slot_partial_assign_loop_carry_probe.compile().mlir_text(), 'loop static-subscript partial assignment'),
+        (ast_with_entry_bound_partial_liveout_probe.compile().mlir_text(), 'with-entry-bound partial live-out'),
+        (ast_with_body_bound_partial_liveout_probe.compile().mlir_text(), 'with-body-bound partial live-out'),
+        (ast_with_as_bound_partial_liveout_probe.compile().mlir_text(), 'with-as-bound partial live-out'),
+        (ast_for_iv_bound_partial_liveout_probe.compile().mlir_text(), 'for-induction-variable-bound partial live-out'),
+    ):
+        expect_parse_roundtrip_and_verify(probe_text, 'AST-rewritten ' + label)
+        expect('iter_args(' in probe_text, label + ' should lower through scf.for iter_args')
+
+
 def expect(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
@@ -7975,6 +8554,9 @@ def main() -> None:
 
     print("ptodsl_jit_compile: PASS")
     os._exit(0)
+
+
+_assert_ast_rewrite_nested_partial_assign_ssa_identity()
 
 
 if __name__ == "__main__":

@@ -78,7 +78,16 @@ def rewrite_jit_function(
             section_uninitialized_aliases=section_rewriter.section_uninitialized_aliases,
             reject_bare_returns=reject_bare_returns,
         )
-        function_def.body = rewriter.rewrite_block(function_def.body, live_after=set())
+        entry_params = set()
+        for _arg in (
+            list(function_def.args.posonlyargs)
+            + list(function_def.args.args)
+            + list(function_def.args.kwonlyargs)
+        ):
+            entry_params.add(_arg.arg)
+        function_def.body = rewriter.rewrite_block(
+            function_def.body, live_after=set(), bound_on_entry=entry_params
+        )
     function_def.lineno = function_first_lineno
     tree = ast.Module(body=[function_def], type_ignores=[])
     ast.fix_missing_locations(tree)
@@ -625,8 +634,8 @@ def _slot_live_before_stmt(stmt, live_after, static_env, static_iters) -> set[_S
     return (set(live) - info.stores) | info.loads
 
 
-def _read_before_assignment_slots(stmts, static_env, static_iters=None) -> set[_SubscriptSlot]:
-    return _slot_live_before_block(stmts, set(), static_env, static_iters)
+def _read_before_assignment_slots(stmts, static_env, static_iters=None, live_after=None) -> set[_SubscriptSlot]:
+    return _slot_live_before_block(stmts, set(live_after or ()), static_env, static_iters)
 
 
 def _kill_slots_for_assigned_bases(slots, stmt) -> set[_SubscriptSlot]:
@@ -668,6 +677,131 @@ def _simple_name_targets(target) -> set[str]:
             names.update(_simple_name_targets(elt))
         return names
     return set()
+
+
+def _definite_stores(stmt) -> set[str]:
+    """Names definitely (unconditionally) bound by one statement.
+
+    Conservative on purpose: names assigned inside conditionals or loop bodies
+    are not treated as definite, so implicit loop carries are only inferred for
+    names that are provably bound before the loop statement.
+    """
+    if isinstance(stmt, ast.Assign):
+        names = set()
+        for target in stmt.targets:
+            names.update(_simple_name_targets(target))
+        return names
+    if isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+        return _simple_name_targets(stmt.target)
+    return set()
+
+
+def _deleted_names(node) -> set[str]:
+    """Names whose local bindings may be deleted while executing node."""
+    deleted = set()
+
+    class Visitor(ast.NodeVisitor):
+        def visit_Delete(self, delete):
+            for target in delete.targets:
+                deleted.update(_simple_name_targets(target))
+
+        def visit_FunctionDef(self, function):
+            return
+
+        def visit_AsyncFunctionDef(self, function):
+            return
+
+        def visit_Lambda(self, function):
+            return
+
+        def visit_ClassDef(self, class_def):
+            return
+
+    visitor = Visitor()
+    if isinstance(node, list):
+        for item in node:
+            visitor.visit(item)
+    else:
+        visitor.visit(node)
+    return deleted
+
+
+def _definite_out_stmt(stmt, bound_in, static_env=None, static_iters=None) -> set[str]:
+    """Definite-assignment dataflow through one statement (not a block)."""
+    if isinstance(stmt, ast.Assign) or (isinstance(stmt, ast.AnnAssign) and stmt.value is not None):
+        return set(bound_in) | _definite_stores(stmt)
+    if isinstance(stmt, ast.Delete):
+        out = set(bound_in)
+        for target in stmt.targets:
+            out -= _simple_name_targets(target)
+        return out
+    if isinstance(stmt, ast.If):
+        return _definite_out_block(stmt.body, bound_in, static_env, static_iters) & _definite_out_block(
+            stmt.orelse, bound_in, static_env, static_iters
+        )
+    if isinstance(stmt, ast.With):
+        out = set(bound_in)
+        for item in stmt.items:
+            if item.optional_vars is not None:
+                out |= _simple_name_targets(item.optional_vars)
+        return _definite_out_block(stmt.body, out, static_env, static_iters)
+    if isinstance(stmt, ast.For):
+        # Runtime loop bodies or targets are not definite because the loop may
+        # not run. A known static_range, however, executes at trace time, so its
+        # body and normal-completion else clause update bindings exactly like a
+        # Python for-loop.
+        if _is_pto_attr_call(stmt.iter, "static_range"):
+            values = _try_eval_static_range(stmt.iter, static_env or {}, static_iters or {})
+            if values is not None:
+                out = set(bound_in)
+                if not values:
+                    return _definite_out_block(
+                        stmt.orelse, out, static_env, static_iters
+                    )
+
+                target_names = _simple_name_targets(stmt.target)
+                control = _loop_control_flags(stmt.body)
+                if control["break"] or control["continue"]:
+                    # Do not credit body assignments that a transfer may skip.
+                    # The target is rebound before every entered iteration, but
+                    # a body deletion can still leave it (or another incoming
+                    # name) unbound on the final/breaking path.
+                    out |= target_names
+                    out -= _deleted_names(stmt.body)
+                    if control["break"]:
+                        # The else clause is optional when a break is possible:
+                        # keep no additions from it, and remove bindings it may
+                        # delete on the normal-completion path.
+                        return out - _deleted_names(stmt.orelse)
+                    return _definite_out_block(
+                        stmt.orelse, out, static_env, static_iters
+                    )
+
+                loop_static_iters = dict(static_iters or {})
+                for value in values:
+                    iteration_static_iters = dict(loop_static_iters)
+                    if isinstance(stmt.target, ast.Name):
+                        iteration_static_iters[stmt.target.id] = (value,)
+                    out |= target_names
+                    out = _definite_out_block(
+                        stmt.body, out, static_env, iteration_static_iters
+                    )
+                if isinstance(stmt.target, ast.Name):
+                    loop_static_iters[stmt.target.id] = (values[-1],)
+                return _definite_out_block(
+                    stmt.orelse, out, static_env, loop_static_iters
+                )
+        return set(bound_in)
+    # Everything else does not definitely bind names: loop bodies may not run
+    # and the loop variable is unbound for empty ranges.
+    return set(bound_in)
+
+
+def _definite_out_block(stmts, bound_in, static_env=None, static_iters=None) -> set[str]:
+    out = set(bound_in)
+    for stmt in stmts:
+        out = _definite_out_stmt(stmt, out, static_env, static_iters)
+    return out
 
 
 def _resolve_subscript_slots(node, static_env, static_iters, *, require_static) -> set[_SubscriptSlot]:
@@ -913,8 +1047,14 @@ def _live_before_stmt(stmt, live_after) -> set[str]:
     return (set(live_after) - info.stores) | info.loads
 
 
-def _read_before_assignment_names(stmts):
-    return _live_before_block(stmts, set())
+def _read_before_assignment_names(stmts, live_after=None):
+    """Return the names read (or implicitly relied on) before assignment.
+
+    live_after seeds backward liveness. Without a seed only explicit reads are
+    visible; with a seed, the partial-assignment default paths of nested
+    conditionals surface their implicit reads of the entering value.
+    """
+    return _live_before_block(stmts, set(live_after or ()))
 
 
 def _is_pto_attr_call(node, name: str) -> bool:
@@ -1243,11 +1383,20 @@ class _ControlFlowRewriter:
             )
         return _name(name)
 
-    def rewrite_block(self, stmts, *, live_after, live_after_slots=None, allow_loop_control=False, static_iters=None):
+    def rewrite_block(self, stmts, *, live_after, live_after_slots=None, allow_loop_control=False, static_iters=None, bound_on_entry=None):
         rewritten_reversed = []
         live = set(live_after)
         live_slots = set(live_after_slots or ())
         static_iters = dict(static_iters or {})
+        # Names definitely bound on entry to this block, plus the per-position
+        # definite-in used to avoid turning unbound partial live-outs into loop
+        # carries. Nested blocks inherit the definite-in of their enclosing
+        # statement; the root block starts from the function parameters.
+        definite_in = set(bound_on_entry or ())
+        bound_before_by_stmt = {}
+        for preceding in stmts:
+            bound_before_by_stmt[id(preceding)] = set(definite_in)
+            definite_in = _definite_out_stmt(preceding, definite_in, self._static_env, static_iters)
         control = self._loop_control_stack[-1] if self._loop_control_stack else None
         tail_assigned = set()
         tail_flags = {"break": False, "continue": False}
@@ -1265,6 +1414,7 @@ class _ControlFlowRewriter:
                 live_after_slots=live_slots,
                 allow_loop_control=allow_loop_control,
                 static_iters=static_iters,
+                bound_before=bound_before_by_stmt.get(id(stmt), set()),
             )
             # When this statement can stop the current iteration (top-level
             # break/continue, or a dynamic if containing one), the already-
@@ -1339,7 +1489,7 @@ class _ControlFlowRewriter:
             assigned_names=set(tail_assigned) | flag_names,
         )
 
-    def _rewrite_loop_body(self, stmts, *, live_after, live_after_slots=None, static_iters=None, control=None):
+    def _rewrite_loop_body(self, stmts, *, live_after, live_after_slots=None, static_iters=None, control=None, bound_on_entry=None):
         """Rewrite loop statements while keeping each authored statement atomic.
 
         A rewritten dynamic ``if`` may contain several setup/branch/merge
@@ -1353,6 +1503,11 @@ class _ControlFlowRewriter:
             live |= {control["active"], control["did_break"]}
         live_slots = set(live_after_slots or ())
         static_iters = dict(static_iters or {})
+        definite_in = set(bound_on_entry or ())
+        bound_before_by_stmt = {}
+        for preceding in stmts:
+            bound_before_by_stmt[id(preceding)] = set(definite_in)
+            definite_in = _definite_out_stmt(preceding, definite_in, self._static_env, static_iters)
         tail_assigned = set()
         tail_flags = {"break": False, "continue": False}
         for stmt in reversed(stmts):
@@ -1369,6 +1524,7 @@ class _ControlFlowRewriter:
                 live_after_slots=live_slots,
                 allow_loop_control=False,
                 static_iters=static_iters,
+                bound_before=bound_before_by_stmt.get(id(stmt), set()),
             )
             # Segment the already-rewritten tail on the merged active value
             # when this statement can stop the current iteration.
@@ -1393,7 +1549,7 @@ class _ControlFlowRewriter:
             live_slots = live_before_slots
         return rewritten_reversed
 
-    def rewrite_stmt(self, stmt, *, live_after, live_after_slots=None, allow_loop_control=False, static_iters=None):
+    def rewrite_stmt(self, stmt, *, live_after, live_after_slots=None, allow_loop_control=False, static_iters=None, bound_before=None):
         live_after_slots = set(live_after_slots or ())
         static_iters = dict(static_iters or {})
         if isinstance(stmt, ast.If):
@@ -1403,6 +1559,7 @@ class _ControlFlowRewriter:
                 live_after_slots=live_after_slots,
                 allow_loop_control=allow_loop_control,
                 static_iters=static_iters,
+                bound_before=bound_before,
             )
         if isinstance(stmt, ast.For):
             return self._rewrite_for(
@@ -1411,6 +1568,7 @@ class _ControlFlowRewriter:
                 live_after_slots=live_after_slots,
                 allow_loop_control=allow_loop_control,
                 static_iters=static_iters,
+                bound_before=bound_before,
             )
         if isinstance(stmt, ast.While):
             return self._rewrite_while(
@@ -1419,6 +1577,7 @@ class _ControlFlowRewriter:
                 live_after_slots=live_after_slots,
                 allow_loop_control=allow_loop_control,
                 static_iters=static_iters,
+                bound_before=bound_before,
             )
         if isinstance(stmt, (ast.Break, ast.Continue)):
             if self._loop_control_stack:
@@ -1444,25 +1603,36 @@ class _ControlFlowRewriter:
                 live_after_slots=live_after_slots,
                 allow_loop_control=allow_loop_control,
                 static_iters=static_iters,
+                bound_before=bound_before,
             )
         ]
 
-    def _rewrite_nested(self, stmt, *, live_after, live_after_slots=None, allow_loop_control=False, static_iters=None):
+    def _rewrite_nested(self, stmt, *, live_after, live_after_slots=None, allow_loop_control=False, static_iters=None, bound_before=None):
         live_after_slots = set(live_after_slots or ())
         static_iters = dict(static_iters or {})
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            inner_params = set()
+            for arg in stmt.args.posonlyargs + stmt.args.args + stmt.args.kwonlyargs:
+                inner_params.add(arg.arg)
             stmt.body = self.rewrite_block(
                 stmt.body,
                 live_after=set(),
                 live_after_slots=set(),
                 allow_loop_control=False,
                 static_iters={},
+                bound_on_entry=inner_params,
             )
             return stmt
         if isinstance(stmt, (ast.Lambda, ast.ClassDef)):
             return stmt
         for field, value in ast.iter_fields(stmt):
             if field in {"body", "orelse", "finalbody"} and isinstance(value, list):
+                entry_bindings = set(bound_before or ())
+                if field == "body" and isinstance(stmt, ast.With):
+                    # The with-as targets are definitely bound inside the body.
+                    for item in stmt.items:
+                        if item.optional_vars is not None:
+                            entry_bindings |= _simple_name_targets(item.optional_vars)
                 setattr(
                     stmt,
                     field,
@@ -1472,6 +1642,7 @@ class _ControlFlowRewriter:
                         live_after_slots=live_after_slots,
                         allow_loop_control=allow_loop_control,
                         static_iters=static_iters,
+                        bound_on_entry=entry_bindings,
                     ),
                 )
             elif isinstance(value, ast.AST):
@@ -1481,6 +1652,7 @@ class _ControlFlowRewriter:
                     live_after_slots=live_after_slots,
                     allow_loop_control=allow_loop_control,
                     static_iters=static_iters,
+                    bound_before=bound_before,
                 )
             elif isinstance(value, list):
                 for item in value:
@@ -1491,10 +1663,11 @@ class _ControlFlowRewriter:
                             live_after_slots=live_after_slots,
                             allow_loop_control=allow_loop_control,
                             static_iters=static_iters,
+                            bound_before=bound_before,
                         )
         return stmt
 
-    def _rewrite_if(self, stmt, *, live_after, live_after_slots=None, allow_loop_control=False, static_iters=None):
+    def _rewrite_if(self, stmt, *, live_after, live_after_slots=None, allow_loop_control=False, static_iters=None, bound_before=None):
         live_after_slots = set(live_after_slots or ())
         static_iters = dict(static_iters or {})
         if _is_pto_attr_call(stmt.test, "const_expr"):
@@ -1504,6 +1677,7 @@ class _ControlFlowRewriter:
                 live_after_slots=live_after_slots,
                 allow_loop_control=allow_loop_control,
                 static_iters=static_iters,
+                bound_on_entry=bound_before,
             )
             stmt.orelse = self.rewrite_block(
                 stmt.orelse,
@@ -1511,6 +1685,7 @@ class _ControlFlowRewriter:
                 live_after_slots=live_after_slots,
                 allow_loop_control=allow_loop_control,
                 static_iters=static_iters,
+                bound_on_entry=bound_before,
             )
             return [stmt]
 
@@ -1553,12 +1728,28 @@ class _ControlFlowRewriter:
 
         branch_live_after = set(live_after) | set(merge_names)
         branch_live_after_slots = set(live_after_slots) | set(merge_slots)
+        # Variables not assigned on one side need their entering value at branch
+        # merge time, and variables read inside a branch need a clean entering
+        # environment. Snapshot the entering SSA value of exactly those names and
+        # restore the Python binding at the top of each dynamic branch so sibling
+        # branch tracing never observes the other branch's rebindings.
+        branch_entry_names = set(old_value_names) | (
+            assigned_any
+            & (
+                _live_before_block(stmt.body, branch_live_after)
+                | _live_before_block(stmt.orelse, branch_live_after)
+            )
+        )
+        if_entry_names = {
+            name: self._fresh(f'if_entry_{name}') for name in sorted(branch_entry_names)
+        }
         then_body = self.rewrite_block(
             stmt.body,
             live_after=branch_live_after,
             live_after_slots=branch_live_after_slots,
             allow_loop_control=False,
             static_iters=static_iters,
+            bound_on_entry=bound_before,
         )
         else_body = self.rewrite_block(
             stmt.orelse,
@@ -1566,6 +1757,7 @@ class _ControlFlowRewriter:
             live_after_slots=branch_live_after_slots,
             allow_loop_control=False,
             static_iters=static_iters,
+            bound_on_entry=bound_before,
         )
         trace_time_if = ast.If(
             test=_name(cond_name),
@@ -1594,6 +1786,28 @@ class _ControlFlowRewriter:
         }
         dynamic_then_body = copy.deepcopy(then_body)
         dynamic_else_body = copy.deepcopy(else_body)
+        if if_entry_names or old_slot_value_names:
+            # The restore assignments below emit no IR: they only reset the
+            # trace-time Python bindings so every dynamic branch starts from the
+            # same entering SSA environment. Slot temporaries are shared between
+            # sibling branches as well, so restore them from their entry copies
+            # too; otherwise a nested conditional inside one branch captures the
+            # other branch's slot value.
+            entry_restores = [
+                ast.Assign(
+                    targets=[_name(name, ast.Store())],
+                    value=_name(if_entry_names[name]),
+                )
+                for name in sorted(if_entry_names)
+            ] + [
+                ast.Assign(
+                    targets=[_name(slot_value_names[slot], ast.Store())],
+                    value=_name(old_slot_value_names[slot]),
+                )
+                for slot in sorted(merge_slots)
+            ]
+            dynamic_then_body = copy.deepcopy(entry_restores) + dynamic_then_body
+            dynamic_else_body = copy.deepcopy(entry_restores) + dynamic_else_body
         if slot_value_names:
             dynamic_then_body = [
                 _SlotValueRewriter(slot_value_names, self._static_env, static_iters).visit(stmt)
@@ -1619,7 +1833,7 @@ class _ControlFlowRewriter:
                 self._branch_assign(
                     branch_name,
                     merge_names,
-                    old_value_names=old_value_names,
+                    entry_names=if_entry_names,
                     assigned_names=then_assigned,
                     slot_value_names=slot_value_names,
                     old_slot_value_names=old_slot_value_names,
@@ -1630,7 +1844,7 @@ class _ControlFlowRewriter:
                 self._branch_assign(
                     branch_name,
                     merge_names,
-                    old_value_names=old_value_names,
+                    entry_names=if_entry_names,
                     assigned_names=else_assigned,
                     slot_value_names=slot_value_names,
                     old_slot_value_names=old_slot_value_names,
@@ -1683,7 +1897,14 @@ class _ControlFlowRewriter:
                     type_comment=None,
                 )
             )
-        dynamic_body = [with_stmt]
+        dynamic_body = [
+            ast.Assign(
+                targets=[_name(if_entry_names[name], ast.Store())],
+                value=self._current_value(name, requires_pre_if_value=True),
+            )
+            for name in sorted(if_entry_names)
+        ]
+        dynamic_body.append(with_stmt)
         dynamic_body.extend(
             ast.Assign(
                 targets=[_name(name, ast.Store())],
@@ -1719,13 +1940,6 @@ class _ControlFlowRewriter:
         ]
         result.extend(
             ast.Assign(
-                targets=[_name(old_name, ast.Store())],
-                value=self._current_value(name, requires_pre_if_value=True),
-            )
-            for name, old_name in old_value_names.items()
-        )
-        result.extend(
-            ast.Assign(
                 targets=[_name(value_name, ast.Store())],
                 value=_slot_subscript(slot),
             )
@@ -1759,7 +1973,7 @@ class _ControlFlowRewriter:
         branch_name,
         names,
         *,
-        old_value_names,
+        entry_names,
         assigned_names,
         slot_value_names=None,
         old_slot_value_names=None,
@@ -1771,7 +1985,7 @@ class _ControlFlowRewriter:
         keywords = [
             ast.keyword(
                 arg=name,
-                value=_name(name if name in assigned_names else old_value_names[name]),
+                value=_name(name if name in assigned_names else entry_names[name]),
             )
             for name in names
         ]
@@ -1790,7 +2004,7 @@ class _ControlFlowRewriter:
             )
         )
 
-    def _rewrite_for(self, stmt, *, live_after, live_after_slots=None, allow_loop_control=False, static_iters=None):
+    def _rewrite_for(self, stmt, *, live_after, live_after_slots=None, allow_loop_control=False, static_iters=None, bound_before=None):
         live_after_slots = set(live_after_slots or ())
         static_iters = dict(static_iters or {})
         # Drop statically dead tails of unconditional break/continue before
@@ -1804,6 +2018,16 @@ class _ControlFlowRewriter:
                     next_static_iters[stmt.target.id] = values
             saved_control_stack = self._loop_control_stack
             self._loop_control_stack = []
+            name_target = stmt.target.id if isinstance(stmt.target, ast.Name) else None
+            entry_with_iv = set(bound_before or ())
+            if name_target is not None:
+                entry_with_iv.add(name_target)
+            orelse_with_iv = set(bound_before or ())
+            # The induction target is only definitely bound in the else clause
+            # when the static range is known non-empty; an empty static range
+            # jumps straight to the else clause with the target unbound.
+            if name_target is not None and values is not None and len(values) > 0:
+                orelse_with_iv.add(name_target)
             try:
                 stmt.body = self.rewrite_block(
                     stmt.body,
@@ -1811,6 +2035,7 @@ class _ControlFlowRewriter:
                     live_after_slots=live_after_slots,
                     allow_loop_control=True,
                     static_iters=next_static_iters,
+                    bound_on_entry=entry_with_iv,
                 )
                 stmt.orelse = self.rewrite_block(
                     stmt.orelse,
@@ -1818,6 +2043,7 @@ class _ControlFlowRewriter:
                     live_after_slots=live_after_slots,
                     allow_loop_control=True,
                     static_iters=static_iters,
+                    bound_on_entry=orelse_with_iv,
                 )
             finally:
                 self._loop_control_stack = saved_control_stack
@@ -1830,6 +2056,7 @@ class _ControlFlowRewriter:
                 live_after=live_after,
                 live_after_slots=live_after_slots,
                 static_iters=static_iters,
+                bound_before=bound_before,
             )
         if not isinstance(stmt.target, ast.Name):
             raise PTODSLAstRewriteError("ast_rewrite=True runtime for-loops require a simple name target")
@@ -1849,12 +2076,40 @@ class _ControlFlowRewriter:
         body_slot_info = _slot_info(stmt.body, self._static_env, static_iters)
         if body_slot_info.invalid_stores:
             raise PTODSLAstRewriteError(body_slot_info.invalid_stores[0])
-        reads_before = _read_before_assignment_names(stmt.body)
         slot_reads_before = _read_before_assignment_slots(stmt.body, self._static_env, static_iters)
         assigned_live_after = body_info.stores & set(live_after)
         assigned_slots_live_after = body_slot_info.stores & set(live_after_slots)
-        loop_carried = tuple(sorted(body_info.stores & reads_before))
-        loop_carried_slots = tuple(sorted(body_slot_info.stores & slot_reads_before))
+        # Seed backward liveness with the body stores that are live after the
+        # loop so that a partial assignment whose default path keeps the previous
+        # value is recognized as a live-in and therefore a loop-carried iter_arg.
+        # Only the implicit (default-path) reads are additionally gated on a
+        # definite binding before the loop: carrying an unbound name would read
+        # an unbound Python local when the loop is entered, instead of the clear
+        # last-iteration-only diagnostics below. The same gate applies to static
+        # subscript slots, keyed on the definite binding of the slot base list.
+        reads_before_raw = _read_before_assignment_names(stmt.body)
+        reads_before = _read_before_assignment_names(stmt.body, live_after=assigned_live_after)
+        implicit_reads = reads_before - reads_before_raw
+        safe_reads = reads_before_raw | {
+            name for name in implicit_reads if name in (bound_before or set())
+        }
+        # The induction variable is re-bound at the top of every iteration and
+        # must never be inferred as a carried name, otherwise the carry init
+        # would read it before the loop (unbound) or shadow the fresh binding.
+        loop_carried = tuple(
+            name
+            for name in sorted(body_info.stores & safe_reads)
+            if name != stmt.target.id
+        )
+        slot_reads_raw = _read_before_assignment_slots(stmt.body, self._static_env, static_iters)
+        slot_reads = _read_before_assignment_slots(
+            stmt.body, self._static_env, static_iters, live_after=assigned_slots_live_after
+        )
+        slot_implicit = slot_reads - slot_reads_raw
+        safe_slots = slot_reads_raw | {
+            slot for slot in slot_implicit if slot.base in (bound_before or set())
+        }
+        loop_carried_slots = tuple(sorted(body_slot_info.stores & safe_slots))
         unsupported_last_values = sorted(assigned_live_after - set(loop_carried))
         if unsupported_last_values:
             raise PTODSLAstRewriteError(
@@ -1877,6 +2132,12 @@ class _ControlFlowRewriter:
             live_after=loop_live_after,
             live_after_slots=loop_live_after_slots,
             static_iters=static_iters,
+            bound_on_entry=(
+                set(bound_before or ())
+                | {stmt.target.id}
+                | set(loop_carried)
+                | {slot.base for slot in loop_carried_slots}
+            ),
         )
 
         slot_carry_names = {
@@ -2037,10 +2298,10 @@ class _ControlFlowRewriter:
             targets=[_name(old_names[name], ast.Store())], value=_name(name))
             for name in merge_names]
         then_body = list(body) + [self._branch_assign(
-            branch_name, merge_names, old_value_names=old_names,
+            branch_name, merge_names, entry_names=old_names,
             assigned_names=assigned_names)] if merge_names else list(body)
         else_body = [self._branch_assign(
-            branch_name, merge_names, old_value_names=old_names,
+            branch_name, merge_names, entry_names=old_names,
             assigned_names=set())] if merge_names else [ast.Pass()]
         result = prefix + [ast.With(
             items=[ast.withitem(
@@ -2073,7 +2334,7 @@ class _ControlFlowRewriter:
             ) for name in merge_names)
         return result
 
-    def _rewrite_controlled_for(self, stmt, *, live_after, live_after_slots=None, static_iters=None):
+    def _rewrite_controlled_for(self, stmt, *, live_after, live_after_slots=None, static_iters=None, bound_before=None):
         """Lower range-for with transfers or else clauses through scf.while."""
         if not isinstance(stmt.target, ast.Name):
             raise PTODSLAstRewriteError(
@@ -2092,9 +2353,14 @@ class _ControlFlowRewriter:
             raise PTODSLAstRewriteError(
                 "ast_rewrite=True runtime for break/continue does not support static subscript carries yet"
             )
-        reads_before = _read_before_assignment_names(stmt.body)
-        loop_carried = set(body_info.stores & reads_before)
-        loop_carried |= set(body_info.stores & set(live_after))
+        reads_before_raw = _read_before_assignment_names(stmt.body)
+        assigned_live_after = body_info.stores & set(live_after)
+        reads_before = _read_before_assignment_names(stmt.body, live_after=assigned_live_after)
+        implicit_reads = (reads_before - reads_before_raw) | assigned_live_after
+        safe_reads = reads_before_raw | {
+            name for name in implicit_reads if name in (bound_before or set())
+        }
+        loop_carried = set(body_info.stores & safe_reads)
         loop_carried.discard(stmt.target.id)
         unsupported_last = sorted((body_info.stores & set(live_after)) - loop_carried)
         if unsupported_last:
@@ -2174,6 +2440,7 @@ class _ControlFlowRewriter:
                 live_after_slots=set(),
                 control={"active": skip_name, "did_break": did_break_name},
                 static_iters=static_iters,
+                bound_on_entry=set(bound_before or ()) | set(loop_carried) | {iv_name},
             )
         finally:
             self._loop_control_stack.pop()
@@ -2213,6 +2480,7 @@ class _ControlFlowRewriter:
                 live_after_slots=live_after_slots,
                 allow_loop_control=False,
                 static_iters=static_iters,
+                bound_on_entry=bound_before,
             )
             else_info = _name_info(stmt.orelse)
             else_merge_names = tuple(sorted(else_info.stores & set(live_after)))
@@ -2225,7 +2493,7 @@ class _ControlFlowRewriter:
         return result
 
     def _rewrite_while(self, stmt, *, live_after, live_after_slots=None,
-                       allow_loop_control=False, static_iters=None):
+                       allow_loop_control=False, static_iters=None, bound_before=None):
         """Lower runtime ``while`` using named state and explicit control flags."""
         # Drop statically dead tails of unconditional break/continue before
         # any analysis or tracing (they are unreachable in Python semantics),
@@ -2252,14 +2520,22 @@ class _ControlFlowRewriter:
         # A loop-carried name must be one whose pre-iteration value is needed:
         # it is read by the test before each iteration, it is read before any
         # assignment inside the body (so it depends on the previous iteration's
-        # value), or it stays live after the loop.  ``body_info.loads`` is
-        # deliberately not used here: it includes loop-local temporaries that
-        # are written before they are read each iteration (e.g.
-        # ``col = base + index``), which are not live across iterations and
-        # would be read while still unbound at the pto._while(...) setup.
-        # This mirrors the loop_carried criterion used by ``_rewrite_for``.
-        reads_before = _read_before_assignment_names(stmt.body)
-        required_carries = test_info.loads | reads_before | set(live_after)
+        # value), or it is an assigned live-out whose partial-assignment default
+        # path keeps the entering value.  Seed backward liveness with assigned
+        # live-outs so nested conditionals expose that implicit read, then gate
+        # only those implicit reads on a definite binding before the loop.  An
+        # unbound implicit read must take the same last-iteration-only diagnostic
+        # as runtime for-loops instead of being evaluated by pto._while(...)
+        # setup.  This mirrors _rewrite_for while retaining explicit reads from
+        # the authored body and test.
+        assigned_live_after = body_info.stores & set(live_after)
+        reads_before_raw = _read_before_assignment_names(stmt.body)
+        reads_before = _read_before_assignment_names(stmt.body, live_after=assigned_live_after)
+        implicit_reads = reads_before - reads_before_raw
+        safe_reads = reads_before_raw | {
+            name for name in implicit_reads if name in (bound_before or set())
+        }
+        required_carries = test_info.loads | safe_reads
         # A controlled loop (break/continue/else) may legitimately need no
         # user-level carry: its test reads only loop-invariant names and every
         # body store is a loop-local temporary.  The active/did_break control
@@ -2271,6 +2547,12 @@ class _ControlFlowRewriter:
                 "ast_rewrite=True runtime while break/continue requires explicit control-state lowering"
             )
         carry_names = tuple(sorted(body_info.stores & required_carries))
+        unsupported_last_values = sorted(assigned_live_after - set(carry_names))
+        if unsupported_last_values:
+            raise PTODSLAstRewriteError(
+                "ast_rewrite=True runtime while cannot expose last-iteration-only values yet; "
+                f"use explicit pto.while_(...) state for {unsupported_last_values}"
+            )
         if not carry_names and not (control["break"] or control["continue"] or stmt.orelse):
             raise PTODSLAstRewriteError(
                 "ast_rewrite=True runtime while requires at least one loop-carried value"
@@ -2347,6 +2629,7 @@ class _ControlFlowRewriter:
                     if controlled else None
                 ),
                 static_iters=static_iters,
+                bound_on_entry=set(bound_before or ()) | set(carry_names),
             )
         finally:
             if controlled:
@@ -2408,6 +2691,7 @@ class _ControlFlowRewriter:
                 live_after_slots=live_after_slots,
                 allow_loop_control=False,
                 static_iters=static_iters,
+                bound_on_entry=bound_before,
             )
             else_info = _name_info(stmt.orelse)
             else_merge_names = tuple(sorted(else_info.stores & set(live_after)))
