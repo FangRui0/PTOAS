@@ -931,18 +931,44 @@ def _is_range_call(node) -> bool:
     return isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "range"
 
 
-def _range_triplet(call):
-    if not _is_range_call(call):
-        raise PTODSLAstRewriteError("ast_rewrite=True only rewrites for-loops over range(...)")
-    if call.keywords:
-        raise PTODSLAstRewriteError("ast_rewrite=True range(...) loops do not support keyword arguments")
+def _is_pto_range_call(node) -> bool:
+    return _is_pto_attr_call(node, "range")
+
+
+_UNROLL_HINT_KWARGS = ("unroll", "unroll_factor")
+
+
+def _range_triplet_and_hints(call):
+    """Return (start, stop, step, hint_keywords) for a loop iterable call.
+
+    Accepts plain ``range(...)`` (no keyword arguments, as before) and the
+    ``pto.range(...)`` marker, which additionally takes the ``unroll`` /
+    ``unroll_factor`` hint keywords forwarded to the generated ``pto.for_``.
+    """
+    if _is_range_call(call):
+        if call.keywords:
+            raise PTODSLAstRewriteError("ast_rewrite=True range(...) loops do not support keyword arguments")
+        hint_keywords = []
+    elif _is_pto_range_call(call):
+        hint_keywords = []
+        for keyword in call.keywords:
+            if keyword.arg not in _UNROLL_HINT_KWARGS:
+                raise PTODSLAstRewriteError(
+                    "ast_rewrite=True pto.range(...) loops only support the "
+                    f"'unroll' and 'unroll_factor' keyword arguments; got {keyword.arg!r}"
+                )
+            hint_keywords.append(keyword)
+    else:
+        raise PTODSLAstRewriteError(
+            "ast_rewrite=True only rewrites for-loops over range(...) or pto.range(...)"
+        )
     args = call.args
     if len(args) == 1:
-        return ast.Constant(0), args[0], ast.Constant(1)
+        return ast.Constant(0), args[0], ast.Constant(1), hint_keywords
     if len(args) == 2:
-        return args[0], args[1], ast.Constant(1)
+        return args[0], args[1], ast.Constant(1), hint_keywords
     if len(args) == 3:
-        return args[0], args[1], args[2]
+        return args[0], args[1], args[2], hint_keywords
     raise PTODSLAstRewriteError("ast_rewrite=True range(...) loops require 1 to 3 arguments")
 
 
@@ -1844,7 +1870,25 @@ class _ControlFlowRewriter:
                 f"use explicit pto.for_(...) for {stmt.target.id!r}"
             )
 
-        start, stop, step = _range_triplet(stmt.iter)
+        start, stop, step, hint_keywords = _range_triplet_and_hints(stmt.iter)
+        # The plain path lowers to scf.for, whose control-flow lowering
+        # compares the induction variable with the upper bound using a signed
+        # less-than: a non-positive step would silently produce zero
+        # iterations instead of Python range's descending iteration.  Only
+        # loops with break/continue (the pto._while path) support negative
+        # steps, so reject a constant non-positive step here.  Note that a
+        # negative literal is a UnaryOp(USub, Constant), not a Constant, so
+        # use literal_eval to see through it.
+        try:
+            step_const = ast.literal_eval(step)
+        except (ValueError, TypeError, SyntaxError):
+            step_const = None
+        if isinstance(step_const, int) and not isinstance(step_const, bool) and step_const <= 0:
+            raise PTODSLAstRewriteError(
+                "ast_rewrite=True range(...) / pto.range(...) loops require a positive step; "
+                f"got step={step_const}. Loops with break/continue support negative steps "
+                "via the pto._while lowering; a dynamic step must be positive at runtime."
+            )
         body_info = _name_info(stmt.body)
         body_slot_info = _slot_info(stmt.body, self._static_env, static_iters)
         if body_slot_info.invalid_stores:
@@ -1905,7 +1949,7 @@ class _ControlFlowRewriter:
                         value=ast.Call(
                             func=_pto_attr("for_"),
                             args=[start, stop],
-                            keywords=[ast.keyword(arg="step", value=step)],
+                            keywords=[ast.keyword(arg="step", value=step), *hint_keywords],
                         ),
                         attr="carry",
                         ctx=ast.Load(),
@@ -2017,7 +2061,7 @@ class _ControlFlowRewriter:
                     context_expr=ast.Call(
                         func=_pto_attr("for_"),
                         args=[start, stop],
-                        keywords=[ast.keyword(arg="step", value=step)],
+                        keywords=[ast.keyword(arg="step", value=step), *hint_keywords],
                     ),
                     optional_vars=_name(stmt.target.id, ast.Store()),
                 )
@@ -2083,7 +2127,12 @@ class _ControlFlowRewriter:
             raise PTODSLAstRewriteError(
                 "ast_rewrite=True does not support dynamic return inside runtime for"
             )
-        start, stop, step = _range_triplet(stmt.iter)
+        start, stop, step, hint_keywords = _range_triplet_and_hints(stmt.iter)
+        if hint_keywords:
+            raise PTODSLAstRewriteError(
+                "ast_rewrite=True pto.range(...) unroll hints are not supported on loops with "
+                "break/continue or else clauses (these lower through pto._while)"
+            )
         body_info = _name_info(stmt.body)
         body_slot_info = _slot_info(stmt.body, self._static_env, static_iters)
         if body_slot_info.invalid_stores:
