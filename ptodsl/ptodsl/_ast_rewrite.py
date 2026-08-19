@@ -74,7 +74,6 @@ def rewrite_jit_function(
     if rewrite_control_flow:
         rewriter = _ControlFlowRewriter(
             static_env,
-            section_entry_bindings=section_rewriter.section_entry_bindings,
             section_uninitialized_aliases=section_rewriter.section_uninitialized_aliases,
             reject_bare_returns=reject_bare_returns,
         )
@@ -1357,12 +1356,10 @@ class _ControlFlowRewriter:
         self,
         static_env=None,
         *,
-        section_entry_bindings=None,
         section_uninitialized_aliases=None,
         reject_bare_returns: bool = False,
     ):
         self._static_env = dict(static_env or {})
-        self._section_entry_bindings = dict(section_entry_bindings or {})
         self._section_uninitialized_aliases = set(section_uninitialized_aliases or ())
         self._counter = 0
         # Each entry names the SSA flags used to emulate Python loop control
@@ -1438,7 +1435,8 @@ class _ControlFlowRewriter:
             live_slots = live_before_slots
         return rewritten_reversed
 
-    def _guard_control_tail(self, stmt, *, control, tail, tail_assigned, tail_flags, live):
+    def _guard_control_tail(self, stmt, *, control, tail, tail_assigned, tail_flags, live,
+                            forced_merge_names=()):
         """Guard the already-rewritten tail of a break/continue statement.
 
         When ``stmt`` can stop the current iteration (a top-level break/continue,
@@ -1450,7 +1448,11 @@ class _ControlFlowRewriter:
 
         ``tail_assigned`` holds the names the tail assigns; names that are also
         live after the guard point are merged through the guard so later
-        statements and the loop ``update`` keep consistent values.  ``tail_flags``
+        statements and the loop ``update`` keep consistent values.  Loop-carried
+        names can look dead at the transfer point when their last authored read
+        is before the break/continue, so ``forced_merge_names`` keeps tail
+        assignments to those names from being trapped inside the guard region.
+        ``tail_flags``
         records whether the tail itself contains control transfers: a tail that
         assigns ``active``/``did_break`` (they are not ``ast.Assign`` stores, so
         they never appear in ``tail_assigned``) must also merge them out, or the
@@ -1481,7 +1483,12 @@ class _ControlFlowRewriter:
             flag_names.add(control["active"])
         if tail_flags["break"]:
             flag_names.add(control["did_break"])
-        merge_names = sorted((set(tail_assigned) | flag_names) & set(live))
+        forced_merge_names = set(forced_merge_names)
+        forced_or_live = set(live) | forced_merge_names
+        value_merge_names = set(tail_assigned) & forced_or_live
+        if value_merge_names:
+            flag_names.add(control["active"])
+        merge_names = sorted((value_merge_names | flag_names) & forced_or_live)
         return self._guard_block(
             _name(control["active"]),
             tail,
@@ -1489,7 +1496,8 @@ class _ControlFlowRewriter:
             assigned_names=set(tail_assigned) | flag_names,
         )
 
-    def _rewrite_loop_body(self, stmts, *, live_after, live_after_slots=None, static_iters=None, control=None, bound_on_entry=None):
+    def _rewrite_loop_body(self, stmts, *, live_after, live_after_slots=None, static_iters=None,
+                           control=None, bound_on_entry=None, forced_tail_merge_names=()):
         """Rewrite loop statements while keeping each authored statement atomic.
 
         A rewritten dynamic ``if`` may contain several setup/branch/merge
@@ -1531,6 +1539,7 @@ class _ControlFlowRewriter:
             guarded_tail = self._guard_control_tail(
                 stmt, control=control, tail=rewritten_reversed,
                 tail_assigned=tail_assigned, tail_flags=tail_flags, live=live,
+                forced_merge_names=forced_tail_merge_names,
             )
             if guarded_tail is not None:
                 # The tail now lives inside the guard: replace the
@@ -2419,7 +2428,7 @@ class _ControlFlowRewriter:
         )
         initial_values = [
             copy.deepcopy(start),
-            *[_name(self._section_entry_bindings.get(name, name)) for name in sorted(loop_carried)],
+            *[_name(name) for name in sorted(loop_carried)],
             _flag_const(True),
             _flag_const(False),
         ]
@@ -2441,6 +2450,7 @@ class _ControlFlowRewriter:
                 control={"active": skip_name, "did_break": did_break_name},
                 static_iters=static_iters,
                 bound_on_entry=set(bound_before or ()) | set(loop_carried) | {iv_name},
+                forced_tail_merge_names=loop_carried,
             )
         finally:
             self._loop_control_stack.pop()
@@ -2610,7 +2620,7 @@ class _ControlFlowRewriter:
                         arg=name,
                         value=(_flag_const(True) if name == active_name else
                                _flag_const(False) if name == did_break_name else
-                               _name(self._section_entry_bindings.get(name, name))),
+                               _name(name)),
                     ) for name in state_names
                 ],
             ),
@@ -2630,6 +2640,7 @@ class _ControlFlowRewriter:
                 ),
                 static_iters=static_iters,
                 bound_on_entry=set(bound_before or ()) | set(carry_names),
+                forced_tail_merge_names=carry_names,
             )
         finally:
             if controlled:
