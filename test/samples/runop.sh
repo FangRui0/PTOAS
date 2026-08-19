@@ -75,7 +75,8 @@ lcfirst() {
 # Declare directory-wide requirements here so `all` can filter before counting cases.
 sample_dir_arch() {
   case "$1" in
-    A3SingleOps|Qwen*A3|Deepseek*A3) printf 'a3\n' ;;
+    TPipe|TAxpy|TColArgMax|TColArgMin|TConcatIdx|\
+      TRowArgMax|TRowArgMin|Qwen*A3|Deepseek*A3) printf 'a3\n' ;;
     Qwen*A5|Deepseek*A5|TquantMx|TquantMxDn) printf 'a5\n' ;;
   esac
 }

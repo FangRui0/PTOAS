@@ -6,7 +6,20 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from ir.loader import print_case
+from pathlib import Path
+
+from ptoas.mlir.dialects import pto
+from ptoas.mlir.ir import Context, Module
+
+
+def print_case() -> None:
+    ir_text = Path(__file__).with_suffix(".pto").read_text(encoding="utf-8")
+    with Context() as context:
+        pto.register_dialect(context, load=True)
+        module = Module.parse(ir_text)
+        module.operation.verify()
+        print(ir_text)
+
 
 if __name__ == "__main__":
-    print_case(__file__)
+    print_case()

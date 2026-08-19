@@ -44,8 +44,8 @@ should_skip_roundtrip() {
     */test/samples/MatMul/0.pto) return 0 ;;
     */test/samples/MatMul/tmatmulk.pto) return 0 ;;
     */test/samples/Movfp/movfp_fixpipe_reuse-pto.pto) return 0 ;;
-    */test/samples/A3SingleOps/ir/a3_pipe_roundtrip.pto) return 0 ;;
-    */test/samples/A3SingleOps/ir/taxpy_tsync.pto) return 0 ;;
+    */test/samples/TPipe/a3_pipe_roundtrip.pto) return 0 ;;
+    */test/samples/TAxpy/taxpy_tsync.pto) return 0 ;;
     */test/samples/SubView/SubView.pto) return 0 ;;
     */test/samples/Sync/test_if_else_tile_result.pto) return 0 ;;
   esac

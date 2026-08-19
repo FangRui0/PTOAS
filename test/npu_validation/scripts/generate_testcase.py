@@ -208,7 +208,7 @@ SAMPLE_CASE_INT_SCALAR_DEFAULTS = {
 # which makes determinism validation compare an unchanged input.  Pin the
 # actual PTO destination parameter for the affected sample revisions.
 SAMPLE_CASE_OUTPUT_PARAMS = {
-    "a3singleops": {
+    "tpipe": {
         "a3_pipe_roundtrip": ["v2"],
     },
     "deepseekv4decodea5": {
@@ -301,7 +301,7 @@ CASE_POINTER_COUNT_MINIMUMS = {
 # source revision.  Scope by sample so older DeepSeek variants with the same
 # testcase names retain their already validated layouts.
 SAMPLE_CASE_POINTER_COUNT_MINIMUMS = {
-    "a3singleops": {
+    "tpipe": {
         "a3_pipe_roundtrip": {"v3": 2_048},
     },
     "deepseekv4decodea3": {
