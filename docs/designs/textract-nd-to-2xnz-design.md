@@ -75,7 +75,9 @@ lowering、verifier、TileLib template 或回归测试；后续实现拟在同�
 11. partial-valid/odd/`1x1` 是定义明确的 TEXTRACT/UB-only 支持，不自动获得 NZ TSTORE
     支持；driver 的 post-planning safety helper 按静态 physical range 而不是 SSA use chain，
     在同一 direct-call graph component 内拒绝 partial destination 的所有 alias TSTORE，不能因
-    producer 和 TSTORE 位于不同函数而漏检。首版没有 test-only escape hatch。
+    producer 和 TSTORE 位于不同函数而漏检。helper 固定运行在 resolve-buffer-select 后、
+    backend-helper inlining 前；普通 codegen 与 `--emit-pto-ir` 共用该切点。首版没有 test-only
+    escape hatch。
 12. CPU-sim、cost-model 和其他 optional backend 对该 overload 的 unsupported 判断必须来自 driver 注入的
     capability manifest，并在最终 backend lowering 前失败，不能依赖后期 C++ 实例化。
 13. GraphSyncSolver 必须为普通 `AllocTileOp` 建立基于静态 `addr`、physical footprint 和
@@ -84,6 +86,9 @@ lowering、verifier、TileLib template 或回归测试；后续实现拟在同�
     `.indexRow`/`.indexCol`/`.dst` properties 和 PTOBC v0 单输出 wire schema 保持兼容；
     新双输出 form 使用同一 op class 的新 builder，并以新的 PTOBC generic record 承载，不能复用
     已发布的四/五 operand fixed-width opcode。
+15. backend-partitioned outer module 在 child 拆分前建图；local declaration 必须按 exact final-link
+    symbol 穿透到唯一 sibling public definition。含 partial producer 的 component 首版禁止跨 child，
+    declaration 的零/多 sibling 匹配不能成为调用图终点。
 
 ## 3. PTO-ISA 真实契约
 
@@ -185,9 +190,9 @@ source 或使两个可观察输出互相覆盖。
 `pto.set_validshape` 仅接受 `v_row=?/v_col=?` 的本地动态 tile，并且只修改运行时元数据。
 因此首版不把同一个 partial descriptor 伪装成 full-valid，也不在 generic `TSTORE` 中放宽契约。
 driver 的 `validateTExtractNd2xNzPostPlanningSafety()` 在内存规划和
-`PTOResolveBufferSelect` 完成后按 physical range 检查同址但不同 SSA root 的 alias；直接使用
-partial descriptor、经 view 派生后使用，或者另建同址 full-valid `alloc_tile` 后 TSTORE，
-都必须在 PTOAS 阶段报错：
+`PTOResolveBufferSelect` 完成后、`PTOInlineBackendHelpersPass` 前按 physical range 检查同址但
+不同 SSA root 的 alias；直接使用 partial descriptor、经 view 派生后使用，或者另建同址
+full-valid `alloc_tile` 后 TSTORE，都必须在 PTOAS 阶段报错：
 
 ```text
 pto.tstore source physical byte range aliases a partial-valid ND-to-2xNZ
@@ -806,7 +811,7 @@ single-value accessor。单输出随后调用语义不变的现有 verifier help
 9. 首版要求两个 dst 的 valid shape 静态且非零；确保归一化后的 valid extent 不超过
    `UINT16_MAX`，并检查其不大于对应 physical extent。
 10. 对每个 window 独立执行 constant bounds 校验，使用 dst valid shape。
-11. generic `mlir::verify` 成功后，driver 在 main pass manager 运行前直接调用
+11. generic `mlir::verify` 成功后，driver 在 planning/sync pass manager 运行前直接调用
     `validateTExtractNd2xNzInputProvenance(module)`；不新增 provenance pass。helper 对 `src`、
     `dst0`、`dst1` 递归穿过 `subview`、`bitcast`、`treshape` 和单输入
     `unrealized_conversion_cast`。首版只接受最终 root 为 `AllocTileOp`，或 source 确实来自
@@ -821,9 +826,10 @@ single-value accessor。单输出随后调用语义不变的现有 verifier help
 
     诊断必须指出 operand 名称和命中的 root op 名。通过 helper 的 level1/level2 operand 才进入
     现有 planner；level3 还必须满足第 7.1 节的规划后静态 range 检查。
-13. legacy/modern PlanMemory 保持现有 semantic conflict；main pass manager 完成后，driver
-    再由统一 post-planning helper 要求三个 operand 均可解析为静态 absolute byte range并复核
-    三组 pair。未知 range 直接拒绝，不把“未知”当成“不重叠”。
+13. legacy/modern PlanMemory 保持现有 semantic conflict；planning/sync pipeline 已运行到
+    `PTOResolveBufferSelect`、但尚未进入 `PTOInlineBackendHelpersPass` 时，driver 由统一
+    post-planning helper 要求三个 operand 均可解析为静态 absolute byte range并复核三组 pair。
+    未知 range 直接拒绝，不把“未知”当成“不重叠”。
 
 ### 5.2 dtype helper
 
@@ -861,9 +867,32 @@ golden，才能无条件放行动态/非对齐 index。FP4 未通过第 3.5 节�
 - static bounds 的加法使用 checked arithmetic，避免超大常量溢出后误判为合法。
 
 首版的完整 TSTORE eligibility 不由 `TExtractOp::verify()` 假定，也不新增 StoreUse pass。
-driver 在 main pass manager 成功后、`TSTORE`/EmitC/VPTO 最终 lowering 前直接调用
-`validateTExtractNd2xNzPostPlanningSafety(module)`；`--emit-pto-ir` 路径也调用，因为这是 IR
-内存语义检查，不是 backend capability gate：
+
+#### 5.3.1 post-planning helper 执行切点
+
+当前 `compilePTOASModule()` 把 `PTOResolveBufferSelectPass` 和
+`PTOInlineBackendHelpersPass` 追加到同一个 `PassManager`，最后只调用一次 `pm.run()`；因此不存在
+“main pass manager 完成后、但 call inlining 前”的可执行时点。实现必须把当前 main pipeline
+拆成两个实际运行的 pass manager，而不是在单次 `pm.run()` 后再调用 helper：
+
+1. `preInlinePlanningPM` 保留现有 generic verification 之后的 planning、sync 和地址物化顺序，
+   运行到 `PTOResolveBufferSelectPass`；EmitC 当前紧随其后的第一次
+   `NarrowUnusedMultiResultProvenancePass` 也可留在该 PM，因为它不改写 call graph。
+2. `preInlinePlanningPM.run(module)` 成功后，driver 立即调用普通函数
+   `validateTExtractNd2xNzPostPlanningSafety(module)`。此时 planner 地址和 multi-buffer slot 已经
+   materialize，所有尚未 inline 的 `func.call` definition edge 仍可用于构造 component。
+3. `--emit-pto-ir` 在同一个校验点通过后打印当前 IR 并返回；它不能走一条跳过 helper、提前打印，
+   或使用不同 component 边界的专用路径。
+4. 普通 EmitC/VPTO codegen 只有通过 helper 后才运行 `postValidationPM`。该 PM 包含当前后半段的
+   CSE、`PTOInlineBackendHelpersPass`、inline 后的 provenance narrowing、canonicalizer 和 CSE，
+   然后再进入最终 backend lowering。
+5. 两个 PM 都启用 verifier，并分别调用 `applyConfiguredPassManagerCLOptions`，使用可区分的 pipeline
+   label；现有 pass-manager CLI 的打印、统计和验证语义必须保留。不得通过 CLI pipeline 配置或
+   `emitMlirIR` 分支绕过位于两次 `run()` 之间的普通 driver helper。
+
+该切点同时满足“post-planning”与“pre-inlining”。不采用 planning 前保存 call graph 的替代方案，
+因为旧 graph 还必须在地址物化后重新关联 physical range，容易与实际被检查的 IR 脱节。helper
+执行以下检查：
 
 1. level1/level2 使用 planner 物化地址，level3 使用调用方显式地址；multi-buffer slot 已经由
    `PTOResolveBufferSelect` materialize。range 一律使用 physical byte footprint，不能使用 valid shape。
@@ -897,7 +926,7 @@ driver 在 main pass manager 成功后、`TSTORE`/EmitC/VPTO 最终 lowering 前
 这样 partial-valid op 本身仍可用于不含 generic TSTORE 的 UB-only 测试，不会在 debug PTO-ISA
 上晚期触发 TSTORE assertion，也不能通过复制一个同址 full-valid allocation 绕过限制。
 
-#### 5.3.1 backend-partitioned module boundary
+#### 5.3.2 backend-partitioned module boundary
 
 `post-planning safety helper` 只在 child compile unit 内运行仍然不充分。mixed-backend driver
 会先把 outer module 拆成独立 child compile unit，再把跨 child `func.call` 的 callee 克隆成
@@ -907,21 +936,35 @@ caller/TSTORE 在 child B 时，两个 child 都看不到完整的 partial/TSTOR
 首版选择在拆分前增加一个普通 driver precheck，而不是传递跨 child range/effect summary：
 
 1. 在 `runPTOASJobs()` 调用 `collectChildJobs()`/`buildBackendChildCompileUnit()` 之前，对完整
-   outer module 建立 direct internal `func.call` graph。此时 symbol table 仍包含所有 child 的
-   function definitions，不能使用拆分后生成的 declaration 代替 definition。
-2. 为每个 function definition 记录其 immediate child owner；以同一套 weakly connected
-   component 规则收集 call component。component 中只要存在 partial-valid ND-to-2xNZ producer，
-   且其 function owner 集合包含两个或更多 child，就直接拒绝整个 module。即便目前没有发现
-   TSTORE、TSTORE 位于 caller 侧、或两个 child 使用相同 backend，也必须拒绝；这是首版对跨
-   compile-unit definedness 的保守边界。
-3. precheck 必须在任何 child clone、callee declaration materialization 或 child-level
+   outer module 的 function definitions 建立 direct `func.call` graph，并记录每个 definition 的
+   immediate child owner。不能用 `SymbolTable::lookupNearestSymbolFrom()` 的普通结果直接建图：
+   nested child 是独立 symbol table，caller child 中同名的 private declaration 会先被命中。
+2. 每个 direct call 按最终链接符号规则解析。local lookup 命中带 body 的 definition 时连接该
+   definition；local lookup 缺失或只命中 declaration 时，declaration 不是 graph node 或 terminal，
+   precheck 必须扫描 sibling children，忽略 private symbol 和无 body declaration，并按 exact
+   callee symbol name 查找唯一 public/non-private definition。当前 direct `func.call` child assembly
+   不使用 logical-name fallback；该解析应与 `findSiblingSourceFunction(...,
+   allowLogicalNameMatch=false)` 抽取或共享同一 helper，避免 precheck 与最终 child assembly 漂移。
+   后续若 driver 改变最终链接名规则，两处必须同步修改。
+3. sibling definition 恰有一个时，call edge 直接连接到该 definition，即使 caller child 已有同名
+   private declaration、后续 child assembly 因 declaration 已存在而不再 clone。零个匹配记录为
+   unresolved；多个 exact public definitions 记录为 ambiguous，并保留全部 candidate owner 供
+   partial reachability 的保守判定。只要 unresolved/ambiguous call 所在的 provisional component
+   含 partial producer，就稳定拒绝，不能把本地 declaration 当成 opaque terminal 后继续 child
+   检查；诊断列出 caller child/function、local declaration（如有）、callee symbol、所有 sibling
+   candidate 及 unresolved/ambiguous 原因。
+4. 用解析后的 definition edge 收集 weakly connected components。component 中只要存在
+   partial-valid ND-to-2xNZ producer，且 definition owner 集合包含两个或更多 child，就直接拒绝
+   整个 module。即便目前没有发现 TSTORE、TSTORE 位于 caller 侧、或两个 child 使用相同 backend，
+   也必须拒绝；这是首版对跨 compile-unit definedness 的保守边界。
+5. precheck 必须在任何 child clone、callee declaration materialization 或 child-level
    `compilePTOASModule()` 之前失败，并报告 producer function、跨越的 child/backend、call site
    和“partial-valid destination cannot cross backend child compile units”。这样不会把 opaque
    declaration 当作已经完成 alias 检查，也不会把同一 component 拆成两个看似独立的检查域。
-4. component 完全属于一个 child 时，仍由该 child 的 post-planning helper 执行第 5.3 节的
+6. component 完全属于一个 child 时，仍由该 child 的 post-planning helper 执行第 5.3 节的
    component-wide range 检查。没有 partial producer 的跨 child component 不受此规则影响；两个
    disconnected child component 复用相同数值地址仍按第 5.3 节的 component scope 规则处理。
-5. 该 precheck 是 driver 普通函数，不注册 MLIR pass，也不改变 `compilePTOASModule()` 的
+7. 该 precheck 是 driver 普通函数，不注册 MLIR pass，也不改变 `compilePTOASModule()` 的
    单 child 契约。后续若要支持跨 child partial component，必须先定义 producer/TSTORE physical
    range、call argument provenance、backend ownership 和 opaque-call effects 的稳定 summary
    协议，再删除本首版拒绝规则。
@@ -1093,7 +1136,8 @@ allocation root 只有在双方都有 absolute address 时才比较，因此两�
 首版选择保守、可执行的规则；它只接收已经通过 driver input provenance helper 的
 allocation-backed operand：
 
-- main pass manager 完成后，driver 直接调用 post-planning safety helper；对 level1/level2
+- `preInlinePlanningPM` 运行到 `PTOResolveBufferSelect` 后、`postValidationPM` 的
+  `PTOInlineBackendHelpersPass` 前，driver 直接调用 post-planning safety helper；对 level1/level2
   使用 planner 结果，对 level3 使用显式地址，不注册独立 address pass。
 - 当 module 含 ND-to-2xNZ form 时，`src`、`dst0`、`dst1` 的最终 physical range 必须具有
   non-negative static absolute begin。可折叠的常量 `arith.addi`/index/integer cast 表达式
@@ -1408,15 +1452,24 @@ PTOAS 当前三个 pin 都早于 8 月 14 日功能提交：
   direct callee TSTORE；`entry -> helper -> leaf` 三级调用中 producer/TSTORE 分居两端；tile block
   argument 使 TSTORE source range unresolved；含 partial producer 的 component 存在 indirect、
   external 或 unresolved call；这些 case 都必须在 post-planning helper 稳定失败；
+- 对同一跨函数负向分别运行普通 codegen 和 `--emit-pto-ir`，两者必须在
+  `PTOInlineBackendHelpersPass` 前从相同、尚未 inline 的 function component 得到同一类别诊断；
+  另加一个会被该 pass inline 的 backend-helper call case，证明检查不是在 main pipeline 整体运行后
+  才观察已经扁平化的 IR；
 - 增加 mixed-backend partition 负向：child A 的 level3 `alloc_tile addr=0` 产生 partial
   ND-to-2xNZ，child B 通过 `func.call @A` 后以同址 `alloc_tile addr=0` 执行 `TSTORE`；必须在
   child clone/declaration 和任一 child compile 之前由 outer-module precheck 稳定拒绝。反向
   caller/callee、三级跨 child component、同 backend 但分 child 的 case 也覆盖；
+- declaration-shadowed 负向必须复用真实 driver 形态：caller child 同时包含
+  `func.func private @A(...)` declaration 和 `func.call @A(...)`，sibling child 包含唯一
+  `func.func public @A(...)` definition 及 partial producer；precheck 必须跨过 local declaration
+  连接 sibling definition。另覆盖 partial component 上 sibling definition 为零个和多个的
+  unresolved/ambiguous 诊断，不能 crash 或静默截断调用图；
 - 增加 component scope 正向：两个互不连通的 entry/kernel function 使用相同 UB 数值地址，只有
   一个 component 含 partial producer、另一个含 TSTORE，不得因 module-wide 全局扫描而误拒绝；
 - 增加 partition scope 正向：partial producer/TSTORE component 完全位于 child A，child B 是
   独立 non-partial component（即使复用地址）时，不得被 precheck 误拒绝；full-valid component
-  跨 child 也不因本规则失败；
+  通过 local declaration 唯一解析到 sibling public definition 并跨 child 时，也不因本规则失败；
 - production/test build 使用同一规则；不存在 hidden option、test-only module attribute 或
   canonical fixture escape。
 
@@ -1469,7 +1522,7 @@ PTOBC v0 兼容测试单列，不并入普通 MLIR bytecode 假设：
 - 两个 dst 的 consumer 位于不同 block/loop 时 liveness 都正确；
 - legacy/modern planner 都为两个 live destination 分配不重叠范围；
 - source/dst0/dst1 的 subview overlap 被拒绝；
-- driver input provenance helper 位于 generic verification 之后、main pass manager 之前；
+- driver input provenance helper 位于 generic verification 之后、`preInlinePlanningPM` 之前；
   declared tile、tassign、tpop 及其 view chain 在两个 planner 运行前均被拒绝；静态
   alloc-backed 正向 case 继续进入对应 planner；
 - level3 三组 pair 分别使用同一动态 `%base` 时拒绝，`%base + constant` 的动态派生地址也
@@ -1477,13 +1530,18 @@ PTOBC v0 兼容测试单列，不并入普通 MLIR bytecode 假设：
 - post-planning helper 覆盖 direct/view/same-address allocation/partial-overlap TSTORE；同一
   direct-call graph component 内任意相交都拒绝，不做 branch/loop/interprocedural summary
   dataflow，也不因 full overwrite 清除；unresolved TSTORE source range 同样保守拒绝；
+- pipeline-order 回归固定 `preInlinePlanningPM -> post-planning helper -> postValidationPM`；普通
+  codegen 和 `--emit-pto-ir` 对相同输入共享检查点，且 diagnostic/IR dump 证明 helper 运行时
+  `PTOInlineBackendHelpersPass` 尚未执行；
 - 跨函数 `_post_planning_safety` 回归覆盖 callee-producer/caller-store、caller-producer/callee-store、
   三级 transitive call、block-argument unresolved source，以及 indirect/external/unresolved callee
   拒绝；另有 disconnected entry components 同址正向，锁定检查不能退化为 module-wide 地址并集；
 - mixed-backend `_pre_partition_safety` 回归在 `collectChildJobs()` 之前覆盖跨 child partial
   producer/TSTORE、反向调用、三级跨 child component 和同 backend 分 child 拒绝；child A/B 的
-  cloned declaration 不得成为绕过证据；partial component 单 child、full-valid cross-child 和
-  disconnected same-address child 正向通过；
+  cloned declaration 不得成为绕过证据；caller child 已有 private declaration 时，必须按 exact
+  final-link symbol 唯一解析到 sibling public definition；partial component 上的零/多匹配稳定失败；
+  partial component 单 child、经唯一 declaration 解析的 full-valid cross-child 和 disconnected
+  same-address child 正向通过；
 - 独立 GraphSync `_gss` 回归覆盖：同址不同
   `AllocTileOp` root 产生 MTE2-to-V WAW 和 V-to-MTE3 RAW；静态 physical range 部分重叠也产生
   同步；不重叠 range 不产生误同步；相同数字地址但不同 address space 不冲突。该 test 必须
@@ -1571,8 +1629,10 @@ full-store group 必须经过完整链路，partial-valid group 必须保留明�
 - PTOAS unit/lit 全量通过；
 - A3/A5 compile-only；
 - post-planning safety helper 的 direct/view/same-address/partial-overlap/unresolved-range 和
-  interprocedural call-component 正负向回归通过；production/test build 没有行为差异；GraphSync `_gss`
-  exact/overlap/disjoint/different-address-space 回归通过；
+  interprocedural call-component 正负向回归通过；普通 codegen 与 `--emit-pto-ir` 共用
+  `PTOResolveBufferSelect` 后、`PTOInlineBackendHelpersPass` 前的检查点；declaration-shadowed
+  mixed-backend call 与 sibling zero/unique/ambiguous resolution 回归通过；production/test build
+  没有行为差异；GraphSync `_gss` exact/overlap/disjoint/different-address-space 回归通过；
 - capability validation 的正负向 lit 全部通过；CPU backend 存在时执行 CPU-sim 双输出
   数值测试，缺失时 manifest 明确标记 unsupported 并链接 upstream dependency，不伪造
   simulator coverage；cost-model 同理；
@@ -1587,7 +1647,7 @@ full-store group 必须经过完整链路，partial-valid group 必须保留明�
 |---|---|---|
 | 0 | rebase、逐 target pin/backend 探测、CMake manifest 生成与 driver 注入 | NPU probe 生成正向 capability；CPU/cost-model 失败生成稳定负向 capability；manifest path/root/revision 校验可执行 |
 | 1 | 扩展 `TExtractOp` ODS ranges、inherent-property schema validator/form classifier、custom assembly、精确兼容 builder/accessor、DPS、pipe、effects、PTOBC shim | property conversion、generated invariants、custom verifier 各阶段负向测试不崩溃；src=0/2 等可到达 classifier 的 schema 稳定失败且 effects 保守；旧 C++ API compile-only、legacy/new parse-print、binding、v0 bytecode 兼容和 range-based adaptor 编译测试通过，且没有新增 op 名 |
-| 2 | shared emitted-dimension helper、A5 partial-valid physical-stride gate、IR verifier，以及 driver input-provenance/post-planning-safety helper | 架构矩阵包含 A3/A5/VPTO `32/13` counterexample；A5 gate diagnostic 可执行；bounds、direct/alias/cross-function/cross-child TSTORE、closed call-component、partition precheck、provenance、动态/静态地址 lit 通过，且没有新增 validation pass/test escape |
+| 2 | shared emitted-dimension helper、A5 partial-valid physical-stride gate、IR verifier，以及 driver input-provenance/post-planning-safety helper | 架构矩阵包含 A3/A5/VPTO `32/13` counterexample；A5 gate diagnostic 可执行；main pipeline 在 resolve-buffer-select 后、backend-helper inline 前拆分并检查；bounds、direct/alias/cross-function/cross-child TSTORE、closed call-component、declaration-shadowed sibling resolution、partition precheck、provenance、动态/静态地址 lit 通过，且没有新增 validation pass/test escape |
 | 3 | no-alias、GraphSync `AllocTileOp` single-address model 与 planner/GSS 回归 | 三组 alias 被拒绝，declared/tpop provenance 在 planner 前失败，动态 level3 地址失败，双输出 liveness 正确，同址/overlap/disjoint/address-space GSS edge 正确 |
 | 4 | EmitC pattern | A3/A5 精确文本与 pin compile-only 通过 |
 | 5 | A5 TileLib/VPTO template 与 Python facade | physical-stride/stride gate、aligned/unaligned/tail/enabled-lowp 展开通过；legacy free function/property/constructor smoke 通过；NZ+1/FP4 随 gate 开启 |
@@ -1646,11 +1706,14 @@ public syntax；实现只承诺 canonical `pto.textract ins(...) outs(...)` 文�
 - driver post-planning safety helper 能拒绝 direct、view、同址/重叠 allocation alias 和
   unresolved source range 的 partial TSTORE；检查覆盖同一 direct-call graph component 的
   caller/callee/transitive helper，拒绝 indirect/external/unresolved call 隐藏 effects，允许互不连通
-  component 复用地址；该 component 级保守规则没有 test-only escape；
+  component 复用地址；helper 固定运行在 `PTOResolveBufferSelect` 后、
+  `PTOInlineBackendHelpersPass` 前，普通 codegen 与 `--emit-pto-ir` 共用该切点；该 component 级
+  保守规则没有 test-only escape；
 - backend-partitioned outer module 在 child 拆分前完成 component precheck；含 partial producer
-  的 component 跨 child 时稳定拒绝，不能依赖 child declaration 或最终链接阶段补救；完全位于
-  单 child 的 partial component、full-valid cross-child component 和 disconnected child component
-  保持各自既定规则；
+  的 component 跨 child 时稳定拒绝；local declaration 必须按 exact final-link symbol 穿透到唯一
+  sibling public definition，零/多匹配在 partial component 上稳定失败，不能依赖 child declaration
+  或最终链接阶段补救；完全位于单 child 的 partial component、full-valid cross-child component 和
+  disconnected child component 保持各自既定规则；
 - A3/A5 至少各有一条 full-valid 端到端双输出数值链路；partial-valid/odd/`1x1` 只计入
   通过 simulator UB dump 或独立 raw-buffer harness 观测的 UB-only TEXTRACT
   coverage，不能直接进入 generic NZ TSTORE；NPU partial coverage 必须实际导出并逐 byte 比较
