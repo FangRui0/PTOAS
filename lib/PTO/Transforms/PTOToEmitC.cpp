@@ -6894,32 +6894,6 @@ struct PTOTAddToTADD : public OpConversionPattern<pto::TAddOp> {
   }
 };
 
-//===----------------------------------------------------------------------===//
-// pto.taddrelu lowering -> TADD(dst, src0, src1); TRELU(dst, dst)
-//===----------------------------------------------------------------------===//
-
-struct PTOTAddReluToEmitC : public OpConversionPattern<pto::TAddReluOp> {
-  using OpConversionPattern<pto::TAddReluOp>::OpConversionPattern;
-
-  LogicalResult matchAndRewrite(pto::TAddReluOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    Value src0 = adaptor.getSrc0();
-    Value src1 = adaptor.getSrc1();
-    Value dst = adaptor.getDst();
-
-    // PTO-ISA exposes the fused conversion variant but no f32->f32 TADDRELU
-    // interface, so preserve taddrelu semantics with its two public ops.
-    createLastUseAwareOpaqueCall(rewriter, op.getOperation(), TypeRange{},
-                                 "TADD", ValueRange{dst, src0, src1});
-    emitPipeBarrier(rewriter, op.getLoc(), "PIPE_V");
-    createLastUseAwareOpaqueCall(rewriter, op.getOperation(), TypeRange{},
-                                 "TRELU", ValueRange{dst, dst});
-
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
 struct PTOInitializeL2G2LPipeToEmitC
     : public OpConversionPattern<mlir::pto::InitializeL2G2LPipeOp> {
   PTOInitializeL2G2LPipeToEmitC(TypeConverter &typeConverter, MLIRContext *ctx,
@@ -13618,7 +13592,6 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<ReinterpretCastToEmitC>(typeConverter, ctx);
   patterns.add<PTOTAbsToTABS>(typeConverter, ctx);
   patterns.add<PTOTAddToTADD>(typeConverter, ctx);
-  patterns.add<PTOTAddReluToEmitC>(typeConverter, ctx);
   patterns.add<PTOAddSCToTADDSC>(typeConverter, ctx);
   patterns.add<ArithCastOPToEmitC>(typeConverter, ctx);
   patterns.add<ArithTruncIToEmitC>(typeConverter, ctx);
