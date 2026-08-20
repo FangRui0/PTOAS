@@ -89,9 +89,10 @@ lowering、verifier、TileLib template 或回归测试；后续实现拟在同�
     已发布的四/五 operand fixed-width opcode。
 15. backend-partitioned outer module 在 child 拆分前建图；local declaration 必须按 exact final-link
     symbol 穿透到唯一 sibling public definition。outer module 含任一 partial producer 时，首版禁止
-    所有跨 child direct call 和跨 child `peer_func` link（包括与 partial component 不相连的
-    full-valid link），因此 child clone 不会留下需要闭包例外的 sibling declaration 或 peer reserve
-    import；declaration 的零/多 sibling 匹配不能成为调用图终点。只要模块中出现 ND-to-2xNZ form
+    所有跨 child direct call，并在 reserved-buffer resolution 前禁止任意 `peer_func` import（无论
+    同 child、跨 child 或与 partial component 是否连通），因此 child clone 不会留下需要闭包例外的
+    sibling declaration，也不会在 helper 建图后才暴露 peer reserve 同址关系；declaration 的零/多
+    sibling 匹配不能成为调用图终点。只要模块中出现 ND-to-2xNZ form
     且存在 descendant `ModuleOp`，首版就执行 fixed-depth structure guard：根 module body 只能
     包含 immediate backend child，所有 `func.func` 必须直接属于 immediate child，child 内不得再
     嵌套 `ModuleOp`。
@@ -983,26 +984,26 @@ callee 再次表现为 child 内无 body declaration。child helper 因而不能
    `CallOpInterface` 都在拆分前拒绝，即使 opaque site 与 producer 位于不同 direct component 或
    不同 child。诊断列出 producer、caller child/function、local declaration（如有）、callee symbol、
    所有 sibling candidate 及 unresolved/ambiguous/opaque 原因。
-5. `pto.import_reserved_buffer` 不实现 `CallOpInterface`，因此必须作为独立的 peer link 类型处理。
-   对每个 immediate child 直接拥有的 `ImportReservedBufferOp`，按
+5. `pto.import_reserved_buffer` 不实现 `CallOpInterface`，而且会在 post-planning helper 之前由
+   `PTOResolveReservedBuffersPass` 替换为 peer reserve 的同一静态地址并删除。因此只要完整 outer
+   module 或 single compile unit 含任一 partial producer，就必须在 planning/reserved-buffer
+   resolution 前拒绝所有 `ImportReservedBufferOp`，无论 import 与 producer 位于同一 child、不同
+   child 或不同 direct-call component。对每个 immediate child 直接拥有的 `func.func` 内的 import，按
    `findSiblingSourceFunction(..., allowLogicalNameMatch=true, referenceKind="peer_func reference")`
    的 exact-symbol 优先、logical-name 唯一回退规则解析 `peer_func`；private、无 body、零匹配或多匹配
-   都是 unresolved/ambiguous。解析成功的 peer definition owner 与 import 所在 child 不同时，
-   建立 cross-child peer edge，并检查被引用 peer reserve 的名字和 `verifyImportedPeerCloneContract`
-   的 leaf-only 条件。完整 outer module 含 partial producer 时，任一 cross-child peer edge 都必须
-   在 child clone 和 `PTOResolveReservedBuffersPass` 物化地址之前拒绝，即使 peer import 最终会被
-   替换为与 peer reserve 相同的静态地址；不能把它视为 disconnected component 或等待 import 被
-   删除后再检查。outer module 不含 partial producer 时，peer link 保持现有 driver 解析和 clone 语义。
-6. 用解析后的 direct-call 和 peer-link definition edge 收集 weakly connected components。只要完整 outer module 含任一
+   都是 unresolved/ambiguous；解析只用于稳定诊断和证明与现有 driver peer lookup 一致，不能成为
+   partial 场景的放行证据。outer/single compile unit 不含 partial producer 时，peer link 保持现有
+   driver 解析、clone 和 address materialization 语义。
+6. 用解析后的 direct-call definition edge 收集 weakly connected components。只要完整 outer module 含任一
    partial-valid ND-to-2xNZ producer，任何 direct edge 的 caller/callee definition owner 不同就
-   直接拒绝整个 module；peer edge 也适用同一 owner 规则，不以 edge 所在 component 是否含 partial
-   producer 为条件。因此 child A 有独立 partial producer、child B 的 full-valid caller 调用 child C
-   的 full-valid callee，或 child B 通过 `import_reserved_buffer` 引用 child C 的 peer reserve，都拒绝。
+   直接拒绝整个 module；不以 edge 所在 component 是否含 partial producer 为条件。因此 child A
+   有独立 partial producer、child B 的 full-valid caller 调用 child C 的 full-valid callee 也拒绝；
+   任意 child 中的 peer import 已由第 5 项更早、独立地拒绝。
    此规则同样适用于相同 backend 但被拆成不同 child 的情况。它比只拒绝跨 child partial component
    更保守，但保证所有被允许进入 child compilation 的 call 都有当前 compile unit 内带 body 的
-   definition，且不会在 child 中留下跨 child declaration 或 peer import 供 post-planning helper 误判
-   为 opaque/disconnected；child-level call-surface closure 无需信任 clone 前的外层结论或特别处理
-   declaration。
+   definition，且不会在 child 中留下跨 child declaration 或已删除的 peer import 供 post-planning
+   helper 误判为 opaque/disconnected；child-level call-surface closure 无需信任 clone 前的外层结论
+   或特别处理 declaration。
 7. precheck 必须在任何 child clone、callee declaration materialization、peer clone 或 child-level
    `compilePTOASModule()` 之前失败，并报告至少一个 partial producer、caller/callee function 及其
    child/backend、link site 和“backend-partitioned module with partial-valid ND-to-2xNZ does not
@@ -1010,8 +1011,8 @@ callee 再次表现为 child 内无 body declaration。child helper 因而不能
    是否 full-valid，都不能由最终链接阶段、child declaration 或 reserved-buffer address materialization
    补救。
 8. outer module 不含 partial producer 时，本 feature precheck 不限制既有跨 child direct call 或 peer
-   link；其
-   clone/declaration 行为保持 driver 基线语义。outer module 含 partial producer 且通过第 5 项时，
+   link；其 clone/declaration/address-materialization 行为保持 driver 基线语义。outer module 含
+   partial producer 且通过第 4 至 6 项时，
    每个 direct-call component 都完全位于一个 child，仍由该 child 的 post-planning helper 执行
    第 5.3 节的 component-wide range 检查；互不连通 child 可以复用相同数值地址，但仍须通过
    第 4 项的 outer call-surface closure 和第 5 项的 peer-link closure。
@@ -1530,12 +1531,12 @@ PTOAS 当前三个 pin 都早于 8 月 14 日功能提交：
   precheck 必须跨过 local declaration 连接 sibling definition，并按跨 child call 拒绝。另覆盖完整
   outer module 含 partial producer 时，任一 child 的 sibling definition 为零个和多个的
   unresolved/ambiguous 诊断，不能 crash 或静默截断调用图；
-- 增加 mixed-backend peer-link 负向：child A 的 peer function 产生 partial TEXTRACT destination，
-  child B 的 `pto.import_reserved_buffer {peer_func = ...}` 唯一解析到 A 的 peer reserve，并在同址
-  执行 `TSTORE`；outer precheck 必须在 child clone 和 `PTOResolveReservedBuffersPass` 删除 import
-  之前拒绝。该回归必须证明 `ImportReservedBufferOp` 虽然不是 `CallOpInterface`，仍按
-  `peer_func` exact-symbol/logical-name 解析建立跨 child link；还覆盖 zero/ambiguous/private peer
-  lookup，以及无 partial producer 时保留既有 peer clone 行为；
+- 增加 peer-reserve 负向：partial producer 所在 child 既包含同 child `pto.import_reserved_buffer`，
+  也包含跨 child `peer_func` import；两者都必须在 child clone 和 `PTOResolveReservedBuffersPass`
+  删除/materialize import 之前拒绝，即使 import 与 partial producer 不在同一 direct component、也
+  没有显式 `func.call`。该回归必须证明 `ImportReservedBufferOp` 虽然不是 `CallOpInterface`，仍按
+  `peer_func` exact-symbol/logical-name 解析用于稳定诊断；还覆盖 zero/ambiguous/private peer lookup，
+  以及无 partial producer 时保留既有 peer clone/address-materialization 行为；
 - 增加 mixed-backend global-closure 负向：partial producer 在 child A，opaque/unresolved call 在
   direct graph 与其不相连的 child B；必须在拆分前拒绝。增加 structure-guard 负向：immediate
   backend child 下再嵌套 `ModuleOp`（无论 nested module 是否带 backend attr），以及
@@ -1631,8 +1632,8 @@ PTOBC v0 兼容测试单列，不并入普通 MLIR bytecode 假设：
   declaration 时，必须按 exact final-link symbol 唯一解析到 sibling public definition；任一 child 的
   零/多匹配或 opaque call 在 outer module 含 partial producer 时稳定失败；nested `ModuleOp` 和非
   direct-child `func.func` 在 backend/output 路由前稳定失败；`ImportReservedBufferOp` 的跨 child
-  peer link 也必须在 clone/resolve 前拒绝；partial component 单 child 且没有 cross-child direct
-  call/peer link、outer module 无 partial producer 的 full-valid cross-child 和
+  任意 peer import 也必须在 resolve 前拒绝；partial component 单 child 且没有 cross-child direct
+  call 或 peer import、outer module 无 partial producer 的 full-valid cross-child 和
   call-surface-closed 的 disconnected same-address child 正向通过；
 - 独立 GraphSync `_gss` 回归覆盖：同址不同
   `AllocTileOp` root 产生 MTE2-to-V WAW 和 V-to-MTE3 RAW；静态 physical range 部分重叠也产生
@@ -1740,7 +1741,7 @@ full-store group 必须经过完整链路，partial-valid group 必须保留明�
 |---|---|---|
 | 0 | rebase、逐 target pin/backend 探测、CMake manifest 生成与 driver 注入 | NPU probe 生成正向 capability；CPU/cost-model 失败生成稳定负向 capability；manifest path/root/revision 校验可执行 |
 | 1 | 扩展 `TExtractOp` ODS ranges、inherent-property schema validator/form classifier、custom assembly、精确兼容 builder/accessor、DPS、pipe、effects、PTOBC shim | property conversion、generated invariants、custom verifier 各阶段负向测试不崩溃；src=0/2 等可到达 classifier 的 schema 稳定失败且 effects 保守；旧 C++ API compile-only、legacy/new parse-print、binding、v0 bytecode 兼容和 range-based adaptor 编译测试通过，且没有新增 op 名 |
-| 2 | shared emitted-dimension helper、A5 partial-valid physical-stride gate、IR verifier，以及 driver input-provenance/post-planning-safety helper | 架构矩阵包含 A3/A5/VPTO `32/13` counterexample；A5 gate diagnostic 可执行；main pipeline 在 resolve-buffer-select 后、backend-helper inline 前拆分并检查；bounds、direct/alias/cross-function/cross-child TSTORE、compile-unit-wide opaque closure、outer-partial 时所有 cross-child direct call/peer link 拒绝、无条件先行的 fixed-depth backend child guard、declaration-shadowed sibling/peer resolution、partition precheck、provenance、动态/静态地址 lit 通过，且没有新增 validation pass/test escape |
+| 2 | shared emitted-dimension helper、A5 partial-valid physical-stride gate、IR verifier，以及 driver input-provenance/post-planning-safety helper | 架构矩阵包含 A3/A5/VPTO `32/13` counterexample；A5 gate diagnostic 可执行；main pipeline 在 resolve-buffer-select 后、backend-helper inline 前拆分并检查；bounds、direct/alias/cross-function/cross-child TSTORE、compile-unit-wide opaque closure、outer-partial 时所有 cross-child direct call 和任意 peer import 拒绝、无条件先行的 fixed-depth backend child guard、declaration-shadowed sibling/peer resolution、partition precheck、provenance、动态/静态地址 lit 通过，且没有新增 validation pass/test escape |
 | 3 | no-alias、GraphSync `AllocTileOp` single-address model 与 planner/GSS 回归 | 三组 alias 被拒绝，declared/tpop provenance 在 planner 前失败，动态 level3 地址失败，双输出 liveness 正确，同址/overlap/disjoint/address-space GSS edge 正确 |
 | 4 | EmitC pattern | A3/A5 精确文本与 pin compile-only 通过 |
 | 5 | A5 TileLib/VPTO template 与 Python facade | physical-stride/stride gate、aligned/unaligned/tail/enabled-lowp 展开通过；legacy free function/property/constructor smoke 通过；NZ+1/FP4 随 gate 开启 |
@@ -1809,11 +1810,11 @@ public syntax；实现只承诺 canonical `pto.textract ins(...) outs(...)` 文�
   混合的根结构在所有 output mode 下稳定拒绝。通过 guard 的 backend-partitioned outer module 在
   child 拆分前完成 component precheck；local declaration 必须按 exact final-link symbol 穿透到唯一
   sibling public definition，`peer_func` 必须按 driver 的 exact/logical peer resolution 解析。outer
-  module 含 partial producer 时，任意 child 中零/多匹配、opaque call，或任何解析后的 cross-child
-  direct call/peer link 都稳定失败，即使该 link full-valid 且与 partial component 不连通；不能依赖
-  child declaration、peer clone、reserved-buffer address materialization、outer 预解析结果或最终链接
-  阶段补救。outer module 无 partial producer 时，既有 full-valid cross-child direct call/peer link
-  行为保持不变；完全位于单 child 且没有跨 child direct call/peer link 的 partial component，以及
+  module 含 partial producer 时，任意 child 中零/多匹配、opaque call、任何解析后的 cross-child
+  direct call，或任意 `ImportReservedBufferOp` 都稳定失败，即使 link full-valid 且与 partial
+  component 不连通；不能依赖 child declaration、peer clone、reserved-buffer address materialization、
+  outer 预解析结果或最终链接阶段补救。outer module 无 partial producer 时，既有 full-valid cross-child
+  direct call/peer link 行为保持不变；完全位于单 child 且没有跨 child direct call 或 peer import 的 partial component，以及
   call-surface-closed 的 disconnected child component 保持各自既定规则；
 - A3/A5 至少各有一条 full-valid 端到端双输出数值链路；partial-valid/odd/`1x1` 只计入
   通过 simulator UB dump 或独立 raw-buffer harness 观测的 UB-only TEXTRACT
