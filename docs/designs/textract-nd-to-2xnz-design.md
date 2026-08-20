@@ -384,10 +384,14 @@ driver 注入的 codegen environment/capability contract：
   `unknown` 并输出 IR；任何 EmitC/VPTO strict final-codegen path 都必须要求该文件并失败。
 - 在 generic `mlir::verify` 之后、EmitC/VPTO 最终 lowering 之前由 driver 直接调用普通
   capability validation helper；不得为该检查注册 MLIR pass。helper 只对被 `TExtractOp`
-  form classifier 判定为 ND-to-2xNZ 的 `pto.textract` 查询已注入 entry；
-  environment unknown、entry 缺失或 capability 为 false 时，报告 backend、environment、
-  arch、required capability、PTO-ISA revision、manifest path 和 probe 诊断，不把错误延迟到
-  C++ 模板实例化。
+  form classifier 判定为 ND-to-2xNZ 的 `pto.textract` 查询已注入 entry，并按两个 destination
+  的 compact mode 计算完整 required-capability 集合：始终要求
+  `textract.nd_to_2xnz`；若 `dst0` 或 `dst1` 任一为 `CompactMode::RowPlusOne`，再额外要求
+  `textract.nd_to_2xnz.row_plus_one`。因此 plain+plain 只查询通用 key，而 plain+RowPlusOne
+  和 RowPlusOne+RowPlusOne 必须同时查询两个 key；不能用通用 key 的 `true` 推导子 capability
+  已支持。required 集合中的任一 key 缺失或为 `false` 都必须拒绝，并报告 backend、environment、
+  arch、完整 required-capability 集合、PTO-ISA revision、manifest path 和 probe 诊断，不把错误
+  延迟到 C++ 模板实例化。
 - CPU-sim 和 cost-model 的 probe 失败时分别记录缺少的
   `TEXTRACT_ND2XNZ_IMPL`/七参数 wrapper，并写入 `false` capability。只有 probe 成功且对应
   pin 同时包含 implementation 与（cost-model 所需的）latency model，才能放行。
@@ -1041,12 +1045,14 @@ callee 再次表现为 child 内无 body declaration。child helper 因而不能
   ND-to-2xNZ 的两个 destination 都拒绝 `RowPlusOne`。只有本节的完整 gate 同时满足后，才允许
   一边 plain NZ、另一边 NZ+1，或两边都使用 NZ+1。
 
-当前实现不是单纯缺少 emitted Tile type adapter。对 ColMajor NZ，`PTOResolveBufferSelect` 的
-subview `colStride` 仍使用不含 virtual row 的 `innerRows`；legacy/modern PlanMemory、InsertSync
-和 GraphSync 又各自使用“最后一个 major slice 不带 trailing gap”的
-`(major - 1) * (minor + 1) + minor` footprint。若 EmitC/PTO-ISA `TileData::Rows` 单独改成
-`physicalRows + 1`，TSTORE 会按完整 padded physical extent 访问，地址和 allocation footprint
-立即分叉。
+当前问题不是 `PTOResolveBufferSelect` 的 subview offset 错误。基线对 ColMajor NZ
+`RowPlusOne` 已使用 `shape[0] + 1` 的 `colStride`；因此 A5 `f16 16x32` 的第二个 block
+当前就应为 `17 * 16 = 272` elements。这个既有结果必须保留，shared helper 接管该路径时
+不得再次加一。真正未统一的是 legacy/modern PlanMemory、InsertSync 和 GraphSync 仍各自使用
+“最后一个 major slice 不带 trailing gap”的
+`(major - 1) * (minor + 1) + minor` footprint，得到 1086 bytes；若 EmitC/PTO-ISA
+`TileData::Rows` 使用完整 `physicalRows + 1`，TSTORE、allocation range 和同步 size 就会
+分叉。
 
 实现必须增加一个共享、checked 的 tile physical-layout helper。它从 `TileBufType` 的 logical
 physical shape、element storage width、B/S layout、fractal 和 compact mode 一次性返回：
@@ -1068,12 +1074,15 @@ footprintBytes       = footprintElems * storageElemBytes
 对该布局的 subview 物化，NZ column-block 使用 helper 返回的
 `colStride = storageRows`；第二个 block 的 offset 是 `colStride * c0`。其他 view 维度的
 `rowStride`/inner stride 也必须来自同一 layout record，不能继续从 `innerRows` 或 logical
-shape 局部推导。于是 `f16 16x32` 的 `colStride=17`，而不是当前的 `16`。
+shape 局部推导。对 `f16 16x32`，该记录必须保留基线已有的 `colStride=17`；`16` 只作为
+回归检测值，不能被 helper 或调用方重新引入。
 
 valid rows 仍是 logical rows，不因 padding 增大。所有乘加都用 checked arithmetic；dynamic、负数、
 不合法 fractal/layout 或溢出返回 failure，不能回退到 product(shape) 或旧 implicit-gap 公式。
 
-以下消费者必须直接调用同一 helper，不得复制公式或再次 `+1`：
+以下消费者必须直接调用同一 helper，不得复制公式或再次 `+1`；对已有正确的 subview stride，
+helper 应返回并复用 `PTOResolveBufferSelect` 当前的 `shape[0] + 1` 结果，而不是在调用方
+再次叠加 padding：
 
 - `PTOResolveBufferSelect` 的 subview 地址物化；
 - legacy/modern PlanMemory 的 allocation/slot footprint；
@@ -1081,11 +1090,11 @@ valid rows 仍是 logical rows，不因 padding 增大。所有乘加都用 chec
 - InsertSync translator 和 GraphSync `getBufferBitSize`；
 - EmitC/TileLib 的 emitted Tile dimensions，以及 PTO-ISA TSTORE source stride。
 
-固定反例为 A5 ColMajor NZ `f16 16x32`、`c0=16`：`storageRows=17`，第二个 NZ block 的
-subview offset 必须是 `17 * 16 = 272` elements（544 bytes），完整 footprint 必须是
-`17 * 32 * 2 = 1088` bytes。现有的 256-element offset 和 1086-byte footprint 都是失败结果；
-相邻 allocation 不得早于 `base + 1088`，semantic range 必须是 `[base, base + 1088)`，GraphSync
-必须记录 8704 bits。
+固定反例为 A5 ColMajor NZ `f16 16x32`、`c0=16`：`storageRows=17`，现有 subview 的第二个
+NZ block offset 必须保持 `17 * 16 = 272` elements（544 bytes），不能回退到 256，也不能因
+helper 接管而重复加一；完整 footprint 必须是 `17 * 32 * 2 = 1088` bytes。基线中 1086-byte
+footprint 是失败结果；相邻 allocation 不得早于 `base + 1088`，semantic range 必须是
+`[base, base + 1088)`，GraphSync 必须记录 8704 bits。
 
 只有上述所有消费者、精确回归、VPTO/EmitC compile 和 A5 `TEXTRACT -> TSTORE` device golden
 同时通过，capability manifest 才能把 ND-to-2xNZ `RowPlusOne` 从 unsupported 改为 supported。
@@ -1269,11 +1278,13 @@ materialization 后仍产生动态地址 select，按同一规则拒绝；只有
 两个 dst 的 liveness 从同一 op 开始，planner 必须分别保留到各自最后一次消费。测试使用
 不同大小和不同最后消费点，固定不能因只读取 `getDpsInits().front()` 而提前复用第二路内存。
 
-现有 legacy/modern planner、sync translator、GraphSync 和 subview materialization 的
-`RowPlusOne` 公式并不等价于 PTO-ISA TSTORE 使用的完整 virtual-row stride，不能作为本 op 的
-既有正确基础。实现必须按第 5.4 节抽取并切换到同一个 shared physical-layout helper；semantic
-range 和 post-planning alias helper 也必须复用它。迁移需要有既有 RowPlusOne 非本 op 回归，防止
-修正 ND-to-2xNZ 时静默改变其他操作的布局语义。
+现有 legacy/modern planner、sync translator 和 GraphSync 的 `RowPlusOne` footprint 公式并不
+等价于 PTO-ISA TSTORE 使用的完整 virtual-row stride，不能作为本 op 的既有正确基础；但
+subview materialization 的 ColMajor NZ `colStride = shape[0] + 1` 与 272-element 第二 block
+offset 已是正确基线。实现必须按第 5.4 节抽取并切换到同一个 shared physical-layout helper，
+同时保留该 subview 结果且禁止调用方重复 `+1`；semantic range 和 post-planning alias helper
+也必须复用同一 footprint。迁移需要有既有 RowPlusOne 非本 op 回归，防止修正 ND-to-2xNZ 时
+静默改变其他操作的布局语义。
 
 增加 `dst0=plain`、`dst1=RowPlusOne` 的 planning、subview、semantic range、InsertSync、GraphSync、
 EmitC 与 full-valid TSTORE 端到端测试，精确证明两路分别使用自己的 stride、footprint 和相邻
@@ -1545,10 +1556,13 @@ PTOAS 当前三个 pin 都早于 8 月 14 日功能提交：
 - level3 下任一 operand 的 `alloc_tile.addr` 含动态 root；
 - 最终 codegen 时 environment unknown、capability manifest 缺失或
   `textract.nd_to_2xnz=false`；
+- manifest 中 `textract.nd_to_2xnz=true` 但
+  `textract.nd_to_2xnz.row_plus_one=false` 或缺失时，plain+RowPlusOne 与
+  RowPlusOne+RowPlusOne 必须拒绝；plain+plain 不应因缺少 RowPlusOne 子 capability 被拒绝；
 - support gate 未满足时使用 FP4 或 RowPlusOne；
 - A5 ColMajor NZ `f16 16x32 RowPlusOne` 在 shared helper 尚未覆盖全部消费者时稳定拒绝；gate
-  解锁回归必须拒绝旧的 second-block offset=256 elements/footprint=1086 bytes，并精确匹配
-  272 elements/1088 bytes；
+  解锁回归必须保留 subview second-block offset=272 elements，并拒绝任何回退到 256 的实现，
+  同时拒绝 footprint=1086 bytes，精确匹配 272 elements/1088 bytes；
 - FP4 gate 打开后，覆盖 raw dimension 合法但 emitted dimension 非法，以及反向边界；
 - `physicalRows=32, validRows=13, validCols >= 2*c0`：A2/A3 与非 A5 VPTO 正向检查第二个
   block offset 为 `32*c0`；A5 partial-valid 必须在 template/verifier gate 稳定拒绝，不能生成
@@ -1672,8 +1686,8 @@ PTOBC v0 兼容测试单列，不并入普通 MLIR bytecode 假设：
 - shared physical-layout helper 回归对 A5 ColMajor NZ `f16 16x32 RowPlusOne` 同时检查：
   `PTOResolveBufferSelect` 的 `colStride=17`、第二 block subview offset=272 elements；legacy/modern PlanMemory 和
   semantic range footprint=1088 bytes；InsertSync/GraphSync size=1088 bytes/8704 bits；EmitC
-  `Tile::Rows=17`，TSTORE block stride=272 elements。任一消费者仍产生 256 或 1086 即保持
-  RowPlusOne capability unsupported；
+  `Tile::Rows=17`，TSTORE block stride=272 elements。subview 产生 256 或 footprint 产生 1086
+  都是回归，任一消费者出现这两种结果即保持 RowPlusOne capability unsupported；
 - call-surface closure 回归覆盖：存在 partial producer 时，opaque/indirect/external/unresolved call
   位于相同或任意 disconnected direct component 都拒绝；尤其覆盖一个 caller 中两次
   `func.call_indirect` 潜在连接 producer/TSTORE 的反例。无 opaque call 的 disconnected
@@ -1792,7 +1806,9 @@ full-store group 必须经过完整链路，partial-valid group 必须保留明�
   mixed-backend call、sibling zero/unique/ambiguous resolution、compile-unit-wide opaque closure 和
   fixed-depth nested-child rejection 回归通过；production/test build 没有行为差异；GraphSync `_gss`
   exact/overlap/disjoint/different-address-space 回归通过；
-- capability validation 的正负向 lit 全部通过；CPU backend 存在时执行 CPU-sim 双输出
+- capability validation 的正负向 lit 全部通过，包含通用 capability 为 true 而
+  `textract.nd_to_2xnz.row_plus_one` 缺失/为 false 时对 RowPlusOne form 的拒绝，以及 plain+plain
+  不受该子 capability 缺失影响；CPU backend 存在时执行 CPU-sim 双输出
   数值测试，缺失时 manifest 明确标记 unsupported 并链接 upstream dependency，不伪造
   simulator coverage；cost-model 同理；
 - A3/A5 至少执行必选 NPU ST，并在 PR 中记录设备、PTO-ISA revision 和命令；FP4、
