@@ -76,8 +76,9 @@ lowering、verifier、TileLib template 或回归测试；后续实现拟在同�
     支持；driver 的 post-planning safety helper 按静态 physical range 而不是 SSA use chain，
     在同一 direct-call graph component 内拒绝 partial destination 的所有 alias TSTORE，不能因
     producer 和 TSTORE 位于不同函数而漏检。helper 固定运行在 resolve-buffer-select 后、
-    backend-helper inlining 前；普通 codegen 与 `--emit-pto-ir` 共用该切点。首版没有 test-only
-    escape hatch。
+    backend-helper inlining 前；普通 codegen 与 `--emit-pto-ir` 共用该切点。任一 partial producer
+    存在时，整个 compile unit 的 call surface 还必须闭合；opaque/external call 不能以位于另一个
+    direct component 为由绕过检查。首版没有 test-only escape hatch。
 12. CPU-sim、cost-model 和其他 optional backend 对该 overload 的 unsupported 判断必须来自 driver 注入的
     capability manifest，并在最终 backend lowering 前失败，不能依赖后期 C++ 实例化。
 13. GraphSyncSolver 必须为普通 `AllocTileOp` 建立基于静态 `addr`、physical footprint 和
@@ -88,7 +89,8 @@ lowering、verifier、TileLib template 或回归测试；后续实现拟在同�
     已发布的四/五 operand fixed-width opcode。
 15. backend-partitioned outer module 在 child 拆分前建图；local declaration 必须按 exact final-link
     symbol 穿透到唯一 sibling public definition。含 partial producer 的 component 首版禁止跨 child，
-    declaration 的零/多 sibling 匹配不能成为调用图终点。
+    declaration 的零/多 sibling 匹配不能成为调用图终点。首版只接受 fixed-depth container：所有
+    `func.func` 必须直接属于 immediate backend child，child 内不得再嵌套 `ModuleOp`。
 
 ## 3. PTO-ISA 真实契约
 
@@ -200,13 +202,15 @@ destination in the same call component; undefined NZ padding cannot be stored
 ```
 
 首版故意不提供 CMake test hook、hidden CLI flag 或输入 IR attribute escape。post-planning
-helper 采用调用图分量级保守规则：只要同一 direct-call graph weakly connected component 内任一
-`TStoreOp.src` 的 physical range 与 partial destination 相交就拒绝，不考虑函数内文本顺序、
-caller/callee 方向、控制流支配关系或中间的 full overwrite。含 partial producer 的分量若存在
-`func.call_indirect`、external/unresolved direct callee 或无法解析 range 的 TSTORE source，也
-保守拒绝；互不连通的独立 kernel/function component 可以复用相同数值的 UB 地址。这会过拒绝
-少量理论上可证明安全的程序，但避免为首版引入任何新的 interprocedural CFG/dataflow validation
-pass、call-summary fixed point 和测试专用语义。
+helper 对已闭合的 direct-call graph 采用分量级 range 规则：只要同一 weakly connected component
+内任一 `TStoreOp.src` 的 physical range 与 partial destination 相交就拒绝，不考虑函数内文本
+顺序、caller/callee 方向、控制流支配关系或中间的 full overwrite。闭包检查本身更保守：只要
+compile unit 中存在任一 partial producer，就扫描所有函数并拒绝任意位置的 `func.call_indirect`、
+external/unresolved direct callee 或其他无法解析为 internal definition 的 `CallOpInterface`；这些
+调用被视为可能连接任意 direct component，不能因 opaque site 与 partial producer 暂时位于不同
+component 而放行。闭包成功后，互不连通的独立 kernel/function component 仍可复用相同数值的
+UB 地址。这会过拒绝少量理论上可证明安全的程序，但避免为首版引入任何新的 interprocedural
+CFG/dataflow validation pass、indirect-target analysis、call-summary fixed point 和测试专用语义。
 
 NPU partial-valid 覆盖若需要导出 UB，必须使用独立 `test/npu_validation` raw-buffer harness，
 通过 backend-native UB-to-GM byte copy 导出 physical footprint 和紧贴其前后的 redzone；该
@@ -906,14 +910,19 @@ golden，才能无条件放行动态/非对齐 index。FP4 未通过第 3.5 节�
 4. 任一 TSTORE source static range 与任一 partial destination range 相交即拒绝。TSTORE source
    是 block argument/call operand 派生值而无法解析为唯一 static absolute range 时也保守拒绝；
    首版不为此建立 argument-effect/range summary fixed point。
-5. 含 partial producer 的 component 必须是 closed direct-call component。component 中出现
-   `func.call_indirect`、callee declaration/external function、无法解析的 direct callee symbol 或
-   除已解析 internal `func.call` 之外的 `CallOpInterface` 时拒绝，因为其 body 可能隐藏 alias
-   TSTORE。诊断必须指出 producer function、call site/callee 和无法证明 closed 的原因。
-6. component 之间不比较 physical ranges；两个没有调用关系的独立 entry/kernel 可以合法复用
-   相同数值的 UB 地址。component 内则与操作文本顺序、caller/callee 方向、CFG、dominance 和
-   full overwrite 无关：即使 TSTORE 位于调用前、producer 位于 callee、TSTORE 位于 caller，
-   或中间存在完整覆盖，只要 static range 相交仍拒绝。
+5. helper 先判断 compile unit 是否含任一 partial producer。若有，则 call-surface closure 是
+   compile-unit-wide 条件：扫描所有函数中的 call-like op，`func.call` 必须唯一解析到本 compile
+   unit 中带 body 的 internal definition；任意 `func.call_indirect`、callee declaration/external
+   function、无法解析的 direct callee symbol，或除已解析 internal `func.call` 之外的
+   `CallOpInterface` 都拒绝。opaque call 等价于一条可能连接调用者与任意 function component 的
+   hyper-edge；首版不做 function-pointer target/signature/address-taken 分析，因此不能只检查
+   opaque site 当前所属的 direct component。诊断必须同时指出至少一个 partial producer function、
+   opaque call site/callee、二者当前 direct component（可相同或不同）及无法证明 closed 的原因。
+6. 只有第 5 项的 module-wide closure 成功后，component 之间才不比较 physical ranges；两个没有
+   调用关系的独立 entry/kernel 可以合法复用相同数值的 UB 地址。component 内则与操作文本顺序、
+   caller/callee 方向、CFG、dominance 和 full overwrite 无关：即使 TSTORE 位于调用前、producer
+   位于 callee、TSTORE 位于 caller，或中间存在完整覆盖，只要 static range 相交仍拒绝。compile
+   unit 没有 partial producer 时，本 helper 不因 opaque call 单独失败。
 7. alias 诊断必须同时指出 producer function、TSTORE function 和两个 half-open physical ranges：
 
    ```text
@@ -935,39 +944,53 @@ caller/TSTORE 在 child B 时，两个 child 都看不到完整的 partial/TSTOR
 
 首版选择在拆分前增加一个普通 driver precheck，而不是传递跨 child range/effect summary：
 
-1. 在 `runPTOASJobs()` 调用 `collectChildJobs()`/`buildBackendChildCompileUnit()` 之前，对完整
-   outer module 的 function definitions 建立 direct `func.call` graph，并记录每个 definition 的
-   immediate child owner。不能用 `SymbolTable::lookupNearestSymbolFrom()` 的普通结果直接建图：
-   nested child 是独立 symbol table，caller child 中同名的 private declaration 会先被命中。
-2. 每个 direct call 按最终链接符号规则解析。local lookup 命中带 body 的 definition 时连接该
+1. 当 backend-partitioned outer module 含任一 ND-to-2xNZ form 时，先执行 fixed-depth structure
+   guard；它位于 `runPTOASJobs()` 的 single/mixed backend 分支及任何 user-visible IR output 分支
+   之前。outer body 只包含 immediate backend child `ModuleOp`；每个 child 下不得再出现 descendant
+   `ModuleOp`，且每个 descendant `func.func` 的直接 parent 必须就是该 child。违反任一条件都拒绝，
+   诊断指出 offending op、最近的 immediate child 和
+   “backend-partitioned ND-to-2xNZ validation does not support nested module/function scope”。首版不
+   递归编译、提升或猜测 nested symbol ownership；没有 ND-to-2xNZ form 的既有输入不受该 feature
+   guard 影响。递归 walk 只用于发现并拒绝 invalid nesting，不得把 nested function 纳入 owner、
+   symbol resolution、call graph 或 compile coverage。
+2. 通过 structure guard 后，在 `collectChildJobs()`/`buildBackendChildCompileUnit()` 之前，仅收集
+   immediate child 直接拥有的 function definitions 建立 direct `func.call` graph；每个 definition
+   的 owner 就是其直接 parent child，不能递归收集。也不能用
+   `SymbolTable::lookupNearestSymbolFrom()` 的普通结果直接建图：caller child 中同名的 private
+   declaration 会先被命中。
+3. 每个 direct call 按最终链接符号规则解析。local lookup 命中带 body 的 definition 时连接该
    definition；local lookup 缺失或只命中 declaration 时，declaration 不是 graph node 或 terminal，
-   precheck 必须扫描 sibling children，忽略 private symbol 和无 body declaration，并按 exact
-   callee symbol name 查找唯一 public/non-private definition。当前 direct `func.call` child assembly
-   不使用 logical-name fallback；该解析应与 `findSiblingSourceFunction(...,
+   precheck 必须扫描 immediate sibling children 的 direct functions，忽略 private symbol 和无 body
+   declaration，并按 exact callee symbol name 查找唯一 public/non-private definition。当前 direct
+   `func.call` child assembly 不使用 logical-name fallback；该解析应与 `findSiblingSourceFunction(...,
    allowLogicalNameMatch=false)` 抽取或共享同一 helper，避免 precheck 与最终 child assembly 漂移。
    后续若 driver 改变最终链接名规则，两处必须同步修改。
-3. sibling definition 恰有一个时，call edge 直接连接到该 definition，即使 caller child 已有同名
+4. sibling definition 恰有一个时，call edge 直接连接到该 definition，即使 caller child 已有同名
    private declaration、后续 child assembly 因 declaration 已存在而不再 clone。零个匹配记录为
-   unresolved；多个 exact public definitions 记录为 ambiguous，并保留全部 candidate owner 供
-   partial reachability 的保守判定。只要 unresolved/ambiguous call 所在的 provisional component
-   含 partial producer，就稳定拒绝，不能把本地 declaration 当成 opaque terminal 后继续 child
-   检查；诊断列出 caller child/function、local declaration（如有）、callee symbol、所有 sibling
-   candidate 及 unresolved/ambiguous 原因。
-4. 用解析后的 definition edge 收集 weakly connected components。component 中只要存在
+   unresolved；多个 exact public definitions 记录为 ambiguous。完整 outer module 含任一 partial
+   producer 时，第 5.3.1 节的 call-surface closure 同样作用于所有 immediate child functions：任一
+   child 中的 unresolved/ambiguous direct call、`func.call_indirect` 或其他 opaque
+   `CallOpInterface` 都在拆分前拒绝，即使 opaque site 与 producer 位于不同 direct component 或
+   不同 child。诊断列出 producer、caller child/function、local declaration（如有）、callee symbol、
+   所有 sibling candidate 及 unresolved/ambiguous/opaque 原因。
+5. 用解析后的 definition edge 收集 weakly connected components。component 中只要存在
    partial-valid ND-to-2xNZ producer，且 definition owner 集合包含两个或更多 child，就直接拒绝
    整个 module。即便目前没有发现 TSTORE、TSTORE 位于 caller 侧、或两个 child 使用相同 backend，
    也必须拒绝；这是首版对跨 compile-unit definedness 的保守边界。
-5. precheck 必须在任何 child clone、callee declaration materialization 或 child-level
+6. precheck 必须在任何 child clone、callee declaration materialization 或 child-level
    `compilePTOASModule()` 之前失败，并报告 producer function、跨越的 child/backend、call site
    和“partial-valid destination cannot cross backend child compile units”。这样不会把 opaque
    declaration 当作已经完成 alias 检查，也不会把同一 component 拆成两个看似独立的检查域。
-6. component 完全属于一个 child 时，仍由该 child 的 post-planning helper 执行第 5.3 节的
+7. component 完全属于一个 child 时，仍由该 child 的 post-planning helper 执行第 5.3 节的
    component-wide range 检查。没有 partial producer 的跨 child component 不受此规则影响；两个
-   disconnected child component 复用相同数值地址仍按第 5.3 节的 component scope 规则处理。
-7. 该 precheck 是 driver 普通函数，不注册 MLIR pass，也不改变 `compilePTOASModule()` 的
+   disconnected child component 只有在完整 outer call surface 闭合时才能复用相同数值地址，仍按
+   第 5.3 节的 component scope 规则处理。
+8. 该 precheck 是 driver 普通函数，不注册 MLIR pass，也不改变 `compilePTOASModule()` 的
    单 child 契约。后续若要支持跨 child partial component，必须先定义 producer/TSTORE physical
    range、call argument provenance、backend ownership 和 opaque-call effects 的稳定 summary
-   协议，再删除本首版拒绝规则。
+   协议；后续若要支持 nested child，还必须统一升级 `isBackendPartitionedContainer`、sibling symbol
+   resolution、`collectChildJobs`、object compile 的 `collectSharedPipelineFunctions` 和递归 codegen，
+   再删除本首版拒绝规则。
 
 ### 5.4 compact mode
 
@@ -1450,8 +1473,14 @@ PTOAS 当前三个 pin 都早于 8 月 14 日功能提交：
   或中间存在 overwrite，首版 component 级保守规则仍拒绝；
 - 增加跨函数负向：callee 产生 partial、caller 用同址 allocation TSTORE；caller 产生 partial、
   direct callee TSTORE；`entry -> helper -> leaf` 三级调用中 producer/TSTORE 分居两端；tile block
-  argument 使 TSTORE source range unresolved；含 partial producer 的 component 存在 indirect、
-  external 或 unresolved call；这些 case 都必须在 post-planning helper 稳定失败；
+  argument 使 TSTORE source range unresolved；compile unit 存在 partial producer 时，任意 direct
+  component 中存在 indirect、external、unresolved direct call 或其他 opaque `CallOpInterface`；
+  这些 case 都必须在 post-planning helper 稳定失败；
+- 固定覆盖 opaque 跨 component 反例：`@entry` 通过两个 `func.call_indirect` 分别潜在调用
+  partial producer function 和同址 TSTORE function，三者在 direct-call graph 中没有 edge；以及
+  opaque/external call 位于与 partial producer 完全 disconnected 的第四个 function。两例都必须由
+  compile-unit-wide closure 拒绝。另加无 partial producer 但存在 opaque call 的非回归，证明本
+  feature helper 不无条件禁止既有 indirect-call IR；
 - 对同一跨函数负向分别运行普通 codegen 和 `--emit-pto-ir`，两者必须在
   `PTOInlineBackendHelpersPass` 前从相同、尚未 inline 的 function component 得到同一类别诊断；
   另加一个会被该 pass inline 的 backend-helper call case，证明检查不是在 main pipeline 整体运行后
@@ -1463,10 +1492,18 @@ PTOAS 当前三个 pin 都早于 8 月 14 日功能提交：
 - declaration-shadowed 负向必须复用真实 driver 形态：caller child 同时包含
   `func.func private @A(...)` declaration 和 `func.call @A(...)`，sibling child 包含唯一
   `func.func public @A(...)` definition 及 partial producer；precheck 必须跨过 local declaration
-  连接 sibling definition。另覆盖 partial component 上 sibling definition 为零个和多个的
-  unresolved/ambiguous 诊断，不能 crash 或静默截断调用图；
+  连接 sibling definition。另覆盖完整 outer module 含 partial producer 时，任一 child 的 sibling
+  definition 为零个和多个的 unresolved/ambiguous 诊断，不能 crash 或静默截断调用图；
+- 增加 mixed-backend global-closure 负向：partial producer 在 child A，opaque/unresolved call 在
+  direct graph 与其不相连的 child B；必须在拆分前拒绝。增加 structure-guard 负向：immediate
+  backend child 下再嵌套 `ModuleOp`（无论 nested module 是否带 backend attr），以及
+  `func.func` 不是 immediate child 的 direct op；普通 object codegen 与 user-visible IR output 都
+  必须在 child clone/pipeline 前得到 fixed-depth diagnostic，不能静默漏掉 nested producer/TSTORE。
+  fixed-depth direct-function case 正向通过；不含 ND-to-2xNZ form 的既有 nested input 不得新增该
+  feature diagnostic；
 - 增加 component scope 正向：两个互不连通的 entry/kernel function 使用相同 UB 数值地址，只有
-  一个 component 含 partial producer、另一个含 TSTORE，不得因 module-wide 全局扫描而误拒绝；
+  一个 component 含 partial producer、另一个含 TSTORE，且整个 compile unit 不含 opaque/external/
+  unresolved call；不得因 range 检查退化为 module-wide 地址并集而误拒绝；
 - 增加 partition scope 正向：partial producer/TSTORE component 完全位于 child A，child B 是
   独立 non-partial component（即使复用地址）时，不得被 precheck 误拒绝；full-valid component
   通过 local declaration 唯一解析到 sibling public definition 并跨 child 时，也不因本规则失败；
@@ -1530,18 +1567,25 @@ PTOBC v0 兼容测试单列，不并入普通 MLIR bytecode 假设：
 - post-planning helper 覆盖 direct/view/same-address allocation/partial-overlap TSTORE；同一
   direct-call graph component 内任意相交都拒绝，不做 branch/loop/interprocedural summary
   dataflow，也不因 full overwrite 清除；unresolved TSTORE source range 同样保守拒绝；
+- call-surface closure 回归覆盖：存在 partial producer 时，opaque/indirect/external/unresolved call
+  位于相同或任意 disconnected direct component 都拒绝；尤其覆盖一个 caller 中两次
+  `func.call_indirect` 潜在连接 producer/TSTORE 的反例。无 opaque call 的 disconnected
+  same-address components 继续通过，无 partial producer 的既有 opaque-call module 不因本 helper
+  失败；
 - pipeline-order 回归固定 `preInlinePlanningPM -> post-planning helper -> postValidationPM`；普通
   codegen 和 `--emit-pto-ir` 对相同输入共享检查点，且 diagnostic/IR dump 证明 helper 运行时
   `PTOInlineBackendHelpersPass` 尚未执行；
 - 跨函数 `_post_planning_safety` 回归覆盖 callee-producer/caller-store、caller-producer/callee-store、
-  三级 transitive call、block-argument unresolved source，以及 indirect/external/unresolved callee
-  拒绝；另有 disconnected entry components 同址正向，锁定检查不能退化为 module-wide 地址并集；
+  三级 transitive call、block-argument unresolved source，以及 compile-unit-wide
+  indirect/external/unresolved callee 拒绝；另有 call-surface-closed 的 disconnected entry
+  components 同址正向，锁定 range 检查不能退化为 module-wide 地址并集；
 - mixed-backend `_pre_partition_safety` 回归在 `collectChildJobs()` 之前覆盖跨 child partial
   producer/TSTORE、反向调用、三级跨 child component 和同 backend 分 child 拒绝；child A/B 的
   cloned declaration 不得成为绕过证据；caller child 已有 private declaration 时，必须按 exact
-  final-link symbol 唯一解析到 sibling public definition；partial component 上的零/多匹配稳定失败；
-  partial component 单 child、经唯一 declaration 解析的 full-valid cross-child 和 disconnected
-  same-address child 正向通过；
+  final-link symbol 唯一解析到 sibling public definition；任一 child 的零/多匹配或 opaque call 在
+  outer module 含 partial producer 时稳定失败；nested `ModuleOp` 和非 direct-child `func.func` 在
+  backend/output 路由前稳定失败；partial component 单 child、经唯一 declaration 解析的 full-valid
+  cross-child 和 call-surface-closed 的 disconnected same-address child 正向通过；
 - 独立 GraphSync `_gss` 回归覆盖：同址不同
   `AllocTileOp` root 产生 MTE2-to-V WAW 和 V-to-MTE3 RAW；静态 physical range 部分重叠也产生
   同步；不重叠 range 不产生误同步；相同数字地址但不同 address space 不冲突。该 test 必须
@@ -1631,8 +1675,9 @@ full-store group 必须经过完整链路，partial-valid group 必须保留明�
 - post-planning safety helper 的 direct/view/same-address/partial-overlap/unresolved-range 和
   interprocedural call-component 正负向回归通过；普通 codegen 与 `--emit-pto-ir` 共用
   `PTOResolveBufferSelect` 后、`PTOInlineBackendHelpersPass` 前的检查点；declaration-shadowed
-  mixed-backend call 与 sibling zero/unique/ambiguous resolution 回归通过；production/test build
-  没有行为差异；GraphSync `_gss` exact/overlap/disjoint/different-address-space 回归通过；
+  mixed-backend call、sibling zero/unique/ambiguous resolution、compile-unit-wide opaque closure 和
+  fixed-depth nested-child rejection 回归通过；production/test build 没有行为差异；GraphSync `_gss`
+  exact/overlap/disjoint/different-address-space 回归通过；
 - capability validation 的正负向 lit 全部通过；CPU backend 存在时执行 CPU-sim 双输出
   数值测试，缺失时 manifest 明确标记 unsupported 并链接 upstream dependency，不伪造
   simulator coverage；cost-model 同理；
@@ -1647,7 +1692,7 @@ full-store group 必须经过完整链路，partial-valid group 必须保留明�
 |---|---|---|
 | 0 | rebase、逐 target pin/backend 探测、CMake manifest 生成与 driver 注入 | NPU probe 生成正向 capability；CPU/cost-model 失败生成稳定负向 capability；manifest path/root/revision 校验可执行 |
 | 1 | 扩展 `TExtractOp` ODS ranges、inherent-property schema validator/form classifier、custom assembly、精确兼容 builder/accessor、DPS、pipe、effects、PTOBC shim | property conversion、generated invariants、custom verifier 各阶段负向测试不崩溃；src=0/2 等可到达 classifier 的 schema 稳定失败且 effects 保守；旧 C++ API compile-only、legacy/new parse-print、binding、v0 bytecode 兼容和 range-based adaptor 编译测试通过，且没有新增 op 名 |
-| 2 | shared emitted-dimension helper、A5 partial-valid physical-stride gate、IR verifier，以及 driver input-provenance/post-planning-safety helper | 架构矩阵包含 A3/A5/VPTO `32/13` counterexample；A5 gate diagnostic 可执行；main pipeline 在 resolve-buffer-select 后、backend-helper inline 前拆分并检查；bounds、direct/alias/cross-function/cross-child TSTORE、closed call-component、declaration-shadowed sibling resolution、partition precheck、provenance、动态/静态地址 lit 通过，且没有新增 validation pass/test escape |
+| 2 | shared emitted-dimension helper、A5 partial-valid physical-stride gate、IR verifier，以及 driver input-provenance/post-planning-safety helper | 架构矩阵包含 A3/A5/VPTO `32/13` counterexample；A5 gate diagnostic 可执行；main pipeline 在 resolve-buffer-select 后、backend-helper inline 前拆分并检查；bounds、direct/alias/cross-function/cross-child TSTORE、compile-unit-wide opaque closure、fixed-depth backend child guard、declaration-shadowed sibling resolution、partition precheck、provenance、动态/静态地址 lit 通过，且没有新增 validation pass/test escape |
 | 3 | no-alias、GraphSync `AllocTileOp` single-address model 与 planner/GSS 回归 | 三组 alias 被拒绝，declared/tpop provenance 在 planner 前失败，动态 level3 地址失败，双输出 liveness 正确，同址/overlap/disjoint/address-space GSS edge 正确 |
 | 4 | EmitC pattern | A3/A5 精确文本与 pin compile-only 通过 |
 | 5 | A5 TileLib/VPTO template 与 Python facade | physical-stride/stride gate、aligned/unaligned/tail/enabled-lowp 展开通过；legacy free function/property/constructor smoke 通过；NZ+1/FP4 随 gate 开启 |
@@ -1705,15 +1750,19 @@ public syntax；实现只承诺 canonical `pto.textract ins(...) outs(...)` 文�
   不得宣称对应模拟或性能模型支持；
 - driver post-planning safety helper 能拒绝 direct、view、同址/重叠 allocation alias 和
   unresolved source range 的 partial TSTORE；检查覆盖同一 direct-call graph component 的
-  caller/callee/transitive helper，拒绝 indirect/external/unresolved call 隐藏 effects，允许互不连通
-  component 复用地址；helper 固定运行在 `PTOResolveBufferSelect` 后、
-  `PTOInlineBackendHelpersPass` 前，普通 codegen 与 `--emit-pto-ir` 共用该切点；该 component 级
-  保守规则没有 test-only escape；
+  caller/callee/transitive helper；compile unit 含 partial producer 时，任意 component 中的
+  indirect/external/unresolved/opaque call 都拒绝，不能通过两个 disconnected indirect targets 隐藏
+  producer 与 TSTORE；call surface 闭合后才允许互不连通 component 复用地址。helper 固定运行在
+  `PTOResolveBufferSelect` 后、`PTOInlineBackendHelpersPass` 前，普通 codegen 与 `--emit-pto-ir`
+  共用该切点；这组保守规则没有 test-only escape；
 - backend-partitioned outer module 在 child 拆分前完成 component precheck；含 partial producer
   的 component 跨 child 时稳定拒绝；local declaration 必须按 exact final-link symbol 穿透到唯一
-  sibling public definition，零/多匹配在 partial component 上稳定失败，不能依赖 child declaration
-  或最终链接阶段补救；完全位于单 child 的 partial component、full-valid cross-child component 和
-  disconnected child component 保持各自既定规则；
+  sibling public definition；outer module 含 partial producer 时，任意 child 中零/多匹配或 opaque
+  call 都稳定失败，不能依赖 child declaration 或最终链接阶段补救；含 ND-to-2xNZ form 的
+  backend-partitioned input 只接受 immediate child/direct function 的 fixed-depth 形态，nested
+  `ModuleOp`/function 在所有 output mode 下稳定拒绝；完全位于单 child 的 partial component、
+  full-valid cross-child component 和 call-surface-closed 的 disconnected child component 保持各自
+  既定规则；
 - A3/A5 至少各有一条 full-valid 端到端双输出数值链路；partial-valid/odd/`1x1` 只计入
   通过 simulator UB dump 或独立 raw-buffer harness 观测的 UB-only TEXTRACT
   coverage，不能直接进入 generic NZ TSTORE；NPU partial coverage 必须实际导出并逐 byte 比较
