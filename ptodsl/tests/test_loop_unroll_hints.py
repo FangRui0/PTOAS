@@ -12,8 +12,9 @@
 Covers the frontend half of the loop-unroll hint design
 (docs/designs/ptodsl-loop-unroll-hint-design.md): hint validation, attribute
 placement on scf.for for all loop construction paths (explicit pto.for_,
-carry loops, and AST-rewritten ``for i in pto.range(...)``), and the marker
-misuse diagnostics.
+carry loops, tile-template tracing, and AST-rewritten ``for i in
+pto.range(...)``), the marker misuse diagnostics, and the "no hint -> no
+pto.unroll* attribute" contract.
 """
 
 import re
@@ -33,9 +34,9 @@ def _assert_loop_attr(mlir_text: str, attr_pattern: str, context: str):
 
 
 @pto.jit(target="a5")
-def range_hint_enable():
+def range_hint_full():
     acc = pto.const(0, dtype=pto.i32)
-    for i in pto.range(4, unroll="enable"):
+    for i in pto.range(4, unroll="full"):
         acc = acc + pto.const(1, dtype=pto.i32)
     _ = acc
 
@@ -51,7 +52,7 @@ def range_hint_factor():
 @pto.jit(target="a5")
 def range_hint_carry(limit: pto.i32):
     acc = pto.const(0, dtype=pto.i32)
-    for i in pto.range(limit, unroll="disable"):
+    for i in pto.range(limit, unroll_factor=2):
         acc = acc + pto.const(1, dtype=pto.i32)
     _ = acc
 
@@ -90,7 +91,7 @@ def range_hint_unknown_keyword():
 @pto.jit(target="a5")
 def range_hint_with_break():
     acc = pto.const(0, dtype=pto.i32)
-    for i in pto.range(8, unroll="enable"):
+    for i in pto.range(8, unroll="full"):
         if i == pto.const(3, dtype=pto.i32):
             break
         acc = acc + pto.const(1, dtype=pto.i32)
@@ -100,9 +101,97 @@ def range_hint_with_break():
 @pto.jit(target="a5")
 def range_hint_negative_step():
     acc = pto.const(0, dtype=pto.i32)
-    for i in pto.range(4, 0, -1, unroll="enable"):
+    for i in pto.range(4, 0, -1, unroll="full"):
         acc = acc + pto.const(1, dtype=pto.i32)
     _ = acc
+
+
+@pto.jit(target="a5")
+def plain_range_negative_step():
+    # No hint: the negative-step rejection is a behavior change of the plain
+    # range(...) path itself (previously lowered to a silent zero-trip loop).
+    acc = pto.const(0, dtype=pto.i32)
+    for i in range(4, 0, -1):
+        acc = acc + pto.const(1, dtype=pto.i32)
+    _ = acc
+
+
+@pto.jit(target="a5")
+def plain_range_zero_step():
+    acc = pto.const(0, dtype=pto.i32)
+    for i in range(0, 8, 0):
+        acc = acc + pto.const(1, dtype=pto.i32)
+    _ = acc
+
+
+@pto.jit(target="a5")
+def plain_range_false_step():
+    # bool is an int subclass; step=False must be rejected like step=0 while
+    # step=True (== 1) stays legal.
+    acc = pto.const(0, dtype=pto.i32)
+    for i in range(0, 8, False):
+        acc = acc + pto.const(1, dtype=pto.i32)
+    _ = acc
+
+
+@pto.jit(target="a5")
+def plain_range_true_step():
+    acc = pto.const(0, dtype=pto.i32)
+    for i in range(0, 8, True):
+        acc = acc + pto.const(1, dtype=pto.i32)
+    _ = acc
+
+
+@pto.jit(target="a5")
+def plain_range_no_hint():
+    acc = pto.const(0, dtype=pto.i32)
+    for i in range(4):
+        acc = acc + pto.const(1, dtype=pto.i32)
+    _ = acc
+
+
+@pto.jit(target="a5")
+def explicit_for_no_hint():
+    acc = pto.const(0, dtype=pto.i32)
+    with pto.for_(0, 4, step=1) as i:
+        acc = acc + pto.const(1, dtype=pto.i32)
+    _ = acc
+
+
+# ── Tile-template tracing path ───────────────────────────────────────────────
+#
+# tilelib templates author loops via an @rewrite_jit_function core: the AST
+# rewrite turns ``for i in pto.range(..., unroll_factor=N)`` into a
+# ``pto.for_(..., unroll_factor=N)`` call, which the template trace session
+# (``_TemplateTrace``) builds like any other hinted loop.  This exercises the
+# same kwarg forwarding a real template would rely on.
+
+try:
+    import ptodsl.tilelib as tilelib
+    from ptodsl._ast_rewrite import rewrite_jit_function
+    from ptodsl.tilelib import ScalarType, TileSpec
+
+    @rewrite_jit_function
+    def _tt_hint_core():
+        for i in pto.range(0, 4, unroll_factor=3):
+            pass
+
+    @tilelib.tile_template(
+        op="test.unroll_hint",
+        target="a5",
+        name="unroll_hint_loop",
+        loop_depth=1,
+        register=False,
+    )
+    def _tt_unroll_hint(src: pto.Tile, dst: pto.Tile):
+        _tt_hint_core()
+
+    _TT_SPECS = {
+        "src": TileSpec(shape=(8, 64), dtype=ScalarType("f32")),
+        "dst": TileSpec(shape=(8, 64), dtype=ScalarType("f32")),
+    }
+except ImportError:  # tilelib unavailable: the tile-template test is skipped
+    _tt_unroll_hint = None
 
 
 def _expect_raises(exc_types, fn, needle: str, context: str):
@@ -115,9 +204,9 @@ def _expect_raises(exc_types, fn, needle: str, context: str):
 
 
 def main():
-    # 1. pto.range(unroll="enable") on a constant loop.
-    text = range_hint_enable.compile().mlir_text()
-    _assert_loop_attr(text, r'pto\.unroll\s*=\s*"enable"', "pto.range unroll=enable")
+    # 1. pto.range(unroll="full") on a constant loop.
+    text = range_hint_full.compile().mlir_text()
+    _assert_loop_attr(text, r'pto\.unroll\s*=\s*"full"', "pto.range unroll=full")
 
     # 2. pto.range(0, 8, 2, unroll_factor=4).
     text = range_hint_factor.compile().mlir_text()
@@ -125,7 +214,7 @@ def main():
 
     # 3. pto.range with a dynamic bound and a loop-carried value.
     text = range_hint_carry.compile().mlir_text()
-    _assert_loop_attr(text, r'pto\.unroll\s*=\s*"disable"', "pto.range carry unroll=disable")
+    _assert_loop_attr(text, r"pto\.unroll_factor\s*=\s*2", "pto.range carry unroll_factor=2")
 
     # 4. Explicit pto.for_(..., unroll="full").
     text = explicit_for_hint_full.compile().mlir_text()
@@ -144,7 +233,7 @@ def main():
     )
     _expect_raises(
         (ValueError,),
-        lambda: pto.for_(0, 4, step=1, unroll="enable", unroll_factor=4),
+        lambda: pto.for_(0, 4, step=1, unroll="full", unroll_factor=4),
         "mutually exclusive",
         "conflicting hints",
     )
@@ -206,6 +295,87 @@ def main():
         "positive step",
         "pto.range negative step",
     )
+
+    # 11. The same rejection applies to plain range(...) without any hint (the
+    # behavior-change regression surface), and step=0 / step=False are
+    # rejected like Python's own range, while step=True (== 1) stays legal.
+    _expect_raises(
+        (PTODSLAstRewriteError,),
+        lambda: plain_range_negative_step.compile(),
+        "positive step",
+        "plain range negative step",
+    )
+    _expect_raises(
+        (PTODSLAstRewriteError,),
+        lambda: plain_range_zero_step.compile(),
+        "non-zero step",
+        "plain range zero step",
+    )
+    _expect_raises(
+        (PTODSLAstRewriteError,),
+        lambda: plain_range_false_step.compile(),
+        "non-zero step",
+        "plain range step=False",
+    )
+    text = plain_range_true_step.compile().mlir_text()
+    _assert_loop_attr(text, r"scf\.for", "plain range step=True compiles")
+
+    # 11b. "enable"/"disable" were removed with the metadata forwarding path;
+    # only "full" remains a valid unroll= value.
+    _expect_raises(
+        (ValueError,),
+        lambda: pto.for_(0, 4, step=1, unroll="enable"),
+        "unroll= expects one of",
+        "removed enable hint",
+    )
+    _expect_raises(
+        (ValueError,),
+        lambda: pto.for_(0, 4, step=1, unroll="disable"),
+        "unroll= expects one of",
+        "removed disable hint",
+    )
+
+    # 12. Type traps at eager validation: bool is an int subclass and must not
+    # be accepted as a factor; floats and non-str unroll values are rejected.
+    _expect_raises(
+        (TypeError,),
+        lambda: pto.for_(0, 4, step=1, unroll_factor=True),
+        "positive Python int",
+        "bool factor",
+    )
+    _expect_raises(
+        (TypeError,),
+        lambda: pto.for_(0, 4, step=1, unroll_factor=4.0),
+        "positive Python int",
+        "float factor",
+    )
+    _expect_raises(
+        (ValueError,),
+        lambda: pto.for_(0, 4, step=1, unroll=1),
+        "unroll= expects one of",
+        "non-str unroll value",
+    )
+
+    # 13. No-hint contract: loops built without hints carry no pto.unroll*
+    # attribute at all.
+    for fn, context in (
+        (plain_range_no_hint, "plain range without hint"),
+        (explicit_for_no_hint, "explicit pto.for_ without hint"),
+        (plain_range_true_step, "plain range step=True"),
+    ):
+        text = fn.compile().mlir_text()
+        assert re.search(r"scf\.for", text), f"{context}: no scf.for in MLIR:\n{text}"
+        assert not re.search(r'"?pto\.unroll(_factor)?"?\s*=', text), (
+            f"{context}: unexpected pto.unroll* attribute in MLIR:\n{text}"
+        )
+
+    # 14. Tile-template tracing path: for_ -> _TraceBuilder.for_ -> _enter_for
+    # must forward unroll_factor all the way onto the generated scf.for.
+    if _tt_unroll_hint is not None:
+        text = _tt_unroll_hint.specialize(**_TT_SPECS).mlir_text()
+        _assert_loop_attr(
+            text, r"pto\.unroll_factor\s*=\s*3", "tile-template for_ unroll_factor=3"
+        )
 
     print("PASS test_loop_unroll_hints")
 

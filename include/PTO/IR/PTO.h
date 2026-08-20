@@ -212,29 +212,28 @@ inline constexpr llvm::StringLiteral kPTODSLLogicalNameAttrName =
 
 /// Loop-unroll hint attributes carried on `scf.for` as discardable attrs.
 ///
-/// `pto.unroll` is a string attribute with one of the values below;
+/// `pto.unroll` is a string attribute; only "full" is supported.
 /// `pto.unroll_factor` is an integer attribute holding a positive unroll
 /// factor.  The two attributes are mutually exclusive on one loop.
 ///
-/// Consumption contract:
-/// - "full" / `pto.unroll_factor`: `pto-unroll-loops` tries to unroll the
-///   loop natively; loops it cannot unroll keep the attribute and are
-///   degraded to LLVM loop metadata by `pto-lower-loop-hints`.
-/// - "enable" / "disable": never unrolled natively; translated to
-///   `llvm.loop.unroll.enable` / `llvm.loop.unroll.disable` metadata by
-///   `pto-lower-loop-hints`.
+/// Consumption contract (`pto-unroll-loops` is the only consumer):
+/// - "full": unrolled natively when the trip count is a positive constant;
+///   otherwise the hint is dropped with a remark and the loop is kept.
+/// - `pto.unroll_factor`: unrolled natively when the value satisfies
+///   `isValidUnrollFactorAttr`, the step is a positive constant, and the
+///   factor does not exceed the pass's max-unroll-factor cap; otherwise the
+///   hint is dropped with a remark.  Malformed hints (unknown pto.unroll
+///   value, both attributes on one loop, out-of-contract factor) are hard
+///   errors reported by the pass.
 inline constexpr llvm::StringLiteral kUnrollAttrName = "pto.unroll";
-inline constexpr llvm::StringLiteral kUnrollEnableValue = "enable";
-inline constexpr llvm::StringLiteral kUnrollDisableValue = "disable";
 inline constexpr llvm::StringLiteral kUnrollFullValue = "full";
 inline constexpr llvm::StringLiteral kUnrollFactorAttrName =
     "pto.unroll_factor";
 
 /// Check whether a `pto.unroll_factor` attribute value satisfies the
 /// contract: a signless i32 holding a positive factor.  The factor is read
-/// back as a signed value and forwarded into 32-bit LLVM loop metadata, so
-/// anything wider or non-positive would silently truncate (e.g. an i64
-/// 2**31 becomes count=-2**31).
+/// back as a signed value, so anything wider or non-positive would silently
+/// truncate (e.g. an i64 2**31 becomes a negative factor).
 inline bool isValidUnrollFactorAttr(IntegerAttr attr) {
   return attr && attr.getType().isSignlessInteger(32) && attr.getInt() >= 1;
 }

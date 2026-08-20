@@ -1878,12 +1878,29 @@ class _ControlFlowRewriter:
         # loops with break/continue (the pto._while path) support negative
         # steps, so reject a constant non-positive step here.  Note that a
         # negative literal is a UnaryOp(USub, Constant), not a Constant, so
-        # use literal_eval to see through it.
+        # use literal_eval to see through it.  bool is an int subclass:
+        # step=False (== 0) must be rejected like an explicit 0 (Python range
+        # raises ValueError for it), while step=True (== 1) is legal Python -
+        # normalize the literal to int 1 because downstream index coercion
+        # rejects bool values.
         try:
             step_const = ast.literal_eval(step)
         except (ValueError, TypeError, SyntaxError):
             step_const = None
-        if isinstance(step_const, int) and not isinstance(step_const, bool) and step_const <= 0:
+        if isinstance(step_const, bool):
+            if not step_const:
+                raise PTODSLAstRewriteError(
+                    "ast_rewrite=True range(...) / pto.range(...) loops require a non-zero step; "
+                    "got step=0 (Python range raises ValueError for a zero step)."
+                )
+            if isinstance(step, ast.Constant):
+                step.value = 1
+        elif isinstance(step_const, int) and step_const <= 0:
+            if step_const == 0:
+                raise PTODSLAstRewriteError(
+                    "ast_rewrite=True range(...) / pto.range(...) loops require a non-zero step; "
+                    "got step=0 (Python range raises ValueError for a zero step)."
+                )
             raise PTODSLAstRewriteError(
                 "ast_rewrite=True range(...) / pto.range(...) loops require a positive step; "
                 f"got step={step_const}. Loops with break/continue support negative steps "

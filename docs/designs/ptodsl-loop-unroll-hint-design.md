@@ -1,7 +1,15 @@
 # PTODSL / PTOAS Loop Unroll Hint 设计文档
 
+> **修订记录（v2）**：初版设计为双阶段——Pass A 原生展开 + Pass B
+> （`pto-lower-loop-hints`）把残留 hint 透传为 LLVM loop metadata（含
+> `unroll="enable"`/`"disable"` 两个 cost-model 委托 hint）。评审后决定
+> **移除阶段一（Pass B）**：`full`/`unroll_factor` 的原生展开已覆盖
+> #1242/#1000 需要的 unroll 接口能力，`enable`/`disable` 随之删除，
+> 前端遇到这两个值直接报错。本文档已更新为 v2 状态；涉及 Pass B 的
+> 历史分析（如 §2.2 的 metadata 下传链路）保留作为决策记录。
+
 > 关联 Issue：
-> - [Issue #1242](https://github.com/hw-native-sys/PTOAS/issues/1242) Requirement 2 —— `pto.for_` loop-unroll hint（`unroll="enable"`）
+> - [Issue #1242](https://github.com/hw-native-sys/PTOAS/issues/1242) Requirement 2 —— `pto.for_` loop-unroll hint（v1 的 `unroll="enable"` 已随阶段一移除，由 `unroll="full"` / `unroll_factor=N` 覆盖该接口诉求）
 > - [Issue #1000](https://github.com/hw-native-sys/PTOAS/issues/1000) —— 支持 Loop Unroll Hint（含 `pto.range`、factor unroll、两阶段计划）
 > - [PR #838](https://github.com/hw-native-sys/PTOAS/pull/838) —— `PTOUnrollSIMTForPass`（规避 BiSheng AICore 后端 bug 的临时方案，本次一并重构）
 
@@ -22,17 +30,17 @@
 
 ### 1.2 目标
 
-1. `pto.for_` / 新增 `pto.range` 支持 `unroll="enable"` hint：保留 device loop，hint 透传到 LLVM IR 的 `!llvm.loop.unroll.enable` metadata，由 BiSheng cost model 决定展开策略（#1242 验收标准）。
-2. 支持 `unroll="full"` 与 `unroll_factor=N`：PTOAS 优先原生展开，失败时降级为编译器 hint（#1000 阶段二重构）。
-3. 将 `PTOUnrollSIMTFor` 从"SIMT-only、full-only 的临时 pass"重构为通用的 attr 驱动 unroll pass，同时保持 #838 的 bug 规避语义不回归。
-4. 未指定 hint 的循环行为完全不变。
+1. `pto.for_` / 新增 `pto.range` 支持 `unroll="full"` 与 `unroll_factor=N` hint：PTOAS 在 LLVM lowering 前原生展开（#1242 的 loop-unroll 接口诉求、#1000 阶段二）。
+2. 将 `PTOUnrollSIMTFor` 从"SIMT-only、full-only 的临时 pass"重构为通用的 attr 驱动 unroll pass，同时保持 #838 的 bug 规避语义不回归。
+3. 未指定 hint 的循环行为完全不变。
+
+（v1 曾包含 `unroll="enable"`/`"disable"` 的 metadata 透传目标；评审后删除，见文首修订记录与 §5.3。）
 
 ### 1.3 非目标（Non-goals）
 
 - 不修改 LLVM/BiSheng 的 unroll cost model；
-- 不保证 `enable` hint 选择固定展开 factor；
 - 不改变 `pto.static_range` 的 trace-time full-unroll 语义；
-- 不支持任意动态循环的 full unroll（动态 bound 的 `"full"` 降级为 metadata hint）；
+- 不支持任意动态循环的 full unroll（动态 bound 的 `"full"` 无法原生展开，丢 hint + remark，loop 保留）；
 - 不包含 TileLang codegen 侧的修改。
 
 ---
@@ -54,7 +62,7 @@ PTODSL 目前**没有任何 public API** 设置 `pto.unroll` attr——该 attr 
 
 无需对 LLVM/BiSheng 对接层做任何改动：
 
-1. **SCF→CF**：vendored LLVM 19（feature-vpto）的 `SCFToControlFlow` **不会**把 `scf.for` 上的 `llvm.loop_annotation` 拷贝到 latch `cf.br`（该能力只在更新的上游版本存在，`llvm-workspace` 的 LLVM 21 已具备）。因此本方案中 Pass B 对带注解的 loop 自行完成 SCF→CF 降级并把注解挂到 latch 上（见 3.1 边界情形）；未注解的 loop 仍走上游 `convert-scf-to-cf`；
+1. **SCF→CF**（历史记录，v1 依据）：vendored LLVM 19（feature-vpto）的 `SCFToControlFlow` **不会**把 `scf.for` 上的 `llvm.loop_annotation` 拷贝到 latch `cf.br`（该能力只在更新的上游版本存在，`llvm-workspace` 的 LLVM 21 已具备）。v1 因此让 Pass B 自行降级带注解 loop；v2 移除阶段一后，该链路不再被使用；
 2. **CF→LLVM**：`BranchOpLowering` / `CondBranchOpLowering` 将全部 attrs 保留到 `llvm.br` / `llvm.cond_br`
    （`llvm-workspace/llvm-project/mlir/lib/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.cpp:130-170`）；
 3. **MLIR→LLVM IR**：`translateModuleToLLVMIR` 把 latch 上的 `#llvm.loop_annotation` 翻译为 `!llvm.loop` metadata
@@ -80,9 +88,9 @@ PTODSL 目前**没有任何 public API** 设置 `pto.unroll` attr——该 attr 
 - 支持**动态 bounds**：自动生成 trip count 计算与 epilogue remainder loop；
 - **live-out carry values 由 epilogue 正确穿线**：main loop results 作为 epilogue 的 init args，uses 自动替换（现有 pass 注释中"live-out 不能展开"的限制在这条路径上不存在）；
 - `loopUnrollFull` 是 `loopUnrollByFactor(tripCount)` 的封装；
-- 限制：要求正 step（动态 sign 未知时使用 `ceilDivPositive` 语义），factor 必须为正。
+- 限制：要求正 step，factor 必须为正；动态 bound 路径按 `ceilDivPositive`（`arith.divui`）计算 trip count，运行时 `upper < lower` 会把负差值按无符号解释成极大值——上游注释明确留了 `TODO: Add dynamic asserts for negative lb/ub/step`。Pass A 因此在调用前自行兜底：静态 `ub <= lb` 丢 hint，动态上界插入 `arith.maxsi(ub, lb)` 钳位（`ub >= lb` 时是恒等变换，`ub < lb` 时主循环与 epilogue 同样零次迭代）。
 
-因此 #1000 阶段二中最重的工作（remainder loop 生成、loop-carried SSA 穿线）已由上游 util 完成，本方案只需实现 attr 驱动的调度与降级逻辑。
+因此 #1000 阶段二中最重的工作（remainder loop 生成、loop-carried SSA 穿线）已由上游 util 完成，本方案只需实现 attr 驱动的调度、边界兜底与丢弃逻辑。
 
 ### 2.4 attr 存活风险排查
 
@@ -94,15 +102,15 @@ PTODSL 目前**没有任何 public API** 设置 `pto.unroll` attr——该 attr 
 
 ### 3.1 语义矩阵
 
-一套 attr 编码（`scf.for` 的 discardable attrs），两种消费方式（native 展开 / metadata 透传）：
+一套 attr 编码（`scf.for` 的 discardable attrs），一种消费方式（Pass A 原生展开）：
 
-| 前端写法 | `scf.for` attr | 语义 | Native 处理（Pass A） | 降级/透传（Pass B）→ LLVM metadata |
+| 前端写法 | `scf.for` attr | 语义 | Native 处理（Pass A） | 无法原生展开时 |
 |---|---|---|---|---|
-| （无 hint） | 无 | 现状不变 | 不处理 | 不处理 |
-| `unroll="enable"` | `pto.unroll = "enable"` | 保留 loop，编译器 cost model 决定 full/partial | **不处理** | `llvm.loop.unroll.enable` |
-| `unroll="disable"` | `pto.unroll = "disable"` | 禁止展开 | **不处理** | `llvm.loop.unroll.disable` |
-| `unroll="full"` | `pto.unroll = "full"` | PTOAS 强制全展开 | `loopUnrollByFactor(tripCount)`，loop 消失 | 展开失败 → `llvm.loop.unroll.full` + remark |
-| `unroll_factor=N` | `pto.unroll_factor = N`（i32） | PTOAS 按 N 展开 | `loopUnrollByFactor(N)`，生成 main + epilogue | 展开失败 → `llvm.loop.unroll.count = N` + remark |
+| （无 hint） | 无 | 现状不变 | 不处理 | — |
+| `unroll="full"` | `pto.unroll = "full"` | PTOAS 强制全展开 | `loopUnrollByFactor(tripCount)`，loop 消失 | 动态 trip：丢 hint + remark，保留 loop |
+| `unroll_factor=N` | `pto.unroll_factor = N`（i32） | PTOAS 按 N 展开 | `loopUnrollByFactor(N)`，生成 main + epilogue | 动态 step / 超上限 / N=1：丢 hint + remark，保留 loop |
+
+约束：
 
 约束：
 
@@ -113,25 +121,22 @@ PTODSL 目前**没有任何 public API** 设置 `pto.unroll` attr——该 attr 
 
 边界情形（实现决策）：
 
-- `unroll_factor=1` 无 native 意义，直接按 `llvm.loop.unroll.count = 1` 透传；
-- 空 body 的 loop（`loopUnrollByFactor` 对其为 no-op）不 native 展开，hint 降级为 metadata；
+- `unroll_factor=1` 无 native 意义，hint 丢弃 + remark；
+- 空 body 的 loop（`loopUnrollByFactor` 对其为 no-op）不 native 展开，hint 丢弃 + remark；
+- 只支持 index 类型的 loop：`scf.for` 也允许 signless 整数（i16/i32）边界，但 `loopUnrollByFactor` 一律用 `arith::ConstantIndexOp` 构造 step/offset 运算，展开 i16 loop 会产出 `arith.muli(i16, index)` 以及 step 类型与边界不符的 `scf.for`，直接 verifier 失败。非 index loop 丢 hint + remark；
+- 空迭代区间不展开：上游按 `ceilDivPositive`（`arith.divui`）算 trip count，静态 `ub <= lb` 会被展开成上界回绕的循环，运行时 `ub < lb` 更会把负差值解释成极大无符号值。因此 Pass A 静态 `ub <= lb` 丢 hint + remark，动态上界在调用前插 `arith.maxsi(ub, lb)` 钳位（`ub >= lb` 恒等，`ub < lb` 时主循环与 epilogue 同样零次迭代）；
 - 带 `break`/`continue`/`else` 的 `pto.range(...)` loop 走 `scf.while` 降级路径，无法承载 hint，前端直接报错；
-- LLVM 19 的 `convert-scf-to-cf` 不会把 `llvm.loop_annotation` 从 `scf.for` 传到 latch `cf.br`（上游新版本才支持），因此 Pass B 对带注解的 loop 自行完成 SCF→CF 降级并把注解挂到 latch 分支上；未注解的 loop 仍走上游转换；
-- 挂在 latch 上的注解必须使用 ODS 裸名 `loop_annotation`（而非 `scf.for` 上的 discardable 名 `llvm.loop_annotation`）：MLIR→LLVM IR 翻译通过 `BrOp::getLoopAnnotationAttr()` 按裸名查找，`convert-cf-to-llvm` 原样转发分支属性（`op->getAttrs()`），因此 Pass B 在挂注解时改存裸名，之后的转换链无需特殊处理即可生成 `!llvm.loop` metadata；
-- Pass B 的 SCF→CF 改写必须只作用于带注解的 loop（`applyOpPatternsAndFold` + `ExistingOps`，worklist 仅含带注解的 `scf.for`）：对整函数跑 `applyPatternsAndFoldGreedily` 会顺带常量折叠所有 op（即使没有 pattern 命中），在 VPTO emission 管线里会把 ub→llvm config word 的 `arith.ori` 链提前折叠掉，改变最终 LLVM IR 文本；
-- `unroll_factor` 还须 ≤ 2^31−1：attr 编码为 signless i32，按有符号读回并写入 32 位 LLVM loop metadata，更大的值会回绕成负数。前端在构造期报错；后端同样坚持该契约——Pass A 对类型/范围不合约的 factor（如手写 IR 里的 i64 attr）不消费，Pass B 对其报错，避免截断成负的 `llvm.loop.unroll.count`；
-- Pass A 的展开 fixpoint 不设轮数上限：每轮重新 walk 拾取外层展开克隆出的内层带注解 loop，直到某轮不再有任何变化为止。固定轮数上限会让超过该深度的嵌套 `full` hint 静默残留并降级为 metadata，违反 `full` 对静态循环强制 native 展开的契约。
+- `unroll_factor` 必须 ≤ 2^31−1：attr 编码为 signless i32 并按有符号读回，更大的值会回绕成负数。前端在构造期报错；后端同样坚持该契约——Pass A 对类型/范围不合约的 factor（如手写 IR 里的 i64 attr）直接报错，不会截断成负 factor；
+- Pass A 的展开 fixpoint 不设轮数上限：每轮重新 walk 拾取外层展开克隆出的内层带注解 loop，直到某轮不再有任何变化为止。固定轮数上限会让超过该深度的嵌套 `full` hint 静默残留并丢失，违反 `full` 对静态循环强制 native 展开的契约；
+- Pass A 不使用 greedy pattern driver，而是按 post-order（内层先处理）手动驱动 `loopUnrollByFactor`：该 util 用内部 `IRRewriter` 删除被展开的 loop，绕过 driver 的 listener，会使 driver worklist 中的指针悬空；post-order 保证 erase 外层 loop 时其内层已全部处理完，不存在悬空指针；
+- factor 上限：`max-unroll-factor`（默认 1024）限制 native 展开的 factor，超限丢 hint + remark，防止巨大 factor 导致编译器挂死/OOM；
+- v1 曾设计 metadata 透传路径（Pass B），其中两个实现要点已不再需要，但值得记录：(a) LLVM 19 的 `convert-scf-to-cf` 不会把 `llvm.loop_annotation` 从 `scf.for` 传到 latch `cf.br`（上游新版本才支持），v1 因此让 Pass B 自行降级带注解 loop 并以 ODS 裸名 `loop_annotation` 挂到 latch（MLIR→LLVM IR 翻译经 `BrOp::getLoopAnnotationAttr()` 按裸名查找）；(b) v1 的 Pass B 用 `applyOpPatternsAndFold` + `ExistingOps` 把改写限制在带注解 loop 上，避免全函数 greedy 顺带折叠无关 op（如 ub→llvm config word 的 `arith.ori` 链）。v2 移除该路径后，Pass A 手动驱动天然满足同样的"不动无关 IR"约束。
 
-### 3.2 重复展开的 by-construction 排除
+### 3.2 重复展开问题随阶段一移除而消失
 
-#1000 担心"阶段一 CCE bypass 与阶段二 native unroll 对同一循环重复展开"。本设计中每个 loop 的 attr 只被消费一次：
+#1000 担心"阶段一 CCE bypass 与阶段二 native unroll 对同一循环重复展开"。v2 只有原生展开一个阶段：每个 loop 的 attr 由 Pass A 消费一次（展开或丢弃），不存在第二条消费通道，该问题在构造上消失。
 
-- native 展开成功 → attr 被移除，Pass B 看不到该 loop；
-- native 展开失败或不适用（`enable`/`disable`）→ attr 保留，由 Pass B 翻译成 metadata。
-
-无需额外的阶段互斥配置。
-
-**防二次展开**：factor 展开成功后给 epilogue loop 挂 `pto.unroll = "disable"`（等价 clang 对 remainder loop 打 `llvm.loop.unroll.disable` 的行为），由 Pass B 统一翻译；main loop 不再携带 unroll metadata。
+factor 展开生成的 epilogue loop 不带任何 hint attr，fixpoint 与后续管线都不会再处理它，天然防止二次展开。
 
 ### 3.3 架构总览
 
@@ -139,20 +144,20 @@ PTODSL 目前**没有任何 public API** 设置 `pto.unroll` attr——该 attr 
 PTODSL 前端                          PTOAS 后端
 ─────────────                        ─────────────────────────────────────────────
 pto.for_(..., unroll=...)            prepareVPTOForEmission:
-pto.range(...)  (AST rewrite)          [Pass A] pto-unroll-loops        ← 消费 "full" / factor
-        │                                SCCP / canonicalize / CSE      ← 折叠展开后的常量分支
-        ▼                                ...（其余 VPTO 优化 pass）
-scf.for {pto.unroll = "...",           ─────────────────────────────────────────────
-         pto.unroll_factor = N}      VPTO emission pipeline（Beta1 / CANN900）:
-        │                                ...
-        └──────────────────────────▶     [Pass B] pto-lower-loop-hints  ← 翻译残留 attr → #llvm.loop_annotation，
-                                         │                                并自行将带注解 loop 降为 CF、注解挂到 latch cf.br
-                                         convert-scf-to-cf              ← 仅处理未注解 loop
-                                         convert-cf-to-llvm             ← 自动保留到 llvm.br
-                                         translateModuleToLLVMIR        ← 自动生成 !llvm.loop metadata
+pto.range(...)  (AST rewrite)          pto-unroll-loops（唯一的 hint 消费者）
+        │                                ├─ "full" / factor 可展开 → 原生展开，attr 移除
+        ▼                                ├─ 无法展开（动态 trip/step、超上限、factor=1、
+scf.for {pto.unroll = "full",             空 body）→ 丢 hint + remark，loop 保留
+         pto.unroll_factor = N}          └─ 非法 hint（enable/disable/未知值/互斥/
+        │                                   非 i32 factor）→ 硬错误
+        └──────────────────────────▶     SCCP / canonicalize / CSE   ← 折叠展开后的常量分支
+                                         ...（其余 VPTO 优化 pass）
+                                         ─────────────────────────────
+                                         convert-scf-to-cf / LLVM lowering
+                                         （attr 已全部消费，无需任何 metadata 通道）
                                                │
                                                ▼
-                                         BiSheng（cost model 决定 full/partial unroll）
+                                         BiSheng
 ```
 
 ---
@@ -168,7 +173,7 @@ def for_(start, stop, *, step, unroll=None, unroll_factor=None):
     ...
 ```
 
-- `unroll`：取值 `None | "enable" | "full" | "disable"`；
+- `unroll`：取值 `None | "full"`（v1 的 `"enable"`/`"disable"` 已随阶段一移除）；
 - `unroll_factor`：`None` 或 ≥ 1 的 `int`；
 - 入口参数校验：非法取值 / 互斥冲突 / 非正整数 factor 抛 `TypeError` 或 `ValueError`，诊断信息可定位到调用点；
 - hint 沿 `_ForBuilder` → `_ForCM.__enter__`（`_control_flow.py`）传递，`scf.ForOp` 创建后立即通过共享 helper（`_tracing/control_flow.py` 的 `apply_unroll_hint`，配套校验函数 `normalize_unroll_hint`）挂 attr：
@@ -193,7 +198,7 @@ hint 必须在以下所有创建 `scf.for` 的路径上一致生效，全部走 
 ### 4.3 新增 `pto.range`（Python 原生 `for` 的 hint carrier）
 
 ```python
-for i in pto.range(0, N, unroll="enable"):
+for i in pto.range(0, N, unroll="full"):
     ...
 
 for i in pto.range(0, N, unroll_factor=4):
@@ -213,37 +218,29 @@ for i in pto.range(0, N, unroll_factor=4):
 
 ### 5.1 共享常量
 
-将 `kUnrollAttrName` / `kUnrollFullValue`（现为 `PTOUnrollSIMTForPass.cpp:58-59` 私有）提升为共享常量（如 `include/PTO/IR/PTO.h` 或 Transforms 公共头），新增 `kUnrollFactorAttrName = "pto.unroll_factor"` 及 `"enable"` / `"disable"` 取值常量，供两个 pass 与文档共用。
+将 `kUnrollAttrName` / `kUnrollFullValue`（原为 `PTOUnrollSIMTForPass.cpp` 私有）提升为共享常量（`include/PTO/IR/PTO.h`），新增 `kUnrollFactorAttrName = "pto.unroll_factor"` 与 `isValidUnrollFactorAttr` 契约校验，供 pass 与文档共用。
 
-### 5.2 Pass A：`PTOUnrollLoops`（重构 `PTOUnrollSIMTFor`）
+### 5.2 Pass A：`PTOUnrollLoops`（重构 `PTOUnrollSIMTFor`，唯一消费者）
 
 - **新 pass 名**：`pto-unroll-loops`；保留 `pto-unroll-simt-for` 作为 alias（两个现存测试通过 `--mlir-print-ir-after=pto-unroll-simt-for` 引用，行为不变，零回归）；
-- **位置不变**：`prepareVPTOForEmission` 内、SCCP/canonicalize/CSE 之前（`tools/ptoas/ptoas.cpp:3074`），保留 #838 "展开后常量分支被折叠"的收益；
-- **处理逻辑**（walk `scf.for`）：
-  - `pto.unroll = "full"`：静态 lb/ub/step、正 step、可计算 trip count → `loopUnrollByFactor(tripCount)` 全展开；成功则 loop 与 attr 一并消失；失败（动态 bound 等）则**保留 attr**，本 pass 不发诊断，由 Pass B 降级为 metadata 并 emit remark 说明降级原因；
-  - `pto.unroll_factor = N`：先校验 attr 符合 signless i32 正数契约（`isValidUnrollFactorAttr`），不合约（如手写 IR 的 i64 attr）一律不消费、留给 Pass B 报错；合约时 `loopUnrollByFactor(N)`（动态 bounds 同样支持，上游 util 自动生成 epilogue 并穿线 live-out carry）；成功后移除 main loop 的 attr，并给 epilogue loop（若存在）挂 `pto.unroll = "disable"`；失败（非正 step 等）则保留 attr，由 Pass B 降级 + remark；
-  - `pto.unroll = "enable"` / `"disable"`：直接跳过；
+- **位置不变**：`prepareVPTOForEmission` 内、SCCP/canonicalize/CSE 之前（`tools/ptoas/ptoas.cpp`），保留 #838 "展开后常量分支被折叠"的收益；
+- **两阶段结构**：先 walk 全函数校验所有 hint（收集全部诊断后统一失败——函数 pass adaptor 在某个函数失败后可能跳过其余函数，诊断必须函数内完备），合法再进入展开 fixpoint；
+- **校验**（硬错误）：`pto.unroll` 非 `"full"` 值（含已删除的 `"enable"`/`"disable"`）、两 attr 同现、factor 不符合 signless i32 正数契约（`isValidUnrollFactorAttr`）；
+- **处理逻辑**（校验通过后）：
+  - `pto.unroll = "full"`：静态 lb/ub/step、正 step、可计算 trip count → `loopUnrollByFactor(tripCount)` 全展开，loop 与 attr 一并消失；动态 trip 无法展开 → 丢 hint + remark，loop 保留；
+  - `pto.unroll_factor = N`：`loopUnrollByFactor(N)`（动态 bounds 同样支持，上游 util 自动生成 epilogue 并穿线 live-out carry）；成功后 attr 移除；N=1、动态 step、超过 `max-unroll-factor`（默认 1024）→ 丢 hint + remark，loop 保留；
+  - 空 body loop：丢 hint + remark（`loopUnrollByFactor` 对空 body 是假成功，会让 fixpoint 死循环）；
 - **放开 SIMT-context 限制**：#838 的 auto-detect（trip count ≤ 64 自动展开）已移除，现存逻辑只认显式 attr——显式 attr 即用户意图，在非 SIMT 函数中静默忽略反而违反直觉。删除 `isInSIMTContext` 检查，pass 文档同步更新；
-- **可选护栏**：full unroll 静态 trip count 超过阈值（默认如 1024，可用 pass option 调整）时 emit warning，防止 IR 体积爆炸；
-- 非法 attr 组合不在本 pass 报错（留给 Pass B 统一诊断），本 pass 对无法识别的 attr 一律不触碰。
+- **可选护栏**：full unroll 静态 trip count 超过阈值（默认 1024，可用 pass option 调整）时 emit warning，防止 IR 体积爆炸。
 
-### 5.3 Pass B：`PTOLowerLoopHints`（新增）
+### 5.3 （已移除）Pass B：`PTOLowerLoopHints`
 
-- **pass 名**：`pto-lower-loop-hints`，func-level；
-- **插入点**：两个 emitter pipeline 的 `createConvertSCFToCFPass()` 之前（`VPTOLLVMEmitter.cpp:14198`、`VPTOCANN900LLVMEmitter.cpp:11878`），保证翻译之后不再有任何 pass 有机会丢弃 attr；
-- **翻译逻辑**（walk `scf.for`）：
+v1 曾设计 `pto-lower-loop-hints` 把残留 hint 翻译成 `llvm.loop_annotation` 并经自定义 SCF→CF 降级挂到 latch `cf.br`（LLVM 19 的 `convert-scf-to-cf` 不传该注解），最终生成 `!llvm.loop.unroll.*` metadata。评审后认定阶段二原生展开已覆盖需求，该 pass 及 `enable`/`disable` hint 一并移除：
 
-  | 残留 attr | 生成的 annotation |
-  |---|---|
-  | `pto.unroll = "enable"` | `#llvm.loop_annotation<unroll = <disable = false>>` |
-  | `pto.unroll = "disable"` | `#llvm.loop_annotation<unroll = <disable = true>>` |
-  | `pto.unroll = "full"`（降级残留） | `#llvm.loop_annotation<unroll = <full = true>>` |
-  | `pto.unroll_factor = N`（降级残留） | `#llvm.loop_annotation<unroll = <count = N>>` |
-
-  翻译后移除 `pto.unroll` / `pto.unroll_factor` attr；
-- **合并而非覆盖**：loop 上已有 `llvm.loop_annotation` 时（未来可能挂 vectorize 等其他 annotation），合并 `unroll` 字段而非替换整个 attr；
-- **诊断**：未知 `pto.unroll` 字符串、factor < 1、attr 类型错误 → `emitError`，不静默忽略（满足 #1000 "不得静默改变语义" 的要求）；
-- 之后的 cf→llvm→`!llvm.loop` metadata 由上游机制自动完成；带注解 loop 的 SCF→CF 降级由本 pass 自行完成（LLVM 19 的上游转换不传注解，见 3.1 边界情形），未注解 loop 仍走上游 `convert-scf-to-cf`。emitter 的全部改动就是在两条 emission pipeline 各插一行 `addNestedPass`，translation 层零改动。
+- hint 无法原生展开时的行为从"降级为 metadata"改为"丢 hint + remark"；
+- 诊断职责全部收回 Pass A；
+- epilogue 不再需要 `pto.unroll = "disable"` 盖章（没有下游消费者，fixpoint 不处理无 hint 的 loop）；这同时根除了 v1 中"promoteIfSingleIteration splice 出的嵌套 loop 被误盖 disable"的正确性问题——盖章逻辑已随消费者一并删除；
+- 两个 emitter pipeline 恢复原样（v1 各插过一行 `addNestedPass`）。
 
 ### 5.4 与 #838 bug 规避语义的关系
 
@@ -262,10 +259,11 @@ for i in pto.range(0, N, unroll_factor=4):
 | `unroll_factor` 超过 signless i32 上限（2^31−1） | PTODSL 前端 `ValueError` |
 | 普通路径 `range(...)` / `pto.range(...)` 使用常量非正 step | PTODSL 前端 `PTODSLAstRewriteError`（负 step 仅带 break/continue 的 `pto._while` 路径支持） |
 | `pto.range` 在非 AST-rewrite 上下文被调用 | `RuntimeError`（提示仅用于 rewrite 场景） |
-| 手写 IR 中 `pto.unroll` 未知字符串 / attr 类型错误 | Pass B `emitError` |
-| 手写 IR 中 `pto.unroll_factor` 类型/范围不合约（非 signless i32 或非正） | Pass B `emitError`（Pass A 对不合约 factor 一律不消费） |
-| 手写 IR 中 `pto.unroll` 与 `pto.unroll_factor` 同时出现在一个 loop 上 | Pass B `emitError`（互斥） |
-| `"full"` / factor native 展开失败 | Pass A 保留 attr（不发诊断）；Pass B emit remark + 降级 metadata，编译继续 |
+| 手写 IR 中 attr 种类错误（`pto.unroll` 非 string / `pto.unroll_factor` 非 integer） | Pass A `emitError`（否则 typed getter 返回空，malformed hint 会静默留在 IR 中） |
+| 手写 IR 中 `pto.unroll` 未知字符串（含已删除的 `"enable"`/`"disable"`） | Pass A `emitError` |
+| 手写 IR 中 `pto.unroll_factor` 类型/范围不合约（非 signless i32 或非正） | Pass A `emitError` |
+| 手写 IR 中 `pto.unroll` 与 `pto.unroll_factor` 同时出现在一个 loop 上 | Pass A `emitError`（互斥） |
+| `"full"` / factor 无法原生展开（动态 trip / 动态 step / 超 `max-unroll-factor` / factor=1 / 空 body / 静态空迭代区间 `ub <= lb` / 非 index 归纳变量） | Pass A emit remark + 丢 hint，loop 保留，编译继续 |
 | full unroll trip count 超过护栏阈值 | Pass A warning，仍执行展开 |
 
 ---
@@ -274,43 +272,38 @@ for i in pto.range(0, N, unroll_factor=4):
 
 ### 7.1 PTODSL 前端测试（`ptodsl/tests/`）
 
-- `for_(..., unroll="enable")` / `unroll="full"` / `unroll_factor=4` 生成的 `scf.for` 携带正确 attr；
+- `for_(..., unroll="full")` / `unroll_factor=4` 生成的 `scf.for` 携带正确 attr；`unroll="enable"`/`"disable"` 被拒绝；
 - `for i in pto.range(...)` 与 `with pto.for_(...)` 生成相同 IR（bounds / step / attr / SSA 语义逐字节一致）；
 - `.carry(...)` 循环携带 hint 并正确编译（live-out carry 值正确）；
 - `range` / `pto.range` / `pto.for_` 无 hint 时 IR 完全一致；
 - 互斥参数、非法 `unroll` 取值、非整数 / 动态 factor 的稳定诊断；
-- `pto.range` 的 start/stop/step 组合与 Python `range` 语义一致（单参数形式、负数界等）；普通路径（无 break/continue）下降为 `scf.for`，仅支持正 step，常量非正 step 由前端报错；负 step 仅在带 break/continue 的 `pto._while` 路径受支持；
+- `pto.range` 的 start/stop/step 组合与 Python `range` 语义一致（单参数形式、负数界等）；普通路径（无 break/continue）下降为 `scf.for`，仅支持正 step，常量非正 step 由前端报错（bool 是 int 子类：`step=False` 按 0 拒绝，`step=True` 归一化为 1——下游 index coercion 拒绝 bool）；负 step 仅在带 break/continue 的 `pto._while` 路径受支持；
 - 嵌套循环中只有直接使用 `pto.range` 的层级携带 hint。
 
 ### 7.2 PTOAS lit 测试（`test/`、`test/lit/vpto/`）
 
-**Native unroll（Pass A）**：
+**Native unroll（Pass A，唯一消费者）**：
 
 - factor 整除（无 epilogue）/ 不整除（epilogue 存在且 init args 正确）；
 - trip count < factor、0 次、1 次迭代；
 - 动态 upper bound 的 factor 展开；
 - 带 live-out carry values 的 factor 展开（验证 epilogue 穿线）；
-- 嵌套循环、循环内含条件分支与 memory side effect；
-- epilogue loop 携带 `pto.unroll = "disable"`；
+- 嵌套循环（含 `promoteIfSingleIteration` 把带 hint 内层 splice 到父 block 的场景）、循环内含条件分支与同步操作（`pto.barrier`）；
 - 非 SIMT 上下文中的显式 attr 循环同样被展开（放开限制后的行为锁定）。
 
-**Hint 透传（Pass B）**：
+**Hint 丢弃与诊断（Pass A）**：
 
-- `pto.unroll = "enable"` → FileCheck `#llvm.loop_annotation<unroll = <disable = false>>`；
-- `--emit-vpto-llvm-dialect` 端到端：latch `llvm.br` 携带 annotation；
-- 翻译后 `.ll` 检查 `!{!"llvm.loop.unroll.enable"}` / `count` / `full` / `disable`；
-- 动态 bound 的 `"full"` 降级为 `llvm.loop.unroll.full` + warning；
-- 非法 attr 组合产生 error 而非静默通过；
-- attr 存活锁定：跑完整 `prepareVPTOForEmission` 后 annotation 仍在 loop 上。
+- 动态 trip 的 `"full"`、动态 step / 超上限 / factor=1 的 factor → remark + 丢 hint、loop 保留；
+- 非法 hint（未知值含已删除的 `enable`/`disable`、互斥、非 i32 factor）→ error 而非静默通过；单函数内多个非法 loop 的诊断一次性全部发出（不受函数级并行调度影响）；
+- 无 hint 循环的 IR 与最终产物逐字节不变。
 
 **回归**：
 
-- `test/test_unroll_annotation.mlir`、`test/lit/vpto/unroll_inline_simt_sections.pto` 不修改、不回归（#838 规避路径）；
-- 无 hint 循环的 IR 与最终产物逐字节不变。
+- `test/test_unroll_annotation.mlir`、`test/lit/vpto/unroll_inline_simt_sections.pto` 不修改、不回归（#838 规避路径）。
 
 ### 7.3 端到端验证
 
-- SIMTVF sample（`test/samples/`）使用 `unroll="enable"` 编译到 A5：loop 保留、metadata 出现在 BiSheng 输入 `.ll` 中、kernel 正确编译；
+- SIMTVF ST（`test/dsl-st/unroll_hint_numeric.py`）在模拟器与 A5 硬件上验证展开后 kernel 数值正确；
 - 带 `.carry()` 的循环与普通循环均完成 PTODSL → PTOAS → BiSheng 闭环。
 
 ---
@@ -320,14 +313,13 @@ for i in pto.range(0, N, unroll_factor=4):
 - [ ] PTODSL：`_control_flow.py`、`_tracing/control_flow.py`、`_tracing/session.py`、`_tile_template_tracing.py`、`_ast_rewrite.py`、`pto.py`（导出 `range`）
 - [ ] 共享常量头文件（`pto.unroll` / `pto.unroll_factor` attr 名与取值）
 - [ ] Pass A：`include/PTO/Transforms/Passes.td`（`pto-unroll-loops` + `pto-unroll-simt-for` alias）、`lib/PTO/Transforms/PTOUnrollSIMTForPass.cpp`（重构，视情况改名）
-- [ ] Pass B：`Passes.td` + `lib/PTO/Transforms/PTOLowerLoopHintsPass.cpp`（新文件需 PR386 OAT.3 license header）
-- [ ] `tools/ptoas/ptoas.cpp`（Pass A 替换）、两个 VPTO emitter（Pass B 插入）
-- [ ] `docs/`：PTODSL user guide 增加 unroll hint 章节（语义矩阵、降级行为、与 `static_range` 的区别）
+- [ ] `tools/ptoas/ptoas.cpp`（Pass A 替换）
+- [ ] `docs/`：PTODSL user guide 增加 unroll hint 章节（语义矩阵、无法展开时的丢弃行为、与 `static_range` 的区别）
 - [ ] 上述全部测试
 
 ## 9. 工作量评估
 
-合并实现（enable hint + native full/factor unroll + #838 重构）相比"只做 enable hint"多出：Pass A 的 factor 分支与降级逻辑（约百余行，重活均在上游 `loopUnrollByFactor`）及对应测试。相比分两期实施，省掉"先纯透传、后插 native unroll 再处理阶段互斥"的返工——互斥问题在合并设计中天然不存在。
+合并实现（native full/factor unroll + #838 重构）的主体是 Pass A 的 attr 驱动调度、边界兜底与丢弃逻辑（约百余行，重活均在上游 `loopUnrollByFactor`）及对应测试。v2 移除阶段一后，"阶段互斥"这一 #1000 关注点在构造上不存在。
 
 ---
 
@@ -335,8 +327,18 @@ for i in pto.range(0, N, unroll_factor=4):
 
 # PTODSL / PTOAS Loop Unroll Hint — Design Document
 
+> **Revision history (v2)**: the initial design had two stages - Pass A
+> (native unrolling) plus Pass B (`pto-lower-loop-hints`) forwarding leftover
+> hints as LLVM loop metadata (including the cost-model-delegating
+> `unroll="enable"`/`"disable"` hints).  After review, **stage 1 (Pass B) was
+> removed**: native unrolling of `full`/`unroll_factor` already covers the
+> unroll-interface needs of #1242/#1000, and `enable`/`disable` were removed
+> with it - the frontend rejects both values.  This document reflects v2;
+> analyses that motivated Pass B (e.g. the metadata delivery chain in §2.2)
+> are kept as decision records.
+
 > Related issues:
-> - [Issue #1242](https://github.com/hw-native-sys/PTOAS/issues/1242) Requirement 2 — `pto.for_` loop-unroll hint (`unroll="enable"`)
+> - [Issue #1242](https://github.com/hw-native-sys/PTOAS/issues/1242) Requirement 2 — `pto.for_` loop-unroll hint (v1's `unroll="enable"` was removed with stage 1; the interface need is covered by `unroll="full"` / `unroll_factor=N`)
 > - [Issue #1000](https://github.com/hw-native-sys/PTOAS/issues/1000) — Loop Unroll Hint support (incl. `pto.range`, factor unroll, two-phase plan)
 > - [PR #838](https://github.com/hw-native-sys/PTOAS/pull/838) — `PTOUnrollSIMTForPass` (temporary workaround for a BiSheng AICore backend bug, refactored by this design)
 
@@ -357,17 +359,22 @@ for i in pto.range(0, N, unroll_factor=4):
 
 ### 1.2 Goals
 
-1. Support `unroll="enable"` on `pto.for_` / the new `pto.range`: keep the device loop and pass the hint through to the `!llvm.loop.unroll.enable` LLVM IR metadata, letting the BiSheng cost model choose the unrolling strategy (#1242 acceptance criteria).
-2. Support `unroll="full"` and `unroll_factor=N`: PTOAS unrolls natively first; on failure, degrade to a compiler hint (#1000 phase-2 refactor).
-3. Refactor `PTOUnrollSIMTFor` from a SIMT-only, full-only temporary pass into a general attribute-driven unroll pass, without regressing the #838 bug-workaround semantics.
-4. Loops without any hint behave exactly as before.
+1. `pto.for_` / the new `pto.range` support the `unroll="full"` and
+   `unroll_factor=N` hints: PTOAS unrolls natively before LLVM lowering
+   (#1242's loop-unroll interface request, #1000 phase 2).
+2. Refactor `PTOUnrollSIMTFor` from a SIMT-only, full-only stopgap pass into a
+   general attribute-driven unroll pass, keeping the #838 bug-workaround
+   semantics intact.
+3. Loops without a hint behave exactly as before.
+
+(v1 also targeted `unroll="enable"`/`"disable"` metadata forwarding; removed
+after review - see the revision note at the top and §5.3.)
 
 ### 1.3 Non-goals
 
 - No changes to the LLVM/BiSheng unroll cost model;
-- No fixed unroll factor guaranteed for the `enable` hint;
 - No change to `pto.static_range`'s trace-time full-unroll semantics;
-- No full unrolling of arbitrary dynamic loops (dynamic-bound `"full"` degrades to a metadata hint);
+- No full unrolling of arbitrary dynamic loops (a dynamic-bound `"full"` cannot be unrolled natively: the hint is dropped with a remark and the loop is kept);
 - No TileLang codegen changes.
 
 ---
@@ -389,7 +396,7 @@ PTODSL currently has **no public API** that sets the `pto.unroll` attribute — 
 
 No changes are needed in the LLVM/BiSheng interface layers:
 
-1. **SCF→CF**: the vendored LLVM 19 (feature-vpto) `SCFToControlFlow` does **not** copy `llvm.loop_annotation` from `scf.for` to the latch `cf.br` (that support only exists in newer upstream versions; the LLVM 21 in `llvm-workspace` already has it).  Pass B therefore lowers annotated loops to control flow itself and attaches the annotation to the latch (see the edge cases in 3.1); unannotated loops still go through upstream `convert-scf-to-cf`;
+1. **SCF→CF** (historical record, v1 rationale): the vendored LLVM 19 (feature-vpto) `SCFToControlFlow` does **not** copy `llvm.loop_annotation` from `scf.for` to the latch `cf.br` (that support only exists in newer upstream versions; the LLVM 21 in `llvm-workspace` already has it).  v1 therefore had Pass B lower annotated loops itself; v2 removed stage 1 and the chain is no longer used;
 2. **CF→LLVM**: `BranchOpLowering` / `CondBranchOpLowering` preserve all attributes onto `llvm.br` / `llvm.cond_br`
    (`llvm-workspace/llvm-project/mlir/lib/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.cpp:130-170`);
 3. **MLIR→LLVM IR**: `translateModuleToLLVMIR` translates `#llvm.loop_annotation` on the latch into `!llvm.loop` metadata
@@ -415,9 +422,9 @@ No changes are needed in the LLVM/BiSheng interface layers:
 - Supports **dynamic bounds**: automatically generates the trip-count computation and an epilogue remainder loop;
 - **Live-out carry values are threaded correctly through the epilogue**: main-loop results become the epilogue's init args and uses are replaced automatically (the "live-out values cannot be unrolled" restriction noted in the current pass does not apply on this path);
 - `loopUnrollFull` is a wrapper around `loopUnrollByFactor(tripCount)`;
-- Restrictions: a positive step is required (`ceilDivPositive` semantics when the sign is not statically known); the factor must be positive.
+- Restrictions: a positive step is required and the factor must be positive; on the dynamic-bound path the trip count is computed with `ceilDivPositive` (`arith.divui`), so a runtime `upper < lower` reinterprets the negative difference as a huge unsigned value — upstream explicitly leaves a `TODO: Add dynamic asserts for negative lb/ub/step`.  Pass A therefore guards the call itself: a static `ub <= lb` drops the hint, and a dynamic upper bound is clamped with `arith.maxsi(ub, lb)` (the identity when `ub >= lb`; when `ub < lb` both the unrolled main loop and the epilogue iterate zero times, like the original loop).
 
-The heaviest work of #1000 phase 2 (remainder-loop generation, loop-carried SSA threading) is therefore already done by the upstream utility; this design only needs attribute-driven scheduling and degradation logic.
+The heaviest work of #1000 phase 2 (remainder-loop generation, loop-carried SSA threading) is therefore already done by the upstream utility; this design only needs attribute-driven scheduling, bounds guarding, and hint-dropping logic.
 
 ### 2.4 Attribute-survival risk audit
 
@@ -429,15 +436,13 @@ The only pass between `prepareVPTOForEmission` and emission that rebuilds `scf.f
 
 ### 3.1 Semantics matrix
 
-One attribute encoding (discardable attrs on `scf.for`), two consumption paths (native unroll / metadata pass-through):
+One attribute encoding (discardable attrs on `scf.for`), one consumption path (native unroll in Pass A):
 
-| Frontend syntax | `scf.for` attr | Semantics | Native handling (Pass A) | Degradation/pass-through (Pass B) → LLVM metadata |
+| Frontend syntax | `scf.for` attr | Semantics | Native handling (Pass A) | When native unrolling is impossible |
 |---|---|---|---|---|
-| (no hint) | none | unchanged | not handled | not handled |
-| `unroll="enable"` | `pto.unroll = "enable"` | keep the loop; compiler cost model decides full/partial | **not handled** | `llvm.loop.unroll.enable` |
-| `unroll="disable"` | `pto.unroll = "disable"` | forbid unrolling | **not handled** | `llvm.loop.unroll.disable` |
-| `unroll="full"` | `pto.unroll = "full"` | PTOAS forced full unroll | `loopUnrollByFactor(tripCount)`; the loop disappears | on failure → `llvm.loop.unroll.full` + remark |
-| `unroll_factor=N` | `pto.unroll_factor = N` (i32) | PTOAS unrolls by N | `loopUnrollByFactor(N)`; main + epilogue loops | on failure → `llvm.loop.unroll.count = N` + remark |
+| (no hint) | none | unchanged | not handled | — |
+| `unroll="full"` | `pto.unroll = "full"` | PTOAS forced full unroll | `loopUnrollByFactor(tripCount)`; the loop disappears | dynamic trip: drop hint + remark, keep the loop |
+| `unroll_factor=N` | `pto.unroll_factor = N` (i32) | PTOAS unrolls by N | `loopUnrollByFactor(N)`; main + epilogue loops | dynamic step / over-cap / N=1: drop hint + remark, keep the loop |
 
 Constraints:
 
@@ -448,54 +453,69 @@ Constraints:
 
 Edge cases (implementation decisions):
 
-- `unroll_factor=1` has no native meaning and is forwarded as
-  `llvm.loop.unroll.count = 1`;
+- `unroll_factor=1` has no native meaning; the hint is dropped with a remark;
 - empty-body loops (a no-op for `loopUnrollByFactor`) are not unrolled
-  natively; the hint degrades to metadata;
+  natively; the hint is dropped with a remark;
+- only index-typed loops can be unrolled: `scf.for` also accepts signless
+  integer bounds (i16/i32), but `loopUnrollByFactor` always builds its
+  step/offset arithmetic with `arith::ConstantIndexOp`, so unrolling an i16
+  loop emits `arith.muli(i16, index)` and an `scf.for` whose step type no
+  longer matches its bounds - both verifier failures.  Non-index loops drop
+  the hint with a remark;
+- empty iteration spaces are never unrolled: upstream computes the trip count
+  with `ceilDivPositive` (`arith.divui`), so a static `ub <= lb` would unroll
+  into a loop with a wrapped-around upper bound, and a runtime `ub < lb`
+  would reinterpret the negative difference as a huge unsigned value.  Pass A
+  therefore drops the hint with a remark for a static `ub <= lb`, and clamps a
+  dynamic upper bound with `arith.maxsi(ub, lb)` before the call (the identity
+  when `ub >= lb`; zero-trip for both the main loop and the epilogue when
+  `ub < lb`);
 - `pto.range(...)` loops with `break`/`continue`/`else` lower through
   `scf.while` and cannot carry a hint, so the frontend reports an error;
-- LLVM 19's `convert-scf-to-cf` does not propagate `llvm.loop_annotation`
-  from `scf.for` to the latch `cf.br` (only newer upstream versions do), so
-  Pass B lowers annotated loops to control flow itself and attaches the
-  annotation to the latch branch; unannotated loops still go through the
-  upstream conversion;
-- the annotation on the latch must use the bare ODS name `loop_annotation`
-  (not the discardable name `llvm.loop_annotation` used on `scf.for`): the
-  MLIR-to-LLVM-IR translation looks it up via `BrOp::getLoopAnnotationAttr()`
-  under the bare name, and `convert-cf-to-llvm` forwards branch attributes
-  verbatim (`op->getAttrs()`), so Pass B stores the bare name on the latch and
-  the rest of the conversion chain needs no special handling to emit
-  `!llvm.loop` metadata;
-- Pass B's SCF→CF rewrite must only touch annotated loops
-  (`applyOpPatternsAndFold` + `ExistingOps`, worklist = annotated `scf.for`
-  ops only): a function-wide `applyPatternsAndFoldGreedily` would also
-  constant-fold every op it visits even with no pattern match, which in the
-  VPTO emission pipeline folds the `arith.ori` chains of the ub-to-llvm
-  config words ahead of time and changes the emitted LLVM IR text;
-- `unroll_factor` must also be ≤ 2^31−1: the attribute is encoded as a
-  signless i32, read back as a signed value, and forwarded into 32-bit LLVM
-  loop metadata, so larger values wrap negative.  The frontend rejects them
-  at construction time; the backend enforces the same contract — Pass A does
-  not consume an out-of-contract factor (e.g. an i64 attribute in handwritten
-  IR), and Pass B reports an error for it instead of truncating it into a
-  negative `llvm.loop.unroll.count`;
+- `unroll_factor` must be ≤ 2^31−1: the attribute is encoded as a signless
+  i32 and read back as a signed value, so larger values wrap negative.  The
+  frontend rejects them at construction time; the backend enforces the same
+  contract — Pass A reports an error for an out-of-contract factor (e.g. an
+  i64 attribute in handwritten IR) instead of truncating it negative;
 - Pass A's unroll fixpoint has no round cap: each round re-walks the function
   to pick up annotated inner loops cloned by an outer unroll, and stops only
   when a round changes nothing.  A fixed round budget would silently leave
   hints behind on loops nested deeper than the budget, and a leftover `full`
-  hint degrading to metadata would violate the forced native-unroll contract
-  for static loops.
+  hint being dropped would violate the forced native-unroll contract for
+  static loops;
+- Pass A does not use the greedy pattern driver; it drives
+  `loopUnrollByFactor` manually in post-order (innermost first): the utility
+  erases the unrolled loop with its own internal `IRRewriter`, bypassing the
+  driver's listener and leaving dangling pointers in a driver worklist.
+  Post-order guarantees that by the time an outer loop is unrolled and
+  erased, every annotated inner loop has already been processed;
+- factor cap: `max-unroll-factor` (default 1024) bounds native factor
+  unrolling; beyond it the hint is dropped with a remark, preventing a huge
+  factor from hanging/OOMing the compiler;
+- v1 designed a metadata forwarding path (Pass B); two of its implementation
+  points are no longer needed but worth recording: (a) LLVM 19's
+  `convert-scf-to-cf` does not propagate `llvm.loop_annotation` from
+  `scf.for` to the latch `cf.br` (only newer upstream versions do), so v1's
+  Pass B lowered annotated loops to control flow itself and attached the
+  annotation to the latch under the bare ODS name `loop_annotation` (the
+  MLIR-to-LLVM-IR translation looks it up via
+  `BrOp::getLoopAnnotationAttr()`); (b) v1's Pass B restricted its rewrite to
+  annotated loops via `applyOpPatternsAndFold` + `ExistingOps` so a
+  function-wide greedy run could not fold unrelated ops (e.g. the
+  `arith.ori` chains of the ub-to-llvm config words).  With the path removed
+  in v2, Pass A's manual driving satisfies the same
+  "don't touch unrelated IR" constraint by construction.
 
-### 3.2 Double unrolling excluded by construction
+### 3.2 Double unrolling disappears with stage 1
 
-#1000 worried about "phase-1 CCE bypass and phase-2 native unroll both unrolling the same loop". In this design each loop's attribute is consumed exactly once:
+#1000 worried about "phase-1 CCE bypass and phase-2 native unroll both
+unrolling the same loop".  v2 has a single stage: each loop's attribute is
+consumed exactly once by Pass A (unrolled or dropped); there is no second
+consumption channel, so the problem disappears by construction.
 
-- native unroll succeeds → the attribute is removed; Pass B never sees the loop;
-- native unroll fails or does not apply (`enable`/`disable`) → the attribute survives and Pass B translates it into metadata.
-
-No extra phase-mutual-exclusion configuration is needed.
-
-**Preventing re-unrolling**: after a successful factor unroll, the epilogue loop gets `pto.unroll = "disable"` (equivalent to clang attaching `llvm.loop.unroll.disable` to remainder loops), translated uniformly by Pass B; the main loop carries no further unroll metadata.
+The epilogue loop produced by a factor unroll carries no hint attribute, so
+neither the fixpoint nor any later pass touches it again - re-unrolling is
+prevented without any tagging.
 
 ### 3.3 Architecture overview
 
@@ -503,21 +523,24 @@ No extra phase-mutual-exclusion configuration is needed.
 PTODSL frontend                      PTOAS backend
 ─────────────                        ─────────────────────────────────────────────
 pto.for_(..., unroll=...)            prepareVPTOForEmission:
-pto.range(...)  (AST rewrite)          [Pass A] pto-unroll-loops        ← consumes "full" / factor
-        │                                SCCP / canonicalize / CSE      ← folds constant branches
-        ▼                                ... (remaining VPTO opt passes)
-scf.for {pto.unroll = "...",           ─────────────────────────────────────────────
-         pto.unroll_factor = N}      VPTO emission pipeline (Beta1 / CANN900):
-        │                                ...
-        └──────────────────────────▶     [Pass B] pto-lower-loop-hints  ← leftover attrs → #llvm.loop_annotation,
-                                         │                                self-lowers annotated loops to CF and
-                                         │                                attaches the annotation to the latch cf.br
-                                         convert-scf-to-cf              ← unannotated loops only
-                                         convert-cf-to-llvm             ← auto-preserved on llvm.br
-                                         translateModuleToLLVMIR        ← auto-generated !llvm.loop metadata
-                                               │
-                                               ▼
-                                         BiSheng (cost model decides full/partial unroll)
+pto.range(...)  (AST rewrite)          pto-unroll-loops (the only hint consumer)
+        │                                ├─ "full" / factor unrollable → unroll
+        ▼                                │   natively, attribute removed
+scf.for {pto.unroll = "full",            ├─ not unrollable (dynamic trip/step,
+         pto.unroll_factor = N}          │   over-cap factor, factor=1, empty
+        │                                │   body) → drop hint + remark, loop kept
+        └──────────────────────────▶     └─ malformed hint (enable/disable/unknown
+                                            value, conflicting attrs, non-i32
+                                            factor) → hard error
+                                       SCCP / canonicalize / CSE   (fold constant
+                                       ...  branches exposed by unrolling)
+                                       ─────────────────────────────
+                                       convert-scf-to-cf / LLVM lowering
+                                       (attributes fully consumed; no metadata
+                                       channel needed)
+                                             │
+                                             ▼
+                                       BiSheng
 ```
 
 ---
@@ -533,7 +556,7 @@ def for_(start, stop, *, step, unroll=None, unroll_factor=None):
     ...
 ```
 
-- `unroll`: one of `None | "enable" | "full" | "disable"`;
+- `unroll`: one of `None | "full"` (v1's `"enable"`/`"disable"` were removed together with stage 1);
 - `unroll_factor`: `None` or an `int` ≥ 1;
 - Entry-point validation: illegal values / mutually-exclusive conflicts / non-positive factor raise `TypeError` or `ValueError` with diagnostics that locate the call site;
 - The hint flows through `_ForBuilder` → `_ForCM.__enter__` (`_control_flow.py`); the attribute is attached immediately after `scf.ForOp` creation via a shared helper (`apply_unroll_hint` in `_tracing/control_flow.py`, with `normalize_unroll_hint` as the companion validator):
@@ -558,7 +581,7 @@ The hint must take effect consistently on every path that creates an `scf.for`, 
 ### 4.3 New `pto.range` (hint carrier for native Python `for`)
 
 ```python
-for i in pto.range(0, N, unroll="enable"):
+for i in pto.range(0, N, unroll="full"):
     ...
 
 for i in pto.range(0, N, unroll_factor=4):
@@ -578,37 +601,41 @@ for i in pto.range(0, N, unroll_factor=4):
 
 ### 5.1 Shared constants
 
-Promote `kUnrollAttrName` / `kUnrollFullValue` (currently private at `PTOUnrollSIMTForPass.cpp:58-59`) into a shared header (e.g. `include/PTO/IR/PTO.h` or a Transforms common header), and add `kUnrollFactorAttrName = "pto.unroll_factor"` plus the `"enable"` / `"disable"` value constants, shared by both passes and the docs.
+Promote `kUnrollAttrName` / `kUnrollFullValue` (previously private in `PTOUnrollSIMTForPass.cpp`) into a shared header (`include/PTO/IR/PTO.h`), and add `kUnrollFactorAttrName = "pto.unroll_factor"` plus the `isValidUnrollFactorAttr` contract check, shared by the pass and the docs.
 
-### 5.2 Pass A: `PTOUnrollLoops` (refactor of `PTOUnrollSIMTFor`)
+### 5.2 Pass A: `PTOUnrollLoops` (refactor of `PTOUnrollSIMTFor`, the only consumer)
 
 - **New pass name**: `pto-unroll-loops`; keep `pto-unroll-simt-for` as an alias (two existing tests reference it via `--mlir-print-ir-after=pto-unroll-simt-for`; behavior is unchanged, zero regression);
-- **Position unchanged**: inside `prepareVPTOForEmission`, before SCCP/canonicalize/CSE (`tools/ptoas/ptoas.cpp:3074`), preserving the #838 benefit of folding constant branches after unrolling;
-- **Handling logic** (walk `scf.for`):
-  - `pto.unroll = "full"`: static lb/ub/step, positive step, computable trip count → fully unroll via `loopUnrollByFactor(tripCount)`; on success the loop and the attribute disappear; on failure (e.g. dynamic bounds) the attribute is **kept** — this pass emits no diagnostic, and Pass B degrades it to metadata with a remark explaining the degradation;
-  - `pto.unroll_factor = N`: the attribute is first checked against the signless-i32 positive-factor contract (`isValidUnrollFactorAttr`); an out-of-contract attribute (e.g. an i64 in handwritten IR) is never consumed here and is left for Pass B to diagnose.  A valid factor is unrolled via `loopUnrollByFactor(N)` (dynamic bounds supported; the upstream utility generates the epilogue and threads live-out carries); on success remove the attribute from the main loop and attach `pto.unroll = "disable"` to the epilogue loop (if any); on failure (e.g. non-positive step) keep the attribute — Pass B degrades it with a remark;
-  - `pto.unroll = "enable"` / `"disable"`: skipped;
-- **Lift the SIMT-context restriction**: #838's auto-detection (auto-unroll for trip count ≤ 64) has already been removed; only explicit attributes remain — an explicit attribute is user intent, and silently ignoring it outside SIMT contexts would be counterintuitive. Remove the `isInSIMTContext` check and update the pass documentation;
-- **Optional guardrail**: warn when a full-unroll static trip count exceeds a threshold (default e.g. 1024, tunable via pass option) to prevent IR explosion;
-- Illegal attribute combinations are not diagnosed here (left to Pass B's unified diagnostics); this pass never touches attributes it does not recognize.
+- **Position unchanged**: inside `prepareVPTOForEmission`, before SCCP/canonicalize/CSE (`tools/ptoas/ptoas.cpp`), preserving the #838 benefit of folding constant branches after unrolling;
+- **Two-phase structure**: first walk the function and validate every hint (collecting all diagnostics before failing once - the function pass adaptor may stop scheduling functions after the first failure, so diagnostics must be complete per function), then run the unroll fixpoint;
+- **Validation** (hard errors): a `pto.unroll` value other than `"full"` (including the removed `"enable"`/`"disable"`), both attributes on one loop, or a factor violating the signless-i32 positive-factor contract (`isValidUnrollFactorAttr`);
+- **Handling logic** (after validation):
+  - `pto.unroll = "full"`: static lb/ub/step, positive step, computable trip count → fully unroll via `loopUnrollByFactor(tripCount)`; the loop and the attribute disappear.  A dynamic trip count cannot be unrolled → drop the hint with a remark and keep the loop;
+  - `pto.unroll_factor = N`: unroll via `loopUnrollByFactor(N)` (dynamic bounds supported; the upstream utility generates the epilogue and threads live-out carries); on success the attribute is removed.  N=1, a dynamic step, or a factor above `max-unroll-factor` (default 1024) → drop the hint with a remark and keep the loop;
+  - empty-body loops: drop the hint with a remark (`loopUnrollByFactor` reports a no-op success on them, which would loop the fixpoint forever);
+- **Lift the SIMT-context restriction**: #838's auto-detection (auto-unroll for trip count ≤ 64) has already been removed; only explicit attributes remain — an explicit attribute is user intent, and silently ignoring it outside SIMT contexts would be counterintuitive.  The `isInSIMTContext` check is removed and the pass documentation updated;
+- **Optional guardrail**: warn when a full-unroll static trip count exceeds a threshold (default 1024, tunable via pass option) to prevent IR explosion.
 
-### 5.3 Pass B: `PTOLowerLoopHints` (new)
+### 5.3 (Removed) Pass B: `PTOLowerLoopHints`
 
-- **Pass name**: `pto-lower-loop-hints`, func-level;
-- **Insertion points**: immediately before `createConvertSCFToCFPass()` in both emitter pipelines (`VPTOLLVMEmitter.cpp:14198`, `VPTOCANN900LLVMEmitter.cpp:11878`), guaranteeing no later pass can drop the attribute;
-- **Translation logic** (walk `scf.for`):
+v1 designed `pto-lower-loop-hints` to translate leftover hints into
+`llvm.loop_annotation` and attach them to the latch `cf.br` via a custom
+SCF→CF lowering (LLVM 19's `convert-scf-to-cf` does not propagate the
+annotation), producing `!llvm.loop.unroll.*` metadata.  Review concluded
+that native unrolling (stage 2) already covers the requirements, so the pass
+and the `enable`/`disable` hints were removed:
 
-  | Leftover attr | Generated annotation |
-  |---|---|
-  | `pto.unroll = "enable"` | `#llvm.loop_annotation<unroll = <disable = false>>` |
-  | `pto.unroll = "disable"` | `#llvm.loop_annotation<unroll = <disable = true>>` |
-  | `pto.unroll = "full"` (degraded leftover) | `#llvm.loop_annotation<unroll = <full = true>>` |
-  | `pto.unroll_factor = N` (degraded leftover) | `#llvm.loop_annotation<unroll = <count = N>>` |
-
-  The `pto.unroll` / `pto.unroll_factor` attrs are removed after translation;
-- **Merge, don't overwrite**: if the loop already carries `llvm.loop_annotation` (e.g. vectorize annotations in the future), merge the `unroll` field instead of replacing the whole attribute;
-- **Diagnostics**: unknown `pto.unroll` strings, factor < 1, or attribute type errors → `emitError`, never silently ignored (per #1000's "never silently change semantics" requirement);
-- Everything after — cf→llvm and the `!llvm.loop` metadata translation — is handled by the upstream mechanism; the SCF→CF lowering of annotated loops is done by this pass itself (LLVM 19's upstream conversion does not propagate the annotation, see the edge cases in 3.1), while unannotated loops still go through upstream `convert-scf-to-cf`.  The only emitter change is one `addNestedPass` line in each emission pipeline; the translation layer is untouched.
+- hints that cannot be unrolled natively are now dropped with a remark
+  instead of being degraded to metadata;
+- all diagnostics moved into Pass A;
+- the epilogue no longer needs a `pto.unroll = "disable"` stamp (no
+  downstream consumer exists, and the fixpoint never touches hint-free
+  loops); this also eliminates v1's correctness hazard where
+  `promoteIfSingleIteration` could splice nested loops into the parent block
+  and get them mis-stamped - the stamping logic was deleted together with
+  its consumer;
+- both emitter pipelines are back to their original shape (v1 inserted one
+  `addNestedPass` line in each).
 
 ### 5.4 Relationship to the #838 bug-workaround semantics
 
@@ -627,10 +654,11 @@ Promote `kUnrollAttrName` / `kUnrollFullValue` (currently private at `PTOUnrollS
 | `unroll_factor` exceeds the signless i32 limit (2^31−1) | PTODSL frontend `ValueError` |
 | Constant non-positive step on the plain `range(...)` / `pto.range(...)` path | PTODSL frontend `PTODSLAstRewriteError` (negative steps are only supported on the break/continue `pto._while` path) |
 | `pto.range` called outside an AST-rewrite context | `RuntimeError` (rewrite-only hint) |
-| Hand-written IR with unknown `pto.unroll` string / wrong attr type | Pass B `emitError` |
-| Hand-written IR with an out-of-contract `pto.unroll_factor` (not signless i32, or non-positive) | Pass B `emitError` (Pass A never consumes an out-of-contract factor) |
-| Hand-written IR with both `pto.unroll` and `pto.unroll_factor` on one loop | Pass B `emitError` (mutual exclusion) |
-| `"full"` / factor native unroll fails | Pass A keeps the attribute (no diagnostic); Pass B emits a remark + degrades to metadata; compilation continues |
+| Hand-written IR with a wrongly *kinded* attribute (`pto.unroll` not a string / `pto.unroll_factor` not an integer) | Pass A `emitError` (otherwise the typed getters return null and the malformed hint survives silently) |
+| Hand-written IR with unknown `pto.unroll` string (including the removed `"enable"`/`"disable"`) | Pass A `emitError` |
+| Hand-written IR with an out-of-contract `pto.unroll_factor` (not signless i32, or non-positive) | Pass A `emitError` |
+| Hand-written IR with both `pto.unroll` and `pto.unroll_factor` on one loop | Pass A `emitError` (mutual exclusion) |
+| `"full"` / factor cannot be unrolled natively (dynamic trip / dynamic step / above `max-unroll-factor` / factor=1 / empty body / statically empty iteration space `ub <= lb` / non-index induction variable) | Pass A emits a remark + drops the hint; the loop is kept; compilation continues |
 | Full-unroll trip count exceeds the guardrail threshold | Pass A warning; unroll still proceeds |
 
 ---
@@ -639,43 +667,38 @@ Promote `kUnrollAttrName` / `kUnrollFullValue` (currently private at `PTOUnrollS
 
 ### 7.1 PTODSL frontend tests (`ptodsl/tests/`)
 
-- `for_(..., unroll="enable")` / `unroll="full"` / `unroll_factor=4` produce `scf.for` with the correct attributes;
+- `for_(..., unroll="full")` / `unroll_factor=4` produce `scf.for` with the correct attributes; `unroll="enable"`/`"disable"` are rejected;
 - `for i in pto.range(...)` and `with pto.for_(...)` produce identical IR (bounds / step / attributes / SSA semantics, byte-for-byte);
 - `.carry(...)` loops carry the hint and compile correctly (correct live-out carry values);
 - `range` / `pto.range` / `pto.for_` without hints produce identical IR;
 - Stable diagnostics for mutually-exclusive arguments, illegal `unroll` values, and non-integer / dynamic factors;
-- `pto.range` start/stop/step combinations match Python `range` semantics (single-argument form, negative bounds, etc.); the plain path (no break/continue) lowers to `scf.for` and only supports a positive step — a constant non-positive step is rejected by the frontend; negative steps are only supported on the break/continue `pto._while` path;
+- `pto.range` start/stop/step combinations match Python `range` semantics (single-argument form, negative bounds, etc.); the plain path (no break/continue) lowers to `scf.for` and only supports a positive step — a constant non-positive step is rejected by the frontend (bool is an int subclass: `step=False` is rejected as 0, `step=True` is normalized to 1 because downstream index coercion rejects bools); negative steps are only supported on the break/continue `pto._while` path;
 - In nested loops, only the levels directly using `pto.range` carry the hint.
 
 ### 7.2 PTOAS lit tests (`test/`, `test/lit/vpto/`)
 
-**Native unroll (Pass A)**:
+**Native unroll (Pass A, the only consumer)**:
 
-- Factor divides trip count (no epilogue) / does not divide (epilogue present with correct init args);
-- Trip count < factor, 0 iterations, 1 iteration;
-- Factor unroll with a dynamic upper bound;
-- Factor unroll with live-out carry values (verify epilogue threading);
-- Nested loops, conditional branches and memory side effects inside the body;
-- The epilogue loop carries `pto.unroll = "disable"`;
-- Explicitly annotated loops outside SIMT contexts are also unrolled (locks in the lifted restriction).
+- factor divides / does not divide the trip count (epilogue present with correct init args);
+- trip count < factor, zero-trip, single-iteration;
+- factor unroll with a dynamic upper bound;
+- factor unroll with live-out carry values (epilogue threading);
+- nested loops (including `promoteIfSingleIteration` splicing hinted inner loops into the parent block), bodies with conditionals and synchronization ops (`pto.barrier`);
+- explicit-attribute loops outside SIMT contexts are unrolled too (locking in the lifted restriction).
 
-**Hint pass-through (Pass B)**:
+**Hint dropping and diagnostics (Pass A)**:
 
-- `pto.unroll = "enable"` → FileCheck `#llvm.loop_annotation<unroll = <disable = false>>`;
-- `--emit-vpto-llvm-dialect` end-to-end: the latch `llvm.br` carries the annotation;
-- The translated `.ll` contains `!{!"llvm.loop.unroll.enable"}` / `count` / `full` / `disable`;
-- Dynamic-bound `"full"` degrades to `llvm.loop.unroll.full` + warning;
-- Illegal attribute combinations produce errors rather than silently passing;
-- Attribute-survival lock: after the full `prepareVPTOForEmission`, the annotation is still on the loop.
+- dynamic-trip `"full"`, dynamic-step / over-cap / factor=1 → remark + hint dropped, loop kept;
+- malformed hints (unknown values including the removed `enable`/`disable`, conflicting attrs, non-i32 factor) → errors, never silently accepted; multiple malformed loops in one function produce all diagnostics at once (immune to function-level parallel scheduling);
+- unhinted loops produce byte-identical IR.
 
 **Regression**:
 
-- `test/test_unroll_annotation.mlir` and `test/lit/vpto/unroll_inline_simt_sections.pto` unchanged and green (the #838 workaround path);
-- Loops without hints produce byte-identical IR and final artifacts.
+- `test/test_unroll_annotation.mlir` and `test/lit/vpto/unroll_inline_simt_sections.pto` are unmodified and keep passing (#838 workaround path).
 
 ### 7.3 End-to-end validation
 
-- A SIMTVF sample (`test/samples/`) using `unroll="enable"` compiled to A5: the loop is kept, the metadata appears in the BiSheng input `.ll`, and the kernel compiles correctly;
+- A SIMTVF ST (`test/dsl-st/unroll_hint_numeric.py`) validates the unrolled kernels numerically on the simulator and on A5 hardware;
 - Both `.carry()` loops and plain loops complete the PTODSL → PTOAS → BiSheng loop.
 
 ---
@@ -685,11 +708,10 @@ Promote `kUnrollAttrName` / `kUnrollFullValue` (currently private at `PTOUnrollS
 - [ ] PTODSL: `_control_flow.py`, `_tracing/control_flow.py`, `_tracing/session.py`, `_tile_template_tracing.py`, `_ast_rewrite.py`, `pto.py` (export `range`)
 - [ ] Shared-constants header (`pto.unroll` / `pto.unroll_factor` attr names and values)
 - [ ] Pass A: `include/PTO/Transforms/Passes.td` (`pto-unroll-loops` + `pto-unroll-simt-for` alias), `lib/PTO/Transforms/PTOUnrollSIMTForPass.cpp` (refactored, possibly renamed)
-- [ ] Pass B: `Passes.td` + `lib/PTO/Transforms/PTOLowerLoopHintsPass.cpp` (new files require the PR386 OAT.3 license header)
-- [ ] `tools/ptoas/ptoas.cpp` (Pass A replacement), both VPTO emitters (Pass B insertion)
-- [ ] `docs/`: PTODSL user guide gains an unroll-hint section (semantics matrix, degradation behavior, difference from `static_range`)
+- [ ] `tools/ptoas/ptoas.cpp` (Pass A replacement)
+- [ ] `docs/`: PTODSL user guide gains an unroll-hint section (semantics matrix, hint-dropping behavior when native unrolling is impossible, difference from `static_range`)
 - [ ] All tests listed above
 
 ## 9. Effort Estimate
 
-The combined implementation (enable hint + native full/factor unroll + #838 refactor) adds, compared to "enable hint only": the factor branch and degradation logic in Pass A (roughly a hundred lines — the heavy lifting lives in the upstream `loopUnrollByFactor`) plus the corresponding tests. Compared to a two-phase rollout, it avoids the rework of "pass metadata through first, then insert native unrolling and solve phase mutual exclusion later" — mutual exclusion does not exist as a problem in the combined design.
+The bulk of the implementation (native full/factor unroll + the #838 refactor) is Pass A's attribute-driven scheduling, bounds guarding, and hint-dropping logic (roughly a hundred lines — the heavy lifting lives in the upstream `loopUnrollByFactor`) plus the corresponding tests. With stage 1 removed in v2, #1000's "phase mutual exclusion" concern does not exist by construction.

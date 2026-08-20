@@ -22,7 +22,7 @@ from ptoas.mlir.ir import InsertionPoint, IntegerAttr, IntegerType, StringAttr
 
 # ── loop-unroll hints ─────────────────────────────────────────────────────────
 
-_UNROLL_HINT_VALUES = ("enable", "full", "disable")
+_UNROLL_HINT_VALUES = ("full",)
 
 # pto.unroll_factor is encoded as a signless i32 attribute and read back as a
 # signed value by the backend, so the factor must fit in [1, INT32_MAX].
@@ -32,7 +32,7 @@ _MAX_UNROLL_FACTOR = 2**31 - 1
 def normalize_unroll_hint(unroll, unroll_factor, *, context="pto.for_(...)"):
     """Validate one loop-unroll hint pair and return it unchanged.
 
-    ``unroll`` must be one of "enable" / "full" / "disable"; ``unroll_factor``
+    ``unroll`` must be "full" (the only supported value); ``unroll_factor``
     must be a positive Python int that fits the signless i32 attribute
     encoding (<= 2**31 - 1).  The two are mutually exclusive.
     """

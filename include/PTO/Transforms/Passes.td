@@ -778,20 +778,20 @@ def PTOUnrollLoops : Pass<"pto-unroll-loops", "func::FuncOp"> {
     Fully or partially unrolls `scf.for` loops that carry an explicit unroll
     annotation, regardless of whether they are inside a SIMT context:
 
-    - `{pto.unroll = "full"}`: fully unrolled via `loopUnrollFull`.  Only
-      loops with a constant trip count are unrolled; other loops keep the
-      attribute and are degraded to the `llvm.loop.unroll.full` metadata hint
-      by `pto-lower-loop-hints`.
+    - `{pto.unroll = "full"}`: fully unrolled via `loopUnrollByFactor` with
+      the trip count as the factor (single-iteration promotion removes the
+      resulting loop shell).  Only loops with a constant trip count are
+      unrolled; other loops keep the loop and drop the hint with a remark.
     - `{pto.unroll_factor = N}`: unrolled by N via `loopUnrollByFactor`,
       which supports dynamic upper bounds and generates an epilogue
-      (remainder) loop that threads live-out loop-carried values.  The
-      epilogue loop is annotated `{pto.unroll = "disable"}` to prevent
-      further unrolling.  Only loops with a statically known positive step
-      are unrolled; other loops keep the attribute and are degraded to the
-      `llvm.loop.unroll.count` metadata hint by `pto-lower-loop-hints`.
-    - `{pto.unroll = "enable"}` / `{pto.unroll = "disable"}`: never unrolled
-      natively; left for `pto-lower-loop-hints` to translate into LLVM loop
-      metadata.
+      (remainder) loop that threads live-out loop-carried values.  Only
+      loops with a statically known positive step are unrolled; a no-op
+      factor (1), a dynamic step, or a factor above `max-unroll-factor`
+      keeps the loop and drops the hint with a remark.
+
+    Malformed hints are hard errors: an unknown `pto.unroll` value, both
+    attributes on one loop, or an out-of-contract factor (not a signless
+    i32, or non-positive).
 
     The annotation is opt-in: loops without an attribute are left unchanged
     regardless of trip count.
@@ -816,6 +816,11 @@ def PTOUnrollLoops : Pass<"pto-unroll-loops", "func::FuncOp"> {
            /*default=*/"1024",
            "Emit a warning when fully unrolling a loop whose static trip "
            "count exceeds this threshold.  The loop is still unrolled.">,
+    Option<"maxUnrollFactor", "max-unroll-factor", "int64_t",
+           /*default=*/"1024",
+           "Do not natively unroll by a factor larger than this; the loop "
+           "is kept and the hint is dropped with a remark instead.  "
+           "A negative value disables the cap.">,
   ];
 }
 
@@ -842,44 +847,11 @@ def PTOUnrollSIMTFor : Pass<"pto-unroll-simt-for", "func::FuncOp"> {
            /*default=*/"1024",
            "Emit a warning when fully unrolling a loop whose static trip "
            "count exceeds this threshold.  The loop is still unrolled.">,
-  ];
-}
-
-def PTOLowerLoopHints : Pass<"pto-lower-loop-hints", "func::FuncOp"> {
-  let summary =
-      "Translate pto.unroll/pto.unroll_factor loop hints into LLVM loop "
-      "annotations";
-  let description = [{
-    Translates leftover loop-unroll hint attributes on `scf.for` into
-    `#llvm.loop_annotation` attributes so that the corresponding
-    `!llvm.loop` metadata (`llvm.loop.unroll.enable/disable/full/count`)
-    reaches the emitted LLVM IR:
-
-    - `{pto.unroll = "enable"}`  -> `#llvm.loop_annotation<unroll = <disable = false>>`
-    - `{pto.unroll = "disable"}` -> `#llvm.loop_annotation<unroll = <disable = true>>`
-    - `{pto.unroll = "full"}`    -> `#llvm.loop_annotation<unroll = <full = true>>`
-      (degradation: the loop could not be unrolled natively)
-    - `{pto.unroll_factor = N}`  -> `#llvm.loop_annotation<unroll = <count = N>>`
-      (degradation: the loop could not be unrolled natively)
-
-    An existing `llvm.loop_annotation` attribute on the loop is merged rather
-    than overwritten.  Unknown `pto.unroll` values, non-positive factors, or
-    both attributes on the same loop are hard errors.
-
-    The stock LLVM 19 `convert-scf-to-cf` does not propagate
-    `llvm.loop_annotation` from `scf.for` to the loop latch, so this pass also
-    lowers each annotated `scf.for` to control-flow ops itself (mirroring
-    `ForLowering`) and attaches the annotation to the latch `cf.br`.
-    Unannotated loops are left for the regular conversion pass.    This pass must run immediately before `createConvertSCFToCFPass` so that
-    no intermediate pass can drop the discardable attributes.
-  }];
-  let constructor = "mlir::pto::createPTOLowerLoopHintsPass()";
-  let dependentDialects = [
-    "mlir::func::FuncDialect",
-    "mlir::scf::SCFDialect",
-    "mlir::arith::ArithDialect",
-    "mlir::cf::ControlFlowDialect",
-    "mlir::LLVM::LLVMDialect"
+    Option<"maxUnrollFactor", "max-unroll-factor", "int64_t",
+           /*default=*/"1024",
+           "Do not natively unroll by a factor larger than this; the loop "
+           "is kept and the hint is dropped with a remark instead.  "
+           "A negative value disables the cap.">,
   ];
 }
 
