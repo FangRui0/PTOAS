@@ -447,7 +447,7 @@ def TExtractOp : PTO_TOp<"textract", [
 
   let extraClassDeclaration = [{
     enum class Form { Invalid, SingleOutput, NdTo2xNz };
-    Form classifyForm() const;
+    Form classifyForm();
     bool isSingleOutputForm();
     bool isNdTo2xNzForm();
 
@@ -483,7 +483,7 @@ range，改为 custom parser/printer。printer 对单输出 form 必须逐字符
 
 `classifyForm()` 返回 `SingleOutput`、`NdTo2xNz` 或 `Invalid`。它不能先调用任何依赖 segment
 offset 的 generated operand accessor，包括 `getSrc()`、`getIndices()`、`getDsts()`、`getFp()`。
-MLIR 21 把 `operandSegmentSizes` 存储在 inherent properties 中，`Operation::getRawDictionaryAttrs()`
+LLVM/MLIR 19 把 `operandSegmentSizes` 存储在 inherent properties 中，`Operation::getRawDictionaryAttrs()`
 明确不包含它。本 op 的 schema helper 固定从 typed property 读取：
 
 ```cpp
@@ -806,7 +806,7 @@ attribute 和 layout 承载 base、FP、preQuant、relu、acc-to-vec 等多种�
 
 ### 5.1 公共校验顺序
 
-不能承诺 `TExtractOp::verify()` 在所有 generated accessor 之前执行。MLIR 21 的真实验证顺序是：
+不能承诺 `TExtractOp::verify()` 在所有 generated accessor 之前执行。LLVM/MLIR 19 的真实验证顺序是：
 
 1. parser/`setPropertiesFromParsedAttr()`/`setPropertiesFromAttr()` 把文本 property 转换为固定长度
    `Properties::operandSegmentSizes`；长度错误在此失败。
@@ -904,7 +904,8 @@ golden，才能无条件放行动态/非对齐 index。FP4 未通过第 3.5 节�
 #### 5.3.1 post-planning helper 执行切点
 
 当前 `compilePTOASModule()` 把 `PTOResolveBufferSelectPass` 和
-`PTOInlineBackendHelpersPass` 追加到同一个 `PassManager`，最后只调用一次 `pm.run()`；因此不存在
+`PTOInlineBackendHelpersPass` 追加到同一个 `PassManager`；在 `--emit-pto-ir`、VPTO 和 EmitC
+三条执行路径上各自只有一次 `pm.run()`，因此不存在
 “main pass manager 完成后、但 call inlining 前”的可执行时点。实现必须把当前 main pipeline
 拆成两个实际运行的 pass manager，而不是在单次 `pm.run()` 后再调用 helper：
 
@@ -1902,16 +1903,20 @@ full-store group 必须经过完整链路，partial-valid group 必须保留明�
 
 建议按以下顺序提交，保证每一步都可单独 review：
 
-| 阶段 | 内容 | 完成标准 |
-|---|---|---|
-| 0 | rebase、逐 target pin/backend 探测、CMake manifest 生成与 driver 注入 | NPU probe 生成正向 capability；CPU/cost-model 失败生成稳定负向 capability；manifest path/root/revision 校验可执行 |
-| 1 | 扩展 `TExtractOp` ODS ranges、inherent-property schema validator/form classifier、custom assembly、精确兼容 builder/accessor、DPS、pipe、effects、PTOBC shim | property conversion、generated invariants、custom verifier 各阶段负向测试不崩溃；src=0/2 等可到达 classifier 的 schema 稳定失败且 effects 保守；RowPlusOne `AllocMultiTileOp` 的既有 verifier rejection 保留；旧 C++ API compile-only、legacy/new parse-print、binding、v0 bytecode 兼容和 range-based adaptor 编译测试通过，且没有新增 op 名或 multi-buffer stride/access 属性 |
-| 2 | shared checked physical-layout/access helper、A5 partial-valid plain stride gate、IR verifier，以及 driver input-provenance/post-planning-safety helper | helper 分离 emitted dimension、subview/block stride、payload intervals、access end 和 allocation reservation；仅单 `AllocTileOp` 的 legacy/modern planner、ResolveBufferSelect、semantic range、InsertSync 切换完成；`16x32xf16 RowPlusOne` 精确得到 272-element stride、1024-byte payload、1056-byte access end、1088-byte allocation reservation，且 1088-byte reservation 不进入 access consumers；RowPlusOne multi-buffer/view chain 在 planner 前失败，plain multi-buffer 正向不变；capability 仍关闭；架构矩阵包含 A3/A5/VPTO `32/13` counterexample；main pipeline、安全 closure、partition/provenance lit 通过，且没有新增 validation pass/test escape |
-| 3 | no-alias、GraphSync `AllocTileOp` single-address model、shared-layout consumer 与 planner/GSS 回归 | GraphSync 对单 RowPlusOne allocation 从 shared helper 取得 8448-bit access envelope；三组 alias 被拒绝，declared/tpop provenance 在 planner 前失败，动态 level3 地址失败，双输出 liveness 正确，同址/overlap/disjoint/address-space GSS edge 正确；RowPlusOne two-slot negative 与 plain multi-buffer positive 通过；RowPlusOne capability 仍关闭 |
-| 4 | EmitC pattern | A3/A5 精确文本与 pin compile-only 通过 |
-| 5 | A5 TileLib/VPTO template 与 Python facade | physical-stride/stride gate、aligned/unaligned/tail/enabled-lowp 展开通过；legacy free function/property/constructor smoke 通过；NZ+1 compile/IR 回归消费 shared layout，但 capability 仍关闭；FP4 随独立 gate 开启 |
-| 6 | A3/A5 NPU ST、UB sentinel/raw-buffer harness；可用时 CPU-sim | 必选组合两路 byte-exact；partial case 实际导出 UB redzone；RowPlusOne full-store device golden 与所有精确 layout 回归通过后才打开 capability；其他 optional gate 有真实 backend 证据 |
-| 7 | manual、SPEC、ReleaseNotes | 文档与实际 verifier/EmitC 一致 |
+| 阶段 | 内容 | 完成标准 | 实现 PR 粗略规模 |
+|---|---|---|---|
+| 0 | rebase、逐 target pin/backend 探测、CMake manifest 生成与 driver 注入 | NPU probe 生成正向 capability；CPU/cost-model 失败生成稳定负向 capability；manifest path/root/revision 校验可执行 | 约 150-300 行 CMake/driver/probe，不含生成 manifest 和依赖 pin 噪声 |
+| 1 | 扩展 `TExtractOp` ODS ranges、inherent-property schema validator/form classifier、custom assembly、精确兼容 builder/accessor、DPS、pipe、effects、PTOBC shim | property conversion、generated invariants、custom verifier 各阶段负向测试不崩溃；src=0/2 等可到达 classifier 的 schema 稳定失败且 effects 保守；RowPlusOne `AllocMultiTileOp` 的既有 verifier rejection 保留；旧 C++ API compile-only、legacy/new parse-print、binding、v0 bytecode 兼容和 range-based adaptor 编译测试通过，且没有新增 op 名或 multi-buffer stride/access 属性 | 约 600-1000 行 ODS/C++/Python/bytecode 兼容代码及 300-500 行回归 |
+| 2 | shared checked physical-layout/access helper、A5 partial-valid plain stride gate、IR verifier，以及 driver input-provenance/post-planning-safety helper | helper 分离 emitted dimension、subview/block stride、payload intervals、access end 和 allocation reservation；仅单 `AllocTileOp` 的 legacy/modern planner、ResolveBufferSelect、semantic range、InsertSync 切换完成；`16x32xf16 RowPlusOne` 精确得到 272-element stride、1024-byte payload、1056-byte access end、1088-byte allocation reservation，且 1088-byte reservation 不进入 access consumers；RowPlusOne multi-buffer/view chain 在 planner 前失败，plain multi-buffer 正向不变；capability 仍关闭；架构矩阵包含 A3/A5/VPTO `32/13` counterexample；main pipeline、安全 closure、partition/provenance lit 通过，且没有新增 validation pass/test escape | 约 900-1500 行 helper/规划/driver 代码及 500-800 行回归 |
+| 3 | no-alias、GraphSync `AllocTileOp` single-address model、shared-layout consumer 与 planner/GSS 回归 | GraphSync 对单 RowPlusOne allocation 从 shared helper 取得 8448-bit access envelope；三组 alias 被拒绝，declared/tpop provenance 在 planner 前失败，动态 level3 地址失败，双输出 liveness 正确，同址/overlap/disjoint/address-space GSS edge 正确；RowPlusOne two-slot negative 与 plain multi-buffer positive 通过；RowPlusOne capability 仍关闭 | 约 450-800 行 GraphSync/planner 改动及 250-450 行回归 |
+| 4 | EmitC pattern | A3/A5 精确文本与 pin compile-only 通过 | 约 150-300 行 EmitC 代码及 100-200 行回归 |
+| 5 | A5 TileLib/VPTO template 与 Python facade | physical-stride/stride gate、aligned/unaligned/tail/enabled-lowp 展开通过；legacy free function/property/constructor smoke 通过；NZ+1 compile/IR 回归消费 shared layout，但 capability 仍关闭；FP4 随独立 gate 开启 | 约 500-900 行 TileLib/VPTO/Python 代码及 300-500 行回归 |
+| 6 | A3/A5 NPU ST、UB sentinel/raw-buffer harness；可用时 CPU-sim | 必选组合两路 byte-exact；partial case 实际导出 UB redzone；RowPlusOne full-store device golden 与所有精确 layout 回归通过后才打开 capability；其他 optional gate 有真实 backend 证据 | 约 300-600 行 harness/fixture/脚本，不含设备侧生成物 |
+| 7 | manual、SPEC、ReleaseNotes | 文档与实际 verifier/EmitC 一致 | 约 100-200 行文档与发布说明 |
+
+上表规模是实现 PR 的粗略 review 预算，按新增/实质修改的源码和回归估算，不把生成文件、构建
+产物或设备输出计入行数；实际拆分可以因仓库既有 helper 复用而下浮，但不应把阶段 2/3 的安全
+检查压缩为未覆盖的隐式逻辑。
 
 ## 14. 兼容性与完成条件
 
@@ -1925,6 +1930,27 @@ PTOBC v0 不迁移已发布的单输出 wire schema：旧 fixed-width record 继
 走 generic record。MLIR generic assembly 中手写的旧六项 `operandSegmentSizes` 不是 canonical
 public syntax；实现只承诺 canonical `pto.textract ins(...) outs(...)` 文本和上述 PTOBC fixture
 兼容。若仓库存在直接持久化 generic assembly 的用户，ReleaseNotes 必须给出新五段 schema。
+
+首版有三项明确的可用性取舍，不能在实现 PR 中被误解成未完成的校验细节：
+
+- **opaque-call closure 是 compile-unit-wide 的保守规则。** 只要一个 compile unit 存在
+  partial-valid producer，任意 `func.call_indirect`、external/unresolved call 或其他无法闭合的
+  call-like op 都会拒绝，即使它在数据流上理论上与 producer 无关。首版不做 function-pointer
+  target、address-taken 或跨函数 range/effect summary 分析，因此不能根据“真实 kernel 里这种
+  组合可能少见”而放宽规则；无 partial producer 的 module 仍保持 opaque-call 非回归。后续若要
+  降低过拒绝，必须先提供经过验证的 target-set 与 producer/TSTORE summary，并保留 disconnected
+  component、mixed-backend child 和 indirect-target 回归。
+- **runtime-bound tile provenance 会排除现有 runtime/queue-fed pattern。** `DeclareTileOp`、
+  `TAssignOp`、frontend `TPop*` 及其 view chain 常用于由 tpop、队列或调用方在运行时绑定 tile；
+  这些 pattern 在首版不能作为 ND-to-2xNZ 的 source/destination，必须改用 planner-owned
+  `alloc_tile`（level3 还要提供静态可证明地址），或等待后续 provenance contract。该限制不改变
+  这些 op 对其他 PTOAS 操作的既有可用性。
+- **RowPlusOne multi-buffer 需要单独跟踪。** 本设计刻意永久拒绝该组合，因为现有
+  `AllocMultiTileOp` 的单一 slot 字段不能同时表达 slot reservation stride 和 per-slot access end。
+  合入实现 PR 时应同时创建 follow-up issue，标题至少包含“RowPlusOne multi-buffer slot stride /
+  access-end split”，并把 issue 链接写入 release note；后续设计必须覆盖 ODS/verifier、slot 地址
+  物化、两套 planner、InsertSync、GraphSync、文本/PTOBC 兼容和双 slot overlap 回归后，才能
+  删除本首版拒绝规则。
 
 实现合入必须同时满足：
 
