@@ -11800,6 +11800,23 @@ struct PTORowSumToEmitC : public OpConversionPattern<pto::TRowSumOp> {
   }
 };
 
+struct PTOPairReduceSumToEmitC
+    : public OpConversionPattern<pto::TPairReduceSumOp> {
+  using OpConversionPattern<pto::TPairReduceSumOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(
+      pto::TPairReduceSumOp op, OpAdaptor adaptor,
+      ConversionPatternRewriter &rewriter) const override {
+    Value src = adaptor.getSrc();
+    Value dst = adaptor.getDst();
+
+    createLastUseAwareOpaqueCall(rewriter, op.getOperation(), TypeRange{},
+                                 "TPAIRREDUCESUM", ValueRange{dst, src});
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct PTORowProdToEmitC : public OpConversionPattern<pto::TRowProdOp> {
   using OpConversionPattern<pto::TRowProdOp>::OpConversionPattern;
 
@@ -13592,6 +13609,7 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<ReinterpretCastToEmitC>(typeConverter, ctx);
   patterns.add<PTOTAbsToTABS>(typeConverter, ctx);
   patterns.add<PTOTAddToTADD>(typeConverter, ctx);
+  patterns.add<PTOPairReduceSumToEmitC>(typeConverter, ctx);
   patterns.add<PTOAddSCToTADDSC>(typeConverter, ctx);
   patterns.add<ArithCastOPToEmitC>(typeConverter, ctx);
   patterns.add<ArithTruncIToEmitC>(typeConverter, ctx);
