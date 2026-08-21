@@ -34,6 +34,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
@@ -3297,11 +3298,30 @@ static void appendVMISemanticPipeline(OpPassManager &pm) {
   pm.addPass(pto::createVMIToVPTOPass());
 }
 
+/// Reject statically invalid scf.for steps at the PTOAS input boundary.
+/// LLVM 19 intentionally does not follow SSA values from scf.for verifiers,
+/// so the generic MLIR verifier cannot enforce this semantic constraint.
+static LogicalResult validateSCFForConstantSteps(ModuleOp module) {
+  WalkResult result = module.walk([](scf::ForOp forOp) -> WalkResult {
+    std::optional<int64_t> step = getConstantIntValue(forOp.getStep());
+    if (!step || *step > 0)
+      return WalkResult::advance();
+
+    forOp.emitOpError("constant step operand must be positive");
+    return WalkResult::interrupt();
+  });
+  return result.wasInterrupted() ? failure() : success();
+}
+
 int mlir::pto::compilePTOASModule(
     OwningOpRef<ModuleOp> &module, PTOASContext &context,
     PTOBackend effectiveBackend, PTOASCompileResult &result,
     bool emitVPTOHostStub) {
   result.reset();
+  if (failed(validateSCFForConstantSteps(*module))) {
+    return 1;
+  }
+
   // Validate stack-local struct provenance before every output path. In
   // particular, --emit-pto-ir returns before the EmitC validation pass and
   // VPTO does not use that pass.
