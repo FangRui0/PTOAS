@@ -83,7 +83,9 @@ lowering、verifier、TileLib template 或回归测试；后续实现拟在同�
     存在时，整个 compile unit 的 call surface 还必须闭合；opaque/external call 不能以位于另一个
     direct component 为由绕过检查。首版没有 test-only escape hatch。
 12. CPU-sim、cost-model 和其他 optional backend 对该 overload 的 unsupported 判断必须来自 driver 注入的
-    capability manifest，并在最终 backend lowering 前失败，不能依赖后期 C++ 实例化。
+    capability manifest，并在最终 backend lowering 前失败，不能依赖后期 C++ 实例化。manifest
+    只在 module 实际包含 ND-to-2xNZ form 时按需读取；不含该 form 的既有 EmitC/VPTO workflow
+    不要求任何新参数或 manifest。
 13. GraphSyncSolver 必须为普通 `AllocTileOp` 建立基于静态 `addr`、physical access envelope 和
     address space 的单地址模型；不同 SSA allocation root 使用同一地址时仍必须产生 hazard。
 14. 既有 `pto.textract` 文本、Python `TExtractOp`/`pto.textract` 调用、legacy
@@ -337,21 +339,26 @@ FP4 path 尚未验证”；验证通过后再把两种 FP4 加入正向集合。
 unsupported gate 必须有可执行载体，不能留在 op verifier 的架构白名单里。实现 PR 增加
 driver 注入的 codegen environment/capability contract：
 
-- driver 新增两个输入：
+- driver 为需要 capability 的编译任务新增三个可选输入；只有 module 实际包含
+  ND-to-2xNZ form 时才按 entry kind 要求其中相应输入：
 
   ```text
   --pto-codegen-env=npu|cpu-sim|costmodel
   --pto-capability-manifest=<path>
+  --pto-isa-include-root=<path>
   ```
 
   `--pto-capability-manifest` 是唯一 manifest 来源；不从环境变量、当前工作目录或输入 IR
-  属性猜测。CMake/harness 在实际 PTO-ISA include root 上运行 compile probe，把 JSON 写入
-  build tree（例如 `${CMAKE_BINARY_DIR}/pto/capabilities/<environment>-<backend>-<arch>.json`），
-  再把该绝对路径传给 `ptoas`。最终生成 C++ 的 harness 必须复用 manifest 选出的同一个
-  `include_root`，不能 probe 一个头文件树、编译时再换另一棵树。
+  属性猜测。`--pto-isa-include-root` 是当前编译任务的运行时路径，不是 capability identity，
+  不得写入 manifest、生成头文件、已安装 binary 或 wheel。CMake/probe harness 在实际 PTO-ISA
+  include root 上运行 compile probe，把 JSON 写入当前 build tree（例如
+  `${CMAKE_BINARY_DIR}/pto/capabilities/<environment>-<backend>-<arch>.json`），再把 manifest path
+  和本次运行可见的 include root 分别传给 `ptoas`。最终生成 C++ 的 harness 必须复用 driver
+  已校验的同一个 runtime include root，不能 probe 一棵头文件树、编译时再换另一棵树。
 - manifest 固定为 `schema_version = 1`、带 `entries` 的 JSON；每个 entry 的 key 是
-  `(environment, backend, arch)`，并记录 probe 实际使用的 PTO-ISA revision、canonical
-  include root 和输入树指纹：
+  `(environment, backend, arch)`，并只记录可重定位的 probe identity：PTO-ISA revision、
+  probe input kind 和输入指纹。指纹按相对 root 的排序路径、文件长度和文件内容计算，不包含
+  absolute path、mtime、inode 或 build directory：
 
   ```json
   {
@@ -361,8 +368,8 @@ driver 注入的 codegen environment/capability contract：
       "backend": "emitc",
       "arch": "a3",
       "pto_isa_revision": "<remote-local-sha>",
-      "include_root": "/abs/path/to/pto-isa/include",
-      "include_tree_sha256": "sha256:<probe-input-digest>",
+      "probe_input_kind": "pto_isa_include_tree",
+      "probe_input_sha256": "sha256:<relocatable-probe-input-digest>",
       "capabilities": {
         "textract.nd_to_2xnz": {
           "supported": false,
@@ -377,21 +384,27 @@ driver 注入的 codegen environment/capability contract：
   }
   ```
 
-  对 `vpto`，probe 验证 TileLib/template 注册、VPTO lowering 和 intrinsic verifier；对
-  `emitc` 的 NPU/CPU-sim/cost-model，probe 验证生成 C++ 对上述实际 include root 的编译。
+  对 `vpto`，`probe_input_kind` 表示 installed compiler 自带的 backend artifact，probe 验证
+  TileLib/template 注册、VPTO lowering 和 intrinsic verifier；driver 比较可重定位的 artifact
+  digest，不要求外部 PTO-ISA include root。对 `emitc` 的 NPU/CPU-sim/cost-model，kind 为
+  `pto_isa_include_tree`，probe 验证生成 C++ 对上述 runtime include root 的编译。
 - driver 读取 manifest 后必须：校验 JSON/schema；按 effective environment、backend、arch
-  精确选择且只能选择一个 entry；canonicalize 并检查 `include_root` 存在；重新计算
-  `include_tree_sha256`；并把 `pto_isa_revision` 与 CMake/harness 为当前编译任务配置的
-  PTO-ISA revision 校验。实现 PR 由 CMake 从同一依赖选择生成只读的
-  `PTOAS_PTO_ISA_INCLUDE_ROOT`/`PTOAS_PTO_ISA_REVISION` build configuration；driver 将
-  manifest entry 与这两个值及 digest 一起核对，不依赖 PTO-ISA checkout 必须带 `.git`。
-  缺少 configured revision、include root 不可读、digest/revision 不匹配都是 stale manifest，
-  必须在 PTOAS 阶段失败。解析出的 include root/revision 同时回传给最终 C++ 编译 harness，
-  形成 probe 与实际编译的一致性闭环。
+  精确选择且只能选择一个 entry。对 `pto_isa_include_tree` entry，driver 从
+  `--pto-isa-include-root` 解析当前 runtime root，canonicalize 并检查它存在，再按同一相对路径
+  算法重算 `probe_input_sha256`；对 bundled-backend entry，则与 installed compiler 自带的
+  relocatable artifact digest 比较。`pto_isa_revision` 用于诊断和依赖身份记录，digest 才把本次
+  runtime tree/artifact 与 probe 输入闭合；两者都不允许由绝对路径替代。runtime root 缺失、
+  不可读、kind 不匹配或 digest 不匹配都是 stale/misconfigured manifest，必须在 PTOAS 阶段失败。
+  校验后的 runtime root/revision 同时回传给最终 C++ 编译 harness。实现不得生成或引用
+  `PTOAS_PTO_ISA_INCLUDE_ROOT` 之类的 compiled-in absolute path；wheel build 不需要 PTO-ISA
+  checkout，安装前缀或 CI build directory 消失后仍可用新的 runtime root 校验同一 digest。
 - 校验成功后，driver 才写入 module attributes `pto.codegen_env` 和
   `pto.codegen_capabilities`。二者是 driver 保留属性；输入 IR 中的同名属性必须被拒绝，
-  不能手写 IR 自行宣称 capability。manifest 缺失时，`--emit-pto-ir` 可保留
-  `unknown` 并输出 IR；任何 EmitC/VPTO strict final-codegen path 都必须要求该文件并失败。
+  不能手写 IR 自行宣称 capability。driver 在 generic `mlir::verify` 后先扫描 module；若没有
+  被 form classifier 判定为 ND-to-2xNZ 的 `pto.textract`，立即跳过 capability 参数解析、manifest
+  I/O 和属性注入，既有 EmitC/VPTO final-codegen 即使没有 manifest 也保持成功。若存在该 form，
+  manifest 缺失时 `--emit-pto-ir` 可保留 `unknown` 并输出 IR；EmitC/VPTO strict final-codegen
+  才要求相应 manifest，并按 entry kind 要求 runtime include root 或 bundled artifact identity。
 - 在 generic `mlir::verify` 之后、EmitC/VPTO 最终 lowering 之前由 driver 直接调用普通
   capability validation helper；不得为该检查注册 MLIR pass。helper 只对被 `TExtractOp`
   form classifier 判定为 ND-to-2xNZ 的 `pto.textract` 查询已注入 entry，并按两个 destination
@@ -1627,8 +1640,8 @@ PTOAS 当前三个 pin 都早于 8 月 14 日功能提交：
   反例使用 `f16 16x32`：旧 product-shape slot1=`base+1024` 会与 slot0 access tail
   `[1024,1056)` 重叠；测试不得进入 `PTOResolveBufferSelect` 后才失败；
 - level3 下任一 operand 的 `alloc_tile.addr` 含动态 root；
-- 最终 codegen 时 environment unknown、capability manifest 缺失或
-  `textract.nd_to_2xnz=false`；
+- 含 ND-to-2xNZ form 的 strict final codegen 中 environment unknown、capability manifest 缺失或
+  `textract.nd_to_2xnz=false`；不含该 form 的 legacy module 在没有新 manifest/参数时仍然正向；
 - manifest 中 `textract.nd_to_2xnz=true` 但
   `textract.nd_to_2xnz.row_plus_one=false` 或缺失时，plain+RowPlusOne 与
   RowPlusOne+RowPlusOne 必须拒绝；plain+plain 不应因缺少 RowPlusOne 子 capability 被拒绝；
@@ -1719,12 +1732,17 @@ PTOAS 当前三个 pin 都早于 8 月 14 日功能提交：
   TSTORE access end=1056 bytes、planner allocation reservation=1088 bytes 一致；
 - FP4 检查 doubled packed dimension；
 - 生成 C++ 对 implementation PR 选定的 GitCode A3/A5 pin 做 compile-only；
-- capability manifest 分别覆盖 path missing/unreadable/malformed、tuple 无匹配或多匹配、
-  include root 不存在、include-tree digest/revision mismatch、NPU probe success、CPU-sim
-  missing implementation、cost-model missing wrapper/latency；所有失败都应由 driver
-  capability helper 在 final backend lowering 前给出稳定诊断；
-- manifest 选择出的 include root 必须被后续 C++ compile harness 复用；故意替换 include root
-  或 PTO-ISA revision 的 probe/compile split 必须失败；
+- capability manifest 分别覆盖 ND-to-2xNZ strict path 的 manifest missing/unreadable/malformed、
+  tuple 无匹配或多匹配、runtime include root 不存在、relocatable probe-input digest/revision
+  mismatch、NPU probe success、CPU-sim missing implementation、cost-model missing
+  wrapper/latency；所有失败都应由 driver capability helper 在 final backend lowering 前给出稳定诊断；
+- manifest 只保存 revision、probe kind 和不含绝对路径的相对树/artifact digest；选择出的 runtime
+  include root 必须被后续 C++ compile harness 复用。故意替换 runtime include root、probe input
+  digest 或 PTO-ISA revision 的 probe/compile split 必须失败；wheel 安装前缀或 CI build directory
+  消失不应使同一 digest 的本地 runtime tree 变成 stale；
+- 增加 legacy/no-form 正向回归：不含 ND-to-2xNZ 的既有 EmitC/VPTO module 不提供
+  `--pto-capability-manifest` 或 `--pto-isa-include-root` 仍成功；只有实际出现 ND-to-2xNZ 时，
+  strict final codegen 才要求相应 manifest，`--emit-pto-ir` 仍允许 unknown 输出；
 - A2/A3/A5 分别 compile-probe full-valid `1x32xi8` ND sentinel 的 TLOAD/TSTORE；失败的架构必须
   走 raw-buffer harness gate，不能继续宣称 tile helper 可观测 allocation redzone；
 - `--emit-pto-ir` 在 capability unknown 时仍可输出 IR，但相同输入进入 EmitC/VPTO 最终
@@ -1905,7 +1923,7 @@ full-store group 必须经过完整链路，partial-valid group 必须保留明�
 
 | 阶段 | 内容 | 完成标准 | 实现 PR 粗略规模 |
 |---|---|---|---|
-| 0 | rebase、逐 target pin/backend 探测、CMake manifest 生成与 driver 注入 | NPU probe 生成正向 capability；CPU/cost-model 失败生成稳定负向 capability；manifest path/root/revision 校验可执行 | 约 150-300 行 CMake/driver/probe，不含生成 manifest 和依赖 pin 噪声 |
+| 0 | rebase、逐 target pin/backend 探测、manifest 生成与 driver 按需注入 | NPU probe 生成正向 capability；CPU/cost-model 失败生成稳定负向 capability；ND-to-2xNZ strict path 的 manifest schema、runtime include-root、revision/digest 校验可执行；无该 form 的 legacy path 不触发 manifest I/O | 约 150-300 行 CMake/driver/probe，不含生成 manifest 和依赖 pin 噪声 |
 | 1 | 扩展 `TExtractOp` ODS ranges、inherent-property schema validator/form classifier、custom assembly、精确兼容 builder/accessor、DPS、pipe、effects、PTOBC shim | property conversion、generated invariants、custom verifier 各阶段负向测试不崩溃；src=0/2 等可到达 classifier 的 schema 稳定失败且 effects 保守；RowPlusOne `AllocMultiTileOp` 的既有 verifier rejection 保留；旧 C++ API compile-only、legacy/new parse-print、binding、v0 bytecode 兼容和 range-based adaptor 编译测试通过，且没有新增 op 名或 multi-buffer stride/access 属性 | 约 600-1000 行 ODS/C++/Python/bytecode 兼容代码及 300-500 行回归 |
 | 2 | shared checked physical-layout/access helper、A5 partial-valid plain stride gate、IR verifier，以及 driver input-provenance/post-planning-safety helper | helper 分离 emitted dimension、subview/block stride、payload intervals、access end 和 allocation reservation；仅单 `AllocTileOp` 的 legacy/modern planner、ResolveBufferSelect、semantic range、InsertSync 切换完成；`16x32xf16 RowPlusOne` 精确得到 272-element stride、1024-byte payload、1056-byte access end、1088-byte allocation reservation，且 1088-byte reservation 不进入 access consumers；RowPlusOne multi-buffer/view chain 在 planner 前失败，plain multi-buffer 正向不变；capability 仍关闭；架构矩阵包含 A3/A5/VPTO `32/13` counterexample；main pipeline、安全 closure、partition/provenance lit 通过，且没有新增 validation pass/test escape | 约 900-1500 行 helper/规划/driver 代码及 500-800 行回归 |
 | 3 | no-alias、GraphSync `AllocTileOp` single-address model、shared-layout consumer 与 planner/GSS 回归 | GraphSync 对单 RowPlusOne allocation 从 shared helper 取得 8448-bit access envelope；三组 alias 被拒绝，declared/tpop provenance 在 planner 前失败，动态 level3 地址失败，双输出 liveness 正确，同址/overlap/disjoint/address-space GSS edge 正确；RowPlusOne two-slot negative 与 plain multi-buffer positive 通过；RowPlusOne capability 仍关闭 | 约 450-800 行 GraphSync/planner 改动及 250-450 行回归 |
@@ -1999,8 +2017,9 @@ public syntax；实现只承诺 canonical `pto.textract ins(...) outs(...)` 文�
   正向行为保持不变，本设计不修改 `PTOOps.td`/multi-buffer textual/PTOBC schema，也不引入
   `slotStrideBytes`/`slotAccessEndBytes`；
 - 所有宣称支持的实际编译 target，其 PTO-ISA pin 同时包含公开 overload 和对应 backend
-  implementation，且 CMake probe 生成的 manifest 已通过 path/include-root/revision/digest
-  校验并由 driver 注入；CPU/cost-model backend 缺失时
+  implementation，且 ND-to-2xNZ strict codegen 使用的 manifest 已通过 relocatable
+  probe-kind/revision/digest 校验，runtime include root 由当前编译任务解析并由 driver/harness
+  复用；不含该 form 的 legacy codegen 不要求 manifest；CPU/cost-model backend 缺失时
   不得宣称对应模拟或性能模型支持；
 - driver post-planning safety helper 能拒绝 direct、view、同址/重叠 allocation alias 和
   unresolved source range 的 partial TSTORE；检查覆盖同一 direct-call graph component 的
