@@ -99,9 +99,9 @@ lowering、verifier、TileLib template 或回归测试；后续实现拟在同�
 16. A5 `RowPlusOne` 首版保持 support gate 关闭。不能只把 emitted `Tile::Rows` 改成
     `physicalRows + 1`；subview 地址、legacy/modern PlanMemory、semantic range、InsertSync、
     GraphSync、EmitC/TSTORE 必须先共用同一个 checked physical-layout/access helper，并通过
-    `ColMajor NZ f16 16x32` 的 272-element 第二 block offset、1024-byte payload 和
-    1056-byte allocation/access-end 回归。1088 bytes 只是带最后一个 trailing virtual row 的
-    完整矩形大小，不是该布局或 TSTORE 的 footprint。
+    `ColMajor NZ f16 16x32` 的 272-element 第二 block offset、1024-byte payload、1056-byte
+    access-end 和 1088-byte allocation-reservation 回归。1088 bytes 是允许的完整矩形 reservation，
+    不是 TSTORE 的 access range。
 
 ## 3. PTO-ISA 真实契约
 
@@ -1066,8 +1066,8 @@ logical physical shape、element storage width、B/S layout、fractal 和 compac
 - NZ column-block count、stride 和每 block payload（elements）；
 - exact payload intervals、`touchedPayloadElements/Bytes` 和
   `accessEndOffsetElements/Bytes`；
-- `allocationElements/Bytes` 以及计算失败原因。allocation 是容纳最后一个 payload byte 的最小
-  连续 extent；地址空间对 allocation 起点或下一 slot 的额外 alignment 由 planner 单独处理。
+- `allocationElements/Bytes` 以及计算失败原因。首版对 RowPlusOne 使用完整矩形作为 allocation
+  reservation；地址空间对 allocation 起点或下一 slot 的额外 alignment 由 planner 单独处理。
 
 对本 op 唯一待开放的 A5 ColMajor NZ `RowPlusOne`，helper 固定使用：
 
@@ -1080,15 +1080,15 @@ touchedPayloadElems  = blockCount * blockPayloadElems
 accessEndOffsetElems = blockCount == 0
                          ? 0
                          : (blockCount - 1) * nzBlockStrideElems + blockPayloadElems
-allocationElems      = accessEndOffsetElems
+allocationElems      = storageRows * physicalCols
 ```
 
 所有 element 值再乘 `storageElemBytes` 得到 byte 值。`touchedPayloadBytes` 是各 block 实际
 payload 长度之和，不含 block 间 gap；`accessEndOffsetBytes` 是相对 base 的 exclusive end，
 包含地址包络中的 gap。两者不能互换。完整矩形
 `storageRows * physicalCols * storageElemBytes` 只可作为诊断中的
-`rectangularEnvelopeBytes`，首版不得把它当作 allocation、semantic range、sync size 或
-TSTORE access size，因为最后一个 NZ block 后没有 trailing virtual row。
+`rectangularEnvelopeBytes`，首版把它作为 allocation reservation；不得把它当作 semantic
+range、sync size 或 TSTORE access size，因为最后一个 NZ block 后没有 trailing virtual row。
 这与 A5 `TStoreVecNZ` 的实际参数一致：`nBurst=blockCount`、每 burst 从 UB 读取
 `physicalRows * C0_SIZE_BYTE`，相邻 burst source start 相差
 `storageRows * C0_SIZE_BYTE`；上游 RowPlusOne ST 也用
@@ -1108,7 +1108,7 @@ helper 应返回并复用 `PTOResolveBufferSelect` 当前的 `shape[0] + 1` 结�
 再次叠加 padding：
 
 - `PTOResolveBufferSelect` 的 subview 地址物化使用 row/column stride 和 block start；
-- legacy/modern PlanMemory 使用 `allocationBytes`；
+- legacy/modern PlanMemory 使用 `allocationBytes` reservation；
 - semantic range 与 post-planning alias helper 使用 exact intervals；现有单区间 API 不能表达
   block 间 gap 时，保守使用 `[base, base + accessEndOffsetBytes)`，不得扩大到完整矩形；
 - InsertSync translator 和 GraphSync `getBufferBitSize` 使用 access envelope，即
@@ -1119,11 +1119,11 @@ helper 应返回并复用 `PTOResolveBufferSelect` 当前的 `shape[0] + 1` 结�
 固定反例为 A5 ColMajor NZ `f16 16x32`、`c0=16`：`storageRows=17`，现有 subview 的第二个
 NZ block offset 必须保持 `17 * 16 = 272` elements（544 bytes），不能回退到 256，也不能因
 helper 接管而重复加一。每个 block payload 是 `16 * 16 = 256` elements；exact byte intervals
-是 `[0, 512)` 和 `[544, 1056)`，payload 总量为 1024 bytes，exclusive access end 与最小
-allocation extent 都是 `528 * 2 = 1056` bytes。PlanMemory 的下一 allocation 不得早于
-`base + 1056`（再应用既有 alignment）；单区间 semantic range 是 `[base, base + 1056)`，
-GraphSync/InsertSync 记录 8448 bits。`17 * 32 * 2 = 1088` bytes 只是包含末尾未使用 virtual row
-的完整矩形，不能作为 TSTORE access range；1086 bytes 则连 block 边界都没有正确建模。
+是 `[0, 512)` 和 `[544, 1056)`，payload 总量为 1024 bytes，exclusive access end 是
+`528 * 2 = 1056` bytes。PlanMemory 的 allocation reservation 是完整矩形
+`17 * 32 * 2 = 1088` bytes；下一 allocation 不得早于 `base + 1088`（再应用既有 alignment）。
+单区间 semantic range 是 `[base, base + 1056)`，GraphSync/InsertSync 记录 8448 bits。1088
+不能作为 TSTORE access range；1086 bytes 则连 block 边界都没有正确建模。
 
 只有上述所有消费者、精确回归、VPTO/EmitC compile 和 A5 `TEXTRACT -> TSTORE` device golden
 同时通过，capability manifest 才能把 ND-to-2xNZ `RowPlusOne` 从 unsupported 改为 supported。
@@ -1228,7 +1228,7 @@ static PointerLikeInfo getPointerLikeInfo(pto::AllocTileOp alloc);
 
 当前 legacy planner、modern planner、semantic range、InsertSync、GraphSync 和 subview
 materialization 各自维护相近但不等价的 tile layout/footprint 公式。实现必须把它们迁移到第 5.4 节
-shared checked physical-layout/access helper；planner 读取 `allocationBytes`，post-planning safety
+shared checked physical-layout/access helper；planner 读取 `allocationBytes` reservation，post-planning safety
 helper 读取 exact intervals 或 `accessEndOffsetBytes` 构造 half-open access envelope，GraphSync 和
 InsertSync 仅把 access end 转为 bits。各路径都要对 dynamic/negative shape、非法 layout 和算术
 溢出返回 failure，不能为 plain/RowPlusOne 保留彼此漂移的局部公式，也不能把
@@ -1439,8 +1439,8 @@ NZ+1 stride。aligned、unaligned、FP4、1x1 分支都要经过 VPTO-to-LLVM in
 A5 positive control 使用 `physicalRows=16, validRows=13`，验证 plain stride 为 `16*c0`；
   NZ+1 只在 shared physical-layout/access helper gate 解锁后验证。另加 A5 ColMajor NZ `f16 16x32`
   full-valid layout 回归，检查第二 block subview offset=272 elements、payload=1024 bytes、
-  access end/allocation extent=1056 bytes，以及 adjacent allocation 不重叠；回归还必须证明
-  1088-byte rectangular envelope 未被当作 access size。在该回归通过前，A5 RowPlusOne 双输出
+  access end=1056 bytes、allocation reservation=1088 bytes，以及 adjacent allocation 不重叠；
+  回归还必须证明 1088-byte reservation 未被当作 access size。在该回归通过前，A5 RowPlusOne 双输出
   仍必须 gate-negative。
 
 ### 9.3 A2/A3
@@ -1595,8 +1595,8 @@ PTOAS 当前三个 pin 都早于 8 月 14 日功能提交：
 - support gate 未满足时使用 FP4 或 RowPlusOne；
 - A5 ColMajor NZ `f16 16x32 RowPlusOne` 在 shared helper 尚未覆盖全部消费者时稳定拒绝；gate
   解锁回归必须保留 subview second-block offset=272 elements，并拒绝任何回退到 256 的实现，
-  同时拒绝 1086-byte 旧公式和把 1088-byte rectangle 当成 access footprint；精确匹配
-  payload=1024 bytes、access end/allocation extent=1056 bytes；
+  同时拒绝 1086-byte 旧公式和把 1088-byte reservation 当成 access footprint；精确匹配
+  payload=1024 bytes、access end=1056 bytes、allocation reservation=1088 bytes；
 - FP4 gate 打开后，覆盖 raw dimension 合法但 emitted dimension 非法，以及反向边界；
 - `physicalRows=32, validRows=13, validCols >= 2*c0`：A2/A3 与非 A5 VPTO 正向检查第二个
   block offset 为 `32*c0`；A5 partial-valid 必须在 template/verifier gate 稳定拒绝，不能生成
@@ -1676,7 +1676,7 @@ PTOAS 当前三个 pin 都早于 8 月 14 日功能提交：
 - 两个 dst 使用不同 opaque Tile type，确保 lowering 没有误用 dst0 type；
 - A5 RowPlusOne 在 gate 关闭时不生成 C++；gate 解锁回归才检查 destination Tile type 包含正确
   `CompactMode::RowPlusOne`、`Tile::Rows=17`，并与 subview/TSTORE stride=272 elements、
-  TSTORE access end=1056 bytes、planner allocation=1056 bytes 一致；
+  TSTORE access end=1056 bytes、planner allocation reservation=1088 bytes 一致；
 - FP4 检查 doubled packed dimension；
 - 生成 C++ 对 implementation PR 选定的 GitCode A3/A5 pin 做 compile-only；
 - capability manifest 分别覆盖 path missing/unreadable/malformed、tuple 无匹配或多匹配、
@@ -1720,7 +1720,7 @@ PTOBC v0 兼容测试单列，不并入普通 MLIR bytecode 假设：
 - shared physical-layout/access helper 回归对 A5 ColMajor NZ `f16 16x32 RowPlusOne` 同时检查：
   `PTOResolveBufferSelect` 的 `colStride=17`、第二 block subview offset=272 elements；exact payload
   intervals `[0, 512)`/`[544, 1056)` bytes、payload total=1024 bytes；legacy/modern PlanMemory
-  allocation=1056 bytes；semantic range、InsertSync 和 GraphSync access envelope=1056 bytes/8448 bits；
+  allocation reservation=1088 bytes；semantic range、InsertSync 和 GraphSync access envelope=1056 bytes/8448 bits；
   EmitC `Tile::Rows=17`，TSTORE block stride=272 elements、access end=1056 bytes。subview 产生 256、
   任一路径产生 1086，或把 1088-byte rectangle 当作 access size 都是回归，并保持 RowPlusOne
   capability unsupported；
@@ -1862,7 +1862,7 @@ full-store group 必须经过完整链路，partial-valid group 必须保留明�
 |---|---|---|
 | 0 | rebase、逐 target pin/backend 探测、CMake manifest 生成与 driver 注入 | NPU probe 生成正向 capability；CPU/cost-model 失败生成稳定负向 capability；manifest path/root/revision 校验可执行 |
 | 1 | 扩展 `TExtractOp` ODS ranges、inherent-property schema validator/form classifier、custom assembly、精确兼容 builder/accessor、DPS、pipe、effects、PTOBC shim | property conversion、generated invariants、custom verifier 各阶段负向测试不崩溃；src=0/2 等可到达 classifier 的 schema 稳定失败且 effects 保守；旧 C++ API compile-only、legacy/new parse-print、binding、v0 bytecode 兼容和 range-based adaptor 编译测试通过，且没有新增 op 名 |
-| 2 | shared checked physical-layout/access helper、A5 partial-valid plain stride gate、IR verifier，以及 driver input-provenance/post-planning-safety helper | helper 分离 emitted dimension、subview/block stride、payload intervals、access end 和 allocation extent；legacy/modern planner、ResolveBufferSelect、semantic range、InsertSync 切换完成；`16x32xf16 RowPlusOne` 精确得到 272-element stride、1024-byte payload、1056-byte access end/allocation，且 1088-byte rectangle 不进入 access consumers，但 capability 仍关闭；架构矩阵包含 A3/A5/VPTO `32/13` counterexample；main pipeline、安全 closure、partition/provenance lit 通过，且没有新增 validation pass/test escape |
+| 2 | shared checked physical-layout/access helper、A5 partial-valid plain stride gate、IR verifier，以及 driver input-provenance/post-planning-safety helper | helper 分离 emitted dimension、subview/block stride、payload intervals、access end 和 allocation reservation；legacy/modern planner、ResolveBufferSelect、semantic range、InsertSync 切换完成；`16x32xf16 RowPlusOne` 精确得到 272-element stride、1024-byte payload、1056-byte access end、1088-byte allocation reservation，且 1088-byte reservation 不进入 access consumers，但 capability 仍关闭；架构矩阵包含 A3/A5/VPTO `32/13` counterexample；main pipeline、安全 closure、partition/provenance lit 通过，且没有新增 validation pass/test escape |
 | 3 | no-alias、GraphSync `AllocTileOp` single-address model、shared-layout consumer 与 planner/GSS 回归 | GraphSync 从 shared helper 取得 8448-bit access envelope；三组 alias 被拒绝，declared/tpop provenance 在 planner 前失败，动态 level3 地址失败，双输出 liveness 正确，同址/overlap/disjoint/address-space GSS edge 正确；RowPlusOne capability 仍关闭 |
 | 4 | EmitC pattern | A3/A5 精确文本与 pin compile-only 通过 |
 | 5 | A5 TileLib/VPTO template 与 Python facade | physical-stride/stride gate、aligned/unaligned/tail/enabled-lowp 展开通过；legacy free function/property/constructor smoke 通过；NZ+1 compile/IR 回归消费 shared layout，但 capability 仍关闭；FP4 随独立 gate 开启 |
@@ -1919,8 +1919,8 @@ public syntax；实现只承诺 canonical `pto.textract ins(...) outs(...)` 文�
   range/post-planning alias、InsertSync、GraphSync、EmitC/TileLib/TSTORE 的唯一布局来源。ColMajor
   NZ `f16 16x32` 必须在所有路径一致得到 `Tile::Rows=17`、subview `colStride=17`、
   第二 block offset=272 elements、payload intervals `[0, 512)`/`[544, 1056)` bytes、
-  payload total=1024 bytes、allocation/access end=1056 bytes、sync size=8448 bits 和单区间
-  range `[base, base + 1056)`。1088 bytes 只能作为 rectangular-envelope diagnostic；任何
+  payload total=1024 bytes、access end=1056 bytes、allocation reservation=1088 bytes、sync size=8448 bits 和单区间
+  range `[base, base + 1056)`。1088 bytes 只用于 rectangular allocation reservation；任何
   256-element offset、1086-byte 旧公式、把 1088 当作 access size 或局部重复 `+1` 都阻止
   capability 开启；
 - 所有宣称支持的实际编译 target，其 PTO-ISA pin 同时包含公开 overload 和对应 backend
