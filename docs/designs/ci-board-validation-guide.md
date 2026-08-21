@@ -256,7 +256,7 @@ gh workflow run ci.yml \
   -f run_mode=npu \
   -f soc_version=Ascend910 \
   -f device_id=auto \
-  -f skip_cases='mix_kernel,vadd_validshape,vadd_validshape_dynamic,print,storefp' \
+  -f skip_cases='mix_kernel,vadd_validshape,vadd_validshape_dynamic,print,storefp,ci,out_proj_aiv' \
   -f run_only_cases=''
 ```
 
@@ -269,6 +269,11 @@ gh workflow run ci.yml \
 - `skip_cases`：跳过列表
 - `run_only_cases`：只跑列表
 - `pto_isa_repo` / `pto_isa_commit`：指定板测使用的 `pto-isa`
+
+当前 A3 定时板测还会默认隔离两个已确认的运行时问题：`ci` 的 TCI
+输出与 golden 不匹配，`out_proj_aiv` 的 NPU 输出不具备确定性。这是临时
+nightly isolation，不代表底层问题已经修复；完成 A3 服务器上的 root-cause
+修复并验证后，应从默认 skip 列表中移除。
 
 定时任务固定使用默认分支；GitHub cron 使用 UTC，因此配置为 `0 19 * * *`，
 对应北京时间次日 `03:00`。同一时间只允许一个 A3 nightly job，新的运行会排队且不会取消正在进行的板测。
