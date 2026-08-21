@@ -59,9 +59,12 @@ lowering、verifier、TileLib template 或回归测试；后续实现拟在同�
 6. 首版不支持 runtime-bound tile provenance。`DeclareTileOp`、`TAssignOp`、`TPopOp`/
    `TPopFromAicOp`/`TPopFromAivOp` 绑定或产生的 tile，以及它们的 view/subview/cast 派生值，
    在所有 level 都必须在 PlanMemory 之前被拒绝；只有 planner-owned `alloc_tile` 或已物化的
-   `alloc_multi_tile` slot 才能作为该 form 的 local tile provenance；level1/2 的地址由 planner
-   产生，level3 则要求调用方提供可静态证明的地址。这样 no-alias 契约不会依赖
-   planner 对 runtime handle 的猜测。
+   plain-NZ `alloc_multi_tile` slot 才能作为该 form 的 local tile provenance。RowPlusOne
+   destination 必须追溯到单 `AllocTileOp`；`AllocMultiTileOp`、`MultiTileGetOp` 及其
+   view/subview/cast chain 在本设计中永久 unsupported，即使 RowPlusOne capability 已解锁也拒绝。
+   level1/2 的地址由 planner 产生，level3 则要求调用方提供可静态证明的地址。这样 no-alias
+   契约不会依赖 planner 对 runtime handle 的猜测，也不会复用当前把 slot stride 与 access size
+   合并为一个字段的 multi-buffer 路径。
 7. EmitC 精确生成七参数公开 API：
    `TEXTRACT(dst0, dst1, src, indexRow0, indexCol0, indexRow1, indexCol1)`。
    不直接生成内部名字 `TEXTRACT_ND2XNZ_IMPL`。
@@ -102,6 +105,11 @@ lowering、verifier、TileLib template 或回归测试；后续实现拟在同�
     `ColMajor NZ f16 16x32` 的 272-element 第二 block offset、1024-byte payload、1056-byte
     access-end 和 1088-byte allocation-reservation 回归。1088 bytes 是允许的完整矩形 reservation，
     不是 TSTORE 的 access range。
+17. 本设计不开放 RowPlusOne `AllocMultiTileOp`。基线 verifier 已因 slot stride 仍按
+    `product(shape)` 而拒绝该组合；这个拒绝在通用/RowPlusOne capability 均为 true 后仍保留。
+    后续支持必须另起设计，在 ODS、slot address materialization、InsertSync 和 GraphSync 中分别
+    表示 slot reservation stride 与 per-slot access end，不能由本功能的 shared tile helper
+    静默改变既有 multi-buffer ABI。
 
 ## 3. PTO-ISA 真实契约
 
@@ -839,9 +847,10 @@ single-value accessor。单输出随后调用语义不变的现有 verifier help
 11. generic `mlir::verify` 成功后，driver 在 planning/sync pass manager 运行前直接调用
     `validateTExtractNd2xNzInputProvenance(module)`；不新增 provenance pass。helper 对 `src`、
     `dst0`、`dst1` 递归穿过 `subview`、`bitcast`、`treshape` 和单输入
-    `unrealized_conversion_cast`。首版只接受最终 root 为 `AllocTileOp`，或 source 确实来自
-    `AllocMultiTileOp` 的 `MultiTileGetOp`；`DeclareTileOp`、`TAssignOp`、frontend pop、block
-    argument 和未知 root 都按 runtime-bound/unknown provenance 拒绝。
+    `unrealized_conversion_cast`。首版只接受最终 root 为 `AllocTileOp`，或 non-RowPlusOne
+    operand 确实来自 `AllocMultiTileOp` 的 `MultiTileGetOp`。任一 RowPlusOne destination 的 root
+    为 `AllocMultiTileOp`/`MultiTileGetOp` 时按第 5.4 节稳定拒绝；`DeclareTileOp`、`TAssignOp`、
+    frontend pop、block argument 和未知 root 都按 runtime-bound/unknown provenance 拒绝。
 12. runtime-bound provenance 的固定诊断为：
 
     ```text
@@ -1047,7 +1056,17 @@ callee 再次表现为 child 内无 body declaration。child helper 因而不能
 - A2/A3：拒绝 `CompactMode::RowPlusOne`；`Null`/`Normal` 都按 plain NZ 处理。
 - A5 PTO-ISA header/implementation 宣称允许 `Null`/`Normal` 和 `RowPlusOne`，但 PTOAS 首版对
   ND-to-2xNZ 的两个 destination 都拒绝 `RowPlusOne`。只有本节的完整 gate 同时满足后，才允许
-  一边 plain NZ、另一边 NZ+1，或两边都使用 NZ+1。
+  一边 plain NZ、另一边 NZ+1，或两边都使用 NZ+1；其中每个 RowPlusOne destination 都必须由
+  单 `AllocTileOp` backing。
+
+RowPlusOne `AllocMultiTileOp` 不属于本设计的解锁范围。当前 `AllocMultiTileOp::verify()` 已明确
+拒绝 `row_plus_one` slot，因为 `PTOResolveBufferSelect`、InsertSync 和 GraphSync 使用同一个
+`slotBytes`/`allocateSize` 同时表达 slot address stride 与 per-slot conflict/access range。对
+`f16 16x32`，按旧 `product(shape)=1024` 放置第二个 slot 会覆盖第一个 slot 的
+`[1024, 1056)` access tail；把该字段改成 1056 又不能表达本设计选择的 1088-byte reservation。
+因此即使 `textract.nd_to_2xnz.row_plus_one=true`，任何 RowPlusOne `AllocMultiTileOp`、
+`MultiTileGetOp` 或其 view chain 仍在 generic verification/input-provenance 阶段失败，不能进入
+planner、sync 或 buffer-select materialization。
 
 当前问题不是 `PTOResolveBufferSelect` 的 subview offset 错误。基线对 ColMajor NZ
 `RowPlusOne` 已使用 `shape[0] + 1` 的 `colStride`；因此 A5 `f16 16x32` 的第二个 block
@@ -1105,7 +1124,9 @@ valid rows 仍是 logical rows，不因 padding 增大。所有乘加都用 chec
 
 以下消费者必须直接调用同一 helper，不得复制公式或再次 `+1`；对已有正确的 subview stride，
 helper 应返回并复用 `PTOResolveBufferSelect` 当前的 `shape[0] + 1` 结果，而不是在调用方
-再次叠加 padding：
+再次叠加 padding。以下映射只适用于单 `AllocTileOp` backing 的 RowPlusOne tile；不得把
+`allocationBytes`/`accessEndOffsetBytes` 填回现有 multi-buffer 的单一 `slotBytes` 字段来绕过
+上述 verifier gate：
 
 - `PTOResolveBufferSelect` 的 subview 地址物化使用 row/column stride 和 block start；
 - legacy/modern PlanMemory 使用 `allocationBytes` reservation；
@@ -1128,7 +1149,8 @@ helper 接管而重复加一。每个 block payload 是 `16 * 16 = 256` elements
 只有上述所有消费者、精确回归、VPTO/EmitC compile 和 A5 `TEXTRACT -> TSTORE` device golden
 同时通过，capability manifest 才能把 ND-to-2xNZ `RowPlusOne` 从 unsupported 改为 supported。
 此前 verifier/backend-boundary gate 必须稳定拒绝，不得因为 `CompactMode::RowPlusOne` token 已输出
-或单独修正 Tile type 就开放。
+或单独修正 Tile type 就开放。该 capability 只控制单 allocation form，不覆盖
+RowPlusOne multi-buffer；后者没有 capability override。
 
 ### 5.5 不增加的限制
 
@@ -1224,7 +1246,9 @@ static PointerLikeInfo getPointerLikeInfo(pto::AllocTileOp alloc);
 `addressSpace`，把静态 byte `addr` 乘 `kBitsToByte` 后作为唯一 `addresses` 元素，并记录
 `parentLoop`。地址不可折叠时写入 `ShapedType::kDynamic`，在同 address space 中保持保守冲突，
 不能留下空 addresses 后把 UB allocation 当成不冲突。`getMemInfo(Value)` 必须显式 dispatch
-`AllocTileOp`；已有 `AllocMultiTileOp`/slot 行为保持不变。
+`AllocTileOp`。已有 `AllocMultiTileOp`/slot 行为只对 non-RowPlusOne slot 保持不变；基线
+`AllocMultiTileOp::verify()` 对 RowPlusOne 的拒绝必须保留，不能因本节给单 allocation 增加
+access envelope 而删除。
 
 当前 legacy planner、modern planner、semantic range、InsertSync、GraphSync 和 subview
 materialization 各自维护相近但不等价的 tile layout/footprint 公式。实现必须把它们迁移到第 5.4 节
@@ -1232,7 +1256,14 @@ shared checked physical-layout/access helper；planner 读取 `allocationBytes` 
 helper 读取 exact intervals 或 `accessEndOffsetBytes` 构造 half-open access envelope，GraphSync 和
 InsertSync 仅把 access end 转为 bits。各路径都要对 dynamic/negative shape、非法 layout 和算术
 溢出返回 failure，不能为 plain/RowPlusOne 保留彼此漂移的局部公式，也不能把
-`rectangularEnvelopeBytes` 误当实际 access size。
+`rectangularEnvelopeBytes` 误当实际 access size。这里的 RowPlusOne consumer 仅指单
+`AllocTileOp`；`AllocMultiTileOp` 不迁移到该双尺寸模型。
+
+未来若要支持 RowPlusOne multi-buffer，必须另行定义至少 `slotStrideBytes`/
+`slotAllocationBytes` 与 `slotAccessEndBytes`（或 exact per-slot intervals）两套独立数据，并同步
+升级 `PTOOps.td`/verifier、level3 contiguous-slot contract、legacy/modern PlanMemory、
+`PTOResolveBufferSelect`、InsertSync `BaseMemInfo`、GraphSync `PointerLikeInfo` 及 bytecode/文本兼容
+策略，再删除拒绝规则。本设计不预留隐式推导或 fallback。
 
 GraphSync 的同址不同 SSA root 行为由独立 `_gss` 回归锁定：静态 exact/partial overlap 产生
 正确 WAW/RAW edge，不重叠 range 或不同 address space 不产生误同步。该回归不依赖已删除的
@@ -1299,12 +1330,14 @@ allocation-backed operand：
   并对无法证明的不同 root 采用保守拒绝；通过 dedicated range tests 后才能删除本 gate。
 
 因此 `DeclareTileOp`、`TAssignOp`、`TPopOp` 及其 subview 即使带有看似常量的 `addr` 也不能
-绕过 gate；只有从 `AllocTileOp`/materialized multi-tile slot 回溯出的常量地址才能进入
-semantic range overlap 检查。
+绕过 gate；只有从 `AllocTileOp` 或 non-RowPlusOne materialized multi-tile slot 回溯出的常量地址
+才能进入 semantic range overlap 检查。RowPlusOne multi-tile root 在此前已失败，不能靠
+materialization 转成表面上的 `AllocTileOp` 后绕过 provenance gate。
 
-post-planning helper 位于 `PTOResolveBufferSelect` 之后。level3 的 `AllocMultiTileOp` 若在
-materialization 后仍产生动态地址 select，按同一规则拒绝；只有最终三个 operand 都能解析到
-静态 non-negative absolute range 时才进入 overlap 校验。
+post-planning helper 位于 `PTOResolveBufferSelect` 之后。non-RowPlusOne level3
+`AllocMultiTileOp` 若在 materialization 后仍产生动态地址 select，按同一规则拒绝；RowPlusOne
+multi-buffer 必须在 generic verification/input provenance 阶段更早失败。只有最终三个允许的
+operand 都能解析到静态 non-negative absolute range 时才进入 overlap 校验。
 
 两个 dst 的 liveness 从同一 op 开始，planner 必须分别保留到各自最后一次消费。测试使用
 不同大小和不同最后消费点，固定不能因只读取 `getDpsInits().front()` 而提前复用第二路内存。
@@ -1314,8 +1347,9 @@ materialization 后仍产生动态地址 select，按同一规则拒绝；只有
 subview materialization 的 ColMajor NZ `colStride = shape[0] + 1` 与 272-element 第二 block
 offset 已是正确基线。实现必须按第 5.4 节抽取并切换到同一个 shared physical-layout/access helper，
 同时保留该 subview 结果且禁止调用方重复 `+1`；semantic range 和 post-planning alias helper
-必须使用 access intervals/envelope，planner 则使用 allocation extent。迁移需要有既有
-RowPlusOne 非本 op 回归，防止修正 ND-to-2xNZ 时静默改变其他操作的布局语义。
+必须使用 access intervals/envelope，planner 则使用 allocation extent。该迁移只覆盖单
+`AllocTileOp`；multi-buffer 拒绝保持不变。迁移需要有既有 RowPlusOne 非本 op 回归，防止修正
+ND-to-2xNZ 时静默改变其他操作的布局语义。
 
 增加 `dst0=plain`、`dst1=RowPlusOne` 的 planning、subview、semantic range、InsertSync、GraphSync、
 EmitC 与 full-valid TSTORE 端到端测试，精确证明两路分别使用自己的 stride、payload intervals、
@@ -1586,6 +1620,11 @@ PTOAS 当前三个 pin 都早于 8 月 14 日功能提交：
 - `DeclareTileOp` 作为 src、dst0、dst1 的各一例；`TAssignOp` result、`TPopOp`/
   `TPopFromAicOp`/`TPopFromAivOp` 派生值以及它们的 subview/cast 各一例；所有 level 都必须
   在 planner 前得到 runtime-bound provenance 诊断；
+- RowPlusOne `AllocMultiTileOp` 在 level1/2 planner-owned 和 level3 explicit-base 各一例，均由
+  既有 verifier 稳定拒绝；另覆盖 `MultiTileGetOp` 后接 subview/cast 再作为 dst0/dst1，证明
+  `textract.nd_to_2xnz=true` 且 `.row_plus_one=true` 也不能绕过 multi-buffer gate。固定双 slot
+  反例使用 `f16 16x32`：旧 product-shape slot1=`base+1024` 会与 slot0 access tail
+  `[1024,1056)` 重叠；测试不得进入 `PTOResolveBufferSelect` 后才失败；
 - level3 下任一 operand 的 `alloc_tile.addr` 含动态 root；
 - 最终 codegen 时 environment unknown、capability manifest 缺失或
   `textract.nd_to_2xnz=false`；
@@ -1711,7 +1750,8 @@ PTOBC v0 兼容测试单列，不并入普通 MLIR bytecode 假设：
 - source/dst0/dst1 的 subview overlap 被拒绝；
 - driver input provenance helper 位于 generic verification 之后、`preInlinePlanningPM` 之前；
   declared tile、tassign、tpop 及其 view chain 在两个 planner 运行前均被拒绝；静态
-  alloc-backed 正向 case 继续进入对应 planner；
+  alloc-backed 正向 case 继续进入对应 planner；RowPlusOne multi-buffer 与其 view chain 在
+  generic verifier/input provenance 阶段拒绝，不进入 planner；
 - level3 三组 pair 分别使用同一动态 `%base` 时拒绝，`%base + constant` 的动态派生地址也
   拒绝；三个静态非重叠常量地址通过，静态重叠地址继续由 range verifier 拒绝；
 - post-planning helper 覆盖 direct/view/same-address allocation/partial-overlap TSTORE；同一
@@ -1724,6 +1764,10 @@ PTOBC v0 兼容测试单列，不并入普通 MLIR bytecode 假设：
   EmitC `Tile::Rows=17`，TSTORE block stride=272 elements、access end=1056 bytes。subview 产生 256、
   任一路径产生 1086，或把 1088-byte rectangle 当作 access size 都是回归，并保持 RowPlusOne
   capability unsupported；
+- multi-buffer 回归锁定本设计的 unsupported 边界：plain-NZ 两 slot 的既有
+  `AllocMultiTileOp -> MultiTileGetOp -> resolve/sync` 正向行为保持不变；RowPlusOne 两 slot 在
+  level1/2 和 level3 均稳定失败，且 diagnostics 明确要求单 `pto.alloc_tile`。不得新增
+  `slot_stride_bytes`/`slot_access_end_bytes` 属性、不得修改 multi-buffer textual/PTOBC schema；
 - call-surface closure 回归覆盖：存在 partial producer 时，opaque/indirect/external/unresolved call
   位于相同或任意 disconnected direct component 都拒绝；尤其覆盖一个 caller 中两次
   `func.call_indirect` 潜在连接 producer/TSTORE 的反例。无 opaque call 的 disconnected
@@ -1861,9 +1905,9 @@ full-store group 必须经过完整链路，partial-valid group 必须保留明�
 | 阶段 | 内容 | 完成标准 |
 |---|---|---|
 | 0 | rebase、逐 target pin/backend 探测、CMake manifest 生成与 driver 注入 | NPU probe 生成正向 capability；CPU/cost-model 失败生成稳定负向 capability；manifest path/root/revision 校验可执行 |
-| 1 | 扩展 `TExtractOp` ODS ranges、inherent-property schema validator/form classifier、custom assembly、精确兼容 builder/accessor、DPS、pipe、effects、PTOBC shim | property conversion、generated invariants、custom verifier 各阶段负向测试不崩溃；src=0/2 等可到达 classifier 的 schema 稳定失败且 effects 保守；旧 C++ API compile-only、legacy/new parse-print、binding、v0 bytecode 兼容和 range-based adaptor 编译测试通过，且没有新增 op 名 |
-| 2 | shared checked physical-layout/access helper、A5 partial-valid plain stride gate、IR verifier，以及 driver input-provenance/post-planning-safety helper | helper 分离 emitted dimension、subview/block stride、payload intervals、access end 和 allocation reservation；legacy/modern planner、ResolveBufferSelect、semantic range、InsertSync 切换完成；`16x32xf16 RowPlusOne` 精确得到 272-element stride、1024-byte payload、1056-byte access end、1088-byte allocation reservation，且 1088-byte reservation 不进入 access consumers，但 capability 仍关闭；架构矩阵包含 A3/A5/VPTO `32/13` counterexample；main pipeline、安全 closure、partition/provenance lit 通过，且没有新增 validation pass/test escape |
-| 3 | no-alias、GraphSync `AllocTileOp` single-address model、shared-layout consumer 与 planner/GSS 回归 | GraphSync 从 shared helper 取得 8448-bit access envelope；三组 alias 被拒绝，declared/tpop provenance 在 planner 前失败，动态 level3 地址失败，双输出 liveness 正确，同址/overlap/disjoint/address-space GSS edge 正确；RowPlusOne capability 仍关闭 |
+| 1 | 扩展 `TExtractOp` ODS ranges、inherent-property schema validator/form classifier、custom assembly、精确兼容 builder/accessor、DPS、pipe、effects、PTOBC shim | property conversion、generated invariants、custom verifier 各阶段负向测试不崩溃；src=0/2 等可到达 classifier 的 schema 稳定失败且 effects 保守；RowPlusOne `AllocMultiTileOp` 的既有 verifier rejection 保留；旧 C++ API compile-only、legacy/new parse-print、binding、v0 bytecode 兼容和 range-based adaptor 编译测试通过，且没有新增 op 名或 multi-buffer stride/access 属性 |
+| 2 | shared checked physical-layout/access helper、A5 partial-valid plain stride gate、IR verifier，以及 driver input-provenance/post-planning-safety helper | helper 分离 emitted dimension、subview/block stride、payload intervals、access end 和 allocation reservation；仅单 `AllocTileOp` 的 legacy/modern planner、ResolveBufferSelect、semantic range、InsertSync 切换完成；`16x32xf16 RowPlusOne` 精确得到 272-element stride、1024-byte payload、1056-byte access end、1088-byte allocation reservation，且 1088-byte reservation 不进入 access consumers；RowPlusOne multi-buffer/view chain 在 planner 前失败，plain multi-buffer 正向不变；capability 仍关闭；架构矩阵包含 A3/A5/VPTO `32/13` counterexample；main pipeline、安全 closure、partition/provenance lit 通过，且没有新增 validation pass/test escape |
+| 3 | no-alias、GraphSync `AllocTileOp` single-address model、shared-layout consumer 与 planner/GSS 回归 | GraphSync 对单 RowPlusOne allocation 从 shared helper 取得 8448-bit access envelope；三组 alias 被拒绝，declared/tpop provenance 在 planner 前失败，动态 level3 地址失败，双输出 liveness 正确，同址/overlap/disjoint/address-space GSS edge 正确；RowPlusOne two-slot negative 与 plain multi-buffer positive 通过；RowPlusOne capability 仍关闭 |
 | 4 | EmitC pattern | A3/A5 精确文本与 pin compile-only 通过 |
 | 5 | A5 TileLib/VPTO template 与 Python facade | physical-stride/stride gate、aligned/unaligned/tail/enabled-lowp 展开通过；legacy free function/property/constructor smoke 通过；NZ+1 compile/IR 回归消费 shared layout，但 capability 仍关闭；FP4 随独立 gate 开启 |
 | 6 | A3/A5 NPU ST、UB sentinel/raw-buffer harness；可用时 CPU-sim | 必选组合两路 byte-exact；partial case 实际导出 UB redzone；RowPlusOne full-store device golden 与所有精确 layout 回归通过后才打开 capability；其他 optional gate 有真实 backend 证据 |
@@ -1923,6 +1967,11 @@ public syntax；实现只承诺 canonical `pto.textract ins(...) outs(...)` 文�
   range `[base, base + 1056)`。1088 bytes 只用于 rectangular allocation reservation；任何
   256-element offset、1086-byte 旧公式、把 1088 当作 access size 或局部重复 `+1` 都阻止
   capability 开启；
+- RowPlusOne capability 解锁后仍只支持单 `AllocTileOp` backing。任一 RowPlusOne destination
+  来自 `AllocMultiTileOp`、`MultiTileGetOp` 或其 view chain 时，在 level1/2/3 均稳定拒绝；固定
+  `f16 16x32 count=2` 回归证明旧 slot1=`base+1024` 的重叠路径不可达。plain-NZ multi-buffer
+  正向行为保持不变，本设计不修改 `PTOOps.td`/multi-buffer textual/PTOBC schema，也不引入
+  `slotStrideBytes`/`slotAccessEndBytes`；
 - 所有宣称支持的实际编译 target，其 PTO-ISA pin 同时包含公开 overload 和对应 backend
   implementation，且 CMake probe 生成的 manifest 已通过 path/include-root/revision/digest
   校验并由 driver 注入；CPU/cost-model backend 缺失时
