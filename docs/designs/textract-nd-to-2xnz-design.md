@@ -1415,6 +1415,9 @@ lowering，`pto.textract` 会带 pointer operand 残留并在 VPTO LLVM conversi
           + (c % c0)
    ```
 
+   该 expansion block 位于 allocation replacement 之后、现有 TLOAD/TSTORE conversion 和 dead-view
+   cleanup 之前，确保原 op 在 pass verifier 重新运行前已被消除。
+
 3. 为两路 window 分别生成 `0 <= r < validRows_k`、`0 <= c < validCols_k` 的 `scf.for`，循环体
    用现有 `pto.load_scalar` 从 `src[srcOff]` 读取，再用现有 `pto.store_scalar` 写入
    `dst_k[dstOff]`。所有 offset 计算使用 checked/static metadata 加 `index` 算术；循环只写 valid
