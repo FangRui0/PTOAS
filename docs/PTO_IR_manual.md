@@ -8286,6 +8286,9 @@ pto.tmrgsort ins(<src0>, <src1>[, <src2>[, <src3>]], <tmp> {exhausted = <bool>} 
   - `dst` and `tmp` must both be rank-2 single-row tiles (`rows == 1` when statically known).
   - Every `src` must also be a rank-2 single-row tile.
   - `tmp.cols >= dst.cols`.
+  - `tmp.cols` must be at least the sum of the sources' effective valid column
+    extents. For a subview, this uses the subview window's valid columns, not
+    the capacity of its backing tile.
   - `excuted` must be `vector<4xi16>`.
 
 **Hardware Mapping:**

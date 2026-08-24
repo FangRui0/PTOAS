@@ -11334,7 +11334,8 @@ mlir::LogicalResult mlir::pto::TMrgSortOp::verify() {
     for (Value src : getSrcs()) {
       Type srcTy = src.getType();
       auto srcShape = getShapeVec(srcTy);
-      if (srcShape.size() != 2) {
+      auto srcValidShape = getValidShapeVec(src);
+      if (srcShape.size() != 2 || srcValidShape.size() != 2) {
         return emitOpError() << "format2 expects src to be rank-2 tile-shaped";
       }
       if (srcShape[0] != mlir::ShapedType::kDynamic && srcShape[0] != 1) {
@@ -11343,10 +11344,10 @@ mlir::LogicalResult mlir::pto::TMrgSortOp::verify() {
       if (getElemTy(srcTy) != elemTy) {
         return emitOpError() << "format2 expects src/dst/tmp element types to match";
       }
-      if (srcShape[1] == mlir::ShapedType::kDynamic) {
+      if (srcValidShape[1] == mlir::ShapedType::kDynamic) {
         requiredTmpCols = mlir::ShapedType::kDynamic;
       } else if (requiredTmpCols != mlir::ShapedType::kDynamic) {
-        requiredTmpCols += srcShape[1];
+        requiredTmpCols += srcValidShape[1];
       }
     }
     if (tmpTy && requiredTmpCols != mlir::ShapedType::kDynamic &&
