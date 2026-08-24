@@ -771,25 +771,69 @@ def PTOResolveBufferSelect : Pass<"pto-resolve-buffer-select", "ModuleOp"> {
   ];
 }
 
-def PTOUnrollSIMTFor : Pass<"pto-unroll-simt-for", "func::FuncOp"> {
+def PTOUnrollLoops : Pass<"pto-unroll-loops", "func::FuncOp"> {
   let summary =
-      "Unroll explicitly annotated scf.for loops in SIMT contexts";
+      "Unroll explicitly annotated scf.for loops";
   let description = [{
-    Walks functions with the `pto.simt_entry` attribute or inline
-    `pto.section.simt` regions and fully unrolls `scf.for` loops that carry the
-    `{pto.unroll = "full"}` attribute. Annotated loops outside an inline SIMT
-    section in an ordinary function are left unchanged.
+    Fully or partially unrolls `scf.for` loops that carry an explicit unroll
+    annotation, regardless of whether they are inside a SIMT context:
 
-    Only loops with constant lower bound, upper bound, and positive step are
-    unrolled.  The annotation is opt-in: loops without the attribute are
-    left unchanged regardless of trip count.
+    - `{pto.unroll = "full"}`: fully unrolled via `loopUnrollByFactor` with
+      the trip count as the factor (single-iteration promotion removes the
+      resulting loop shell).  Only loops with a constant trip count are
+      unrolled; other loops keep the loop and drop the hint with a remark.
+    - `{pto.unroll_factor = N}`: unrolled by N via `loopUnrollByFactor`,
+      which supports dynamic upper bounds and generates an epilogue
+      (remainder) loop that threads live-out loop-carried values.  Only
+      loops with a statically known positive step are unrolled; a no-op
+      factor (1), a dynamic step, or a factor above `max-unroll-factor`
+      keeps the loop and drops the hint with a remark.
+
+    Malformed hints are hard errors: an unknown `pto.unroll` value, both
+    attributes on one loop, or an out-of-contract factor (not a signless
+    i32, or non-positive).
+
+    The annotation is opt-in: loops without an attribute are left unchanged
+    regardless of trip count.
 
     Full unrolling enables subsequent canonicalize/sccp/cse to constant-fold
-    induction-variable-dependent conditionals (e.g. `scf.if i < 10`), eliminating
-    divergent branches inside SIMTVF kernels.
+    induction-variable-dependent conditionals (e.g. `scf.if i < 10`),
+    eliminating divergent branches inside SIMTVF kernels.
 
     This pass must run before `createConvertSCFToCFPass` (i.e. before LLVM
-    lowering) so that the unrolled structured control flow can be canonicalized.
+    lowering) so that the unrolled structured control flow can be
+    canonicalized.
+  }];
+  let constructor = "mlir::pto::createPTOUnrollLoopsPass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::scf::SCFDialect",
+    "mlir::pto::PTODialect",
+    "mlir::arith::ArithDialect"
+  ];
+  let options = [
+    Option<"maxFullUnrollTripCount", "max-full-unroll-trip-count", "int64_t",
+           /*default=*/"1024",
+           "Emit a warning when fully unrolling a loop whose static trip "
+           "count exceeds this threshold.  The loop is still unrolled.">,
+    Option<"maxUnrollFactor", "max-unroll-factor", "int64_t",
+           /*default=*/"1024",
+           "Do not natively unroll by a factor larger than this; the loop "
+           "is kept and the hint is dropped with a remark instead.  "
+           "A negative value disables the cap.">,
+  ];
+}
+
+// Legacy alias for PTOUnrollLoops.  Kept so existing pipelines and tests
+// that reference "pto-unroll-simt-for" keep working; the behavior is
+// identical to "pto-unroll-loops".
+def PTOUnrollSIMTFor : Pass<"pto-unroll-simt-for", "func::FuncOp"> {
+  let summary =
+      "Alias of pto-unroll-loops kept for backward compatibility";
+  let description = [{
+    Behaves exactly like `pto-unroll-loops`.  Historically this pass only
+    unrolled `{pto.unroll = "full"}` loops inside SIMT contexts; the SIMT
+    restriction has been lifted because the annotation is always explicit.
   }];
   let constructor = "mlir::pto::createPTOUnrollSIMTForPass()";
   let dependentDialects = [
@@ -797,6 +841,17 @@ def PTOUnrollSIMTFor : Pass<"pto-unroll-simt-for", "func::FuncOp"> {
     "mlir::scf::SCFDialect",
     "mlir::pto::PTODialect",
     "mlir::arith::ArithDialect"
+  ];
+  let options = [
+    Option<"maxFullUnrollTripCount", "max-full-unroll-trip-count", "int64_t",
+           /*default=*/"1024",
+           "Emit a warning when fully unrolling a loop whose static trip "
+           "count exceeds this threshold.  The loop is still unrolled.">,
+    Option<"maxUnrollFactor", "max-unroll-factor", "int64_t",
+           /*default=*/"1024",
+           "Do not natively unroll by a factor larger than this; the loop "
+           "is kept and the hint is dropped with a remark instead.  "
+           "A negative value disables the cap.">,
   ];
 }
 

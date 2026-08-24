@@ -93,6 +93,8 @@ std::unique_ptr<Pass> createPTOFusionRegionGenPass();
 
 LogicalResult validateIntToPtrUses(func::FuncOp func);
 
+std::unique_ptr<Pass> createPTOUnrollLoopsPass();
+/// Backward-compatible alias of createPTOUnrollLoopsPass().
 std::unique_ptr<Pass> createPTOUnrollSIMTForPass();
 std::unique_ptr<Pass> createPTONarrowVPTOLoopCountersPass();
 std::unique_ptr<Pass> createPTOAnalyzeSIMTPersistentFragmentPass();
