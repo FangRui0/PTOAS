@@ -176,10 +176,24 @@ struct ApplySIMTEntryNoInlinePass final
 /// generic operation folding. LLVM 19 cannot disable that folding, which can
 /// erase an expression while the EmitC pattern is rewriting it. Apply the
 /// same EmitC rewrite directly so PTOAS retains LLVM 21 expression semantics.
+///
+/// LLVM 19's C++ emitter also loses the enclosing precedence after it adds
+/// parentheses around a nested expression. Keep conditional expressions as
+/// explicit temporaries when another C expression consumes them so a ternary
+/// can never be flattened into an arithmetic expression with changed meaning.
 struct FormEmitCExpressionsCompatPass final
     : public PassWrapper<FormEmitCExpressionsCompatPass,
                          OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(FormEmitCExpressionsCompatPass)
+
+  static bool containsConditionalOperator(emitc::ExpressionOp expression) {
+    for (Operation &op : expression.getBody()->without_terminator()) {
+      if (isa<emitc::ConditionalOp>(op)) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   static bool foldExpression(emitc::ExpressionOp expression,
                              IRRewriter &rewriter) {
@@ -195,6 +209,16 @@ struct FormEmitCExpressionsCompatPass final
         if (!producer || !producer.getResult().hasOneUse() ||
             producer.hasSideEffects())
           continue;
+
+        if (producer.getDoNotInline()) {
+          continue;
+        }
+
+        if (containsConditionalOperator(producer)) {
+          producer.setDoNotInline(true);
+          changed = true;
+          continue;
+        }
 
         rewriter.setInsertionPoint(&op);
         IRMapping mapper;
