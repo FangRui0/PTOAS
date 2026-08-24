@@ -56,8 +56,10 @@ lowering、verifier、TileLib template 或回归测试；后续实现拟在同�
    不直接生成内部名字 `TEXTRACT_ND2XNZ_IMPL`。
 8. A2/A3 与 A5 共用 IR 形态，verifier 按 target arch 分派 dtype 和 compact mode 规则；
    只有通过目标 backend compile 和数值测试的组合才进入正向支持集合。
-9. A5 TileLib 增加独立 template；A2/A3 当前没有 TileLib 目录，继续走 tile-level
-   EmitC 路径。
+9. A5 TileLib 增加独立 template。A2/A3 EmitC 继续走 tile-level PTO-ISA 调用；A2/A3 VPTO
+   则在现有 `LowerPTOToUBufOps` 中把双输出 form 展开成已有 scalar pointer op 和 `scf.for`，
+   不能让 pointer-form `pto.textract` 残留到 VPTO LLVM emission，也不为此新增另一套 TileLib
+   目录或 backend op。
 10. 实现 PR 只在 PTOAS 已配置的目标 backend 上生成本 overload；依赖版本、外部头文件和
    backend 是否可实例化不在本设计中新增 driver/API 约束。目标 backend 缺少该 overload 时，
     由既有构建配置和编译测试报告失败，不引入新的依赖或 driver 机制。
@@ -958,7 +960,7 @@ callee 再次表现为 child 内无 body declaration。child helper 因而不能
 
 - A2/A3：拒绝 `CompactMode::RowPlusOne`；`Null`/`Normal` 都按 plain NZ 处理。
 - A5 PTO-ISA header/implementation 宣称允许 `Null`/`Normal` 和 `RowPlusOne`，但 PTOAS 首版对
-  ND-to-2xNZ 的两个 destination 都拒绝 `RowPlusOne`。只有本节的完整 gate 同时满足后，才允许
+  ND-to-2xNZ 的两个 destination 都拒绝 `RowPlusOne`。只有本节的全部物理布局条件同时满足后，才允许
   一边 plain NZ、另一边 NZ+1，或两边都使用 NZ+1；其中每个 RowPlusOne destination 都必须由
   单 `AllocTileOp` backing。
 
@@ -967,7 +969,7 @@ RowPlusOne `AllocMultiTileOp` 不属于本设计的解锁范围。当前 `AllocM
 `slotBytes`/`allocateSize` 同时表达 slot address stride 与 per-slot conflict/access range。对
 `f16 16x32`，按旧 `product(shape)=1024` 放置第二个 slot 会覆盖第一个 slot 的
 `[1024, 1056)` access tail；把该字段改成 1056 又不能表达本设计选择的 1088-byte reservation。
-因此即使 `textract.nd_to_2xnz.row_plus_one=true`，任何 RowPlusOne `AllocMultiTileOp`、
+因此即使单 allocation 的 RowPlusOne 物理布局支持条件已经满足，任何 RowPlusOne `AllocMultiTileOp`、
 `MultiTileGetOp` 或其 view chain 仍在 generic verification/input-provenance 阶段失败，不能进入
 planner、sync 或 buffer-select materialization。
 
@@ -1110,8 +1112,9 @@ void TExtractOp::getEffects(
 `isPTODpsType` 在上面是共享 type predicate 的示意名，实际实现复用 PTO type utility。Invalid
 fallback 必须覆盖所有 raw memory-carrying operand 的 Read+Write，不能悄悄忽略多出来的 source；
 正常 schema 仍是 source Read、optional FP Read 和全部 DPS destinations Write。source 不声明
-Write。A2/A3 odd-i8 路径使用固定 tmp UB scratch，但不修改 source；该内部 scratch 由 PTO-ISA
-保留区管理，不作为 PTO IR operand。既有单输出 FP read effect 必须保留。
+Write。A2/A3 EmitC 调用的 PTO-ISA odd-i8 vector 路径使用固定 tmp UB scratch，但不修改 source；
+该内部 scratch 由 PTO-ISA 保留区管理，不作为 PTO IR operand。第 9.3 节的 A2/A3 VPTO scalar
+lowering 不使用这块 scratch。既有单输出 FP read effect 必须保留。
 
 ### 6.3 pipe 与自动同步
 
@@ -1120,9 +1123,11 @@ Write。A2/A3 odd-i8 路径使用固定 tmp UB scratch，但不修改 source；�
 固定 `PIPE_V` 的依据是：
 
 - A5 主路径完全是 vector frontend；
-- A2/A3 vector 路径使用 `vcopy`/`vconv`；
-- A2/A3 scalar fallback 内部自行插入 `PIPE_V <-> PIPE_S` flag/wait，公共调用的输入输出
-  依赖仍以 `PIPE_V` 建模。
+- A2/A3 EmitC 调用的 PTO-ISA vector 路径使用 `vcopy`/`vconv`，其 scalar fallback 内部自行
+  插入 `PIPE_V <-> PIPE_S` flag/wait；
+- A2/A3 VPTO 首版使用第 9.3 节的 scalar correctness lowering，并显式生成同样的
+  `PIPE_V -> PIPE_S` 与 `PIPE_S -> PIPE_V` flag/wait。公共调用前后的依赖仍以 `PIPE_V`
+  建模，因此 planning/sync 在 lowering 前看到的 pipe 与展开后的可观察边界一致。
 
 InsertSync/GraphSyncSolver 必须从 effects 得到一个 read 和两个 write。至少覆盖：
 
@@ -1380,11 +1385,53 @@ A5 positive control 使用 `physicalRows=16, validRows=13`，验证 plain stride
   回归还必须证明 1088-byte reservation 未被当作 access size。在该回归通过前，A5 RowPlusOne 双输出
   仍必须 negative。
 
-### 9.3 A2/A3
+### 9.3 A2/A3 EmitC 与 VPTO
 
 仓库当前只有 `lib/TileOps/a5`，没有 A2/A3 TileLib template tree。本功能不借机新增整套
-A2/A3 TileLib 基础设施。A2/A3 的 ND-to-2xNZ `pto.textract` 通过 tile-level EmitC 调用
-PTO-ISA，后续若引入 A2/A3 TileLib，再单独实现与原生 scalar/widen fallback 等价的模板。
+A2/A3 TileLib 基础设施。A2/A3 EmitC 的 ND-to-2xNZ `pto.textract` 仍按第 8 节生成一次
+七参数 PTO-ISA `TEXTRACT` 调用。
+
+A2/A3 VPTO 不能复用这条 EmitC 路径。当前 `lowerPTOToVPTOBackend()` 在
+`LowerPTOToUBufOps` 后对 A2/A3 直接返回，不运行 A5 的 `ExpandTileOp`；同时
+`LowerPTOToUBufOps` 会先把 `AllocTileOp` materialize 成 `!pto.ptr<..., ub>`。如果不增加专门
+lowering，`pto.textract` 会带 pointer operand 残留并在 VPTO LLVM conversion 失败。
+
+首版在现有 `LowerPTOToUBufOps` 中增加 correctness-first 的双输出 lowering，不新增 MLIR op：
+
+1. 在任何 `AllocTileOp` replacement 之前先收集双输出 `TExtractOp`，调用 form classifier 并建立
+   `PendingNd2xNzLowering` 快照：记录五段 schema、三个原始 tile type、四个折叠后的 index、
+   source ND row stride、两个 destination 的 physical/valid shape、element storage bytes 和
+   compact mode。lowering 只接受已经通过 verifier 的 plain-NZ、静态 metadata；缺少任一字段时
+   必须在该 pass 报错，不能把 op 留给后续 conversion。
+2. `AllocTileOp` materialize 后，op operands 已可能变成 `!pto.ptr<..., ub>`，此时不得再调用要求
+   tile type 的 generated accessor。实现从已验证快照中的 segment offset 按 raw operand position
+   取得 materialized `src`、`dst0`、`dst1` pointer。令
+   `c0 = 32 / storageElemBytes`，每个 window `k` 使用与第 3.2 节相同的 element offset：
+
+   ```text
+   srcOff = (indexRow_k + r) * srcRowStrideElements + indexCol_k + c
+   dstOff = floor(c / c0) * dstPhysicalRows_k * c0
+          + r * c0
+          + (c % c0)
+   ```
+
+3. 为两路 window 分别生成 `0 <= r < validRows_k`、`0 <= c < validCols_k` 的 `scf.for`，循环体
+   用现有 `pto.load_scalar` 从 `src[srcOff]` 读取，再用现有 `pto.store_scalar` 写入
+   `dst_k[dstOff]`。所有 offset 计算使用 checked/static metadata 加 `index` 算术；循环只写 valid
+   logical coordinates，不初始化或读取 destination padding。
+4. 因为 `load_scalar`/`store_scalar` 在 `PIPE_S` 执行，而双输出 op 对外仍建模为 `PIPE_V`，整个
+   两窗口展开用 PTO-ISA scalar fallback 相同的固定内部同步包围：进入循环前生成
+   `set_flag(PIPE_V, PIPE_S, EVENT_ID0)`/对应 wait，两个窗口完成后生成
+   `set_flag(PIPE_S, PIPE_V, EVENT_ID0)`/对应 wait。外部 InsertSync 已建立的 MTE2-to-V 和
+   V-to-MTE3 依赖保持有效；不能只生成 scalar loop 而遗漏这两组内部同步。
+5. 展开完成后必须 erase 原 `TExtractOp`。`LowerPTOToUBufOps` 在 A2/A3 路径返回前扫描并拒绝
+   任何残留的 ND-to-2xNZ `TExtractOp`；其 operands 不得以非法的 `!pto.ptr` 形态进入 pass 后
+   verifier 或 VPTOLLVMEmitter。该检查属于现有 pass，不增加新的 validation pass。
+
+该 scalar lowering 是首版 VPTO 的正确性基线，覆盖 `i8/i32/f16/bf16/f32`、非对齐 index、
+odd `validCol` 和 `1x1`，不宣称复刻 PTO-ISA 的 `vcopy`/`vconv` 性能路径。后续可在同一 pass
+中把满足对齐条件的循环替换为已有 VPTO vector micro-op，但必须保持上述 offset、tail、内部同步
+和数值回归；不能通过新增第二个公开 TEXTRACT op 或让 A2/A3 进入 A5 TileLib registry 来优化。
 
 ## 10. Python builder 与文档接口
 
@@ -1490,7 +1537,7 @@ range API 的内部细节。
   在 planner 前得到 runtime-bound provenance 诊断；
 - RowPlusOne `AllocMultiTileOp` 在 level1/2 planner-owned 和 level3 explicit-base 各一例，均由
   既有 verifier 稳定拒绝；另覆盖 `MultiTileGetOp` 后接 subview/cast 再作为 dst0/dst1，证明
-  `textract.nd_to_2xnz=true` 且 `.row_plus_one=true` 也不能绕过 multi-buffer 限制。固定双 slot
+  单 allocation 的 RowPlusOne 物理布局支持条件满足后也不能绕过 multi-buffer 限制。固定双 slot
   反例使用 `f16 16x32`：旧 product-shape slot1=`base+1024` 会与 slot0 access tail
   `[1024,1056)` 重叠；测试不得进入 `PTOResolveBufferSelect` 后才失败；
 - level3 下任一 operand 的 `alloc_tile.addr` 含动态 root；
@@ -1656,6 +1703,23 @@ PTOBC v0 兼容测试单列，不并入普通 MLIR bytecode 假设：
 
 ### 11.4 TileLib / VPTO
 
+A2/A3 `LowerPTOToUBufOps` 回归：
+
+- pass-only FileCheck 在 planned `alloc_tile` 已变成 `!pto.ptr<..., ub>` 后运行，要求双输出
+  `pto.textract` 完全消失，并分别出现 dst0/dst1 的两个 `scf.for` loop nest；
+- 两路使用不同 shape/index，精确检查 `srcOff` 和 plain-NZ `dstOff` 算式，特别是
+  `physicalRows=32, validRows=13, validCols >= 2*c0` 的第二 block 从 `32*c0` 开始；
+- 展开前后分别存在 V-to-S、S-to-V 的 `set_flag`/`wait_flag`，循环体只含已有
+  `pto.load_scalar`/`pto.store_scalar` pointer op；不得新增 raw TEXTRACT op；
+- `i8/i32/f16/bf16/f32`、unaligned index、odd-i8 `validCol`、`1x1` 和两路不同 valid shape
+  都能完成 VPTO-to-LLVM，LLVM verifier 通过且没有残留 `pto.textract`；
+- 缺失 tile metadata、动态 shape/index 或非 plain-NZ input 在 verifier/pass boundary 给出稳定
+  诊断，不得以 pointer operand type mismatch 作为晚期失败；
+- byte-exact VPTO simulator golden 对两个 window 分别比较 logical NZ payload，并保留既有
+  A2/A3 EmitC 七参数调用测试，证明两个 backend 使用同一 form 与 offset 语义。
+
+A5 TileLib / VPTO 回归：
+
 - aligned f16：展开为 load + block-stride store，不残留 tile op；
 - unaligned f32：出现 unaligned load path；
 - public surface probe 精确生成 `vldas`、`vldus` 和普通 `vsstb`，不新增私有 builder；
@@ -1666,7 +1730,6 @@ PTOBC v0 兼容测试单列，不并入普通 MLIR bytecode 假设：
   `physicalRows + 1`、第二 block offset=272 elements、两个 512-byte payload interval、
   access end=1056 bytes，并断言 1088-byte rectangle 不是 access size。`32/13` 与 `16/13`
   只覆盖 partial plain-NZ gate 的 negative/positive control；
-- A3/VPTO `physicalRows=32, validRows=13, validCols >= 2*c0` 的第二 block offset `32*c0`；
 - hif8/fp8 检查正确 vreg/intrinsic type，并至少覆盖一个 1-byte low-precision sub-c0 window；
   FP4 支持条件完成后再增加 FP4 检查；
 - `vsstb` control field 最大合法值和首个非法值；
@@ -1680,12 +1743,18 @@ ND-to-NZ，两个输出独立比较。测试按第 3.2.1 节分成两组：
 - full-store group：两个 destination 都是 full-valid；plain NZ 使用 canonical physical NZ
   GlobalTensor shape，经过 `TLOAD -> TEXTRACT -> two TSTORE`，debug build 必须保持
   assertion enabled，并比较两块完整 physical GM output。A5 `RowPlusOne` 只有第 5.4 节所有
-  physical-layout consumers 的精确回归通过、且 device golden 明确定义 gap 的写回值后才允许进入；
-  否则该 compact mode 仍保持首版拒绝，不能借 full-valid 名义扩大 coverage。
+  physical-layout consumers 的精确回归和下述 payload/gap-skip device tests 通过后才允许进入；
+  golden 不得为 UB gap 定义或比较具体值，否则会把未定义 padding 错当成 TEXTRACT 语义。
 - partial-valid group：不得通过 full-valid alias generic `TSTORE` 绕过 production rule。simulator
   直接读取 UB；NPU 使用独立 backend-native raw-buffer harness 导出每个 destination 的 physical
   allocation extent 和 32B pre/post UB sentinel。golden 只比较 valid logical coordinates，未定义 padding
   不比较；四个 UB sentinel 和 physical GM output 两侧 host guard 必须逐 byte 比较。
+
+RowPlusOne 的 device coverage 分成三个互补断言：TEXTRACT raw-UB dump 只比较 exact payload
+intervals，忽略 block 间 gap；独立 TSTORE gap-skip testcase 用受控 raw UB buffer 给 payload 与 gap
+填入可区分数据，证明 TSTORE 只把 payload 映射到 GM 且不读取/导出 gap；端到端
+`TLOAD -> TEXTRACT -> TSTORE` 只比较完整 logical GM payload 和 GM guards。三者都不得检查
+TEXTRACT 后 gap 的具体字节，也不得把 gap sentinel 保持不变当作通过条件。
 
 若某架构的公开 `1x32xi8` tile TLOAD/TSTORE 编译或设备测试失败，必须使用独立
 raw-buffer NPU harness 通过 backend-native UB-to-GM byte copy 导出相同 pre/post redzone；raw
@@ -1733,6 +1802,9 @@ full-store group 必须经过完整链路，partial-valid group 必须保留明�
 
 - `test/lit/pto/textract_*` 全部通过；
 - `test/lit/vpto/*textract*` 全部通过；
+- A2/A3 pass-only 回归证明 `LowerPTOToUBufOps` 消除 pointer-form 双输出 op、生成两路 scalar
+  loop 与完整 V/S flag-wait；A2/A3 final VPTO-to-LLVM 和 LLVM verifier 通过且无残留
+  `pto.textract`；
 - A3/A5/VPTO stride counterexample matrix 通过：A3/VPTO physical stride 正向、A5 `32/13`
   plain negative、A5 `16/13` plain positive；RowPlusOne 在 shared-helper 完成前保持 negative；
 - PTOBC v0 legacy TEXTRACT fixture 与双输出 generic round-trip 全部通过；
@@ -1758,7 +1830,7 @@ full-store group 必须经过完整链路，partial-valid group 必须保留明�
 | 2 | shared checked physical-layout/access helper、A5 partial-valid plain stride gate、IR verifier，以及 driver input-provenance/post-planning-safety helper | helper 分离 emitted dimension、subview/block stride、payload intervals、access end 和 allocation reservation；仅单 `AllocTileOp` 的 legacy/modern planner、ResolveBufferSelect、semantic range、InsertSync 切换完成；`16x32xf16 RowPlusOne` 精确得到 272-element stride、1024-byte payload、1056-byte access end、1088-byte allocation reservation，且 1088-byte reservation 不进入 access consumers；RowPlusOne multi-buffer/view chain 在 planner 前失败，plain multi-buffer 正向不变；架构矩阵包含 A3/A5/VPTO `32/13` counterexample；main pipeline、安全 closure、partition/provenance lit 通过，且没有新增 validation pass/test escape | 约 900-1500 行 helper/规划/driver 代码及 500-800 行回归 |
 | 3 | no-alias、GraphSync `AllocTileOp` single-address model、shared-layout consumer 与 planner/GSS 回归 | GraphSync 对单 RowPlusOne allocation 从 shared helper 取得 8448-bit access envelope；三组 alias 被拒绝，declared/tpop provenance 在 planner 前失败，动态 level3 地址失败，双输出 liveness 正确，同址/overlap/disjoint/address-space GSS edge 正确；RowPlusOne two-slot negative 与 plain multi-buffer positive 通过 | 约 450-800 行 GraphSync/planner 改动及 250-450 行回归 |
 | 4 | EmitC pattern | A3/A5 精确文本与目标 API compile-only 通过 | 约 150-300 行 EmitC 代码及 100-200 行回归 |
-| 5 | A5 TileLib/VPTO template 与 Python facade | physical-stride/stride gate、aligned/unaligned/tail/enabled-lowp 展开通过；legacy free function/property/constructor smoke 通过；NZ+1 compile/IR 回归消费 shared layout；FP4 随独立物理布局条件开启 | 约 500-900 行 TileLib/VPTO/Python 代码及 300-500 行回归 |
+| 5 | A2/A3 `LowerPTOToUBufOps` scalar correctness lowering、A5 TileLib/VPTO template 与 Python facade | A2/A3 pointer-form 双输出 op 展开为两路 scalar loop 和完整 V/S flag-wait，final VPTO LLVM 无残留 `pto.textract`；A5 physical-stride、aligned/unaligned/tail/enabled-lowp 展开通过；legacy free function/property/constructor smoke 通过；NZ+1 compile/IR 回归消费 shared layout；FP4 随独立物理布局条件开启 | 约 700-1200 行 lowering/TileLib/VPTO/Python 代码及 450-750 行回归 |
 | 6 | A3/A5 NPU ST、UB sentinel/raw-buffer harness | 必选组合两路 byte-exact；partial case 实际导出 UB redzone；RowPlusOne full-store device golden 与所有精确 layout 回归通过后解除首版拒绝 | 约 300-600 行 harness/fixture/脚本，不含设备侧生成物 |
 | 7 | manual、SPEC、ReleaseNotes | 文档与实际 verifier/EmitC 一致 | 约 100-200 行文档与发布说明 |
 
@@ -1826,6 +1898,10 @@ public syntax；实现只承诺 canonical `pto.textract ins(...) outs(...)` 文�
 - EmitC 只生成一次、参数顺序精确的公开 `TEXTRACT`；
 - EmitC 的单/双输出分支都从 adaptor `indices`/`dsts` ranges 取 core operands，不依赖 ODS
   range 化后不存在的 legacy adaptor accessor；
+- A2/A3 VPTO 在现有 `LowerPTOToUBufOps` 内把双输出 form 完整展开为两路
+  `scf.for + load_scalar/store_scalar`，使用 physical source row stride 和各自 destination physical
+  rows 计算 offset，并生成 V-to-S/S-to-V 内部 flag-wait；pass 返回后和 final LLVM emission
+  均无残留 pointer-form `pto.textract`，且不新增 backend TEXTRACT op；
 - Python `pto.py` 在 generated symbol export 后重新提供 legacy `TExtractOp` facade 和
   `textract(src, index_row, index_col, dst, ...)` wrapper；位置/关键字调用、
   `.indexRow/.indexCol/.dst` properties 和 `build_nd_to_2xnz` 均有 smoke；
@@ -1873,5 +1949,8 @@ public syntax；实现只承诺 canonical `pto.textract ins(...) outs(...)` 文�
   紧贴 physical allocation extent 的 pre/post UB redzone，只有 GM guard 或没有可编译观测 helper 的设备
   只能计 compile-only/simulator coverage；A5 的 FP4/NZ+1 只有通过各自物理布局/设备验证后才进入
   verifier 正向集合；
+- A5 RowPlusOne device golden 只定义和比较 logical payload。TEXTRACT raw-UB dump 忽略 gap，
+  独立受控 TSTORE testcase 证明 gap 不被读取/导出，端到端链路比较 GM payload 与 guards；任何
+  对 TEXTRACT 后 gap 具体值或 sentinel 保持状态的要求都不属于完成条件；
 - 既有单输出 `pto.textract` canonical 文本、Python/C++ 调用、PTOBC v0 fixture、verifier、pipe、
   effects 和 EmitC 行为通过兼容回归；Python/ODS surface 中不存在新 op class 或 mnemonic。
