@@ -6096,16 +6096,18 @@ public:
     if (!dst || !offset || !src ||
         !isa<LLVM::LLVMPointerType>(dst.getType()) ||
         !isa<LLVM::LLVMPointerType>(offset.getType()) ||
-        !isa<LLVM::LLVMPointerType>(src.getType()))
+        !isa<LLVM::LLVMPointerType>(src.getType())) {
       return rewriter.notifyMatchFailure(
           op, "unexpected converted ub.vgatherb operand types");
+    }
 
     auto ptrType = mlir::cast<pto::PtrType>(op.getDst().getType());
     Type elemType = ptrType.getElementType();
     unsigned width = pto::getPTOStorageElemBitWidth(elemType);
-    if (width != 16 && width != 32)
+    if (width != 16 && width != 32) {
       return rewriter.notifyMatchFailure(
           op, "unsupported element width for ub.vgatherb");
+    }
     std::string calleeName =
         std::string("llvm.hivm.VGATHERB.") + ((width == 16) ? "b16" : "b32");
 
@@ -6130,11 +6132,13 @@ public:
     // address loaded from Tile host_ptr metadata by the PTO-ISA reference.
     Value srcAddr;
     if (auto *defOp = op.getSrc().getDefiningOp()) {
-      if (auto castOp = dyn_cast<pto::CastPtrOp>(defOp))
+      if (auto castOp = dyn_cast<pto::CastPtrOp>(defOp)) {
         srcAddr = castOp.getOperand();
+      }
     }
-    if (!srcAddr)
+    if (!srcAddr) {
       srcAddr = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, src);
+    }
     Value config =
         rewriter.create<arith::AndIOp>(loc, srcAddr, constI64(0xffffffff));
     config = rewriter.create<arith::OrIOp>(
@@ -6174,16 +6178,18 @@ public:
     Value dst = adaptor.getDst();
     Value src = adaptor.getSrc();
     if (!dst || !src || !isa<LLVM::LLVMPointerType>(dst.getType()) ||
-        !isa<LLVM::LLVMPointerType>(src.getType()))
+        !isa<LLVM::LLVMPointerType>(src.getType())) {
       return rewriter.notifyMatchFailure(
           op, "unexpected converted ub.vgather operand types");
+    }
 
     auto ptrType = mlir::cast<pto::PtrType>(op.getDst().getType());
     Type elemType = ptrType.getElementType();
     unsigned width = pto::getPTOStorageElemBitWidth(elemType);
-    if (width != 16 && width != 32)
+    if (width != 16 && width != 32) {
       return rewriter.notifyMatchFailure(
           op, "unsupported element width for ub.vgather");
+    }
     std::string calleeName =
         std::string("llvm.hivm.VGATHER.") + ((width == 16) ? "b16" : "b32");
 

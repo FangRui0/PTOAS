@@ -10447,12 +10447,14 @@ void UBVgatherbOp::getEffects(
 
 LogicalResult UBVgatherbOp::verify() {
   if (!isBufferLike(getDst().getType()) || !isBufferLike(getOffset().getType()) ||
-      !isBufferLike(getSrc().getType()))
+      !isBufferLike(getSrc().getType())) {
     return emitOpError("requires pointer-like operands");
+  }
   if (classifyMemoryRole(getDst().getType()) != MemoryRole::UB ||
       classifyMemoryRole(getOffset().getType()) != MemoryRole::UB ||
-      classifyMemoryRole(getSrc().getType()) != MemoryRole::UB)
+      classifyMemoryRole(getSrc().getType()) != MemoryRole::UB) {
     return emitOpError("requires UB-backed operands");
+  }
   return success();
 }
 
@@ -10468,11 +10470,13 @@ void UBVgatherOp::getEffects(
 }
 
 LogicalResult UBVgatherOp::verify() {
-  if (!isBufferLike(getDst().getType()) || !isBufferLike(getSrc().getType()))
+  if (!isBufferLike(getDst().getType()) || !isBufferLike(getSrc().getType())) {
     return emitOpError("requires pointer-like operands");
+  }
   if (classifyMemoryRole(getDst().getType()) != MemoryRole::UB ||
-      classifyMemoryRole(getSrc().getType()) != MemoryRole::UB)
+      classifyMemoryRole(getSrc().getType()) != MemoryRole::UB) {
     return emitOpError("requires UB-backed operands");
+  }
   return success();
 }
 

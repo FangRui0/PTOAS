@@ -904,8 +904,9 @@ struct LowerPTOToUBufOpsPass
         auto dstInfo = extractTileShapeInfoFromValue(op.getDst(), tileShapes);
         auto offsetInfo =
             extractTileShapeInfoFromValue(op.getOffsets(), tileShapes);
-        if (!dstInfo || !offsetInfo)
+        if (!dstInfo || !offsetInfo) {
           continue;
+        }
 
         unsigned bse = dstInfo->blockSizeElem;
         unsigned epr = dstInfo->elementsPerRepeat;
@@ -913,8 +914,9 @@ struct LowerPTOToUBufOpsPass
         int64_t validCol = dstInfo->vCols;
         int64_t dstRowStride = dstInfo->cols;
         int64_t offsetRowStride = offsetInfo->cols;
-        if (bse == 0 || epr == 0 || validCol == 0)
+        if (bse == 0 || epr == 0 || validCol == 0) {
           continue;
+        }
 
         // GatherBlockHead/Tail parameters (from pto-isa a2a3/TGatherB.hpp).
         // vgatherb reads 8 u32 block addresses per repeat. Each address must
@@ -928,14 +930,16 @@ struct LowerPTOToUBufOpsPass
         builder.setInsertionPoint(op);
 
         Type dstElemTy = getStoredElemType(op.getDst().getType());
-        if (!dstElemTy)
+        if (!dstElemTy) {
           continue;
+        }
         auto dstPtrType = getUBPtrType(ctx, dstElemTy);
         auto offPtrType = getUBPtrType(ctx, builder.getI32Type());
 
         auto emitAddr = [&](Value tile, pto::PtrType ty) -> Value {
-          if (isa<pto::PtrType>(tile.getType()))
+          if (isa<pto::PtrType>(tile.getType())) {
             return tile;
+          }
           return builder.create<pto::TileBufAddrOp>(loc, ty, tile).getDst();
         };
 
@@ -985,8 +989,9 @@ struct LowerPTOToUBufOpsPass
         if (numRemainPerLine > 0) {
           int64_t tailElemOff = numRepeatPerLine * epr;
           int64_t tailRepStride = dstRowStride / bse;
-          if (tailRepStride == 0)
+          if (tailRepStride == 0) {
             tailRepStride = 1;
+          }
 
           for (int64_t i = 0; i < validRow; ++i) {
             int64_t elemOff = i * dstRowStride + tailElemOff;
@@ -1011,17 +1016,20 @@ struct LowerPTOToUBufOpsPass
       SmallVector<pto::TGatherOp> ops;
       func.walk([&](pto::TGatherOp op) { ops.push_back(op); });
       for (auto op : ops) {
-        if (!op.hasIndexForm())
+        if (!op.hasIndexForm()) {
           continue;
+        }
         auto dstInfo = extractTileShapeInfoFromValue(op.getDst(), tileShapes);
         auto indexInfo =
             extractTileShapeInfoFromValue(op.getIndices(), tileShapes);
         auto tmpInfo = extractTileShapeInfoFromValue(op.getTmp(), tileShapes);
-        if (!dstInfo || !indexInfo || !tmpInfo)
+        if (!dstInfo || !indexInfo || !tmpInfo) {
           continue;
+        }
         int64_t epr = dstInfo->elementsPerRepeat;
-        if (epr == 0)
+        if (epr == 0) {
           continue;
+        }
 
         // Extract the source base address (i64) from the CastPtrOp that
         // defines the src tile pointer. Only handle alloc_tile-backed src.
@@ -1039,8 +1047,9 @@ struct LowerPTOToUBufOpsPass
 
         auto i32PtrType = getUBPtrType(ctx, builder.getI32Type());
         auto emitAddr = [&](Value tile, pto::PtrType ty) -> Value {
-          if (isa<pto::PtrType>(tile.getType()))
+          if (isa<pto::PtrType>(tile.getType())) {
             return tile;
+          }
           return builder.create<pto::TileBufAddrOp>(loc, ty, tile).getDst();
         };
 
@@ -1048,11 +1057,13 @@ struct LowerPTOToUBufOpsPass
         Value tmpPtr = emitAddr(op.getTmp(), i32PtrType);
 
         Type dstElemTy = getStoredElemType(op.getDst().getType());
-        if (!dstElemTy)
+        if (!dstElemTy) {
           continue;
+        }
         unsigned elemSize = getElementSize(dstElemTy);
-        if (elemSize == 0)
+        if (elemSize == 0) {
           continue;
+        }
         auto dstPtrType = getUBPtrType(ctx, dstElemTy);
         Value dstPtr = emitAddr(op.getDst(), dstPtrType);
 
