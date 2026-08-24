@@ -64,7 +64,7 @@ lowering、verifier、TileLib template 或回归测试；后续实现拟在同�
    backend 是否可实例化不在本设计中新增 driver/API 约束。目标 backend 缺少该 overload 时，
     由既有构建配置和编译测试报告失败，不引入新的依赖或 driver 机制。
 11. partial-valid/odd/`1x1` 是定义明确的 TEXTRACT/UB-only 支持，不自动获得 NZ TSTORE
-    支持；driver 的 post-planning safety helper 按静态 physical range 而不是 SSA use chain，
+    支持；driver 的 post-planning safety helper 按静态、带 address space 的 physical range 而不是 SSA use chain，
     在同一 direct-call graph component 内拒绝 partial destination 的所有 alias TSTORE，不能因
     producer 和 TSTORE 位于不同函数而漏检。helper 固定运行在 resolve-buffer-select 后、
     backend-helper inlining 前；普通 codegen 与 `--emit-pto-ir` 共用该切点。任一 partial producer
@@ -73,7 +73,8 @@ lowering、verifier、TileLib template 或回归测试；后续实现拟在同�
 12. CPU-sim、cost-model 和其他 optional backend 不属于本设计的新增支持范围；其编译能力
     由各自原有构建与测试流程决定。
 13. GraphSyncSolver 必须为普通 `AllocTileOp` 建立基于静态 `addr`、physical access envelope 和
-    address space 的单地址模型；不同 SSA allocation root 使用同一地址时仍必须产生 hazard。
+    address space 的单地址模型；不同 SSA allocation root 只有在同一 address space 中使用重叠地址
+    时才必须产生 hazard。
 14. 既有 `pto.textract` 文本、Python `TExtractOp`/`pto.textract` 调用、legacy
     `.indexRow`/`.indexCol`/`.dst` properties 和 PTOBC v0 单输出 wire schema 保持兼容；
     新双输出 form 使用同一 op class 的新 builder，并以新的 PTOBC generic record 承载，不能复用
@@ -190,7 +191,8 @@ source 或使两个可观察输出互相覆盖。
    strides 再按真实 GM view 填入，不能用 valid shape 代替 physical shape。
 
 2. **partial-valid / UB-only**：允许 `valid != physical`、odd `validCol` 和 `1x1`，但不得把
-   partial descriptor 或任何与其 physical range 相交的 alias 作为 generic `TSTORE` source。
+   partial descriptor 或任何与其同 address space physical range 相交的 alias 作为 generic
+   `TSTORE` source。
    simulator 可直接观测 UB；NPU 必须使用生产 PTO IR 之外的 backend-native raw-UB dump
    harness。golden 只比较两个 destination 各自的 valid logical region，未定义区不参与比较。
    A5 partial-valid UB-only codegen仍受第 3.4 节 physical-stride 限制；例如
@@ -200,18 +202,20 @@ source 或使两个可观察输出互相覆盖。
 `pto.set_validshape` 仅接受 `v_row=?/v_col=?` 的本地动态 tile，并且只修改运行时元数据。
 因此首版不把同一个 partial descriptor 伪装成 full-valid，也不在 generic `TSTORE` 中放宽契约。
 driver 的 `validateTExtractNd2xNzPostPlanningSafety()` 在内存规划和
-`PTOResolveBufferSelect` 完成后、`PTOInlineBackendHelpersPass` 前按 physical range 检查同址但
+`PTOResolveBufferSelect` 完成后、`PTOInlineBackendHelpersPass` 前按带 address space 的 physical
+range 检查同址但
 不同 SSA root 的 alias；直接使用 partial descriptor、经 view 派生后使用，或者另建同址
 full-valid `alloc_tile` 后 TSTORE，都必须在 PTOAS 阶段报错：
 
 ```text
-pto.tstore source physical byte range aliases a partial-valid ND-to-2xNZ
-destination in the same call component; undefined NZ padding cannot be stored
+pto.tstore source physical range aliases a partial-valid ND-to-2xNZ destination
+in the same address space and call component; undefined NZ padding cannot be stored
 ```
 
 首版故意不提供 CMake test hook、hidden CLI flag 或输入 IR attribute escape。post-planning
 helper 对已闭合的 direct-call graph 采用分量级 range 规则：只要同一 weakly connected component
-内任一 `TStoreOp.src` 的 physical range 与 partial destination 相交就拒绝，不考虑函数内文本
+内任一 `TStoreOp.src` 与 partial destination 在同一 address space 中的 physical range 相交就拒绝，
+不同 address space 即使数字地址相同也不构成 alias；不考虑函数内文本
 顺序、caller/callee 方向、控制流支配关系或中间的 full overwrite。闭包检查本身更保守：只要
 compile unit 中存在任一 partial producer，就扫描所有函数并拒绝任意位置的 `func.call_indirect`、
 external/unresolved direct callee 或其他无法解析为 internal definition 的 `CallOpInterface`；这些
@@ -246,10 +250,16 @@ PTO-ISA A2/A3 与 A5 的本 overload 都直接检查：
 ```text
 indexRow_k + dst_k.validRows <= src.physicalRows
 indexCol_k + dst_k.validCols <= src.physicalCols
+indexRow_k + dst_k.validRows <= src.validRows
+indexCol_k + dst_k.validCols <= src.validCols
 ```
 
-这里 bounds 使用 destination 的 valid shape 和 source 的 physical shape，不能复用
-当前单输出 helper 中的 `dst.physicalShape` 检查。
+前两项防止读出 source allocation，后两项防止在 allocation 内读取 source 的未定义
+padding。四项都按 window 独立检查；不能只复用当前单输出 helper 中的
+`dst.physicalShape`/`src.physicalShape` 检查。首版要求 source 的 valid shape 也是静态、非零且
+可归一化的；如果调用方没有可证明的 source valid extent，必须改用显式
+`valid == physical` 的 full-valid source 或在 verifier 阶段拒绝，不能把 physical extent
+默认为 valid extent。
 
 destination 的 `validRows`、`validCols` 不要求等于 physical shape，也不要求都是
 fractal 倍数。plain NZ 的 PTOAS physical rows 仍须按 16 rows 对齐，使类型能被 NZ
@@ -745,9 +755,13 @@ single-value accessor。单输出随后调用语义不变的现有 verifier help
    physical-layout 支持条件；首版明确拒绝。
 8. 校验 source row-stride bytes 32B 对齐、每个 dst 的 plain-NZ logical physical rows
    16 对齐、emitted physical cols c0 对齐。
-9. 首版要求两个 dst 的 valid shape 静态且非零；确保归一化后的 valid extent 不超过
-   `UINT16_MAX`，并检查其不大于对应 physical extent。
-10. 对每个 window 独立执行 constant bounds 校验，使用 dst valid shape。
+9. 首版要求 source 和两个 dst 的 valid shape 静态且非零；确保归一化后的 valid extent 不超过
+   `UINT16_MAX`，并检查每个 valid extent 不大于对应 physical extent。source 没有可证明的
+   valid shape 时，只接受明确 `valid == physical` 的 full-valid source，不能默认为 physical
+   shape。
+10. 对每个 window 独立执行 constant bounds 校验，同时检查 source physical 和 source valid
+    两组上界；valid 上界失败时必须报告“window reads source undefined padding”，即使 physical
+    上界仍然通过。
 11. generic `mlir::verify` 成功后，driver 在 planning/sync pass manager 运行前直接调用
     `validateTExtractNd2xNzInputProvenance(module)`；不新增 provenance pass。helper 对 `src`、
     `dst0`、`dst1` 递归穿过 `subview`、`bitcast`、`treshape` 和单输入
@@ -833,19 +847,21 @@ golden，才能无条件放行动态/非对齐 index。FP4 未通过第 3.5 节�
 执行以下检查：
 
 1. level1/level2 使用 planner 物化地址，level3 使用调用方显式地址；multi-buffer slot 已经由
-   `PTOResolveBufferSelect` materialize。range 使用第 5.4 节的 physical access envelope，不能使用
-   valid shape，也不能把 allocation reservation、实际 payload byte count 和 access end offset
-   当成同一个量。
-2. helper 要求 `src`、`dst0`、`dst1` 都能解析到 non-negative static absolute range，并复核
-   三组 pairwise no-alias；常量 cast 和纯常量 `arith.addi` 可折叠，动态 root 拒绝。
+   `PTOResolveBufferSelect` materialize。range 使用第 5.4 节带 address space 的 physical access
+   envelope，不能使用 valid shape，也不能把 allocation reservation、实际 payload byte count 和
+   access end offset 当成同一个量。
+2. helper 要求 `src`、`dst0`、`dst1` 都能解析到 non-negative static absolute range 和已知
+   address space，并复核三组 pairwise no-alias；常量 cast 和纯常量 `arith.addi` 可折叠，动态
+   root、未知 address space 或无法唯一确定 range 一律拒绝。
 3. helper 必须在任何 `func.call` lowering/inlining 之前解析同一 symbol table 中的 direct internal
    `func.call`，以函数为节点构造 weakly connected components。对每个含 partial-valid
    ND-to-2xNZ destination 的 component，先汇总所有 producer 的 physical ranges，再扫描该
    component 内所有函数的 `TStoreOp.src`；不能只在 producer 所属函数内找 TSTORE，也不能因
    call site 没有传递 tile operand 就跳过 caller/callee edge。
-4. 任一 TSTORE source static range 与任一 partial destination range 相交即拒绝。TSTORE source
-   是 block argument/call operand 派生值而无法解析为唯一 static absolute range 时也保守拒绝；
-   首版不为此建立 argument-effect/range summary fixed point。
+4. 任一 TSTORE source 与任一 partial destination 在同一 address space 中的 static range 相交即
+   拒绝；不同 address space 即使数字地址相同也不构成该 alias。TSTORE source 是 block
+   argument/call operand 派生值、address space 未知或无法解析为唯一 static absolute range 时也
+   保守拒绝；首版不为此建立 argument-effect/range summary fixed point。
 5. helper 先判断 compile unit 是否含任一 partial producer。若有，则 call-surface closure 是
    compile-unit-wide 条件：扫描所有函数中的 call-like op，`func.call` 必须唯一解析到本 compile
    unit 中带 body 的 internal definition；任意 `func.call_indirect`、callee declaration/external
@@ -859,11 +875,12 @@ golden，才能无条件放行动态/非对齐 index。FP4 未通过第 3.5 节�
    caller/callee 方向、CFG、dominance 和 full overwrite 无关：即使 TSTORE 位于调用前、producer
    位于 callee、TSTORE 位于 caller，或中间存在完整覆盖，只要 static range 相交仍拒绝。compile
    unit 没有 partial producer 时，本 helper 不因 opaque call 单独失败。
-7. alias 诊断必须同时指出 producer function、TSTORE function 和两个 half-open physical ranges：
+7. alias 诊断必须同时指出 producer function、TSTORE function、address space 和两个 half-open
+   physical ranges：
 
    ```text
-   pto.tstore source physical byte range aliases a partial-valid ND-to-2xNZ
-   destination in the same call component; undefined NZ padding cannot be stored
+   pto.tstore source physical range aliases a partial-valid ND-to-2xNZ destination
+   in the same address space and call component; undefined NZ padding cannot be stored
    ```
 
 8. 不提供 test-only flag、module attribute 或其他 escape hatch。
@@ -993,6 +1010,18 @@ logical physical shape、element storage width、B/S layout、fractal 和 compac
 - `allocationElements/Bytes` 以及计算失败原因。首版对 RowPlusOne 使用完整矩形作为 allocation
   reservation；地址空间对 allocation 起点或下一 slot 的额外 alignment 由 planner 单独处理。
 
+所有可用于 alias、hazard 或同步的 range 都必须携带地址空间，统一表示为：
+
+```text
+PhysicalRange = (addressSpace, [baseByte, endByte))
+```
+
+其中 `baseByte`/`endByte` 是同一 address space 内的绝对、半开 byte range。只有 address
+space 相同且区间相交时才构成 alias 或 GraphSync hazard；相同数字地址落在 `VEC`、`MAT`、
+`ACC` 等不同空间时不冲突。地址空间未知、range 未解析或两者无法证明属于同一空间时，production
+校验必须保守失败，不能把 unknown 当作“不重叠”。该字段是 range 的语义组成部分，不是调用方
+在比较前可以丢弃的附加诊断信息。
+
 对本 op 唯一待开放的 A5 ColMajor NZ `RowPlusOne`，helper 固定使用：
 
 ```text
@@ -1035,10 +1064,12 @@ helper 应返回并复用 `PTOResolveBufferSelect` 当前的 `shape[0] + 1` 结�
 
 - `PTOResolveBufferSelect` 的 subview 地址物化使用 row/column stride 和 block start；
 - legacy/modern PlanMemory 使用 `allocationBytes` reservation；
-- semantic range 与 post-planning alias helper 使用 exact intervals；现有单区间 API 不能表达
-  block 间 gap 时，保守使用 `[base, base + accessEndOffsetBytes)`，不得扩大到完整矩形；
+- semantic range 与 post-planning alias helper 使用带 `addressSpace` 的 exact intervals；现有单区间
+  API 不能表达 block 间 gap 时，保守使用
+  `(addressSpace, [base, base + accessEndOffsetBytes))`，不得扩大到完整矩形；
 - InsertSync translator 和 GraphSync `getBufferBitSize` 使用 access envelope，即
-  `accessEndOffsetBytes`/bits，而不是 allocation alignment 或 payload byte count；
+  同一 `addressSpace` 中的 `accessEndOffsetBytes`/bits，而不是 allocation alignment 或 payload
+  byte count；不同 address space 不生成跨空间 hazard；
 - EmitC/TileLib 使用 emitted dimensions、block stride 和 payload，TSTORE access metadata 使用
   exact intervals 或 `accessEndOffsetBytes`。
 
@@ -1048,7 +1079,7 @@ helper 接管而重复加一。每个 block payload 是 `16 * 16 = 256` elements
 是 `[0, 512)` 和 `[544, 1056)`，payload 总量为 1024 bytes，exclusive access end 是
 `528 * 2 = 1056` bytes。PlanMemory 的 allocation reservation 是完整矩形
 `17 * 32 * 2 = 1088` bytes；下一 allocation 不得早于 `base + 1088`（再应用既有 alignment）。
-单区间 semantic range 是 `[base, base + 1056)`，GraphSync/InsertSync 记录 8448 bits。1088
+单区间 semantic range 是 `(addressSpace, [base, base + 1056))`，GraphSync/InsertSync 记录 8448 bits。1088
 不能作为 TSTORE access range；1086 bytes 则连 block 边界都没有正确建模。
 
 只有上述所有消费者、精确回归、VPTO/EmitC compile 和 A5 `TEXTRACT -> TSTORE` device golden
@@ -1123,8 +1154,9 @@ lowering 不使用这块 scratch。既有单输出 FP read effect 必须保留�
 固定 `PIPE_V` 的依据是：
 
 - A5 主路径完全是 vector frontend；
-- A2/A3 EmitC 调用的 PTO-ISA vector 路径使用 `vcopy`/`vconv`，其 scalar fallback 内部自行
-  插入 `PIPE_V <-> PIPE_S` flag/wait；
+- A2/A3 EmitC 调用的 PTO-ISA vector 路径使用 `vcopy`/`vconv`；其 scalar fallback 的
+  `PIPE_V <-> PIPE_S` flag/wait 必须通过第 6.3.1 节的 `SyncMacroModel`/hidden-event reservation
+  建模，不能作为同步规划外的隐藏副作用；
 - A2/A3 VPTO 首版使用第 9.3 节的 scalar correctness lowering，并显式生成同样的
   `PIPE_V -> PIPE_S` 与 `PIPE_S -> PIPE_V` flag/wait。公共调用前后的依赖仍以 `PIPE_V`
   建模，因此 planning/sync 在 lowering 前看到的 pipe 与展开后的可观察边界一致。
@@ -1142,6 +1174,32 @@ full-valid 测试既要证明 MTE2-to-V 依赖存在，也要证明两个 destin
 都被看到；partial-valid UB-only 测试只验证 TEXTRACT 的 V-side producer 和两个 destination
 的 liveness，不把 partial descriptor 直接传给 NZ TSTORE。两类测试都不能只检查第一个 DPS init。
 
+#### 6.3.1 A2/A3 scalar 与 A5 `1x1` 的内部事件
+
+A2/A3 的 scalar correctness lowering，以及 A5 的 `1x1` scalar path，都会在公开的 `PIPE_V`
+边界内执行 `PIPE_S` load/store。它们使用的 V-to-S、S-to-V 事件不能作为 lowering 后临时插入的
+裸 `EVENT_ID0`：如果事件没有进入同步规划和 event-id allocation，就可能与 compiler-generated
+event 复用同一个 ID，导致错误 wait、数据竞争或死锁。
+
+实现必须复用现有 `SyncMacroModel` 机制，在 event-id allocation 之前为双输出
+`TExtractOp` 返回一个 macro model：
+
+- model 至少包含一个对外的 `PIPE_V` phase 和一个实际 scalar implementation 的 `PIPE_S`
+  phase；phase 的 def/use values 必须分别覆盖 source read、两个 destination write，且与
+  `MemoryEffects` 的 read/write 集合一致；
+- model 声明 `PIPE_V -> PIPE_S` 与 `PIPE_S -> PIPE_V` 两个 bidirectional hidden-event pair。
+  PTO-ISA 若要求固定内部 event（当前示例为 `EVENT_ID0`），该 ID 只能作为 hidden event
+  reservation 记录在 model 中，由现有 `SyncEventIdAllocation::SeedHiddenMacroEventIds`
+  在分配前登记生命周期；不能在 lowering 中绕过 allocator 直接写入一个未登记的 literal；
+- `LowerPTOToUBufOps` 只消费该 op 已登记的 hidden-event reservation（或 allocator 返回的
+  per-op event mapping），再生成对应 set/wait。实现不得在 event allocation 完成后新造一组
+  allocator 不知道的 V/S event。当前 pipeline 可保持“InsertSync/event allocation 先于 A2/A3
+  scalar expansion”，也可以把 expansion 提前到 allocation 前，但二者必须由同一个 model
+  覆盖，不能依赖 pass 的偶然执行顺序。
+
+A5 非 `1x1` vector template 没有这组 scalar hidden event；它仍按普通 `PIPE_V` 依赖建模。该
+ 例外必须按 compact mode/shape 明确选择，不能只按 op 名为所有双输出 form 注入 V/S 事件。
+
 当前 GraphSync 的 traceback 会在普通 `AllocTileOp` 停止，但 `MemInfo::getMemInfo(Value)` 只为
 `AllocMultiTileOp`/`MultiTileGetOp` 构造 `PointerLikeInfo`；普通 allocation 最终退化为 SSA
 Value 相等。实现 PR 必须在 `lib/PTO/Transforms/GraphSyncSolver/MemInfo.cpp` 增加单地址模型：
@@ -1153,7 +1211,8 @@ static PointerLikeInfo getPointerLikeInfo(pto::AllocTileOp alloc);
 该 helper 使用 `getBufferBitSize(alloc.getResult())` 填 `allocateSize`，从 tile memory space 填
 `addressSpace`，把静态 byte `addr` 乘 `kBitsToByte` 后作为唯一 `addresses` 元素，并记录
 `parentLoop`。地址不可折叠时写入 `ShapedType::kDynamic`，在同 address space 中保持保守冲突，
-不能留下空 addresses 后把 UB allocation 当成不冲突。`getMemInfo(Value)` 必须显式 dispatch
+不能留下空 addresses 后把 UB allocation 当成不冲突；address space 不可解析时也必须保守失败，
+不能把不同/未知空间误当成相同或互不相交。`getMemInfo(Value)` 必须显式 dispatch
 `AllocTileOp`。已有 `AllocMultiTileOp`/slot 行为只对 non-RowPlusOne slot 保持不变；基线
 `AllocMultiTileOp::verify()` 对 RowPlusOne 的拒绝必须保留，不能因本节给单 allocation 增加
 access envelope 而删除。
@@ -1197,9 +1256,10 @@ partial dump alias escape。
 地址可能以不同 Value 指向重叠范围，必须复用现有 semantic range 解析。
 
 这里有三种目的不同的 range 消费：semantic no-alias verifier 证明同一次 TEXTRACT 的三个
-operand 不重叠；GraphSync `PointerLikeInfo` 为不同 pipe 的读写建立 hazard；driver
-post-planning safety helper 防止 partial destination 的未定义 padding 被 alias TSTORE 导出。
-前一项通过不代表后两项自动成立。
+operand 不重叠（比较键包含 address space）；GraphSync `PointerLikeInfo` 为不同 pipe 的读写建立
+hazard；driver post-planning safety helper 防止 partial destination 的未定义 padding 被 alias
+TSTORE 导出。相同数字地址但属于不同 address space 的 range 不互相冲突；unknown address
+space/range 则按无法证明安全处理。前一项通过不代表后两项自动成立。
 
 runtime-bound gate 是 no-alias 契约的前置条件，而不是 range resolver 的可选优化。当前
 legacy planner 会跳过 `DeclareTileOp`，InsertSync 也只能把 declared tile 自身作为没有绝对
@@ -1220,9 +1280,10 @@ allocation-backed operand：
 - `preInlinePlanningPM` 运行到 `PTOResolveBufferSelect` 后、`postValidationPM` 的
   `PTOInlineBackendHelpersPass` 前，driver 直接调用 post-planning safety helper；对 level1/level2
   使用 planner 结果，对 level3 使用显式地址，不注册独立 address pass。
-- 当 module 含 ND-to-2xNZ form 时，`src`、`dst0`、`dst1` 的最终 physical range 必须具有
-  non-negative static absolute begin。可折叠的常量 `arith.addi`/index/integer cast 表达式
-  可以接受，含 block argument、函数参数或动态 `%base` 的地址一律拒绝。
+- 当 module 含 ND-to-2xNZ form 时，`src`、`dst0`、`dst1` 的最终 physical range 必须具有已知
+  address space 和 non-negative static absolute begin。可折叠的常量 `arith.addi`/index/integer
+  cast 表达式可以接受，含 block argument、函数参数或动态 `%base` 的地址一律拒绝；不能仅因
+  数字 base 相同就忽略 address space。
 - 诊断固定为：
 
   ```text
@@ -1423,10 +1484,11 @@ lowering，`pto.textract` 会带 pointer operand 残留并在 VPTO LLVM conversi
    `dst_k[dstOff]`。所有 offset 计算使用 checked/static metadata 加 `index` 算术；循环只写 valid
    logical coordinates，不初始化或读取 destination padding。
 4. 因为 `load_scalar`/`store_scalar` 在 `PIPE_S` 执行，而双输出 op 对外仍建模为 `PIPE_V`，整个
-   两窗口展开用 PTO-ISA scalar fallback 相同的固定内部同步包围：进入循环前生成
-   `set_flag(PIPE_V, PIPE_S, EVENT_ID0)`/对应 wait，两个窗口完成后生成
-   `set_flag(PIPE_S, PIPE_V, EVENT_ID0)`/对应 wait。外部 InsertSync 已建立的 MTE2-to-V 和
-   V-to-MTE3 依赖保持有效；不能只生成 scalar loop 而遗漏这两组内部同步。
+   两窗口展开用第 6.3.1 节已登记的 scalar macro model 包围：进入循环前生成已分配的
+   `PIPE_V -> PIPE_S` set/wait，两个窗口完成后生成已分配的 `PIPE_S -> PIPE_V` set/wait。
+   `EVENT_ID0` 只有在 PTO-ISA 把它作为该 hidden event 的固定 ID、且已由 event allocator 预留时
+   才能出现在最终文本中；不能把它作为 lowering 的独立硬编码。外部 InsertSync 已建立的
+   MTE2-to-V 和 V-to-MTE3 依赖保持有效；不能只生成 scalar loop 而遗漏这两组内部同步。
 5. 展开完成后必须 erase 原 `TExtractOp`。`LowerPTOToUBufOps` 在 A2/A3 路径返回前扫描并拒绝
    任何残留的 ND-to-2xNZ `TExtractOp`；其 operands 不得以非法的 `!pto.ptr` 形态进入 pass 后
    verifier 或 VPTOLLVMEmitter。该检查属于现有 pass，不增加新的 validation pass。
@@ -1506,6 +1568,8 @@ range API 的内部细节。
 - A5 plain + plain；plain + RowPlusOne、RowPlusOne + RowPlusOne 在首版均为 negative，
   仅在第 5.4 节物理布局专项回归通过后转为正向；
 - `1x1`、非 c0 index、非 c0 validCol、A2/A3 odd-i8 validCol；
+- source valid extent 覆盖两个 window、但 source physical extent 更大（证明 bounds 同时使用
+  valid/physical 两层）；
 - 双输出 parse-print-parse 保持两个 destination 与 index 配对，打印名称始终是 `pto.textract`；
 - generic form 的 canonical `[src, indices, dsts, fp, preQuantScalar]` segment sizes round-trip；
 - A5 partial-valid plain NZ 只有在 `physicalRows == align16(validRows)` 时进入正向集合并使用
@@ -1532,7 +1596,10 @@ range API 的内部细节。
 - destination plain-NZ logical physical rows 或 emitted physical cols 不满足 NZ；
 - A5 aligned path 的 `vsstb` block/repeat stride 超出 16-bit field；RowPlusOne 在首版无论
   virtual rows 是否可编码都拒绝；
-- window0/window1 各自的负 index、row 越界、col 越界；
+- window0/window1 各自的负 index、超出 source physical 的 row/col，以及 physical 仍足够但
+  超出 source valid extent 的 row/col；后者必须稳定报告读取 undefined padding；
+- source valid shape 缺失、动态、为零，或小于任一 window 而 source physical shape 仍覆盖该
+  window；不得仅因 physical bounds 通过而放行；
 - A2/A3 任一路使用 RowPlusOne；
 - 三种显式 alias pair 各一例；
 - `DeclareTileOp` 作为 src、dst0、dst1 的各一例；`TAssignOp` result、`TPopOp`/
@@ -1651,6 +1718,10 @@ PTOBC v0 兼容测试单列，不并入普通 MLIR bytecode 假设：
 - 对 `[2, 2, 1, 0, 0]` 等 Invalid schema 直接查询 MemoryEffects 不崩溃，并把两个 raw source
   tile 及其他 memory-carrying operands 保守建模为 Read+Write；
 - full-valid case 的 `TLOAD -> ND2XNZ -> 2xTSTORE` 自动同步覆盖两路；
+- A2/A3 scalar form 和 A5 `1x1` 的 `SyncMacroModel` 在 event-id allocation 前声明 V/S phases
+  及双向 hidden event；回归检查 lowering 生成的 set/wait 使用已登记事件，不能出现 allocator
+  未观察到的裸 `EVENT_ID0`，并证明 compiler-generated event 不与内部事件复用；A5 普通 vector
+  form 不额外注入 V/S hidden event；
 - 两个 dst 的 consumer 位于不同 block/loop 时 liveness 都正确；
 - legacy/modern planner 都为两个 live destination 分配不重叠范围；
 - source/dst0/dst1 的 subview overlap 被拒绝；
@@ -1662,7 +1733,8 @@ PTOBC v0 兼容测试单列，不并入普通 MLIR bytecode 假设：
   拒绝；三个静态非重叠常量地址通过，静态重叠地址继续由 range verifier 拒绝；
 - post-planning helper 覆盖 direct/view/same-address allocation/partial-overlap TSTORE；同一
   direct-call graph component 内任意相交都拒绝，不做 branch/loop/interprocedural summary
-  dataflow，也不因 full overwrite 清除；unresolved TSTORE source range 同样保守拒绝；
+  dataflow，也不因 full overwrite 清除；相同数字地址但不同 `VEC`/`MAT`/`ACC` address space
+  不判 alias，unknown address space/range 同样保守拒绝；
 - shared physical-layout/access helper 回归对 A5 ColMajor NZ `f16 16x32 RowPlusOne` 同时检查：
   `PTOResolveBufferSelect` 的 `colStride=17`、第二 block subview offset=272 elements；exact payload
   intervals `[0, 512)`/`[544, 1056)` bytes、payload total=1024 bytes；legacy/modern PlanMemory
@@ -1712,8 +1784,9 @@ A2/A3 `LowerPTOToUBufOps` 回归：
   `pto.textract` 完全消失，并分别出现 dst0/dst1 的两个 `scf.for` loop nest；
 - 两路使用不同 shape/index，精确检查 `srcOff` 和 plain-NZ `dstOff` 算式，特别是
   `physicalRows=32, validRows=13, validCols >= 2*c0` 的第二 block 从 `32*c0` 开始；
-- 展开前后分别存在 V-to-S、S-to-V 的 `set_flag`/`wait_flag`，循环体只含已有
-  `pto.load_scalar`/`pto.store_scalar` pointer op；不得新增 raw TEXTRACT op；
+- 展开前后分别存在由 `SyncMacroModel`/event allocation 登记的 V-to-S、S-to-V
+  `set_flag`/`wait_flag`，循环体只含已有 `pto.load_scalar`/`pto.store_scalar` pointer op；不得
+  新增 raw TEXTRACT op，也不得出现未登记的硬编码 `EVENT_ID0`；
 - `i8/i32/f16/bf16/f32`、unaligned index、odd-i8 `validCol`、`1x1` 和两路不同 valid shape
   都能完成 VPTO-to-LLVM，LLVM verifier 通过且没有残留 `pto.textract`；
 - 缺失 tile metadata、动态 shape/index 或非 plain-NZ input 在 verifier/pass boundary 给出稳定
@@ -1806,7 +1879,8 @@ full-store group 必须经过完整链路，partial-valid group 必须保留明�
 - `test/lit/pto/textract_*` 全部通过；
 - `test/lit/vpto/*textract*` 全部通过；
 - A2/A3 pass-only 回归证明 `LowerPTOToUBufOps` 消除 pointer-form 双输出 op、生成两路 scalar
-  loop 与完整 V/S flag-wait；A2/A3 final VPTO-to-LLVM 和 LLVM verifier 通过且无残留
+  loop 与由 `SyncMacroModel` 预留事件驱动的完整 V/S flag-wait；A2/A3 final VPTO-to-LLVM 和
+  LLVM verifier 通过且无残留
   `pto.textract`；
 - A3/A5/VPTO stride counterexample matrix 通过：A3/VPTO physical stride 正向、A5 `32/13`
   plain negative、A5 `16/13` plain positive；RowPlusOne 在 shared-helper 完成前保持 negative；
@@ -1818,7 +1892,8 @@ full-store group 必须经过完整链路，partial-valid group 必须保留明�
   `PTOResolveBufferSelect` 后、`PTOInlineBackendHelpersPass` 前的检查点；declaration-shadowed
   mixed-backend call、sibling zero/unique/ambiguous resolution、compile-unit-wide opaque closure 和
   fixed-depth nested-child rejection 回归通过；production/test build 没有行为差异；GraphSync `_gss`
-  exact/overlap/disjoint/different-address-space 回归通过；
+  exact/overlap/disjoint/different-address-space 回归通过；source valid/physical 双 bounds、
+  same-numeric-address/different-address-space no-alias 和 unknown-space conservative failure 回归通过；
 - A3/A5 至少执行必选 NPU ST；FP4、RowPlusOne 只有第 5.4 节所有 consumer 精确回归和对应
   device/ST 证据通过后才可解除对应 verifier negative gate。
 
@@ -1830,10 +1905,10 @@ full-store group 必须经过完整链路，partial-valid group 必须保留明�
 |---|---|---|---|
 | 0 | 确认目标 backend 的双输出 API 与构建前提 | A2/A3/A5 目标路径的双输出 API 可被最小调用验证；既有构建流程可编译目标路径 | 约 80-150 行检查/构建调整及回归 |
 | 1 | 扩展 `TExtractOp` ODS ranges、inherent-property schema validator/form classifier、custom assembly、精确兼容 builder/accessor、DPS、pipe、effects、PTOBC shim | property conversion、generated invariants、custom verifier 各阶段负向测试不崩溃；src=0/2 等可到达 classifier 的 schema 稳定失败且 effects 保守；RowPlusOne `AllocMultiTileOp` 的既有 verifier rejection 保留；旧 C++ API compile-only、legacy/new parse-print、binding、v0 bytecode 兼容和 range-based adaptor 编译测试通过，且没有新增 op 名或 multi-buffer stride/access 属性 | 约 600-1000 行 ODS/C++/Python/bytecode 兼容代码及 300-500 行回归 |
-| 2 | shared checked physical-layout/access helper、A5 partial-valid plain stride gate、IR verifier，以及 driver input-provenance/post-planning-safety helper | helper 分离 emitted dimension、subview/block stride、payload intervals、access end 和 allocation reservation；仅单 `AllocTileOp` 的 legacy/modern planner、ResolveBufferSelect、semantic range、InsertSync 切换完成；`16x32xf16 RowPlusOne` 精确得到 272-element stride、1024-byte payload、1056-byte access end、1088-byte allocation reservation，且 1088-byte reservation 不进入 access consumers；RowPlusOne multi-buffer/view chain 在 planner 前失败，plain multi-buffer 正向不变；架构矩阵包含 A3/A5/VPTO `32/13` counterexample；main pipeline、安全 closure、partition/provenance lit 通过，且没有新增 validation pass/test escape | 约 900-1500 行 helper/规划/driver 代码及 500-800 行回归 |
-| 3 | no-alias、GraphSync `AllocTileOp` single-address model、shared-layout consumer 与 planner/GSS 回归 | GraphSync 对单 RowPlusOne allocation 从 shared helper 取得 8448-bit access envelope；三组 alias 被拒绝，declared/tpop provenance 在 planner 前失败，动态 level3 地址失败，双输出 liveness 正确，同址/overlap/disjoint/address-space GSS edge 正确；RowPlusOne two-slot negative 与 plain multi-buffer positive 通过 | 约 450-800 行 GraphSync/planner 改动及 250-450 行回归 |
+| 2 | shared checked physical-layout/access helper、A5 partial-valid plain stride gate、IR verifier，以及 driver input-provenance/post-planning-safety helper | helper 分离 emitted dimension、subview/block stride、payload intervals、access end 和 allocation reservation；仅单 `AllocTileOp` 的 legacy/modern planner、ResolveBufferSelect、semantic range、InsertSync 切换完成；所有 physical range 保留 address space；`16x32xf16 RowPlusOne` 精确得到 272-element stride、1024-byte payload、1056-byte access end、1088-byte allocation reservation，且 1088-byte reservation 不进入 access consumers；RowPlusOne multi-buffer/view chain 在 planner 前失败，plain multi-buffer 正向不变；架构矩阵包含 A3/A5/VPTO `32/13` counterexample；main pipeline、安全 closure、partition/provenance lit 通过，且没有新增 validation pass/test escape | 约 900-1500 行 helper/规划/driver 代码及 500-800 行回归 |
+| 3 | no-alias、GraphSync `AllocTileOp` single-address model、shared-layout consumer、`TExtractOp` `SyncMacroModel` 与 planner/GSS 回归 | GraphSync 对单 RowPlusOne allocation 从 shared helper 取得 8448-bit access envelope；三组 alias 被拒绝，declared/tpop provenance 在 planner 前失败，动态 level3 地址失败，双输出 liveness 正确，同址/overlap/disjoint/different-address-space/unknown-space GSS edge 正确；A2/A3 scalar 与 A5 `1x1` 的 V/S hidden event 在 event-id allocation 前登记且不与 compiler event 复用；RowPlusOne two-slot negative 与 plain multi-buffer positive 通过 | 约 450-800 行 GraphSync/planner 改动及 250-450 行回归 |
 | 4 | EmitC pattern | A3/A5 精确文本与目标 API compile-only 通过 | 约 150-300 行 EmitC 代码及 100-200 行回归 |
-| 5 | A2/A3 `LowerPTOToUBufOps` scalar correctness lowering、A5 TileLib/VPTO template 与 Python facade | A2/A3 pointer-form 双输出 op 展开为两路 scalar loop 和完整 V/S flag-wait，final VPTO LLVM 无残留 `pto.textract`；A5 physical-stride、aligned/unaligned/tail/enabled-lowp 展开通过；legacy free function/property/constructor smoke 通过；NZ+1 compile/IR 回归消费 shared layout；FP4 随独立物理布局条件开启 | 约 700-1200 行 lowering/TileLib/VPTO/Python 代码及 450-750 行回归 |
+| 5 | A2/A3 `LowerPTOToUBufOps` scalar correctness lowering、A5 TileLib/VPTO template 与 Python facade | A2/A3 pointer-form 双输出 op 展开为两路 scalar loop 和由 `SyncMacroModel`/event allocation 登记驱动的完整 V/S flag-wait，final VPTO LLVM 无残留 `pto.textract`；A5 physical-stride、aligned/unaligned/tail/enabled-lowp 展开通过；legacy free function/property/constructor smoke 通过；NZ+1 compile/IR 回归消费 shared layout；FP4 随独立物理布局条件开启 | 约 700-1200 行 lowering/TileLib/VPTO/Python 代码及 450-750 行回归 |
 | 6 | A3/A5 NPU ST、UB sentinel/raw-buffer harness | 必选组合两路 byte-exact；partial case 实际导出 UB redzone；RowPlusOne full-store device golden 与所有精确 layout 回归通过后解除首版拒绝 | 约 300-600 行 harness/fixture/脚本，不含设备侧生成物 |
 | 7 | manual、SPEC、ReleaseNotes | 文档与实际 verifier/EmitC 一致 | 约 100-200 行文档与发布说明 |
 
@@ -1893,8 +1968,9 @@ public syntax；实现只承诺 canonical `pto.textract ins(...) outs(...)` 文�
 - Invalid segment schema 的 interfaces fail-safe，MemoryEffects 对所有 raw memory-carrying operands
   保守给出 Read+Write，不存在额外 source 绕过依赖建模的路径；
 - 三 tile 两两 no-alias；
-- GraphSync 对普通 `AllocTileOp` 使用 address-space-aware physical range，能识别同址或部分重叠的
-  不同 SSA root，并有独立 `_gss` edge 回归；
+- GraphSync 对普通 `AllocTileOp` 使用包含 address space 的 physical range，能识别同址或部分
+  重叠的不同 SSA root；相同数字地址但不同 address space 不产生 hazard，unknown address
+  space/range 保守失败，并有独立 `_gss` edge 回归；
 - `DeclareTileOp`、`TAssignOp`、`TPopOp`/frontend pop 绑定及其 view chain 在两个 planner 前均被
   runtime-bound provenance gate 拒绝；正向 operand 必须来自 planner-owned allocation；
 - level3 中该双输出 form 的三个 local allocation 都有可静态证明的地址；
@@ -1903,14 +1979,17 @@ public syntax；实现只承诺 canonical `pto.textract ins(...) outs(...)` 文�
   range 化后不存在的 legacy adaptor accessor；
 - A2/A3 VPTO 在现有 `LowerPTOToUBufOps` 内把双输出 form 完整展开为两路
   `scf.for + load_scalar/store_scalar`，使用 physical source row stride 和各自 destination physical
-  rows 计算 offset，并生成 V-to-S/S-to-V 内部 flag-wait；pass 返回后和 final LLVM emission
-  均无残留 pointer-form `pto.textract`，且不新增 backend TEXTRACT op；
+  rows 计算 offset，并生成由 `SyncMacroModel`/event allocation 登记驱动的 V-to-S/S-to-V 内部
+  flag-wait；pass 返回后和 final LLVM emission 均无残留 pointer-form `pto.textract`，且不新增
+  backend TEXTRACT op；
 - Python `pto.py` 在 generated symbol export 后重新提供 legacy `TExtractOp` facade 和
   `textract(src, index_row, index_col, dst, ...)` wrapper；位置/关键字调用、
   `.indexRow/.indexCol/.dst` properties 和 `build_nd_to_2xnz` 均有 smoke；
 - A5 partial-valid 的 `physicalRows != align16(validRows)` 在 backend-boundary/template gate
   稳定拒绝；A2/A3/VPTO 的 block stride 始终使用 physical rows；A3/A5/VPTO counterexample
   matrix 和 `16/13` positive control 通过；
+- 每个 source window 同时通过 source physical 和 source valid bounds；physical allocation 覆盖但
+  valid extent 不覆盖的 window 稳定拒绝并报告 undefined-padding read；
 - A5 ND-to-2xNZ RowPlusOne 首版默认拒绝；解除前，shared checked
   physical-layout/access helper 必须成为 `PTOResolveBufferSelect`、legacy/modern PlanMemory、semantic
   range/post-planning alias、InsertSync、GraphSync、EmitC/TileLib/TSTORE 的唯一布局来源。ColMajor
@@ -1928,7 +2007,7 @@ public syntax；实现只承诺 canonical `pto.textract ins(...) outs(...)` 文�
 - 所有宣称支持的实际编译 target，其现有 PTO-ISA/API 配置同时包含公开 overload 和对应
   backend implementation，并有目标路径的 compile/ST 证据；
 - driver post-planning safety helper 能拒绝 direct、view、同址/重叠 allocation alias 和
-  unresolved source range 的 partial TSTORE；检查覆盖同一 direct-call graph component 的
+  unresolved source range/address-space 的 partial TSTORE；检查覆盖同一 direct-call graph component 的
   caller/callee/transitive helper；compile unit 含 partial producer 时，任意 component 中的
   indirect/external/unresolved/opaque call 都拒绝，不能通过两个 disconnected indirect targets 隐藏
   producer 与 TSTORE；call surface 闭合后才允许互不连通 component 复用地址。helper 固定运行在
