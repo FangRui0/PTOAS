@@ -6197,6 +6197,82 @@ def TPairReduceSumOp: PTO_TOp<"tpairreducesum", [
   }];
 }
 
+def TInterleaveOp: PTO_TOp<"tinterleave", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "TINTERLEAVE: Interleave two source tiles into two destination tiles.";
+  let description = [{
+    Interleaves src0 and src1 and splits the result into dst0 and dst1.
+    The operation uses the same valid shape for all four tiles.
+  }];
+
+  let arguments = (ins
+    PTODpsType:$src0,
+    PTODpsType:$src1,
+    PTODpsType:$dst0,
+    PTODpsType:$dst1
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `ins` `(` $src0 `,` $src1 `:`
+      qualified(type($src0)) `,` qualified(type($src1)) `)`
+    `outs` `(` $dst0 `,` $dst1 `:`
+      qualified(type($dst0)) `,` qualified(type($dst1)) `)`
+    attr-dict
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() {
+      return ::mlir::MutableOperandRange(getOperation(), 2, 2);
+    }
+  }];
+}
+
+def TDeInterleaveOp: PTO_TOp<"tdeinterleave", [
+  AttrSizedOperandSegments,
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "TDEINTERLEAVE: De-interleave one or two source tiles into two destination tiles.";
+  let description = [{
+    The two-source form de-interleaves two source tiles with matching valid
+    shapes. The single-source form de-interleaves one source tile into two
+    destination tiles whose valid column count is half the source count.
+  }];
+
+  let arguments = (ins
+    Variadic<PTODpsType>:$srcs,
+    Variadic<PTODpsType>:$dsts
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let hasCustomAssemblyFormat = 1;
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() {
+      return getDstsMutable();
+    }
+    ::mlir::Value getSrc0() { return getSrcs().front(); }
+    ::mlir::Value getSrc1() {
+      return getSrcs().size() == 2 ? getSrcs()[1] : ::mlir::Value();
+    }
+    ::mlir::Value getDst0() { return getDsts().front(); }
+    ::mlir::Value getDst1() { return getDsts()[1]; }
+  }];
+}
+
 def TRowProdOp: PTO_TOp<"trowprod", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,

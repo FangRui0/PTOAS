@@ -11147,6 +11147,101 @@ ParseResult mlir::pto::TCvtOp::parse(OpAsmParser &parser, OperationState &result
   return success();
 }
 
+void mlir::pto::TDeInterleaveOp::print(OpAsmPrinter &p) {
+  p << " ins(";
+  llvm::interleaveComma(getSrcs(), p, [&](Value src) { p << src; });
+  p << " : ";
+  llvm::interleaveComma(getSrcs().getTypes(), p, [&](Type type) { p << type; });
+  p << ") outs(" << getDst0() << ", " << getDst1() << " : "
+    << getDst0().getType() << ", " << getDst1().getType() << ")";
+  p.printOptionalAttrDict((*this)->getAttrs(),
+                          /*elidedAttrs=*/{"operandSegmentSizes"});
+}
+
+ParseResult mlir::pto::TDeInterleaveOp::parse(OpAsmParser &parser,
+                                               OperationState &result) {
+  bool invalidHeader = parser.parseKeyword("ins") || parser.parseLParen();
+  if (invalidHeader) {
+    return failure();
+  }
+
+  SmallVector<OpAsmParser::UnresolvedOperand, 2> srcs;
+  OpAsmParser::UnresolvedOperand src;
+  bool invalidSrc = failed(parser.parseOperand(src));
+  if (invalidSrc) {
+    return failure();
+  }
+  srcs.push_back(src);
+  while (succeeded(parser.parseOptionalComma())) {
+    bool invalidNextSrc = failed(parser.parseOperand(src));
+    if (invalidNextSrc) {
+      return failure();
+    }
+    srcs.push_back(src);
+  }
+
+  SmallVector<Type, 2> srcTypes;
+  Type srcType;
+  bool invalidSrcType = failed(parser.parseColonType(srcType));
+  if (invalidSrcType) {
+    return failure();
+  }
+  srcTypes.push_back(srcType);
+  while (succeeded(parser.parseOptionalComma())) {
+    bool invalidNextType = failed(parser.parseType(srcType));
+    if (invalidNextType) {
+      return failure();
+    }
+    srcTypes.push_back(srcType);
+  }
+  bool invalidOutsHeader =
+      parser.parseRParen() || parser.parseKeyword("outs") || parser.parseLParen();
+  if (invalidOutsHeader) {
+    return failure();
+  }
+
+  SmallVector<OpAsmParser::UnresolvedOperand, 2> dsts;
+  OpAsmParser::UnresolvedOperand dst;
+  bool invalidDst = parser.parseOperand(dst) || parser.parseComma();
+  if (invalidDst) {
+    return failure();
+  }
+  dsts.push_back(dst);
+  bool invalidSecondDst = failed(parser.parseOperand(dst));
+  if (invalidSecondDst) {
+    return failure();
+  }
+  dsts.push_back(dst);
+  Type dst0Ty;
+  Type dst1Ty;
+  bool invalidDstTypes = parser.parseColonType(dst0Ty) ||
+                         parser.parseComma() || parser.parseType(dst1Ty) ||
+                         parser.parseRParen();
+  if (invalidDstTypes) {
+    return failure();
+  }
+  bool invalidSourceCount = srcs.size() < 1 || srcs.size() > 2;
+  if (invalidSourceCount) {
+    return parser.emitError(parser.getCurrentLocation(),
+                            "tdeinterleave expects one or two source operands");
+  }
+
+  bool unresolvedSources =
+      failed(parser.resolveOperands(srcs, srcTypes, parser.getCurrentLocation(),
+                                    result.operands));
+  bool unresolvedDsts =
+      failed(parser.resolveOperand(dsts[0], dst0Ty, result.operands)) ||
+      failed(parser.resolveOperand(dsts[1], dst1Ty, result.operands));
+  if (unresolvedSources || unresolvedDsts) {
+    return failure();
+  }
+  result.addAttribute(
+      "operandSegmentSizes",
+      parser.getBuilder().getDenseI32ArrayAttr(
+          {static_cast<int32_t>(srcs.size()), 2}));
+  return parser.parseOptionalAttrDict(result.attributes);
+}
+
 void mlir::pto::TMrgSortOp::print(OpAsmPrinter &p) {
   if (isFormat1()) {
     p << " ins(" << getSrc() << ", " << getBlockLen() << " : " << getSrc().getType()
@@ -14997,6 +15092,170 @@ mlir::LogicalResult mlir::pto::TPairReduceSumOp::verify() {
   return success();
 }
 
+mlir::LogicalResult mlir::pto::TInterleaveOp::verify() {
+  auto verifyA2A3 = [&]() -> LogicalResult {
+    return emitOpError("tinterleave is only supported on A5 targets");
+  };
+
+  auto verifyA5 = [&]() -> LogicalResult {
+    Type src0Ty = getSrc0().getType();
+    Type src1Ty = getSrc1().getType();
+    Type dst0Ty = getDst0().getType();
+    Type dst1Ty = getDst1().getType();
+
+    bool invalidTile =
+        failed(verifyVecTileCommon(*this, src0Ty, "src0")) ||
+        failed(verifyVecTileCommon(*this, src1Ty, "src1")) ||
+        failed(verifyVecTileCommon(*this, dst0Ty, "dst0")) ||
+        failed(verifyVecTileCommon(*this, dst1Ty, "dst1"));
+    if (invalidTile) {
+      return failure();
+    }
+
+    bool mismatchedElementTypes =
+        failed(verifyTileBufSameElemType(*this, src0Ty, src1Ty, "src0", "src1")) ||
+        failed(verifyTileBufSameElemType(*this, src0Ty, dst0Ty, "src0", "dst0")) ||
+        failed(verifyTileBufSameElemType(*this, src0Ty, dst1Ty, "src0", "dst1"));
+    if (mismatchedElementTypes) {
+      return failure();
+    }
+    if (!isSupportedVecElemType(getElemTy(src0Ty), /*allowBf16=*/true,
+                                /*allowInt8=*/true)) {
+      return emitOpError("expects vec tile element types to be supported");
+    }
+
+    bool mismatchedValidShapes =
+        failed(verifyTileBufSameValidShape(*this, src0Ty, src1Ty, "src0", "src1")) ||
+        failed(verifyTileBufSameValidShape(*this, src0Ty, dst0Ty, "src0", "dst0")) ||
+        failed(verifyTileBufSameValidShape(*this, src0Ty, dst1Ty, "src0", "dst1"));
+    if (mismatchedValidShapes) {
+      return failure();
+    }
+
+    auto validShape = getValidShapeVec(dst0Ty);
+    bool hasInvalidRank = validShape.size() != 2;
+    if (hasInvalidRank) {
+      return emitOpError("expects src0, src1, dst0, and dst1 to have rank-2 valid_shape");
+    }
+    bool hasOddValidColumns =
+        validShape[1] != ShapedType::kDynamic && (validShape[1] & 1) != 0;
+    if (hasOddValidColumns) {
+      return emitOpError("expects valid_shape[1] to be even");
+    }
+
+    return success();
+  };
+
+  return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
+}
+
+mlir::LogicalResult mlir::pto::TDeInterleaveOp::verify() {
+  auto verifyA2A3 = [&]() -> LogicalResult {
+    return emitOpError("tdeinterleave is only supported on A5 targets");
+  };
+
+  auto verifyA5 = [&]() -> LogicalResult {
+    Type src0Ty = getSrc0().getType();
+    Type dst0Ty = getDst0().getType();
+    Type dst1Ty = getDst1().getType();
+
+    bool invalidTile =
+        failed(verifyVecTileCommon(*this, src0Ty, "src0")) ||
+        failed(verifyVecTileCommon(*this, dst0Ty, "dst0")) ||
+        failed(verifyVecTileCommon(*this, dst1Ty, "dst1"));
+    if (invalidTile) {
+      return failure();
+    }
+    bool mismatchedElementTypes =
+        failed(verifyTileBufSameElemType(*this, src0Ty, dst0Ty, "src0", "dst0")) ||
+        failed(verifyTileBufSameElemType(*this, src0Ty, dst1Ty, "src0", "dst1"));
+    if (mismatchedElementTypes) {
+      return failure();
+    }
+    if (!isSupportedVecElemType(getElemTy(src0Ty), /*allowBf16=*/true,
+                                /*allowInt8=*/true)) {
+      return emitOpError("expects vec tile element types to be supported");
+    }
+    bool hasNonRowMajorTile =
+        !isRowMajorTileBuf(src0Ty) || !isRowMajorTileBuf(dst0Ty) ||
+        !isRowMajorTileBuf(dst1Ty);
+    if (hasNonRowMajorTile) {
+      return emitOpError("expects src and dst tiles to use row-major layout");
+    }
+
+    auto src0Valid = getValidShapeVec(src0Ty);
+    auto dst0Valid = getValidShapeVec(dst0Ty);
+    auto dst1Valid = getValidShapeVec(dst1Ty);
+    bool hasInvalidRank =
+        src0Valid.size() != 2 || dst0Valid.size() != 2 || dst1Valid.size() != 2;
+    if (hasInvalidRank) {
+      return emitOpError("expects src and dst tiles to have rank-2 valid_shape");
+    }
+
+    bool hasSecondSource = getSrcs().size() == 2;
+    if (hasSecondSource) {
+      Type src1Ty = getSrc1().getType();
+      bool invalidSource =
+          failed(verifyVecTileCommon(*this, src1Ty, "src1")) ||
+          failed(verifyTileBufSameElemType(*this, src0Ty, src1Ty, "src0", "src1")) ||
+          failed(verifyTileBufSameValidShape(*this, src0Ty, src1Ty, "src0", "src1")) ||
+          failed(verifyTileBufSameValidShape(*this, src0Ty, dst0Ty, "src0", "dst0")) ||
+          failed(verifyTileBufSameValidShape(*this, src0Ty, dst1Ty, "src0", "dst1"));
+      if (invalidSource) {
+        return failure();
+      }
+      if (!isRowMajorTileBuf(src1Ty)) {
+        return emitOpError("expects src1 to use row-major layout");
+      }
+      bool hasOddValidColumns =
+          src0Valid[1] != ShapedType::kDynamic && (src0Valid[1] & 1) != 0;
+      if (hasOddValidColumns) {
+        return emitOpError("expects two-source valid_shape[1] to be even");
+      }
+      return success();
+    }
+
+    bool hasRowMismatchWithDst0 =
+        src0Valid[0] != ShapedType::kDynamic &&
+        dst0Valid[0] != ShapedType::kDynamic &&
+        src0Valid[0] != dst0Valid[0];
+    if (hasRowMismatchWithDst0) {
+      return emitOpError("expects src0 and dst0 to have the same valid_shape[0]");
+    }
+    bool hasRowMismatchWithDst1 =
+        src0Valid[0] != ShapedType::kDynamic &&
+        dst1Valid[0] != ShapedType::kDynamic &&
+        src0Valid[0] != dst1Valid[0];
+    if (hasRowMismatchWithDst1) {
+      return emitOpError("expects src0 and dst1 to have the same valid_shape[0]");
+    }
+    bool hasOddValidColumns =
+        src0Valid[1] != ShapedType::kDynamic && (src0Valid[1] & 1) != 0;
+    if (hasOddValidColumns) {
+      return emitOpError("expects single-source valid_shape[1] to be even");
+    }
+    bool hasColumnMismatchWithDst0 =
+        src0Valid[1] != ShapedType::kDynamic &&
+        dst0Valid[1] != ShapedType::kDynamic &&
+        dst0Valid[1] != src0Valid[1] / 2;
+    if (hasColumnMismatchWithDst0) {
+      return emitOpError(
+          "expects dst0 valid_shape[1] to be half of src0 valid_shape[1]");
+    }
+    bool hasColumnMismatchWithDst1 =
+        src0Valid[1] != ShapedType::kDynamic &&
+        dst1Valid[1] != ShapedType::kDynamic &&
+        dst1Valid[1] != src0Valid[1] / 2;
+    if (hasColumnMismatchWithDst1) {
+      return emitOpError(
+          "expects dst1 valid_shape[1] to be half of src0 valid_shape[1]");
+    }
+    return success();
+  };
+
+  return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
+}
+
 mlir::LogicalResult mlir::pto::TRowProdOp::verify() {
   auto verifyA2A3 = [&]() -> LogicalResult {
     if (!getTmp()) {
@@ -17647,6 +17906,23 @@ PTO_DEFINE_UNARY_EFFECTS(TOrSOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TPartAddOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TPartMaxOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TPartMinOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
+PTO_DEFINE_UNARY_EFFECTS(TPairReduceSumOp, getSrcMutable(), getDstMutable())
+void TInterleaveOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getSrc0Mutable());
+  PTO_ADD_READ(getSrc1Mutable());
+  PTO_ADD_WRITE(getDst0Mutable());
+  PTO_ADD_WRITE(getDst1Mutable());
+}
+void TDeInterleaveOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  for (auto &operand : getSrcsMutable()) {
+    PTO_ADD_READ(operand);
+  }
+  for (auto &operand : getDstsMutable()) {
+    PTO_ADD_WRITE(operand);
+  }
+}
 void TPartArgMaxOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   PTO_ADD_READ(getSrc0Mutable());
