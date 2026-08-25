@@ -8978,18 +8978,6 @@ struct PTOTCIToEmitC : public OpConversionPattern<pto::TCIOp> {
     Value S = adaptor.getOperands()[0];
     Value tmp = op.getTmp() ? adaptor.getTmp() : Value();
 
-    // The pinned A2/A3 PTO-ISA vector TCI implementation computes descending
-    // sequences by negating an ascending sequence.  Feeding it -S preserves
-    // the public S-i contract: -(-S+i) == S-i.  Keep the workaround limited
-    // to the explicit-tmp vector path; the scalar overload already implements
-    // descending directly, and A5 has a native VCI implementation.
-    if (tmp && op.getDescending() &&
-        getTargetArch(op.getOperation()) == PTOArch::A3) {
-      auto scalarTy = S.getType();
-      auto zero = makeEmitCIntConstant(rewriter, loc, scalarTy, 0);
-      S = rewriter.create<emitc::SubOp>(loc, scalarTy, zero, S).getResult();
-    }
-
     // The TCI scalar template parameter should follow the original PTO IR
     // scalar type, not the converted EmitC value type.
     std::string scalarTok = "int32_t";

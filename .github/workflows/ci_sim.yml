@@ -119,7 +119,7 @@ jobs:
       # GitHub pin containing the unified TFILLPAD API, the two-argument Soft
       # SYNCALL ABI, and the follow-up CPU-Sim duplicate-stub fix. Keep this
       # separate from the GitCode pins managed by update_pto_isa_pin.py.
-      PTO_ISA_COMMIT: e948507e18ec4f39037a04914b97e77f5b9d75e3
+      PTO_ISA_COMMIT: cd7eaecfdc30729ca318273569a9781cfd673e20
       PTO_ISA_ROOT: ${{ github.workspace }}/.work/pto-isa-ci
     steps:
       - name: Checkout
