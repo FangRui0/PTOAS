@@ -62,6 +62,7 @@ add_mlir_dialect_library(PTOTransforms
   VPTOBufferMaterialization.cpp
   PTOValidateVPTOIR.cpp
   PTONarrowVPTOLoopCounters.cpp
+  PTOConvertSCFToCFWithLoopHintsPass.cpp
   PTOUnrollLoopsPass.cpp
   PTOValidateVMIIR.cpp
   VMIPreAssignmentCombine.cpp

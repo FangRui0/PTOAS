@@ -855,6 +855,49 @@ def PTOUnrollSIMTFor : Pass<"pto-unroll-simt-for", "func::FuncOp"> {
   ];
 }
 
+def PTOConvertSCFToCFWithLoopHints : Pass<"pto-convert-scf-to-cf-with-loop-hints", "func::FuncOp"> {
+  let summary =
+      "Convert SCF to CF, preserving the enable loop hint as an LLVM loop "
+      "annotation";
+  let description = [{
+    Translates `{pto.unroll = "enable"}` attributes on `scf.for` into
+    `#llvm.loop_annotation<unroll = <disable = false>>` attributes so that
+    the `!llvm.loop.unroll.enable` metadata reaches the emitted LLVM IR and
+    the downstream compiler's cost model decides whether and how to unroll
+    (LLVM's ForceEnable semantics).  All other unroll hints are owned by
+    `pto-unroll-loops` and are left untouched.
+
+    An existing `llvm.loop_annotation` attribute on the loop is merged rather
+    than overwritten (a pre-existing unroll entry is replaced with a
+    warning).
+
+    The stock LLVM 19 `convert-scf-to-cf` does not propagate
+    `llvm.loop_annotation` from `scf.for` to the loop latch, so this pass
+    owns the SCF-to-CF conversion for the function: it runs the upstream
+    conversion patterns together with a higher-benefit pattern that lowers
+    annotated `scf.for` loops (mirroring `ForLowering`) and attaches the
+    annotation to the latch `cf.br`.
+
+    Converting the whole function is required for correctness - lowering an
+    annotated loop in isolation would leave several blocks inside whatever
+    enclosing single-block region held it (an outer `scf.for`, an `scf.if`,
+    ...) and fail that op's verifier.
+
+    Consequently this pass **replaces** `createConvertSCFToCFPass` in the
+    pipelines that run it; it must sit at the same position, after every
+    structured-loop transformation, so no later pass can clone a loop and
+    lose its hint.
+  }];
+  let constructor = "mlir::pto::createPTOConvertSCFToCFWithLoopHintsPass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::scf::SCFDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::cf::ControlFlowDialect",
+    "mlir::LLVM::LLVMDialect"
+  ];
+}
+
 def PTONarrowVPTOLoopCounters
     : Pass<"pto-narrow-vpto-loop-counters", "func::FuncOp"> {
   let summary =

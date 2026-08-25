@@ -223,17 +223,20 @@ def for_(start, stop, *, step, unroll=None, unroll_factor=None):
             loop.update(acc=cur)
         out = loop.final("acc")
 
-    An optional loop-unroll hint asks PTOAS to unroll the loop natively
-    before LLVM lowering::
+    An optional loop-unroll hint is forwarded to the compiler::
 
-        with pto.for_(c0, c16, step=c1, unroll="full") as i:
+        with pto.for_(c0, c16, step=c1, unroll="enable") as i:
             ...
 
-    ``unroll="full"`` unrolls the loop completely when the trip count is a
-    compile-time constant (otherwise the hint is dropped with a remark).
-    ``unroll_factor=N`` unrolls by ``N`` (an epilogue loop handles the
-    remainder; dynamic upper bounds are supported).  The two arguments are
-    mutually exclusive.  Loops without a hint are unchanged.
+    ``unroll="enable"`` keeps the loop and forwards
+    ``llvm.loop.unroll.enable`` metadata, letting the compiler's cost model
+    decide whether and how to unroll (equivalent to a no-factor
+    ``#pragma unroll``).  ``unroll="full"`` asks PTOAS to unroll the loop
+    completely when the trip count is a compile-time constant (otherwise the
+    hint is dropped with a remark).  ``unroll_factor=N`` asks PTOAS to
+    unroll by ``N`` (an epilogue loop handles the remainder; dynamic upper
+    bounds are supported).  The two arguments are mutually exclusive.
+    Loops without a hint are unchanged.
     """
     normalize_unroll_hint(unroll, unroll_factor, context="pto.for_(...)")
     return _ForBuilder(start, stop, step, unroll=unroll, unroll_factor=unroll_factor)
