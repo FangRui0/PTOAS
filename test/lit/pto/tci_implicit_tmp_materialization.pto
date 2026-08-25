@@ -30,7 +30,8 @@ module {
 // IR: pto.tci ins(%{{.*}}, %{{.*}} : i32, !pto.tile_buf<vec, 1x192xf32>)
 // IR-NOT: memref.alloc
 
-// CPP: {{.*}} = {{.*}} - {{.*}}
+// CPP: const int32_t [[ZERO:v[0-9]+]] = 0;
+// CPP-NEXT: int32_t {{.*}} = [[ZERO]] - {{.*}};
 // CPP: TCI<{{.*}}, {{.*}}, int32_t, 1>({{.*}}, {{.*}}, {{.*}})
 
 // A5IR: pto.tci ins(%{{.*}} : i32) outs(
