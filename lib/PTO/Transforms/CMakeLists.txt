@@ -49,6 +49,7 @@ add_mlir_dialect_library(PTOTransforms
   VPTOMaskSimplify.cpp
   VPTOExpandWrapperOps.cpp
   VPTOSoftPostUpdate.cpp
+  VPTOGuardedLICM.cpp
   PTOPrintAddressAnalysis.cpp
   VPTOScheduler/VPTORegPressureTracker.cpp
   VPTOScheduler/VPTOSchedBoundary.cpp

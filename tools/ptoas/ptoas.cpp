@@ -3122,6 +3122,10 @@ static void prepareVPTOForEmission(PassManager &pm) {
   if (enableSoftPostUpdate) {
     kernelModulePM.addPass(pto::createVPTOSoftPostUpdatePass());
   }
+  // Hoist loop-invariant guarded address chains out of scf.if regions before
+  // the generic LICM (which only inspects top-level loop-body operations).
+  kernelModulePM.addNestedPass<func::FuncOp>(
+      pto::createVPTOGuardedLICMPass());
   kernelModulePM.addPass(createLoopInvariantCodeMotionPass());
   kernelModulePM.addNestedPass<func::FuncOp>(
       pto::createPTONarrowVPTOLoopCountersPass());

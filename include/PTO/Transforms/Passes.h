@@ -103,6 +103,7 @@ std::unique_ptr<Pass> createPTOOutlineSIMTSectionsPass();
 std::unique_ptr<Pass> createPTOInferVPTOVecScopePass();
 std::unique_ptr<Pass> createVPTOExpandWrapperOpsPass();
 std::unique_ptr<Pass> createVPTOSoftPostUpdatePass();
+std::unique_ptr<Pass> createVPTOGuardedLICMPass();
 std::unique_ptr<Pass> createPTOPrintAddressAnalysisPass();
 std::unique_ptr<Pass> createPTOVPTOPtrBoundaryPass();
 std::unique_ptr<Pass>
