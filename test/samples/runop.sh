@@ -21,6 +21,7 @@ PTO_BUILD_DIR="${PTO_BUILD_DIR:-}"
 PTOAS_ENABLE_INSERT_SYNC="${PTOAS_ENABLE_INSERT_SYNC:-1}"
 PTOAS_FLAGS="${PTOAS_FLAGS:-}"
 PTOAS_SKIP_CASES="${PTOAS_SKIP_CASES:-}"
+PTOAS_SAMPLE_JOBS="${PTOAS_SAMPLE_JOBS:-1}"
 PTOAS_SKIP_CASES_NORM="$(printf '%s\n' "${PTOAS_SKIP_CASES}" | tr ',[:space:]' '\n' | awk 'NF')"
 MODEL_PTO_DIRS=""
 for model_path in "${BASE_DIR}"/Qwen* "${BASE_DIR}"/Deepseek*; do
@@ -53,6 +54,7 @@ Env:
   PTOAS_FLAGS  # extra flags passed to ptoas (e.g. --enable-insert-sync)
   PTOAS_ENABLE_INSERT_SYNC  # 1 to append --enable-insert-sync to PTOAS_FLAGS (default: 1)
   PTOAS_SKIP_CASES  # comma/space-separated testcase basenames to skip while generating outputs
+  PTOAS_SAMPLE_JOBS  # number of sample directories to process concurrently (default: 1)
   PTO_PTO_DIRS  # space-separated dirs to run .pto directly (default: Sync, every Qwen*/Deepseek* A3/A5 model dir, and the legacy direct-PTO dirs)
 
 Flags:
@@ -1600,8 +1602,30 @@ write_board_case_manifest() {
   echo "BOARD_CASE_MANIFEST=${manifest} ($(wc -l < "${manifest}") cases)"
 }
 
+wait_for_sample_batch() {
+  local summary_file="$1"
+  shift
+
+  local pid result_file
+  while [[ $# -ge 2 ]]; do
+    pid="$1"
+    result_file="$2"
+    shift 2
+    wait "${pid}" || true
+    cat "${result_file}" >>"${summary_file}"
+  done
+}
+
 run_all() {
-  local tmp out_dir summary_rc soc_arch="" dir_name dir_arch
+  local tmp out_dir result_dir result_file summary_rc soc_arch="" dir_name dir_arch
+  local dir_index=0
+  local -a batch=()
+
+  if [[ ! "${PTOAS_SAMPLE_JOBS}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "PTOAS_SAMPLE_JOBS must be a positive integer, got: ${PTOAS_SAMPLE_JOBS}" >&2
+    return 2
+  fi
+
   out_dir="${PTOAS_OUT_DIR}"
   if [[ -z "${out_dir}" ]]; then
     out_dir="$(mktemp -d -t ptoas.samples.XXXXXX)"
@@ -1612,6 +1636,7 @@ run_all() {
   echo "PTOAS_OUT_DIR=${out_dir}"
 
   tmp="$(mktemp -t ptoas.runop.XXXXXX)"
+  result_dir="$(mktemp -d -t ptoas.runop.results.XXXXXX)"
   if [[ -n "${SOC_VERSION:-}" ]]; then
     local soc_lc
     soc_lc="$(printf '%s' "${SOC_VERSION}" | tr '[:upper:]' '[:lower:]')"
@@ -1628,8 +1653,17 @@ run_all() {
     if [[ -n "${soc_arch}" && -n "${dir_arch}" && "${dir_arch}" != "${soc_arch}" ]]; then
       continue
     fi
-    process_one_dir "${dir_name}" "$out_dir" >>"$tmp"
+    result_file="${result_dir}/${dir_index}.log"
+    process_one_dir "${dir_name}" "$out_dir" >"${result_file}" &
+    batch+=("$!" "${result_file}")
+    dir_index=$((dir_index + 1))
+    if [[ ${#batch[@]} -ge $((PTOAS_SAMPLE_JOBS * 2)) ]]; then
+      wait_for_sample_batch "${tmp}" "${batch[@]}"
+      batch=()
+    fi
   done
+  wait_for_sample_batch "${tmp}" "${batch[@]}"
+  rm -rf -- "${result_dir}"
 
   echo "========== SUMMARY =========="
   sort "$tmp" | awk -F'\t' '
