@@ -1535,48 +1535,49 @@ static uint64_t determineVsqzStoreHint(pto::VsqzOp vsqz) {
 
 static std::optional<uint64_t> parseLoadDistImmediate(StringRef dist,
                                                       Type elementType) {
-  auto width = getDistElementWidth(elementType);
   if (dist.empty() || dist == "NORM") {
     return 0;
   }
-  if (!width)
-    return std::nullopt;
-  if (dist == "BRC_B8")
-    return std::optional<uint64_t>(1);
-  if (dist == "BRC_B16")
-    return std::optional<uint64_t>(2);
-  if (dist == "BRC_B32")
-    return std::optional<uint64_t>(3);
-  if (dist == "US_B8")
-    return std::optional<uint64_t>(6);
-  if (dist == "US_B16")
-    return std::optional<uint64_t>(7);
-  if (dist == "DS_B8")
-    return std::optional<uint64_t>(8);
-  if (dist == "DS_B16")
-    return std::optional<uint64_t>(9);
-  if (dist == "UNPK_B8")
-    return std::optional<uint64_t>(13);
-  if (dist == "UNPK_B16")
-    return std::optional<uint64_t>(14);
-  if (dist == "UNPK_B32")
-    return std::optional<uint64_t>(18);
-  if (dist == "BRC_BLK") {
-    return 15;
+  static constexpr std::pair<StringLiteral, uint64_t> kModes[] = {
+      {"BRC_B8", 1},       {"BRC_B16", 2},      {"BRC_B32", 3},
+      {"US_B8", 6},        {"US_B16", 7},       {"DS_B8", 8},
+      {"DS_B16", 9},       {"UNPK_B8", 13},     {"UNPK_B16", 14},
+      {"UNPK_B32", 18},    {"BRC_BLK", 15},     {"E2B_B16", 16},
+      {"E2B_B32", 17},     {"SPLT2CHN_B8", 22}, {"SPLT2CHN_B16", 23},
+  };
+  for (const auto &[name, value] : kModes) {
+    if (dist == name) {
+      return value;
+    }
   }
-  if (dist == "E2B_B16")
-    return std::optional<uint64_t>(16);
-  if (dist == "E2B_B32")
-    return std::optional<uint64_t>(17);
-  if (dist == "UNPK4")
-    return *width == 8 ? std::optional<uint64_t>(20) : std::nullopt;
-  if (dist == "SPLT4CHN")
-    return *width == 8 ? std::optional<uint64_t>(21) : std::nullopt;
-  if (dist == "SPLT2CHN_B8")
-    return std::optional<uint64_t>(22);
-  if (dist == "SPLT2CHN_B16")
-    return std::optional<uint64_t>(23);
+  if (dist == "UNPK4" || dist == "SPLT4CHN") {
+    auto width = getDistElementWidth(elementType);
+    if (!width || *width != 8) {
+      return std::nullopt;
+    }
+    return dist == "UNPK4" ? 20 : 21;
+  }
   return std::nullopt;
+}
+
+static FailureOr<Value> packShiftedFields(Operation *anchor, Value base,
+                                           ArrayRef<std::pair<Value, uint64_t>> fields) {
+  OpBuilder builder(anchor);
+  builder.setInsertionPoint(anchor);
+  Value result = castIntegerLikeTo(anchor, base, builder.getI64Type());
+  if (!result) {
+    return failure();
+  }
+  for (const auto &[field, shift] : fields) {
+    Value value = castIntegerLikeTo(anchor, field, builder.getI64Type());
+    if (!value) {
+      return failure();
+    }
+    Value shifted = builder.create<arith::ShLIOp>(
+        anchor->getLoc(), value, getI64Constant(builder, anchor->getLoc(), shift));
+    result = builder.create<arith::OrIOp>(anchor->getLoc(), result, shifted);
+  }
+  return result;
 }
 
 static std::optional<uint64_t> parseLoadX2DistImmediate(StringRef dist,
