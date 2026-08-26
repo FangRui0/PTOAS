@@ -1452,14 +1452,13 @@ static VcvtElemKind classifyVcvtElemType(Type type) {
   return VcvtElemKind::Invalid;
 }
 
-static std::optional<VcvtContract> lookupVcvtContract(VcvtElemKind src,
-                                                      VcvtElemKind dst) {
-  struct Entry {
-    VcvtElemKind src;
-    VcvtElemKind dst;
-    VcvtContract contract;
-  };
-  static constexpr Entry kEntries[] = {
+struct VcvtContractEntry {
+  VcvtElemKind src;
+  VcvtElemKind dst;
+  VcvtContract contract;
+};
+
+static constexpr VcvtContractEntry kVcvtContractEntries[] = {
       {VcvtElemKind::F32, VcvtElemKind::F8E4M3, {"llvm.hivm.vcvtff.f322f8e4m3.x", true, true, true, 32, false}},
       {VcvtElemKind::F32, VcvtElemKind::F8E5M2, {"llvm.hivm.vcvtff.f322f8e5m2.x", true, true, true, 32, false}},
       {VcvtElemKind::F32, VcvtElemKind::HiF8, {"llvm.hivm.vcvtff.f322hif8.x", true, true, true, 32, false}},
@@ -1511,8 +1510,11 @@ static std::optional<VcvtContract> lookupVcvtContract(VcvtElemKind src,
       {VcvtElemKind::HiF8, VcvtElemKind::F32, {"llvm.hivm.vcvtff.hif82f32.x", false, false, true, 8, false}},
       {VcvtElemKind::F4E1M2x2, VcvtElemKind::BF16, {"llvm.hivm.vcvtff2.f4e1m2x22bf16.x", false, false, true, 8, false}},
       {VcvtElemKind::F4E2M1x2, VcvtElemKind::BF16, {"llvm.hivm.vcvtff2.f4e2m1x22bf16.x", false, false, true, 8, false}},
-  };
-  for (const Entry &entry : kEntries) {
+};
+
+static std::optional<VcvtContract> lookupVcvtContract(VcvtElemKind src,
+                                                      VcvtElemKind dst) {
+  for (const VcvtContractEntry &entry : kVcvtContractEntries) {
     if (entry.src == src && entry.dst == dst) {
       return entry.contract;
     }
