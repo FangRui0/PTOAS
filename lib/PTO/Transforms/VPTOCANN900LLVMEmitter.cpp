@@ -5346,6 +5346,28 @@ private:
   LoweringState &state;
 };
 
+static LogicalResult validateMadRawOperands(pto::MadRawOpInterface op,
+                                            ValueRange operands, Value &bias,
+                                            Value &xt,
+                                            ConversionPatternRewriter &rewriter) {
+  unsigned required = op.hasBiasOperand() ? 5 : 4;
+  if (operands.size() < required) {
+    return rewriter.notifyMatchFailure(op, "expected converted mad raw operands");
+  }
+  bias = op.hasBiasOperand() ? operands[3] : Value();
+  xt = operands[op.hasBiasOperand() ? 4 : 3];
+  for (unsigned index : {0U, 1U, 2U}) {
+    if (!isa<LLVM::LLVMPointerType>(operands[index].getType())) {
+      return rewriter.notifyMatchFailure(
+          op, "expected LLVM pointer lhs/rhs/dst operands");
+    }
+  }
+  if (bias && !isa<LLVM::LLVMPointerType>(bias.getType())) {
+    return rewriter.notifyMatchFailure(op, "expected LLVM pointer bias operand");
+  }
+  return success();
+}
+
 static LogicalResult lowerMadRawOp(pto::MadRawOpInterface op,
                                    ValueRange convertedOperands,
                                    ConversionPatternRewriter &rewriter,
@@ -5353,18 +5375,11 @@ static LogicalResult lowerMadRawOp(pto::MadRawOpInterface op,
   Value lhsRaw = convertedOperands[0];
   Value rhsRaw = convertedOperands[1];
   Value dstRaw = convertedOperands[2];
-  Value biasRaw = op.hasBiasOperand() ? convertedOperands[3] : Value();
-  Value xt = convertedOperands[op.hasBiasOperand() ? 4 : 3];
-  if (!lhsRaw || !rhsRaw || !dstRaw || !xt ||
-      (op.hasBiasOperand() && !biasRaw))
-    return rewriter.notifyMatchFailure(op, "expected converted mad raw operands");
-
-  if (!isa<LLVM::LLVMPointerType>(lhsRaw.getType()) ||
-      !isa<LLVM::LLVMPointerType>(rhsRaw.getType()) ||
-      !isa<LLVM::LLVMPointerType>(dstRaw.getType()) ||
-      (biasRaw && !isa<LLVM::LLVMPointerType>(biasRaw.getType()))) {
-    return rewriter.notifyMatchFailure(
-        op, "expected LLVM pointer lhs/rhs/dst/bias operands");
+  Value biasRaw;
+  Value xt;
+  if (failed(validateMadRawOperands(op, convertedOperands, biasRaw, xt,
+                                    rewriter))) {
+    return failure();
   }
 
   Type i64Ty = rewriter.getI64Type();
