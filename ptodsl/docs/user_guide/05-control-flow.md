@@ -169,13 +169,14 @@ def unroll_hint_probe(*, BLOCK: pto.const_expr = 8):
     for i in pto.range(BLOCK, unroll="full"):
         acc = acc + pto.const(1, dtype=pto.i32)
     # Explicit pto.for_ path (the .carry(...) form takes the same keywords).
-    with pto.for_(0, BLOCK, step=1, unroll_factor=2) as i:
+    with pto.for_(0, BLOCK, step=1, unroll="enable") as i:
         acc = acc + pto.const(2, dtype=pto.i32)
     _ = acc
 ```
 
 | Hint | Meaning |
 |---|---|
+| `unroll="enable"` | Keep the loop and emit `llvm.loop.unroll.enable` metadata; the compiler's cost model decides whether/how to unroll (equivalent to a no-factor `#pragma unroll`). |
 | `unroll="full"` | Unroll completely when the trip count is a compile-time constant; otherwise the hint is dropped with a remark. |
 | `unroll_factor=N` | Unroll by N when the step is a compile-time constant (dynamic upper bounds are supported and produce an epilogue loop); otherwise the hint is dropped with a remark. |
 
