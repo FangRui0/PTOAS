@@ -6,9 +6,6 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// https://discourse.llvm.org/t/matchandrewrite-hiding-virtual-functions/84933/8
-#pragma GCC diagnostic ignored "-Woverloaded-virtual"
-
 #include "PTO/Transforms/VPTOLLVMEmitter.h"
 #include "PTO/Transforms/VPTOLLVMEmitterHelper.h"
 
@@ -248,8 +245,9 @@ static bool hasVPTOConvertibleType(Type type) {
   }
   if (isa<pto::VRegType, pto::MaskType, pto::AlignType, pto::PtrType,
           pto::StructType>(type) ||
-      pto::isPTOLowPrecisionType(type))
+      pto::isPTOLowPrecisionType(type)) {
     return true;
+  }
   if (auto vecType = dyn_cast<VectorType>(type)) {
     return hasVPTOConvertibleType(vecType.getElementType());
   }
@@ -550,47 +548,61 @@ static std::string getMadDstFragment(Type type) {
   return {};
 }
 
+struct MadCalleeContract {
+  StringRef lhs;
+  StringRef rhs;
+  StringRef dst;
+  StringRef callee;
+};
+
+static ArrayRef<MadCalleeContract> getMadCalleeContracts() {
+  static constexpr MadCalleeContract contracts[] = {
+      {"f16", "f16", "f32", "llvm.hivm.MAD.f162f32.c310"},
+      {"f16", "f16", "f16", "llvm.hivm.MAD.f162f16"},
+      {"f16", "f16", "s32", "llvm.hivm.MAD.f162s32.1952"},
+      {"bf16", "bf16", "f32", "llvm.hivm.MAD.bf162f32.c310"},
+      {"f32", "f32", "f32", "llvm.hivm.MAD.f322f32.c310"},
+      {"s8", "s8", "s32", "llvm.hivm.MAD.s8.c310"},
+      {"e4m3", "e4m3", "f32", "llvm.hivm.MAD.e4m3e4m3.c310"},
+      {"e4m3", "e5m2", "f32", "llvm.hivm.MAD.e4m3e5m2.c310"},
+      {"e5m2", "e4m3", "f32", "llvm.hivm.MAD.e5m2e4m3.c310"},
+      {"e5m2", "e5m2", "f32", "llvm.hivm.MAD.e5m2e5m2.c310"},
+      {"hif8", "hif8", "f32", "llvm.hivm.MAD.e4m3e4m3.c310"},
+      {"f16", "s4", "", "llvm.hivm.MAD.f16s4.c310"},
+      {"f16", "s8", "", "llvm.hivm.MAD.f16s8.c310"},
+      {"f16", "u2", "", "llvm.hivm.MAD.f16u2"},
+      {"f16", "e8m0", "", "llvm.hivm.MAD.f16e8m0.c310"},
+  };
+  return contracts;
+}
+
+static std::string getMadLhsFragment(Type type) {
+  if (type.isF16()) return "f16";
+  if (type.isBF16()) return "bf16";
+  if (type.isF32()) return "f32";
+  if (isSignedOrSignlessInteger(dyn_cast<IntegerType>(type), 8)) return "s8";
+  if (isMadE4M3ElementType(type)) return "e4m3";
+  if (isMadE5M2ElementType(type)) return "e5m2";
+  if (pto::isPTOHiFloat8Type(type)) return "hif8";
+  return {};
+}
+
 static FailureOr<StringRef> buildMadTypedCalleeName(MLIRContext *context,
                                                     Type lhsElem, Type rhsElem,
                                                     Type dstElem) {
+  if (pto::isPTOHiFloat8Type(lhsElem) &&
+      pto::isPTOHiFloat8Type(rhsElem) && dstElem.isF32()) {
+    return StringAttr::get(context, "llvm.hivm.MAD.e4m3e4m3.c310").getValue();
+  }
+  std::string lhs = getMadLhsFragment(lhsElem);
   std::string rhs = getMadRhsFragment(rhsElem);
   std::string dst = getMadDstFragment(dstElem);
-  if (lhsElem.isF16() && rhs == "f16" && dst == "f32")
-    return StringAttr::get(context, "llvm.hivm.MAD.f162f32.c310").getValue();
-  if (lhsElem.isF16() && rhs == "f16" && dst == "f16")
-    return StringAttr::get(context, "llvm.hivm.MAD.f162f16").getValue();
-  if (lhsElem.isF16() && rhs == "f16" && dst == "s32")
-    return StringAttr::get(context, "llvm.hivm.MAD.f162s32.1952").getValue();
-  if (lhsElem.isBF16() && rhs == "bf16" && dst == "f32")
-    return StringAttr::get(context, "llvm.hivm.MAD.bf162f32.c310").getValue();
-  if (lhsElem.isF32() && rhs == "f32" && dst == "f32")
-    return StringAttr::get(context, "llvm.hivm.MAD.f322f32.c310").getValue();
-  if (isSignedOrSignlessInteger(dyn_cast<IntegerType>(lhsElem), 8) &&
-      rhs == "s8" && dst == "s32")
-    return StringAttr::get(context, "llvm.hivm.MAD.s8.c310").getValue();
-  if (isMadE4M3ElementType(lhsElem) && isMadE4M3ElementType(rhsElem) &&
-      dst == "f32")
-    return StringAttr::get(context, "llvm.hivm.MAD.e4m3e4m3.c310").getValue();
-  if (isMadE4M3ElementType(lhsElem) && isMadE5M2ElementType(rhsElem) &&
-      dst == "f32")
-    return StringAttr::get(context, "llvm.hivm.MAD.e4m3e5m2.c310").getValue();
-  if (isMadE5M2ElementType(lhsElem) && isMadE4M3ElementType(rhsElem) &&
-      dst == "f32")
-    return StringAttr::get(context, "llvm.hivm.MAD.e5m2e4m3.c310").getValue();
-  if (isMadE5M2ElementType(lhsElem) && isMadE5M2ElementType(rhsElem) &&
-      dst == "f32")
-    return StringAttr::get(context, "llvm.hivm.MAD.e5m2e5m2.c310").getValue();
-  if (pto::isPTOHiFloat8Type(lhsElem) && pto::isPTOHiFloat8Type(rhsElem) &&
-      dst == "f32")
-    return StringAttr::get(context, "llvm.hivm.MAD.e4m3e4m3.c310").getValue();
-  if (lhsElem.isF16() && rhs == "s4")
-    return StringAttr::get(context, "llvm.hivm.MAD.f16s4.c310").getValue();
-  if (lhsElem.isF16() && rhs == "s8")
-    return StringAttr::get(context, "llvm.hivm.MAD.f16s8.c310").getValue();
-  if (lhsElem.isF16() && rhs == "u2")
-    return StringAttr::get(context, "llvm.hivm.MAD.f16u2").getValue();
-  if (lhsElem.isF16() && rhs == "e8m0")
-    return StringAttr::get(context, "llvm.hivm.MAD.f16e8m0.c310").getValue();
+  for (const MadCalleeContract &contract : getMadCalleeContracts()) {
+    if (contract.lhs == lhs && contract.rhs == rhs &&
+        (contract.dst.empty() || contract.dst == dst)) {
+      return StringAttr::get(context, contract.callee).getValue();
+    }
+  }
   return failure();
 }
 
@@ -601,8 +613,9 @@ static FailureOr<StringRef> buildLaneTypedCallee(MLIRContext *context,
   std::string vec =
       getElementTypeFragment(getElementTypeFromVectorLike(resultType));
   auto lanes = getElementCountFromVectorLike(resultType);
-  if (vec.empty() || !lanes)
+  if (vec.empty() || !lanes) {
     return failure();
+  }
 
   return StringAttr::get(context, "llvm.hivm." + stem.str() + ".v" +
                                       std::to_string(*lanes) + vec +
@@ -613,12 +626,15 @@ static FailureOr<StringRef> buildLaneTypedCallee(MLIRContext *context,
 static std::string getLowPrecisionElementFragment(Type type);
 
 static std::string getCANN900VectorElementFragment(Type type) {
-  if (type.isF16())
+  if (type.isF16()) {
     return "f16";
-  if (type.isBF16())
+  }
+  if (type.isBF16()) {
     return "bf16";
-  if (type.isF32())
+  }
+  if (type.isF32()) {
     return "f32";
+  }
   if (std::string lowPrecision = getLowPrecisionElementFragment(type);
       !lowPrecision.empty())
     return lowPrecision;
@@ -631,14 +647,16 @@ static std::string getCANN900VectorTypeFragment(Type vectorType) {
   std::string elem =
       getCANN900VectorElementFragment(getElementTypeFromVectorLike(vectorType));
   auto lanes = getElementCountFromVectorLike(vectorType);
-  if (elem.empty() || !lanes)
+  if (elem.empty() || !lanes) {
     return {};
+  }
   return "v" + std::to_string(*lanes) + elem;
 }
 
 static std::string getCANN900SignednessFragment(Type elemType) {
-  if (elemType.isF16() || elemType.isBF16() || elemType.isF32())
+  if (elemType.isF16() || elemType.isBF16() || elemType.isF32()) {
     return "s";
+  }
   if (auto intType = dyn_cast<IntegerType>(elemType))
     return intType.isUnsigned() ? "u" : "s";
   return {};
@@ -649,8 +667,9 @@ static FailureOr<StringRef> buildCANN900ModeTypedCallee(MLIRContext *context,
                                                         StringRef stem,
                                                         StringRef mode) {
   std::string vec = getCANN900VectorTypeFragment(vectorType);
-  if (vec.empty())
+  if (vec.empty()) {
     return failure();
+  }
   return StringAttr::get(context, "llvm.hivm." + stem.str() + "." +
                                       mode.str() + "." + vec)
       .getValue();
@@ -662,8 +681,9 @@ buildCANN900SignedModeTypedCallee(MLIRContext *context, Type vectorType,
   std::string vec = getCANN900VectorTypeFragment(vectorType);
   std::string signedness =
       getCANN900SignednessFragment(getElementTypeFromVectorLike(vectorType));
-  if (vec.empty() || signedness.empty())
+  if (vec.empty() || signedness.empty()) {
     return failure();
+  }
   return StringAttr::get(context, "llvm.hivm." + stem.str() + "." +
                                       signedness + "." + mode.str() + "." +
                                       vec)
@@ -678,8 +698,9 @@ buildCANN900WideningReductionCallee(MLIRContext *context, Type inputType,
   std::string resultVec = getCANN900VectorTypeFragment(resultType);
   std::string signedness =
       getCANN900SignednessFragment(getElementTypeFromVectorLike(inputType));
-  if (inputVec.empty() || resultVec.empty() || signedness.empty())
+  if (inputVec.empty() || resultVec.empty() || signedness.empty()) {
     return failure();
+  }
   return StringAttr::get(context, "llvm.hivm." + stem.str() + "." +
                                       signedness + "." + mode.str() + "." +
                                       resultVec + "." + inputVec)
@@ -687,40 +708,51 @@ buildCANN900WideningReductionCallee(MLIRContext *context, Type inputType,
 }
 
 static std::string getElementTypeFragment(Type type) {
-  if (type.isF16())
+  if (type.isF16()) {
     return "f16";
-  if (type.isBF16())
+  }
+  if (type.isBF16()) {
     return "bf16";
-  if (type.isF32())
+  }
+  if (type.isF32()) {
     return "f32";
+  }
   if (auto intType = dyn_cast<IntegerType>(type))
     return (intType.isUnsigned() ? "u" : "s") + std::to_string(intType.getWidth());
   return {};
 }
 
 static std::string getLowPrecisionElementFragment(Type type) {
-  if (pto::isPTOHiFloat8x2Type(type))
+  if (pto::isPTOHiFloat8x2Type(type)) {
     return "hif8x2";
-  if (pto::isPTOHiFloat8Type(type))
+  }
+  if (pto::isPTOHiFloat8Type(type)) {
     return "hif8";
-  if (isa<pto::F4E1M2x2Type>(type))
+  }
+  if (isa<pto::F4E1M2x2Type>(type)) {
     return "f4e1m2x2";
-  if (isa<pto::F4E2M1x2Type>(type))
+  }
+  if (isa<pto::F4E2M1x2Type>(type)) {
     return "f4e2m1x2";
-  if (pto::isPTOBF16x2Type(type))
+  }
+  if (pto::isPTOBF16x2Type(type)) {
     return "bf16x2";
-  if (pto::isPTOFloat8E4M3LikeType(type))
+  }
+  if (pto::isPTOFloat8E4M3LikeType(type)) {
     return "f8e4m3";
-  if (pto::isPTOFloat8E5M2LikeType(type))
+  }
+  if (pto::isPTOFloat8E5M2LikeType(type)) {
     return "f8e5m2";
+  }
   return {};
 }
 
 static std::string getMemoryElementTypeFragment(Type type) {
   if (auto intType = dyn_cast<IntegerType>(type))
     return "i" + std::to_string(intType.getWidth());
-  if (pto::isPTOHiFloat8Type(type))
+  if (pto::isPTOHiFloat8Type(type)) {
     return "s8";
+  }
   if (std::string elem = getElementTypeFragment(type); !elem.empty())
     return elem;
   return getLowPrecisionElementFragment(type);
@@ -744,10 +776,12 @@ getLowpPayloadABI(Type elementType, MLIRContext *context) {
 }
 
 static std::string getDirectLowpVLogicElementFragment(Type type) {
-  if (pto::isPTOFloat8E4M3LikeType(type))
+  if (pto::isPTOFloat8E4M3LikeType(type)) {
     return "fp8e4m3";
-  if (pto::isPTOFloat8E5M2LikeType(type))
+  }
+  if (pto::isPTOFloat8E5M2LikeType(type)) {
     return "fp8e5m2";
+  }
   return {};
 }
 
@@ -757,8 +791,9 @@ buildDirectLowpVLogicCallee(MLIRContext *context, Type vectorType,
   Type elementType = getElementTypeFromVectorLike(vectorType);
   auto lanes = getElementCountFromVectorLike(vectorType);
   std::string elem = getDirectLowpVLogicElementFragment(elementType);
-  if (elem.empty() || !lanes)
+  if (elem.empty() || !lanes) {
     return failure();
+  }
   return StringAttr::get(context, "llvm.hivm." + stem.str() + "." +
                                       mode.str() + ".v" +
                                       std::to_string(*lanes) + elem)
@@ -771,8 +806,9 @@ buildLowpPayloadVLogicCallee(MLIRContext *context, Type vectorType,
   Type elementType = getElementTypeFromVectorLike(vectorType);
   auto lanes = getElementCountFromVectorLike(vectorType);
   std::optional<LowpPayloadABI> abi = getLowpPayloadABI(elementType, context);
-  if (!abi || !lanes)
+  if (!abi || !lanes) {
     return failure();
+  }
   return StringAttr::get(context, "llvm.hivm." + stem.str() + "." +
                                       mode.str() + ".v" +
                                       std::to_string(*lanes) +
@@ -785,11 +821,13 @@ static Type getLowpPayloadCarrierType(Type vectorLikeType,
   Type elementType = getElementTypeFromVectorLike(vectorLikeType);
   std::optional<LowpPayloadABI> abi =
       getLowpPayloadABI(elementType, context);
-  if (!abi)
+  if (!abi) {
     return {};
+  }
   auto lanes = getElementCountFromVectorLike(vectorLikeType);
-  if (!lanes)
+  if (!lanes) {
     return {};
+  }
   return VectorType::get({*lanes}, abi->llvmElementType);
 }
 
@@ -823,25 +861,33 @@ static Value castFromPayloadABI(
 static std::string getAtomicElementTypeFragment(Type type,
                                                 Attribute signednessAttr) {
   if (auto vecType = dyn_cast<VectorType>(type)) {
-    if (vecType.getRank() != 1 || vecType.getDimSize(0) != 2)
+    if (vecType.getRank() != 1 || vecType.getDimSize(0) != 2) {
       return {};
-    if (vecType.getElementType().isF16())
+    }
+    if (vecType.getElementType().isF16()) {
       return "f16x2";
-    if (vecType.getElementType().isBF16())
+    }
+    if (vecType.getElementType().isBF16()) {
       return "bf16x2";
+    }
     return {};
   }
-  if (type.isF16())
+  if (type.isF16()) {
     return "fp16";
-  if (type.isBF16())
+  }
+  if (type.isBF16()) {
     return "bf16";
-  if (type.isF32())
+  }
+  if (type.isF32()) {
     return "fp32";
+  }
   auto intType = dyn_cast<IntegerType>(type);
-  if (!intType)
+  if (!intType) {
     return {};
-  if (intType.getWidth() != 32 && intType.getWidth() != 64)
+  }
+  if (intType.getWidth() != 32 && intType.getWidth() != 64) {
     return {};
+  }
   if (signednessAttr) {
     auto signedness = cast<pto::SignednessAttr>(signednessAttr).getValue();
     return std::string(signedness == pto::Signedness::Unsigned ? "u" : "s") +
@@ -861,13 +907,12 @@ static std::string getL0LoadElementFragment(Type type) {
   type.print(os);
   os.flush();
   std::string lower = StringRef(typeText).lower();
-  if (StringRef(lower).contains("e4m3") ||
-      StringRef(lower).contains("e5m2") ||
-      StringRef(lower).contains("e8m0") ||
-      StringRef(lower).contains("hif8") ||
+  if (StringRef(lower).contains("e4m3") || StringRef(lower).contains("e5m2") ||
+      StringRef(lower).contains("e8m0") || StringRef(lower).contains("hif8") ||
       StringRef(lower).contains("e1m2x2") ||
-      StringRef(lower).contains("e2m1x2"))
+      StringRef(lower).contains("e2m1x2")) {
     return "s8";
+  }
   return {};
 }
 
@@ -882,14 +927,17 @@ static std::string getShuffleIntrinsicTypeFragment(Type type) {
       return {};
     }
   }
-  if (type.isF16())
+  if (type.isF16()) {
     return "f16";
-  if (type.isF32())
+  }
+  if (type.isF32()) {
     return "f32";
+  }
   if (auto vecType = dyn_cast<VectorType>(type)) {
     if (vecType.getRank() == 1 && vecType.getDimSize(0) == 2 &&
-        vecType.getElementType().isF16())
+        vecType.getElementType().isF16()) {
       return "v2f16";
+    }
   }
   return {};
 }
@@ -897,8 +945,9 @@ static std::string getShuffleIntrinsicTypeFragment(Type type) {
 static std::string getReduxIntrinsicTypeFragment(Type type,
                                                  Attribute signednessAttr) {
   if (auto intType = dyn_cast<IntegerType>(type)) {
-    if (intType.getWidth() != 32)
+    if (intType.getWidth() != 32) {
       return {};
+    }
     bool isUnsigned = false;
     if (signednessAttr) {
       isUnsigned = cast<pto::SignednessAttr>(signednessAttr).getValue() ==
@@ -906,10 +955,12 @@ static std::string getReduxIntrinsicTypeFragment(Type type,
     }
     return isUnsigned ? "u32" : "s32";
   }
-  if (type.isF16())
+  if (type.isF16()) {
     return "f16";
-  if (type.isF32())
+  }
+  if (type.isF32()) {
     return "f32";
+  }
   return {};
 }
 
@@ -965,8 +1016,9 @@ static FailureOr<Value> reinterpretPointerToAddrSpace(Operation *anchor,
                                                       Value value,
                                                       unsigned targetAddressSpace) {
   auto sourcePtrType = dyn_cast<LLVM::LLVMPointerType>(value.getType());
-  if (!sourcePtrType)
+  if (!sourcePtrType) {
     return failure();
+  }
   if (sourcePtrType.getAddressSpace() == targetAddressSpace)
     return value;
 
@@ -1015,13 +1067,16 @@ static Value normalizeByteScalarOperandForCANN900VectorCall(
 
 static bool isCompatibleScalarForSemanticType(Type semanticType,
                                               Type scalarType) {
-  if (semanticType == scalarType)
+  if (semanticType == scalarType) {
     return true;
+  }
 
   auto semanticInt = dyn_cast<IntegerType>(semanticType);
   auto scalarInt = dyn_cast<IntegerType>(scalarType);
-  if (!semanticInt || !scalarInt || semanticInt.getWidth() != scalarInt.getWidth())
+  if (!semanticInt || !scalarInt ||
+      semanticInt.getWidth() != scalarInt.getWidth()) {
     return false;
+  }
 
   if (semanticInt.isSigned())
     return scalarInt.isSigned() || scalarInt.isSignless();
@@ -1031,30 +1086,40 @@ static bool isCompatibleScalarForSemanticType(Type semanticType,
 }
 
 static std::string getCopyElementFragment(Type elementType) {
-  if (!elementType)
+  if (!elementType) {
     return {};
-  if (elementType.isF16())
+  }
+  if (elementType.isF16()) {
     return "f16";
-  if (elementType.isBF16())
+  }
+  if (elementType.isBF16()) {
     return "bf16";
-  if (elementType.isF32())
+  }
+  if (elementType.isF32()) {
     return "f32";
+  }
   // Handle FP8 family (e4m3/e5m2/e8m0/hif8) used by cube-matmul/mad_mx.
   std::string typeText;
   llvm::raw_string_ostream os(typeText);
   elementType.print(os);
   os.flush();
   std::string lower = StringRef(typeText).lower();
-  if (StringRef(lower).contains("e4m3"))
+  if (StringRef(lower).contains("e4m3")) {
     return "e4m3";
-  if (StringRef(lower).contains("e5m2"))
+  }
+  if (StringRef(lower).contains("e5m2")) {
     return "e5m2";
-  if (StringRef(lower).contains("e8m0"))
+  }
+  if (StringRef(lower).contains("e8m0")) {
     return "e8m0";
-  if (StringRef(lower).contains("hif8"))
+  }
+  if (StringRef(lower).contains("hif8")) {
     return "hif8";
-  if (StringRef(lower).contains("e1m2x2") || StringRef(lower).contains("e2m1x2"))
+  }
+  if (StringRef(lower).contains("e1m2x2") ||
+      StringRef(lower).contains("e2m1x2")) {
     return "u8";
+  }
   if (auto intType = dyn_cast<IntegerType>(elementType)) {
     switch (intType.getWidth()) {
     case 8:
@@ -1071,23 +1136,29 @@ static std::string getCopyElementFragment(Type elementType) {
 }
 
 static std::string getNd2NzCopyElementFragment(Type elementType) {
-  if (!elementType)
+  if (!elementType) {
     return {};
+  }
   std::string typeText;
   llvm::raw_string_ostream os(typeText);
   elementType.print(os);
   os.flush();
   std::string lower = StringRef(typeText).lower();
   if (StringRef(lower).contains("e4m3") || StringRef(lower).contains("e5m2") ||
-      StringRef(lower).contains("e8m0") || StringRef(lower).contains("hif8"))
+      StringRef(lower).contains("e8m0") || StringRef(lower).contains("hif8")) {
     return "U8";
-  if (StringRef(lower).contains("e1m2x2") || StringRef(lower).contains("e2m1x2"))
+  }
+  if (StringRef(lower).contains("e1m2x2") ||
+      StringRef(lower).contains("e2m1x2")) {
     return "U8";
+  }
 
-  if (elementType.isF16() || elementType.isBF16())
+  if (elementType.isF16() || elementType.isBF16()) {
     return "U16";
-  if (elementType.isF32())
+  }
+  if (elementType.isF32()) {
     return "U32";
+  }
   if (auto intType = dyn_cast<IntegerType>(elementType)) {
     switch (intType.getWidth()) {
     case 8:
@@ -1104,148 +1175,200 @@ static std::string getNd2NzCopyElementFragment(Type elementType) {
 }
 
 static std::optional<uint64_t> parsePredicatePatternImmediate(StringRef pattern) {
-  if (pattern == "PAT_ALL")
+  if (pattern == "PAT_ALL") {
     return 0;
-  if (pattern == "PAT_VL1")
+  }
+  if (pattern == "PAT_VL1") {
     return 1;
-  if (pattern == "PAT_VL2")
+  }
+  if (pattern == "PAT_VL2") {
     return 2;
-  if (pattern == "PAT_VL3")
+  }
+  if (pattern == "PAT_VL3") {
     return 3;
-  if (pattern == "PAT_VL4")
+  }
+  if (pattern == "PAT_VL4") {
     return 4;
-  if (pattern == "PAT_VL8")
+  }
+  if (pattern == "PAT_VL8") {
     return 5;
-  if (pattern == "PAT_VL16")
+  }
+  if (pattern == "PAT_VL16") {
     return 6;
-  if (pattern == "PAT_VL32")
+  }
+  if (pattern == "PAT_VL32") {
     return 7;
-  if (pattern == "PAT_VL64")
+  }
+  if (pattern == "PAT_VL64") {
     return 8;
-  if (pattern == "PAT_VL128")
+  }
+  if (pattern == "PAT_VL128") {
     return 9;
-  if (pattern == "PAT_M3")
+  }
+  if (pattern == "PAT_M3") {
     return 10;
-  if (pattern == "PAT_M4")
+  }
+  if (pattern == "PAT_M4") {
     return 11;
-  if (pattern == "PAT_H")
+  }
+  if (pattern == "PAT_H") {
     return 12;
-  if (pattern == "PAT_Q")
+  }
+  if (pattern == "PAT_Q") {
     return 13;
-  if (pattern == "PAT_ALLF")
+  }
+  if (pattern == "PAT_ALLF") {
     return 15;
+  }
   return std::nullopt;
 }
 
 static std::optional<uint64_t> parseHiLoPartImmediate(StringRef part) {
-  if (part == "LOWER")
+  if (part == "LOWER") {
     return 0;
-  if (part == "HIGHER")
+  }
+  if (part == "HIGHER") {
     return 1;
+  }
   return std::nullopt;
 }
 
 static std::optional<uint64_t> parseRoundModeImmediate(StringRef roundMode) {
-  if (roundMode == "R" || roundMode == "ROUND_R")
+  if (roundMode == "R" || roundMode == "ROUND_R") {
     return 0;
-  if (roundMode == "A" || roundMode == "ROUND_A")
+  }
+  if (roundMode == "A" || roundMode == "ROUND_A") {
     return 1;
-  if (roundMode == "F" || roundMode == "ROUND_F")
+  }
+  if (roundMode == "F" || roundMode == "ROUND_F") {
     return 2;
-  if (roundMode == "C" || roundMode == "ROUND_C")
+  }
+  if (roundMode == "C" || roundMode == "ROUND_C") {
     return 3;
-  if (roundMode == "Z" || roundMode == "ROUND_Z")
+  }
+  if (roundMode == "Z" || roundMode == "ROUND_Z") {
     return 4;
-  if (roundMode == "O" || roundMode == "ROUND_O")
+  }
+  if (roundMode == "O" || roundMode == "ROUND_O") {
     return 5;
-  if (roundMode == "H" || roundMode == "ROUND_H")
+  }
+  if (roundMode == "H" || roundMode == "ROUND_H") {
     return 6;
+  }
   return std::nullopt;
 }
 
 static std::optional<uint64_t> parseSaturationImmediate(StringRef sat) {
-  if (sat == "SAT")
+  if (sat == "SAT") {
     return 1;
-  if (sat == "NOSAT")
+  }
+  if (sat == "NOSAT") {
     return 0;
+  }
   return std::nullopt;
 }
 
 static std::optional<uint64_t> parsePartImmediate(StringRef part) {
-  if (part == "EVEN" || part == "PART_EVEN")
+  if (part == "EVEN" || part == "PART_EVEN") {
     return 0;
-  if (part == "ODD" || part == "PART_ODD")
+  }
+  if (part == "ODD" || part == "PART_ODD") {
     return 1;
+  }
   return std::nullopt;
 }
 
 static std::optional<uint64_t> parseVcvtPartImmediate(StringRef part) {
   if (part == "EVEN" || part == "PART_EVEN" || part == "P0" ||
-      part == "PART_P0")
+      part == "PART_P0") {
     return 0;
+  }
   if (part == "ODD" || part == "PART_ODD" || part == "P1" ||
-      part == "PART_P1")
+      part == "PART_P1") {
     return 1;
-  if (part == "P2" || part == "PART_P2")
+  }
+  if (part == "P2" || part == "PART_P2") {
     return 2;
-  if (part == "P3" || part == "PART_P3")
+  }
+  if (part == "P3" || part == "PART_P3") {
     return 3;
+  }
   return std::nullopt;
 }
 
 static std::optional<uint64_t> parsePredicateStoreDistImmediate(StringRef dist) {
-  if (dist == "NORM")
+  if (dist == "NORM") {
     return 0;
-  if (dist == "PK")
+  }
+  if (dist == "PK") {
     return 1;
+  }
   return std::nullopt;
 }
 
 static std::optional<uint64_t> parsePredicateLoadDistImmediate(StringRef dist) {
-  if (dist.empty() || dist == "NORM")
+  if (dist.empty() || dist == "NORM") {
     return 0;
-  if (dist == "US")
+  }
+  if (dist == "US") {
     return 1;
-  if (dist == "DS")
+  }
+  if (dist == "DS") {
     return 2;
+  }
   return std::nullopt;
 }
 
 static std::optional<int32_t> parsePostModeImmediate(StringRef mode) {
-  if (mode == "NO_POST_UPDATE")
+  if (mode == "NO_POST_UPDATE") {
     return 0;
-  if (mode == "POST_UPDATE")
+  }
+  if (mode == "POST_UPDATE") {
     return 1;
+  }
   return std::nullopt;
 }
 
 static std::optional<uint64_t> parsePipeImmediate(StringRef pipe) {
-  if (pipe == "PIPE_S")
+  if (pipe == "PIPE_S") {
     return 0;
-  if (pipe == "PIPE_V")
+  }
+  if (pipe == "PIPE_V") {
     return 1;
-  if (pipe == "PIPE_M")
+  }
+  if (pipe == "PIPE_M") {
     return 2;
-  if (pipe == "PIPE_MTE1")
+  }
+  if (pipe == "PIPE_MTE1") {
     return 3;
-  if (pipe == "PIPE_MTE2")
+  }
+  if (pipe == "PIPE_MTE2") {
     return 4;
-  if (pipe == "PIPE_MTE3")
+  }
+  if (pipe == "PIPE_MTE3") {
     return 5;
-  if (pipe == "PIPE_ALL")
+  }
+  if (pipe == "PIPE_ALL") {
     return 6;
-  if (pipe == "PIPE_MTE4")
+  }
+  if (pipe == "PIPE_MTE4") {
     return 7;
-  if (pipe == "PIPE_MTE5")
+  }
+  if (pipe == "PIPE_MTE5") {
     return 8;
-  if (pipe == "PIPE_V2")
+  }
+  if (pipe == "PIPE_V2") {
     return 9;
-  if (pipe == "PIPE_FIX")
+  }
+  if (pipe == "PIPE_FIX") {
     return 10;
-  if (pipe == "VIRTUAL_PIPE_MTE2_L1A")
+  }
+  if (pipe == "VIRTUAL_PIPE_MTE2_L1A") {
     return 11;
-  if (pipe == "VIRTUAL_PIPE_MTE2_L1B")
+  }
+  if (pipe == "VIRTUAL_PIPE_MTE2_L1B") {
     return 12;
+  }
   return std::nullopt;
 }
 
@@ -1259,45 +1382,59 @@ static std::optional<uint64_t> parseEventImmediate(StringRef event) {
 }
 
 static std::optional<uint64_t> parseSprImmediate(StringRef spr) {
-  if (spr == "AR")
+  if (spr == "AR") {
     return 74;
+  }
   return std::nullopt;
 }
 
 static std::optional<unsigned> getDistElementWidth(Type type) {
   if (auto intType = dyn_cast<IntegerType>(type))
     return intType.getWidth();
-  if (isLowpPayloadElementType(type))
+  if (isLowpPayloadElementType(type)) {
     return 8;
-  if (type.isF16() || type.isBF16())
+  }
+  if (type.isF16() || type.isBF16()) {
     return 16;
-  if (type.isF32())
+  }
+  if (type.isF32()) {
     return 32;
-  if (type.isF64())
+  }
+  if (type.isF64()) {
     return 64;
+  }
   // bf16x2 is a 32-bit packed pair; its dist width is 32 (i32/align4 ABI).
-  if (pto::isPTOBF16x2Type(type))
+  if (pto::isPTOBF16x2Type(type)) {
     return 32;
+  }
   return std::nullopt;
 }
 
 static VcvtElemKind classifyVcvtElemType(Type type) {
-  if (type.isF16())
+  if (type.isF16()) {
     return VcvtElemKind::F16;
-  if (type.isBF16())
+  }
+  if (type.isBF16()) {
     return VcvtElemKind::BF16;
-  if (type.isF32())
+  }
+  if (type.isF32()) {
     return VcvtElemKind::F32;
-  if (pto::isPTOFloat8E4M3LikeType(type))
+  }
+  if (pto::isPTOFloat8E4M3LikeType(type)) {
     return VcvtElemKind::F8E4M3;
-  if (pto::isPTOFloat8E5M2LikeType(type))
+  }
+  if (pto::isPTOFloat8E5M2LikeType(type)) {
     return VcvtElemKind::F8E5M2;
-  if (pto::isPTOHiFloat8Type(type))
+  }
+  if (pto::isPTOHiFloat8Type(type)) {
     return VcvtElemKind::HiF8;
-  if (isa<pto::F4E1M2x2Type>(type))
+  }
+  if (isa<pto::F4E1M2x2Type>(type)) {
     return VcvtElemKind::F4E1M2x2;
-  if (isa<pto::F4E2M1x2Type>(type))
+  }
+  if (isa<pto::F4E2M1x2Type>(type)) {
     return VcvtElemKind::F4E2M1x2;
+  }
   if (auto intType = dyn_cast<IntegerType>(type)) {
     switch (intType.getWidth()) {
     case 8:
@@ -1317,191 +1454,71 @@ static VcvtElemKind classifyVcvtElemType(Type type) {
 
 static std::optional<VcvtContract> lookupVcvtContract(VcvtElemKind src,
                                                       VcvtElemKind dst) {
-  switch (src) {
-  case VcvtElemKind::F32:
-    switch (dst) {
-    case VcvtElemKind::F8E4M3:
-      return VcvtContract{"llvm.hivm.vcvtff.f322f8e4m3.x", true, true, true, 32};
-    case VcvtElemKind::F8E5M2:
-      return VcvtContract{"llvm.hivm.vcvtff.f322f8e5m2.x", true, true, true, 32};
-    case VcvtElemKind::HiF8:
-      return VcvtContract{"llvm.hivm.vcvtff.f322hif8.x", true, true, true, 32};
-    case VcvtElemKind::F16:
-      return VcvtContract{"llvm.hivm.vcvtff.f322f16.x", true, true, true, 32};
-    case VcvtElemKind::BF16:
-      return VcvtContract{"llvm.hivm.vcvtff.f322bf16.x", true, true, true, 32};
-    case VcvtElemKind::S16:
-      return VcvtContract{"llvm.hivm.vcvtfi.f322s16.x", true, true, true, 32};
-    case VcvtElemKind::S32:
-      return VcvtContract{"llvm.hivm.vcvtfi.f322s32.x", true, true, false, 32};
-    case VcvtElemKind::S64:
-      return VcvtContract{"llvm.hivm.vcvtfi.f322s64.x", true, true, true, 32};
-    default:
-      return std::nullopt;
+  struct Entry {
+    VcvtElemKind src;
+    VcvtElemKind dst;
+    VcvtContract contract;
+  };
+  static constexpr Entry kEntries[] = {
+      {VcvtElemKind::F32, VcvtElemKind::F8E4M3, {"llvm.hivm.vcvtff.f322f8e4m3.x", true, true, true, 32, false}},
+      {VcvtElemKind::F32, VcvtElemKind::F8E5M2, {"llvm.hivm.vcvtff.f322f8e5m2.x", true, true, true, 32, false}},
+      {VcvtElemKind::F32, VcvtElemKind::HiF8, {"llvm.hivm.vcvtff.f322hif8.x", true, true, true, 32, false}},
+      {VcvtElemKind::F32, VcvtElemKind::F16, {"llvm.hivm.vcvtff.f322f16.x", true, true, true, 32, false}},
+      {VcvtElemKind::F32, VcvtElemKind::BF16, {"llvm.hivm.vcvtff.f322bf16.x", true, true, true, 32, false}},
+      {VcvtElemKind::F32, VcvtElemKind::S16, {"llvm.hivm.vcvtfi.f322s16.x", true, true, true, 32, false}},
+      {VcvtElemKind::F32, VcvtElemKind::S32, {"llvm.hivm.vcvtfi.f322s32.x", true, true, false, 32, false}},
+      {VcvtElemKind::F32, VcvtElemKind::S64, {"llvm.hivm.vcvtfi.f322s64.x", true, true, true, 32, false}},
+      {VcvtElemKind::F16, VcvtElemKind::F8E4M3, {"llvm.hivm.vcvtff.f162f8e4m3.x", true, true, true, 16, false}},
+      {VcvtElemKind::F16, VcvtElemKind::F8E5M2, {"llvm.hivm.vcvtff.f162f8e5m2.x", true, true, true, 16, false}},
+      {VcvtElemKind::F16, VcvtElemKind::HiF8, {"llvm.hivm.vcvtff.f162hif8.x", true, true, true, 16, false}},
+      {VcvtElemKind::F16, VcvtElemKind::F32, {"llvm.hivm.vcvtff.f162f32.x", false, false, true, 16, false}},
+      {VcvtElemKind::F16, VcvtElemKind::S32, {"llvm.hivm.vcvtfi.f162s32.x", true, false, true, 16, false}},
+      {VcvtElemKind::F16, VcvtElemKind::S16, {"llvm.hivm.vcvtfi.f162s16.x", true, true, false, 16, false}},
+      {VcvtElemKind::F16, VcvtElemKind::S8, {"llvm.hivm.vcvtfi.f162s8.x", true, true, true, 16, false}},
+      {VcvtElemKind::F16, VcvtElemKind::U8, {"llvm.hivm.vcvtfi.f162u8.x", true, true, true, 16, false}},
+      {VcvtElemKind::BF16, VcvtElemKind::F8E4M3, {"llvm.hivm.vcvtff.bf162f8e4m3.x", true, true, true, 16, false}},
+      {VcvtElemKind::BF16, VcvtElemKind::F8E5M2, {"llvm.hivm.vcvtff.bf162f8e5m2.x", true, true, true, 16, false}},
+      {VcvtElemKind::BF16, VcvtElemKind::F4E1M2x2, {"llvm.hivm.vcvtff2.bf162f4e1m2x2.x", true, false, true, 16, false}},
+      {VcvtElemKind::BF16, VcvtElemKind::F4E2M1x2, {"llvm.hivm.vcvtff2.bf162f4e2m1x2.x", true, false, true, 16, false}},
+      {VcvtElemKind::BF16, VcvtElemKind::F16, {"llvm.hivm.vcvtff.bf162f16.x", true, true, false, 16, true}},
+      {VcvtElemKind::BF16, VcvtElemKind::F32, {"llvm.hivm.vcvtff.bf162f32.x", false, false, true, 16, false}},
+      {VcvtElemKind::BF16, VcvtElemKind::S32, {"llvm.hivm.vcvtfi.bf162s32.x", true, true, true, 16, false}},
+      {VcvtElemKind::U8, VcvtElemKind::F16, {"llvm.hivm.vcvtif.u82f16.x", false, false, true, 8, false}},
+      {VcvtElemKind::U8, VcvtElemKind::U16, {"llvm.hivm.vcvtii.u82u16.x", false, false, true, 8, false}},
+      {VcvtElemKind::U8, VcvtElemKind::U32, {"llvm.hivm.vcvtii.u82u32.x", false, false, true, 8, false}},
+      {VcvtElemKind::S8, VcvtElemKind::F16, {"llvm.hivm.vcvtif.s82f16.x", false, false, true, 8, false}},
+      {VcvtElemKind::S8, VcvtElemKind::S16, {"llvm.hivm.vcvtii.s82s16.x", false, false, true, 8, false}},
+      {VcvtElemKind::S8, VcvtElemKind::S32, {"llvm.hivm.vcvtii.s82s32.x", false, false, true, 8, false}},
+      {VcvtElemKind::U16, VcvtElemKind::U8, {"llvm.hivm.vcvtii.u162u8.x", false, true, true, 16, false}},
+      {VcvtElemKind::U16, VcvtElemKind::U32, {"llvm.hivm.vcvtii.u162u32.x", false, false, true, 16, false}},
+      {VcvtElemKind::S16, VcvtElemKind::F16, {"llvm.hivm.vcvtif.s162f16.x", true, false, false, 16, false}},
+      {VcvtElemKind::S16, VcvtElemKind::F32, {"llvm.hivm.vcvtif.s162f32.x", false, false, true, 16, false}},
+      {VcvtElemKind::S16, VcvtElemKind::U8, {"llvm.hivm.vcvtii.s162u8.x", false, true, true, 16, false}},
+      {VcvtElemKind::S16, VcvtElemKind::U32, {"llvm.hivm.vcvtii.s162u32.x", false, false, true, 16, false}},
+      {VcvtElemKind::S16, VcvtElemKind::S32, {"llvm.hivm.vcvtii.s162s32.x", false, false, true, 16, false}},
+      {VcvtElemKind::U32, VcvtElemKind::U8, {"llvm.hivm.vcvtii.u322u8.x", false, true, true, 32, false}},
+      {VcvtElemKind::U32, VcvtElemKind::U16, {"llvm.hivm.vcvtii.u322u16.x", false, true, true, 32, false}},
+      {VcvtElemKind::U32, VcvtElemKind::S16, {"llvm.hivm.vcvtii.u322s16.x", false, true, true, 32, false}},
+      {VcvtElemKind::S32, VcvtElemKind::F32, {"llvm.hivm.vcvtif.s322f32.x", true, false, false, 32, false}},
+      {VcvtElemKind::S32, VcvtElemKind::U8, {"llvm.hivm.vcvtii.s322u8.x", false, true, true, 32, false}},
+      {VcvtElemKind::S32, VcvtElemKind::U16, {"llvm.hivm.vcvtii.s322u16.x", false, true, true, 32, false}},
+      {VcvtElemKind::S32, VcvtElemKind::S16, {"llvm.hivm.vcvtii.s322s16.x", false, true, true, 32, false}},
+      {VcvtElemKind::S32, VcvtElemKind::S64, {"llvm.hivm.vcvtii.s322s64.x", false, false, true, 32, false}},
+      {VcvtElemKind::S64, VcvtElemKind::F32, {"llvm.hivm.vcvtif.s642f32.x", true, false, true, 32, false}},
+      {VcvtElemKind::S64, VcvtElemKind::S32, {"llvm.hivm.vcvtii.s642s32.x", false, true, true, 32, false}},
+      {VcvtElemKind::F8E4M3, VcvtElemKind::F32, {"llvm.hivm.vcvtff.f8e4m32f32.x", false, false, true, 8, false}},
+      {VcvtElemKind::F8E5M2, VcvtElemKind::F32, {"llvm.hivm.vcvtff.f8e5m22f32.x", false, false, true, 8, false}},
+      {VcvtElemKind::HiF8, VcvtElemKind::F32, {"llvm.hivm.vcvtff.hif82f32.x", false, false, true, 8, false}},
+      {VcvtElemKind::F4E1M2x2, VcvtElemKind::BF16, {"llvm.hivm.vcvtff2.f4e1m2x22bf16.x", false, false, true, 8, false}},
+      {VcvtElemKind::F4E2M1x2, VcvtElemKind::BF16, {"llvm.hivm.vcvtff2.f4e2m1x22bf16.x", false, false, true, 8, false}},
+  };
+  for (const Entry &entry : kEntries) {
+    if (entry.src == src && entry.dst == dst) {
+      return entry.contract;
     }
-  case VcvtElemKind::F16:
-    switch (dst) {
-    case VcvtElemKind::F8E4M3:
-      return VcvtContract{"llvm.hivm.vcvtff.f162f8e4m3.x", true, true, true, 16};
-    case VcvtElemKind::F8E5M2:
-      return VcvtContract{"llvm.hivm.vcvtff.f162f8e5m2.x", true, true, true, 16};
-    case VcvtElemKind::HiF8:
-      return VcvtContract{"llvm.hivm.vcvtff.f162hif8.x", true, true, true, 16};
-    case VcvtElemKind::F32:
-      return VcvtContract{"llvm.hivm.vcvtff.f162f32.x", false, false, true, 16};
-    case VcvtElemKind::S32:
-      return VcvtContract{"llvm.hivm.vcvtfi.f162s32.x", true, false, true, 16};
-    case VcvtElemKind::S16:
-      return VcvtContract{"llvm.hivm.vcvtfi.f162s16.x", true, true, false, 16};
-    case VcvtElemKind::S8:
-      return VcvtContract{"llvm.hivm.vcvtfi.f162s8.x", true, true, true, 16};
-    case VcvtElemKind::U8:
-      return VcvtContract{"llvm.hivm.vcvtfi.f162u8.x", true, true, true, 16};
-    default:
-      return std::nullopt;
-    }
-  case VcvtElemKind::BF16:
-    switch (dst) {
-    case VcvtElemKind::F8E4M3:
-      return VcvtContract{"llvm.hivm.vcvtff.bf162f8e4m3.x", true, true, true, 16};
-    case VcvtElemKind::F8E5M2:
-      return VcvtContract{"llvm.hivm.vcvtff.bf162f8e5m2.x", true, true, true, 16};
-    case VcvtElemKind::F4E1M2x2:
-      return VcvtContract{"llvm.hivm.vcvtff2.bf162f4e1m2x2.x", true, false, true, 16};
-    case VcvtElemKind::F4E2M1x2:
-      return VcvtContract{"llvm.hivm.vcvtff2.bf162f4e2m1x2.x", true, false, true, 16};
-    case VcvtElemKind::F16:
-      return VcvtContract{"llvm.hivm.vcvtff.bf162f16.x", true, true, false, 16,
-                          true};
-    case VcvtElemKind::F32:
-      return VcvtContract{"llvm.hivm.vcvtff.bf162f32.x", false, false, true, 16};
-    case VcvtElemKind::S32:
-      return VcvtContract{"llvm.hivm.vcvtfi.bf162s32.x", true, true, true, 16};
-    default:
-      return std::nullopt;
-    }
-  case VcvtElemKind::U8:
-    switch (dst) {
-    case VcvtElemKind::F16:
-      return VcvtContract{"llvm.hivm.vcvtif.u82f16.x", false, false, true, 8};
-    case VcvtElemKind::U16:
-      return VcvtContract{"llvm.hivm.vcvtii.u82u16.x", false, false, true, 8};
-    case VcvtElemKind::U32:
-      return VcvtContract{"llvm.hivm.vcvtii.u82u32.x", false, false, true, 8};
-    default:
-      return std::nullopt;
-    }
-  case VcvtElemKind::S8:
-    switch (dst) {
-    case VcvtElemKind::F16:
-      return VcvtContract{"llvm.hivm.vcvtif.s82f16.x", false, false, true, 8};
-    case VcvtElemKind::S16:
-      return VcvtContract{"llvm.hivm.vcvtii.s82s16.x", false, false, true, 8};
-    case VcvtElemKind::S32:
-      return VcvtContract{"llvm.hivm.vcvtii.s82s32.x", false, false, true, 8};
-    default:
-      return std::nullopt;
-    }
-  case VcvtElemKind::U16:
-    switch (dst) {
-    case VcvtElemKind::U8:
-      return VcvtContract{"llvm.hivm.vcvtii.u162u8.x", false, true, true, 16};
-    case VcvtElemKind::U32:
-      return VcvtContract{"llvm.hivm.vcvtii.u162u32.x", false, false, true, 16};
-    default:
-      return std::nullopt;
-    }
-  case VcvtElemKind::S16:
-    switch (dst) {
-    case VcvtElemKind::F16:
-      return VcvtContract{"llvm.hivm.vcvtif.s162f16.x", true, false, false, 16};
-    case VcvtElemKind::F32:
-      return VcvtContract{"llvm.hivm.vcvtif.s162f32.x", false, false, true, 16};
-    case VcvtElemKind::U8:
-      return VcvtContract{"llvm.hivm.vcvtii.s162u8.x", false, true, true, 16};
-    case VcvtElemKind::U32:
-      return VcvtContract{"llvm.hivm.vcvtii.s162u32.x", false, false, true, 16};
-    case VcvtElemKind::S32:
-      return VcvtContract{"llvm.hivm.vcvtii.s162s32.x", false, false, true, 16};
-    default:
-      return std::nullopt;
-    }
-  case VcvtElemKind::U32:
-    switch (dst) {
-    case VcvtElemKind::U8:
-      return VcvtContract{"llvm.hivm.vcvtii.u322u8.x", false, true, true, 32};
-    case VcvtElemKind::U16:
-      return VcvtContract{"llvm.hivm.vcvtii.u322u16.x", false, true, true, 32};
-    case VcvtElemKind::S16:
-      return VcvtContract{"llvm.hivm.vcvtii.u322s16.x", false, true, true, 32};
-    default:
-      return std::nullopt;
-    }
-  case VcvtElemKind::S32:
-    switch (dst) {
-    case VcvtElemKind::F32:
-      return VcvtContract{"llvm.hivm.vcvtif.s322f32.x", true, false, false, 32};
-    case VcvtElemKind::U8:
-      return VcvtContract{"llvm.hivm.vcvtii.s322u8.x", false, true, true, 32};
-    case VcvtElemKind::U16:
-      return VcvtContract{"llvm.hivm.vcvtii.s322u16.x", false, true, true, 32};
-    case VcvtElemKind::S16:
-      return VcvtContract{"llvm.hivm.vcvtii.s322s16.x", false, true, true, 32};
-    case VcvtElemKind::S64:
-      return VcvtContract{"llvm.hivm.vcvtii.s322s64.x", false, false, true, 32};
-    default:
-      return std::nullopt;
-    }
-  case VcvtElemKind::S64:
-    switch (dst) {
-    case VcvtElemKind::F32:
-      return VcvtContract{"llvm.hivm.vcvtif.s642f32.x", true, false, true, 32};
-    case VcvtElemKind::S32:
-      return VcvtContract{"llvm.hivm.vcvtii.s642s32.x", false, true, true, 32};
-    default:
-      return std::nullopt;
-    }
-  case VcvtElemKind::F8E4M3:
-    switch (dst) {
-    case VcvtElemKind::F32:
-      return VcvtContract{"llvm.hivm.vcvtff.f8e4m32f32.x", false, false, true, 8};
-    default:
-      return std::nullopt;
-    }
-  case VcvtElemKind::F8E5M2:
-    switch (dst) {
-    case VcvtElemKind::F32:
-      return VcvtContract{"llvm.hivm.vcvtff.f8e5m22f32.x", false, false, true, 8};
-    default:
-      return std::nullopt;
-    }
-  case VcvtElemKind::HiF8:
-    switch (dst) {
-    case VcvtElemKind::F32:
-      return VcvtContract{"llvm.hivm.vcvtff.hif82f32.x", false, false, true, 8};
-    default:
-      return std::nullopt;
-    }
-  case VcvtElemKind::F4E1M2x2:
-    switch (dst) {
-    case VcvtElemKind::BF16:
-      return VcvtContract{"llvm.hivm.vcvtff2.f4e1m2x22bf16.x", false, false, true, 8};
-    default:
-      return std::nullopt;
-    }
-  case VcvtElemKind::F4E2M1x2:
-    switch (dst) {
-    case VcvtElemKind::BF16:
-      return VcvtContract{"llvm.hivm.vcvtff2.f4e2m1x22bf16.x", false, false, true, 8};
-    default:
-      return std::nullopt;
-    }
-  case VcvtElemKind::Invalid:
-    return std::nullopt;
   }
   return std::nullopt;
 }
-
 // VSQZ #st hint must only be set when the compacted vector feeds VSTUR.
 // Emitting #st=1 without a matching VSTUR consumer can deadlock hardware queues.
 static uint64_t determineVsqzStoreHint(pto::VsqzOp vsqz) {
@@ -1519,8 +1536,9 @@ static uint64_t determineVsqzStoreHint(pto::VsqzOp vsqz) {
 static std::optional<uint64_t> parseLoadDistImmediate(StringRef dist,
                                                       Type elementType) {
   auto width = getDistElementWidth(elementType);
-  if (dist.empty() || dist == "NORM")
+  if (dist.empty() || dist == "NORM") {
     return 0;
+  }
   if (!width)
     return std::nullopt;
   if (dist == "BRC_B8")
@@ -1543,8 +1561,9 @@ static std::optional<uint64_t> parseLoadDistImmediate(StringRef dist,
     return std::optional<uint64_t>(14);
   if (dist == "UNPK_B32")
     return std::optional<uint64_t>(18);
-  if (dist == "BRC_BLK")
+  if (dist == "BRC_BLK") {
     return 15;
+  }
   if (dist == "E2B_B16")
     return std::optional<uint64_t>(16);
   if (dist == "E2B_B32")
@@ -1563,8 +1582,9 @@ static std::optional<uint64_t> parseLoadDistImmediate(StringRef dist,
 static std::optional<uint64_t> parseLoadX2DistImmediate(StringRef dist,
                                                         Type elementType) {
   auto width = getDistElementWidth(elementType);
-  if (dist == "BDINTLV")
+  if (dist == "BDINTLV") {
     return 10;
+  }
   if (!width)
     return std::nullopt;
   if (dist == "DINTLV_B8")
@@ -1582,12 +1602,15 @@ static std::optional<uint64_t> parseStoreDistImmediate(StringRef dist,
   if (dist.empty()) {
     if (!width)
       return std::nullopt;
-    if (*width == 8)
+    if (*width == 8) {
       return 0;
-    if (*width == 16)
+    }
+    if (*width == 16) {
       return 1;
-    if (*width == 32)
+    }
+    if (*width == 32) {
       return 2;
+    }
     return std::nullopt;
   }
   if (dist == "NORM_B8")
@@ -1652,8 +1675,9 @@ static Value packBlockRepeatStride(Operation *anchor, Value blockStride,
   Value blockI32 = castIntegerLikeTo(anchor, blockStride, builder.getI32Type());
   Value repeatI32 =
       castIntegerLikeTo(anchor, repeatStride, builder.getI32Type());
-  if (!blockI32 || !repeatI32)
+  if (!blockI32 || !repeatI32) {
     return {};
+  }
 
   auto c16 = builder.create<arith::ConstantIntOp>(anchor->getLoc(), 16, 32);
   auto blockShifted =
@@ -1664,10 +1688,12 @@ static Value packBlockRepeatStride(Operation *anchor, Value blockStride,
 }
 
 static std::optional<uint64_t> parseOrderImmediate(StringRef order) {
-  if (order.empty() || order == "ASC")
+  if (order.empty() || order == "ASC") {
     return 0;
-  if (order == "DESC")
+  }
+  if (order == "DESC") {
     return 1;
+  }
   return std::nullopt;
 }
 
@@ -1677,8 +1703,9 @@ static FailureOr<Value> packLoopPair(Operation *anchor, Value low, Value high) {
 
   Value lowI64 = castIntegerLikeTo(anchor, low, builder.getI64Type());
   Value highI64 = castIntegerLikeTo(anchor, high, builder.getI64Type());
-  if (!lowI64 || !highI64)
+  if (!lowI64 || !highI64) {
     return failure();
+  }
 
   Value shift = getI64Constant(builder, anchor->getLoc(), 40);
   Value highShifted =
@@ -1693,8 +1720,9 @@ static FailureOr<Value> packLoopSize(Operation *anchor, Value loop2, Value loop1
 
   Value loop2I64 = castIntegerLikeTo(anchor, loop2, builder.getI64Type());
   Value loop1I64 = castIntegerLikeTo(anchor, loop1, builder.getI64Type());
-  if (!loop2I64 || !loop1I64)
+  if (!loop2I64 || !loop1I64) {
     return failure();
+  }
 
   Value shift = getI64Constant(builder, anchor->getLoc(), 21);
   Value loop2Shifted =
@@ -1705,8 +1733,9 @@ static FailureOr<Value> packLoopSize(Operation *anchor, Value loop2, Value loop1
 
 static FailureOr<Value>
 packCopyGmToUbConfig0(Operation *anchor, ValueRange operands) {
-  if (operands.size() != 11)
+  if (operands.size() != 11) {
     return failure();
+  }
 
   OpBuilder builder(anchor);
   builder.setInsertionPoint(anchor);
@@ -1724,8 +1753,9 @@ packCopyGmToUbConfig0(Operation *anchor, ValueRange operands) {
   Value dataSelect = castIntegerLikeTo(anchor, operands[7], builder.getI64Type());
   Value cacheCtl = getI64Operand(8);
   if (!sid || !nBurst || !lenBurst || !leftPadding || !rightPadding ||
-      !dataSelect || !cacheCtl)
+      !dataSelect || !cacheCtl) {
     return failure();
+  }
 
   auto shl = [&](Value value, uint64_t amount) -> Value {
     return builder.create<arith::ShLIOp>(loc, value,
@@ -1747,8 +1777,9 @@ packCopyGmToUbConfig0(Operation *anchor, ValueRange operands) {
 
 static FailureOr<Value>
 packCopyGmToUbConfig1(Operation *anchor, ValueRange operands) {
-  if (operands.size() != 11)
+  if (operands.size() != 11) {
     return failure();
+  }
   return packLoopPair(anchor, operands[9], operands[10]);
 }
 
@@ -1769,8 +1800,9 @@ packCopyGmToUbConfig0(Operation *anchor, Value sid, Value nBurst,
 
 static FailureOr<Value>
 packCopyUbToGmConfig0(Operation *anchor, ValueRange operands) {
-  if (operands.size() != 8)
+  if (operands.size() != 8) {
     return failure();
+  }
 
   OpBuilder builder(anchor);
   builder.setInsertionPoint(anchor);
@@ -1784,8 +1816,9 @@ packCopyUbToGmConfig0(Operation *anchor, ValueRange operands) {
   Value nBurst = getI64Operand(3);
   Value lenBurst = getI64Operand(4);
   Value l2CacheCtl = getI64Operand(5);
-  if (!sid || !nBurst || !lenBurst || !l2CacheCtl)
+  if (!sid || !nBurst || !lenBurst || !l2CacheCtl) {
     return failure();
+  }
 
   auto shl = [&](Value value, uint64_t amount) -> Value {
     return builder.create<arith::ShLIOp>(loc, value,
@@ -1804,8 +1837,9 @@ packCopyUbToGmConfig0(Operation *anchor, ValueRange operands) {
 
 static FailureOr<Value>
 packCopyUbToGmConfig1(Operation *anchor, ValueRange operands) {
-  if (operands.size() != 8)
+  if (operands.size() != 8) {
     return failure();
+  }
   return packLoopPair(anchor, operands[6], operands[7]);
 }
 
@@ -1822,8 +1856,9 @@ packCopyUbToGmConfig0(Operation *anchor, Value sid, Value nBurst,
 
 static FailureOr<Value>
 packCopyUbToUbConfig(Operation *anchor, ValueRange operands) {
-  if (operands.size() != 7)
+  if (operands.size() != 7) {
     return failure();
+  }
   OpBuilder builder(anchor);
   builder.setInsertionPoint(anchor);
   Location loc = anchor->getLoc();
@@ -1836,8 +1871,9 @@ packCopyUbToUbConfig(Operation *anchor, ValueRange operands) {
   Value lenBurst = getI64Operand(4);
   Value srcStride = getI64Operand(5);
   Value dstStride = getI64Operand(6);
-  if (!nBurst || !lenBurst || !srcStride || !dstStride)
+  if (!nBurst || !lenBurst || !srcStride || !dstStride) {
     return failure();
+  }
 
   auto shl = [&](Value value, uint64_t amount) -> Value {
     return builder.create<arith::ShLIOp>(loc, value,
@@ -1856,8 +1892,9 @@ packCopyUbToUbConfig(Operation *anchor, ValueRange operands) {
 
 static FailureOr<Value>
 packCopyCbufToUbConfig(Operation *anchor, ValueRange operands) {
-  if (operands.size() != 7)
+  if (operands.size() != 7) {
     return failure();
+  }
   OpBuilder builder(anchor);
   builder.setInsertionPoint(anchor);
   Location loc = anchor->getLoc();
@@ -1871,8 +1908,9 @@ packCopyCbufToUbConfig(Operation *anchor, ValueRange operands) {
   Value lenBurst = getI64Operand(4);
   Value srcStride = getI64Operand(5);
   Value dstStride = getI64Operand(6);
-  if (!sid || !nBurst || !lenBurst || !srcStride || !dstStride)
+  if (!sid || !nBurst || !lenBurst || !srcStride || !dstStride) {
     return failure();
+  }
 
   auto shl = [&](Value value, uint64_t amount) -> Value {
     return builder.create<arith::ShLIOp>(loc, value,
@@ -1892,8 +1930,9 @@ packCopyCbufToUbConfig(Operation *anchor, ValueRange operands) {
 
 static FailureOr<Value>
 packCopyUbToCbufConfig(Operation *anchor, ValueRange operands) {
-  if (operands.size() != 7)
+  if (operands.size() != 7) {
     return failure();
+  }
   OpBuilder builder(anchor);
   builder.setInsertionPoint(anchor);
   Location loc = anchor->getLoc();
@@ -1907,8 +1946,9 @@ packCopyUbToCbufConfig(Operation *anchor, ValueRange operands) {
   Value lenBurst = getI64Operand(4);
   Value srcStride = getI64Operand(5);
   Value dstStride = getI64Operand(6);
-  if (!sid || !nBurst || !lenBurst || !srcStride || !dstStride)
+  if (!sid || !nBurst || !lenBurst || !srcStride || !dstStride) {
     return failure();
+  }
 
   auto shl = [&](Value value, uint64_t amount) -> Value {
     return builder.create<arith::ShLIOp>(loc, value,
@@ -1934,8 +1974,9 @@ packCopyGmToCbufConfig0(Operation *anchor, Value nBurst, Value lenBurst) {
 
   Value nBurstI64 = castIntegerLikeTo(anchor, nBurst, builder.getI64Type());
   Value lenBurstI64 = castIntegerLikeTo(anchor, lenBurst, builder.getI64Type());
-  if (!nBurstI64 || !lenBurstI64)
+  if (!nBurstI64 || !lenBurstI64) {
     return failure();
+  }
 
   auto shl = [&](Value value, uint64_t amount) -> Value {
     return builder.create<arith::ShLIOp>(loc, value,
@@ -1960,8 +2001,9 @@ packCopyGmToCbufConfig1(Operation *anchor, Value srcStride,
 
   Value srcStrideI64 = castIntegerLikeTo(anchor, srcStride, builder.getI64Type());
   Value dstStrideI64 = castIntegerLikeTo(anchor, dstStride, builder.getI64Type());
-  if (!srcStrideI64 || !dstStrideI64)
+  if (!srcStrideI64 || !dstStrideI64) {
     return failure();
+  }
 
   auto shl = [&](Value value, uint64_t amount) -> Value {
     return builder.create<arith::ShLIOp>(loc, value,
@@ -1988,8 +2030,9 @@ packCopyGmToCbufMultiConfig0(Operation *anchor, Value sid,
       castIntegerLikeTo(anchor, loop1SrcStride, builder.getI64Type());
   Value l2CacheCtlI64 = castIntegerLikeTo(anchor, l2CacheCtl, builder.getI64Type());
   Value nValueI64 = castIntegerLikeTo(anchor, nValue, builder.getI64Type());
-  if (!sidI64 || !loop1SrcStrideI64 || !l2CacheCtlI64 || !nValueI64)
+  if (!sidI64 || !loop1SrcStrideI64 || !l2CacheCtlI64 || !nValueI64) {
     return failure();
+  }
 
   auto shl = [&](Value value, uint64_t amount) -> Value {
     return builder.create<arith::ShLIOp>(loc, value,
@@ -2017,8 +2060,9 @@ packCopyGmToCbufMultiConfig1(Operation *anchor, Value dValue,
   Value loop4SrcStrideI64 =
       castIntegerLikeTo(anchor, loop4SrcStride, builder.getI64Type());
   Value smallC0EnI64 = castIntegerLikeTo(anchor, smallC0En, builder.getI64Type());
-  if (!dValueI64 || !loop4SrcStrideI64 || !smallC0EnI64)
+  if (!dValueI64 || !loop4SrcStrideI64 || !smallC0EnI64) {
     return failure();
+  }
 
   auto shl = [&](Value value, uint64_t amount) -> Value {
     return builder.create<arith::ShLIOp>(loc, value,
@@ -2050,8 +2094,9 @@ static FailureOr<Value> packCopyCbufToBtConfig(Operation *anchor,
   Value sourceGapI64 = castIntegerLikeTo(anchor, sourceGap, builder.getI64Type());
   Value dstGapI64 = castIntegerLikeTo(anchor, dstGap, builder.getI64Type());
   if (!convControlI64 || !nBurstI64 || !lenBurstI64 || !sourceGapI64 ||
-      !dstGapI64)
+      !dstGapI64) {
     return failure();
+  }
 
   auto shl = [&](Value value, uint64_t amount) -> Value {
     return builder.create<arith::ShLIOp>(loc, value,
@@ -2081,8 +2126,9 @@ static FailureOr<Value> packCopyCbufToFbufConfig(Operation *anchor, Value nBurst
   Value lenBurstI64 = castIntegerLikeTo(anchor, lenBurst, builder.getI64Type());
   Value sourceGapI64 = castIntegerLikeTo(anchor, sourceGap, builder.getI64Type());
   Value dstGapI64 = castIntegerLikeTo(anchor, dstGap, builder.getI64Type());
-  if (!nBurstI64 || !lenBurstI64 || !sourceGapI64 || !dstGapI64)
+  if (!nBurstI64 || !lenBurstI64 || !sourceGapI64 || !dstGapI64) {
     return failure();
+  }
 
   auto shl = [&](Value value, uint64_t amount) -> Value {
     return builder.create<arith::ShLIOp>(loc, value,
@@ -2110,8 +2156,9 @@ packLoadCbufToS4Config0(Operation *anchor, Value mStart, Value kStart,
   Value kStartI64 = castIntegerLikeTo(anchor, kStart, builder.getI64Type());
   Value mStepI64 = castIntegerLikeTo(anchor, mStep, builder.getI64Type());
   Value kStepI64 = castIntegerLikeTo(anchor, kStep, builder.getI64Type());
-  if (!mStartI64 || !kStartI64 || !mStepI64 || !kStepI64)
+  if (!mStartI64 || !kStartI64 || !mStepI64 || !kStepI64) {
     return failure();
+  }
 
   auto shl = [&](Value value, uint64_t amount) -> Value {
     return builder.create<arith::ShLIOp>(loc, value,
@@ -2136,8 +2183,9 @@ packLoadCbufToS4Config1(Operation *anchor, Value srcStride, Value dstStride) {
 
   Value srcStrideI64 = castIntegerLikeTo(anchor, srcStride, builder.getI64Type());
   Value dstStrideI64 = castIntegerLikeTo(anchor, dstStride, builder.getI64Type());
-  if (!srcStrideI64 || !dstStrideI64)
+  if (!srcStrideI64 || !dstStrideI64) {
     return failure();
+  }
 
   auto shl = [&](Value value, uint64_t amount) -> Value {
     return builder.create<arith::ShLIOp>(loc, value,
@@ -2158,8 +2206,9 @@ packLoadCbufToCaConfig0(Operation *anchor, Value mStart, Value kStart,
   Value kStartI64 = castIntegerLikeTo(anchor, kStart, builder.getI64Type());
   Value mStepI64 = castIntegerLikeTo(anchor, mStep, builder.getI64Type());
   Value kStepI64 = castIntegerLikeTo(anchor, kStep, builder.getI64Type());
-  if (!mStartI64 || !kStartI64 || !mStepI64 || !kStepI64)
+  if (!mStartI64 || !kStartI64 || !mStepI64 || !kStepI64) {
     return failure();
+  }
 
   auto shl = [&](Value value, uint64_t amount) -> Value {
     return builder.create<arith::ShLIOp>(loc, value,
@@ -2186,8 +2235,9 @@ packLoadCbufToCaConfig1(Operation *anchor, Value srcStride, Value dstStride) {
       castIntegerLikeTo(anchor, srcStride, builder.getI64Type());
   Value dstStrideI64 =
       castIntegerLikeTo(anchor, dstStride, builder.getI64Type());
-  if (!srcStrideI64 || !dstStrideI64)
+  if (!srcStrideI64 || !dstStrideI64) {
     return failure();
+  }
 
   auto shl = [&](Value value, uint64_t amount) -> Value {
     return builder.create<arith::ShLIOp>(loc, value,
@@ -2208,8 +2258,9 @@ packLoadCbufToCbConfig0(Operation *anchor, Value mStart, Value kStart,
   Value kStartI64 = castIntegerLikeTo(anchor, kStart, builder.getI64Type());
   Value mStepI64 = castIntegerLikeTo(anchor, mStep, builder.getI64Type());
   Value kStepI64 = castIntegerLikeTo(anchor, kStep, builder.getI64Type());
-  if (!mStartI64 || !kStartI64 || !mStepI64 || !kStepI64)
+  if (!mStartI64 || !kStartI64 || !mStepI64 || !kStepI64) {
     return failure();
+  }
 
   auto shl = [&](Value value, uint64_t amount) -> Value {
     return builder.create<arith::ShLIOp>(loc, value,
@@ -2236,8 +2287,9 @@ packLoadCbufToCbConfig1(Operation *anchor, Value srcStride, Value dstStride) {
       castIntegerLikeTo(anchor, srcStride, builder.getI64Type());
   Value dstStrideI64 =
       castIntegerLikeTo(anchor, dstStride, builder.getI64Type());
-  if (!srcStrideI64 || !dstStrideI64)
+  if (!srcStrideI64 || !dstStrideI64) {
     return failure();
+  }
 
   auto shl = [&](Value value, uint64_t amount) -> Value {
     return builder.create<arith::ShLIOp>(loc, value,
@@ -2269,8 +2321,9 @@ static FailureOr<Value> packVbitsortConfig(Operation *anchor, Value repeatTimes)
   Location loc = anchor->getLoc();
 
   Value repeatI64 = castIntegerLikeTo(anchor, repeatTimes, builder.getI64Type());
-  if (!repeatI64)
+  if (!repeatI64) {
     return failure();
+  }
   return builder
       .create<arith::ShLIOp>(loc, repeatI64, getI64Constant(builder, loc, 56))
       .getResult();
@@ -2285,8 +2338,9 @@ materializeDynamicPltMask(ConversionPatternRewriter &rewriter,
   if (laneCountI32.getType() != i32Type) {
     laneCountI32 = castIntegerLikeTo(rewriter.getInsertionBlock()->getParentOp(),
                                      laneCountI32, i32Type);
-    if (!laneCountI32)
+    if (!laneCountI32) {
       return failure();
+    }
   }
 
   StringRef calleeName;
@@ -2302,8 +2356,9 @@ materializeDynamicPltMask(ConversionPatternRewriter &rewriter,
     else if (intType.getWidth() == 8)
       calleeName = StringRef("llvm.hivm.plt.b8.v300");
   }
-  if (calleeName.empty())
+  if (calleeName.empty()) {
     return failure();
+  }
 
   Type maskType = VectorType::get({256}, rewriter.getI1Type());
   auto funcType =
@@ -2320,8 +2375,9 @@ static FailureOr<StringRef> buildCarryBinaryCallee(MLIRContext *context,
   std::string vec =
       getElementTypeFragment(cast<pto::VRegType>(resultType).getElementType());
   auto lanes = getElementCountFromVectorLike(resultType);
-  if (vec.empty() || !lanes)
+  if (vec.empty() || !lanes) {
     return failure();
+  }
   return StringAttr::get(context, "llvm.hivm." + stem.str() + ".v" +
                                       std::to_string(*lanes) + vec)
       .getValue();
@@ -2329,20 +2385,27 @@ static FailureOr<StringRef> buildCarryBinaryCallee(MLIRContext *context,
 
 template <typename UnaryOp>
 static StringRef getUnaryMaskedStem() {
-  if constexpr (std::is_same_v<UnaryOp, pto::VabsOp>)
+  if constexpr (std::is_same_v<UnaryOp, pto::VabsOp>) {
     return "vabs";
-  if constexpr (std::is_same_v<UnaryOp, pto::VexpOp>)
+  }
+  if constexpr (std::is_same_v<UnaryOp, pto::VexpOp>) {
     return "vexp";
-  if constexpr (std::is_same_v<UnaryOp, pto::VlnOp>)
+  }
+  if constexpr (std::is_same_v<UnaryOp, pto::VlnOp>) {
     return "vln";
-  if constexpr (std::is_same_v<UnaryOp, pto::VnegOp>)
+  }
+  if constexpr (std::is_same_v<UnaryOp, pto::VnegOp>) {
     return "vneg";
-  if constexpr (std::is_same_v<UnaryOp, pto::VsqrtOp>)
+  }
+  if constexpr (std::is_same_v<UnaryOp, pto::VsqrtOp>) {
     return "vsqrt";
-  if constexpr (std::is_same_v<UnaryOp, pto::VreluOp>)
+  }
+  if constexpr (std::is_same_v<UnaryOp, pto::VreluOp>) {
     return "vrelu";
-  if constexpr (std::is_same_v<UnaryOp, pto::VnotOp>)
+  }
+  if constexpr (std::is_same_v<UnaryOp, pto::VnotOp>) {
     return "vnot";
+  }
   return {};
 }
 
@@ -2350,44 +2413,58 @@ template <typename UnaryOp>
 static FailureOr<StringRef> buildUnaryMaskedCallee(MLIRContext *context,
                                                    Type resultType) {
   StringRef stem = getUnaryMaskedStem<UnaryOp>();
-  if (stem.empty())
+  if (stem.empty()) {
     return failure();
+  }
   return buildCANN900ModeTypedCallee(context, resultType, stem, "x");
 }
 
 template <typename BinaryOp>
 static StringRef getBinaryMaskedStem() {
-  if constexpr (std::is_same_v<BinaryOp, pto::VaddOp>)
+  if constexpr (std::is_same_v<BinaryOp, pto::VaddOp>) {
     return "vadd";
-  if constexpr (std::is_same_v<BinaryOp, pto::VsubOp>)
+  }
+  if constexpr (std::is_same_v<BinaryOp, pto::VsubOp>) {
     return "vsub";
-  if constexpr (std::is_same_v<BinaryOp, pto::VmulOp>)
+  }
+  if constexpr (std::is_same_v<BinaryOp, pto::VmulOp>) {
     return "vmul";
-  if constexpr (std::is_same_v<BinaryOp, pto::VdivOp>)
+  }
+  if constexpr (std::is_same_v<BinaryOp, pto::VdivOp>) {
     return "vdiv";
-  if constexpr (std::is_same_v<BinaryOp, pto::VmaxOp>)
+  }
+  if constexpr (std::is_same_v<BinaryOp, pto::VmaxOp>) {
     return "vmax";
-  if constexpr (std::is_same_v<BinaryOp, pto::VminOp>)
+  }
+  if constexpr (std::is_same_v<BinaryOp, pto::VminOp>) {
     return "vmin";
-  if constexpr (std::is_same_v<BinaryOp, pto::VandOp>)
+  }
+  if constexpr (std::is_same_v<BinaryOp, pto::VandOp>) {
     return "vand";
-  if constexpr (std::is_same_v<BinaryOp, pto::VorOp>)
+  }
+  if constexpr (std::is_same_v<BinaryOp, pto::VorOp>) {
     return "vor";
-  if constexpr (std::is_same_v<BinaryOp, pto::VxorOp>)
+  }
+  if constexpr (std::is_same_v<BinaryOp, pto::VxorOp>) {
     return "vxor";
-  if constexpr (std::is_same_v<BinaryOp, pto::VshlOp>)
+  }
+  if constexpr (std::is_same_v<BinaryOp, pto::VshlOp>) {
     return "vshl";
-  if constexpr (std::is_same_v<BinaryOp, pto::VshrOp>)
+  }
+  if constexpr (std::is_same_v<BinaryOp, pto::VshrOp>) {
     return "vshr";
-  if constexpr (std::is_same_v<BinaryOp, pto::VpreluOp>)
+  }
+  if constexpr (std::is_same_v<BinaryOp, pto::VpreluOp>) {
     return "vprelu";
+  }
   return {};
 }
 
 template <typename TernaryOp>
 static StringRef getTernaryMaskedStem() {
-  if constexpr (std::is_same_v<TernaryOp, pto::VmaddOp>)
+  if constexpr (std::is_same_v<TernaryOp, pto::VmaddOp>) {
     return "vmadd";
+  }
   return {};
 }
 
@@ -2406,14 +2483,18 @@ static constexpr bool usesSignedTernaryCANN900Callee() {
 
 template <typename CarryOp>
 static StringRef getCarryBinaryStem() {
-  if constexpr (std::is_same_v<CarryOp, pto::VaddcOp>)
+  if constexpr (std::is_same_v<CarryOp, pto::VaddcOp>) {
     return "vaddc";
-  if constexpr (std::is_same_v<CarryOp, pto::VsubcOp>)
+  }
+  if constexpr (std::is_same_v<CarryOp, pto::VsubcOp>) {
     return "vsubc";
-  if constexpr (std::is_same_v<CarryOp, pto::VaddcsOp>)
+  }
+  if constexpr (std::is_same_v<CarryOp, pto::VaddcsOp>) {
     return "vaddcs";
-  if constexpr (std::is_same_v<CarryOp, pto::VsubcsOp>)
+  }
+  if constexpr (std::is_same_v<CarryOp, pto::VsubcsOp>) {
     return "vsubcs";
+  }
   return {};
 }
 
@@ -2426,8 +2507,9 @@ static constexpr bool hasCarryInput() {
 static FailureOr<StringRef> buildVselCallee(MLIRContext *context,
                                             Type resultType) {
   std::string vec = getCANN900VectorTypeFragment(resultType);
-  if (vec.empty())
+  if (vec.empty()) {
     return failure();
+  }
   return StringAttr::get(context, "llvm.hivm.vsel." + vec)
       .getValue();
 }
@@ -2436,16 +2518,18 @@ static FailureOr<StringRef> buildVselrCallee(MLIRContext *context,
                                              Type resultType) {
   Type elementType = getElementTypeFromVectorLike(resultType);
   auto lanes = getElementCountFromVectorLike(resultType);
-  if (!elementType || !lanes)
+  if (!elementType || !lanes) {
     return failure();
+  }
 
   std::optional<LowpPayloadABI> abi =
       getLowpPayloadABI(elementType, context);
   std::string vec = abi ? "v" + std::to_string(*lanes) +
                               abi->intrinsicElementFragment.str()
                         : getCANN900VectorTypeFragment(resultType);
-  if (vec.empty())
+  if (vec.empty()) {
     return failure();
+  }
   return StringAttr::get(context, "llvm.hivm.vselr." + vec)
       .getValue();
 }
@@ -2454,8 +2538,9 @@ static FailureOr<StringRef> buildVdupCallee(MLIRContext *context, pto::VdupOp op
   Type inputType = op.getInput().getType();
   Type resultType = op.getResult().getType();
   std::string vec = getCANN900VectorTypeFragment(resultType);
-  if (vec.empty())
+  if (vec.empty()) {
     return failure();
+  }
 
   if (isa<VectorType, pto::VRegType>(inputType)) {
     StringRef position = op.getPosition().value_or("LOWEST");
@@ -2471,8 +2556,9 @@ static FailureOr<StringRef> buildVdupCallee(MLIRContext *context, pto::VdupOp op
 static FailureOr<StringRef> buildVbrCallee(MLIRContext *context,
                                           Type resultType) {
   std::string vec = getCANN900VectorTypeFragment(resultType);
-  if (vec.empty())
+  if (vec.empty()) {
     return failure();
+  }
   return StringAttr::get(context, "llvm.hivm.vbr." + vec).getValue();
 }
 
@@ -2491,8 +2577,9 @@ static FailureOr<StringRef> buildVstusCallee(MLIRContext *context,
   std::string vec =
       getMemoryElementTypeFragment(getElementTypeFromVectorLike(valueType));
   auto lanes = getElementCountFromVectorLike(valueType);
-  if (vec.empty() || !lanes)
+  if (vec.empty() || !lanes) {
     return failure();
+  }
   return StringAttr::get(context, "llvm.hivm.vstus.v" +
                                       std::to_string(*lanes) + vec)
       .getValue();
@@ -2503,8 +2590,9 @@ static FailureOr<StringRef> buildVstusPostCallee(MLIRContext *context,
   std::string vec =
       getMemoryElementTypeFragment(getElementTypeFromVectorLike(valueType));
   auto lanes = getElementCountFromVectorLike(valueType);
-  if (vec.empty() || !lanes)
+  if (vec.empty() || !lanes) {
     return failure();
+  }
   return StringAttr::get(context, "llvm.hivm.vstus.post.v" +
                                       std::to_string(*lanes) + vec)
       .getValue();
@@ -2836,11 +2924,13 @@ static FailureOr<StringRef> buildAtomicCalleeName(MLIRContext *context,
                                                   Attribute signednessAttr,
                                                   StringRef opName) {
   std::string elem = getAtomicElementTypeFragment(valueType, signednessAttr);
-  if (elem.empty())
+  if (elem.empty()) {
     return failure();
+  }
   auto ptrTy = dyn_cast<pto::PtrType>(ptrType);
-  if (!ptrTy)
+  if (!ptrTy) {
     return failure();
+  }
 
   StringRef space;
   switch (ptrTy.getMemorySpace().getAddressSpace()) {
@@ -2848,8 +2938,9 @@ static FailureOr<StringRef> buildAtomicCalleeName(MLIRContext *context,
     space = "G";
     break;
   case pto::AddressSpace::VEC:
-    if (valueType.isInteger(64))
+    if (valueType.isInteger(64)) {
       return failure();
+    }
     space = "S";
     break;
   default:
@@ -5328,8 +5419,9 @@ public:
   matchAndRewrite(RawOp op, typename RawOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto raw = dyn_cast<pto::MadRawOpInterface>(op.getOperation());
-    if (!raw)
+    if (!raw) {
       return failure();
+    }
     return lowerMadRawOp(raw, adaptor.getOperands(), rewriter, state);
   }
 
@@ -8411,15 +8503,19 @@ public:
     };
 
     if ((*contract).satBeforeRnd) {
-      if ((*contract).requiresSat && failed(appendSatArg()))
+      if ((*contract).requiresSat && failed(appendSatArg())) {
         return failure();
-      if ((*contract).requiresRnd && failed(appendRndArg()))
+      }
+      if ((*contract).requiresRnd && failed(appendRndArg())) {
         return failure();
+      }
     } else {
-      if ((*contract).requiresRnd && failed(appendRndArg()))
+      if ((*contract).requiresRnd && failed(appendRndArg())) {
         return failure();
-      if ((*contract).requiresSat && failed(appendSatArg()))
+      }
+      if ((*contract).requiresSat && failed(appendSatArg())) {
         return failure();
+      }
     }
 
     if ((*contract).requiresPart) {
@@ -8919,10 +9015,12 @@ static std::optional<unsigned> getSimtKeepResumeBitWidth(Type type) {
       return intType.getWidth();
     return std::nullopt;
   }
-  if (type.isF16() || type.isBF16())
+  if (type.isF16() || type.isBF16()) {
     return 16;
-  if (type.isF32())
+  }
+  if (type.isF32()) {
     return 32;
+  }
   return std::nullopt;
 }
 
@@ -8930,8 +9028,9 @@ static Value packSimtKeepResumePayload(Location loc, Value value,
                                        ConversionPatternRewriter &rewriter) {
   Type type = value.getType();
   std::optional<unsigned> width = getSimtKeepResumeBitWidth(type);
-  if (!width)
+  if (!width) {
     return {};
+  }
 
   Type intType = rewriter.getIntegerType(*width);
   Value bits = value;
@@ -8950,8 +9049,9 @@ static Value unpackSimtKeepResumePayload(Location loc, Value value,
                                          Type resultType,
                                          ConversionPatternRewriter &rewriter) {
   std::optional<unsigned> width = getSimtKeepResumeBitWidth(resultType);
-  if (!width)
+  if (!width) {
     return {};
+  }
 
   Type intType = rewriter.getIntegerType(*width);
   Value bits = value;
@@ -9230,8 +9330,9 @@ public:
 
     while (eventValue.getDefiningOp()) {
       auto unrealizedCast = dyn_cast<UnrealizedConversionCastOp>(eventValue.getDefiningOp());
-      if (!unrealizedCast || unrealizedCast.getInputs().size() != 1)
+      if (!unrealizedCast || unrealizedCast.getInputs().size() != 1) {
         break;
+      }
       eventValue = unrealizedCast.getInputs()[0];
     }
 
@@ -10357,20 +10458,24 @@ public:
   LogicalResult
   matchAndRewrite(UnrealizedConversionCastOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (op->getNumOperands() != 1 || op->getNumResults() != 1)
+    if (op->getNumOperands() != 1 || op->getNumResults() != 1) {
       return failure();
+    }
     if (!hasVPTOConvertibleType(op->getOperandTypes()) &&
-        !hasVPTOConvertibleType(op->getResultTypes()))
+        !hasVPTOConvertibleType(op->getResultTypes())) {
       return failure();
+    }
 
     Type convertedResultType =
         getTypeConverter()->convertType(op.getResult(0).getType());
-    if (!convertedResultType)
+    if (!convertedResultType) {
       return failure();
+    }
 
     Value input = adaptor.getOperands().front();
-    if (input.getType() != convertedResultType)
+    if (input.getType() != convertedResultType) {
       return failure();
+    }
 
     rewriter.replaceOp(op, input);
     return success();
@@ -10386,17 +10491,20 @@ public:
   matchAndRewrite(pto::DeclareStructOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     (void)adaptor;
+    Type declaredType = op.getResult().getType();
     auto resultType = dyn_cast<LLVM::LLVMPointerType>(
-        getTypeConverter()->convertType(op.getS().getType()));
-    if (!resultType)
+        getTypeConverter()->convertType(declaredType));
+    if (!resultType) {
       return rewriter.notifyMatchFailure(op,
                                          "expected LLVM pointer result type");
-    auto structType = cast<pto::StructType>(op.getS().getType());
+    }
+    auto structType = cast<pto::StructType>(declaredType);
     Type storageType = getVPTOStructStorageType(structType, rewriter);
     auto parentFunc = op->getParentOfType<func::FuncOp>();
-    if (!parentFunc)
+    if (!parentFunc) {
       return rewriter.notifyMatchFailure(
           op, "expected struct declaration inside a function");
+    }
 
     // A non-entry alloca is a dynamic stack allocation. Keep one stack slot per
     // declaration per function invocation even when the declaration is nested
@@ -10425,13 +10533,16 @@ public:
   matchAndRewrite(pto::StructGetOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Type resultType = getTypeConverter()->convertType(op.getValue().getType());
-    if (!resultType)
+    if (!resultType) {
       return rewriter.notifyMatchFailure(op, "could not convert result type");
+    }
+    Value structValue = adaptor.getOperands().front();
+    auto structType = cast<pto::StructType>(op->getOperand(0).getType());
     FailureOr<Value> address = getVPTOStructFieldAddress(
-        rewriter, op.getLoc(), adaptor.getS(),
-        cast<pto::StructType>(op.getS().getType()), op.getPath());
-    if (failed(address))
+        rewriter, op.getLoc(), structValue, structType, op.getPath());
+    if (failed(address)) {
       return rewriter.notifyMatchFailure(op, "invalid struct field path");
+    }
     rewriter.replaceOpWithNewOp<LLVM::LoadOp>(
         op, resultType, *address, getNaturalByteAlignment(resultType));
     return success();
@@ -10446,11 +10557,13 @@ public:
   LogicalResult
   matchAndRewrite(pto::StructSetOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    Value structValue = adaptor.getOperands().front();
+    auto structType = cast<pto::StructType>(op->getOperand(0).getType());
     FailureOr<Value> address = getVPTOStructFieldAddress(
-        rewriter, op.getLoc(), adaptor.getS(),
-        cast<pto::StructType>(op.getS().getType()), op.getPath());
-    if (failed(address))
+        rewriter, op.getLoc(), structValue, structType, op.getPath());
+    if (failed(address)) {
       return rewriter.notifyMatchFailure(op, "invalid struct field path");
+    }
     rewriter.replaceOpWithNewOp<LLVM::StoreOp>(
         op, adaptor.getValue(), *address,
         getNaturalByteAlignment(adaptor.getValue().getType()));
@@ -11086,8 +11199,9 @@ public:
   LogicalResult
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
-    if (isa<pto::CastPtrOp>(op))
+    if (isa<pto::CastPtrOp>(op)) {
       return failure();
+    }
     Type propertyType;
     if (auto allocaOp = dyn_cast<LLVM::AllocaOp>(op))
       propertyType = allocaOp.getElemType();
@@ -11095,8 +11209,9 @@ public:
       propertyType = gepOp.getElemType();
     if (!hasVPTOConvertibleType(op->getOperandTypes()) &&
         !hasVPTOConvertibleType(op->getResultTypes()) &&
-        !hasVPTOConvertibleType(propertyType))
+        !hasVPTOConvertibleType(propertyType)) {
       return failure();
+    }
     if (op->getNumRegions() != 0)
       return rewriter.notifyMatchFailure(
           op, "region ops with VPTO types are handled structurally");
@@ -11525,8 +11640,9 @@ static LogicalResult lowerVPTOOps(ModuleOp module, llvm::raw_ostream &diagOS) {
     diagOS << "VPTO LLVM emission failed: VPTO op lowering failed\n";
     return failure();
   }
-  if (failed(materializeDecls(module, state.plannedDecls, diagOS)))
+  if (failed(materializeDecls(module, state.plannedDecls, diagOS))) {
     return failure();
+  }
   return success();
 }
 
@@ -11596,8 +11712,9 @@ static LogicalResult lowerVPTOTypes(ModuleOp module, llvm::raw_ostream &diagOS) 
     diagOS << "VPTO LLVM emission failed: VPTO type lowering failed\n";
     return failure();
   }
-  if (failed(materializeDecls(module, state.plannedDecls, diagOS)))
+  if (failed(materializeDecls(module, state.plannedDecls, diagOS))) {
     return failure();
+  }
   foldVPTOTypeCasts(module, typeConverter);
   return success();
 }
@@ -11728,11 +11845,11 @@ static LogicalResult renameKernelFunctionsForKernelKind(ModuleOp module,
   }
 
   StringRef suffix;
-  if (*kernelKind == FunctionKernelKind::Vector)
+  if (*kernelKind == FunctionKernelKind::Vector) {
     suffix = kVectorSuffix;
-  else if (*kernelKind == FunctionKernelKind::Cube)
+  } else if (*kernelKind == FunctionKernelKind::Cube) {
     suffix = kCubeSuffix;
-  else {
+  } else {
     diagOS << "VPTO LLVM emission failed: unsupported "
            << FunctionKernelKindAttr::name << "\n";
     return failure();
@@ -11865,8 +11982,9 @@ emitDeviceLLVMModule(ModuleOp deviceModule, StringRef kernelKind,
                      llvm::raw_ostream &diagOS) {
   if (!deviceModule)
     return EmittedLLVMModule{};
-  if (failed(applyQueriedTargetAttrs(deviceModule, options, diagOS)))
+  if (failed(applyQueriedTargetAttrs(deviceModule, options, diagOS))) {
     return failure();
+  }
 
   auto llvmContext = std::make_unique<llvm::LLVMContext>();
   registerBuiltinDialectTranslation(*deviceModule.getContext());
@@ -11891,8 +12009,9 @@ emitDeviceLLVMModule(ModuleOp deviceModule, StringRef kernelKind,
     func.addFnAttr(llvm::Attribute::WriteOnly);
   }
   applySimtEntryCallingConvention(*llvmModule, simtEntryNames);
-  if (failed(attachAIVectorScopeMetadata(*llvmModule, diagOS)))
+  if (failed(attachAIVectorScopeMetadata(*llvmModule, diagOS))) {
     return failure();
+  }
   attachHIVMKernelAnnotations(*llvmModule, deviceModule);
   llvmModule->setModuleIdentifier(("ptoas.hivm.official." + kernelKind).str());
   llvmModule->setSourceFileName(("ptoas.hivm.official." + kernelKind).str());
