@@ -505,6 +505,47 @@ def PTO_LayoutAttr : PTO_Attr<"Layout", "layout"> {
 }
 
 //===----------------------------------------------------------------------===//
+// ConvTile layout
+//===----------------------------------------------------------------------===//
+
+def PTO_ConvLayout_NC1HWC0 :
+    I32EnumAttrCase<"NC1HWC0", 0, "nc1hwc0">;
+def PTO_ConvLayout_NDC1HWC0 :
+    I32EnumAttrCase<"NDC1HWC0", 1, "ndc1hwc0">;
+def PTO_ConvLayout_FRACTAL_Z :
+    I32EnumAttrCase<"FRACTAL_Z", 2, "fractal_z">;
+def PTO_ConvLayout_FRACTAL_Z_3D :
+    I32EnumAttrCase<"FRACTAL_Z_3D", 3, "fractal_z_3d">;
+def PTO_ConvLayout_NCHW :
+    I32EnumAttrCase<"NCHW", 4, "nchw">;
+def PTO_ConvLayout_NHWC :
+    I32EnumAttrCase<"NHWC", 5, "nhwc">;
+def PTO_ConvLayout_GNCHW :
+    I32EnumAttrCase<"GNCHW", 6, "gnchw">;
+def PTO_ConvLayout_GNC1HWC0 :
+    I32EnumAttrCase<"GNC1HWC0", 7, "gnc1hwc0">;
+
+def PTO_ConvLayoutEnum : PTO_I32Enum<
+  "ConvLayout", "PTO ConvTile storage layout", [
+    PTO_ConvLayout_NC1HWC0,
+    PTO_ConvLayout_NDC1HWC0,
+    PTO_ConvLayout_FRACTAL_Z,
+    PTO_ConvLayout_FRACTAL_Z_3D,
+    PTO_ConvLayout_NCHW,
+    PTO_ConvLayout_NHWC,
+    PTO_ConvLayout_GNCHW,
+    PTO_ConvLayout_GNC1HWC0
+  ]>;
+
+def PTO_ConvLayoutAttr : PTO_Attr<"ConvLayout", "conv_layout"> {
+  let parameters = (ins EnumParameter<PTO_ConvLayoutEnum>:$value);
+  let assemblyFormat = "`<` params `>`";
+  let description = [{
+    Physical layout carried by a PTO ConvTile.
+  }];
+}
+
+//===----------------------------------------------------------------------===//
 // Function and Module Core Type
 //===----------------------------------------------------------------------===//
 

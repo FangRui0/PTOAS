@@ -843,6 +843,56 @@ static std::optional<std::string> getEmitCTileTypeString(pto::TileBufType type) 
          tileBufCompactToken(configAttr) + ">";
 }
 
+static StringRef convLayoutToken(pto::ConvLayout layout) {
+  switch (layout) {
+  case pto::ConvLayout::NC1HWC0:
+    return "Layout::NC1HWC0";
+  case pto::ConvLayout::NDC1HWC0:
+    return "Layout::NDC1HWC0";
+  case pto::ConvLayout::FRACTAL_Z:
+    return "Layout::FRACTAL_Z";
+  case pto::ConvLayout::FRACTAL_Z_3D:
+    return "Layout::FRACTAL_Z_3D";
+  case pto::ConvLayout::NCHW:
+    return "Layout::NCHW";
+  case pto::ConvLayout::NHWC:
+    return "Layout::NHWC";
+  case pto::ConvLayout::GNCHW:
+    return "Layout::GNCHW";
+  case pto::ConvLayout::GNC1HWC0:
+    return "Layout::GNC1HWC0";
+  }
+  return "Layout::NC1HWC0";
+}
+
+static std::optional<std::string>
+getEmitCConvTileTypeString(pto::ConvTileType type) {
+  auto memorySpace =
+      dyn_cast_or_null<pto::AddressSpaceAttr>(type.getMemorySpace());
+  auto layout = type.getLayout();
+  const bool invalidType =
+      !memorySpace || !layout || type.getRank() == 0 || type.getRank() > 6 ||
+      type.getBufferSize() <= 0;
+  if (invalidType) {
+    return std::nullopt;
+  }
+
+  std::string shape = "ConvTileShape<";
+  for (auto [index, dim] : llvm::enumerate(type.getShape())) {
+    if (index != 0) {
+      shape += ", ";
+    }
+    shape += std::to_string(dim);
+  }
+  shape += ">";
+
+  return std::string("ConvTile<") +
+         tileRoleToken(type.getMemorySpace(), type.getElementType(), nullptr) +
+         ", " + getEmitCScalarTypeToken(type.getElementType()) + ", " +
+         std::to_string(type.getBufferSize()) + ", " +
+         convLayoutToken(layout.getValue()).str() + ", " + shape + ">";
+}
+
 //===----------------------------------------------------------------------===//
 // Type Converter
 //===----------------------------------------------------------------------===//
@@ -1017,10 +1067,19 @@ public:
                                               type.getShape());
     });
 
-    addConversion([Ctx](pto::TileBufType type) -> std::optional<Type> {
+  addConversion([Ctx](pto::TileBufType type) -> std::optional<Type> {
       auto typeString = getEmitCTileTypeString(type);
-      if (!typeString)
+      if (!typeString) {
         return std::nullopt;
+      }
+      return emitc::OpaqueType::get(Ctx, *typeString);
+    });
+
+    addConversion([Ctx](pto::ConvTileType type) -> std::optional<Type> {
+      auto typeString = getEmitCConvTileTypeString(type);
+      if (!typeString) {
+        return std::nullopt;
+      }
       return emitc::OpaqueType::get(Ctx, *typeString);
     });
 
@@ -12492,7 +12551,57 @@ struct PTOAllocTileToEmitC
                                 ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
     MLIRContext *ctx = rewriter.getContext();
-    auto tileTy = cast<pto::TileBufType>(op.getResult().getType());
+    Type resultTy = op.getResult().getType();
+    if (auto convTy = dyn_cast<pto::ConvTileType>(resultTy)) {
+      auto convTypeString = getEmitCConvTileTypeString(convTy);
+      if (!convTypeString) {
+        return rewriter.notifyMatchFailure(
+            op, "invalid ConvTile type for EmitC conversion");
+      }
+      Type convertedTy = getTypeConverter()->convertType(convTy);
+      if (!convertedTy) {
+        convertedTy = emitc::OpaqueType::get(ctx, *convTypeString);
+      }
+      Value tile =
+          rewriter
+              .create<emitc::VariableOp>(
+                  loc, getEmitCVariableResultType(convertedTy),
+                  emitc::OpaqueAttr::get(ctx, ""))
+              .getResult();
+      tile = loadEmitCVariableIfNeeded(rewriter, loc, tile);
+
+      Value addr = adaptor.getAddr();
+      if (addr) {
+        addr = peelUnrealized(addr);
+        auto u64Ty = emitc::OpaqueType::get(ctx, "uint64_t");
+        const bool isPointer =
+            isa<emitc::PointerType>(addr.getType()) ||
+            (isa<emitc::OpaqueType>(addr.getType()) &&
+             cast<emitc::OpaqueType>(addr.getType()).getValue().ends_with("*"));
+        if (isPointer) {
+          auto rcU64 =
+              rewriter.getArrayAttr({emitc::OpaqueAttr::get(ctx, "uint64_t")});
+          addr = rewriter
+                     .create<emitc::CallOpaqueOp>(
+                         loc, u64Ty, "reinterpret_cast", ArrayAttr{}, rcU64,
+                         ValueRange{addr})
+                     .getResult(0);
+        } else if (addr.getType() != u64Ty) {
+          addr = rewriter.create<emitc::CastOp>(loc, u64Ty, addr).getResult();
+        }
+        rewriter.create<emitc::CallOpaqueOp>(
+            loc, TypeRange{}, "TASSIGN", ArrayAttr{}, ArrayAttr{},
+            ValueRange{tile, addr});
+      }
+      rewriter.replaceOp(op, tile);
+      return success();
+    }
+
+    auto tileTy = dyn_cast<pto::TileBufType>(resultTy);
+    if (!tileTy) {
+      return rewriter.notifyMatchFailure(
+          op, "expected tile_buf or conv_tile result");
+    }
     auto tileTypeString = getEmitCTileTypeString(tileTy);
     if (!tileTypeString)
       return rewriter.notifyMatchFailure(

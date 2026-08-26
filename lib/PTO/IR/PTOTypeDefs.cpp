@@ -190,6 +190,19 @@ static std::optional<AddressSpace> resolveTileBufMemorySpace(StringRef locStr) {
       .Default(::std::nullopt);
 }
 
+static std::optional<ConvLayout> resolveConvLayout(StringRef layoutStr) {
+  return ::llvm::StringSwitch<::std::optional<ConvLayout>>(layoutStr)
+      .Case("nc1hwc0", ConvLayout::NC1HWC0)
+      .Case("ndc1hwc0", ConvLayout::NDC1HWC0)
+      .Case("fractal_z", ConvLayout::FRACTAL_Z)
+      .Case("fractal_z_3d", ConvLayout::FRACTAL_Z_3D)
+      .Case("nchw", ConvLayout::NCHW)
+      .Case("nhwc", ConvLayout::NHWC)
+      .Case("gnchw", ConvLayout::GNCHW)
+      .Case("gnc1hwc0", ConvLayout::GNC1HWC0)
+      .Default(::std::nullopt);
+}
+
 static BLayout resolveTileBufBLayout(MLIRContext *context,
                                      AddressSpace memorySpace,
                                      BLayout parsedLayout) {
@@ -754,6 +767,162 @@ void mlir::pto::TileBufType::print(mlir::AsmPrinter &printer) const {
     printer << ", compact=" << stringifyCompactModeInt(cfg.getCompactMode());
   }
 
+  printer << ">";
+}
+
+// ---- ConvTileType custom asm ----
+// !pto.conv_tile<mat, buffer=4096, layout=nc1hwc0, shape=1x1x16x16x16xi8>
+Type ConvTileType::parse(AsmParser &parser) {
+  if (failed(parser.parseLess())) {
+    return Type();
+  }
+
+  std::string locStr;
+  std::string layoutStr;
+  SmallVector<int64_t, 6> shape;
+  Type dtype;
+  int64_t bufferSize = 0;
+
+  ParseResult parseResult = parser.parseKeywordOrString(&locStr);
+  if (!parseResult.succeeded()) {
+    return Type();
+  }
+  parseResult = parser.parseComma();
+  if (!parseResult.succeeded()) {
+    return Type();
+  }
+  parseResult = parser.parseKeyword("buffer");
+  if (!parseResult.succeeded()) {
+    return Type();
+  }
+  parseResult = parser.parseEqual();
+  if (!parseResult.succeeded()) {
+    return Type();
+  }
+  parseResult = parser.parseInteger(bufferSize);
+  if (!parseResult.succeeded()) {
+    return Type();
+  }
+  parseResult = parser.parseComma();
+  if (!parseResult.succeeded()) {
+    return Type();
+  }
+  parseResult = parser.parseKeyword("layout");
+  if (!parseResult.succeeded()) {
+    return Type();
+  }
+  parseResult = parser.parseEqual();
+  if (!parseResult.succeeded()) {
+    return Type();
+  }
+  parseResult = parser.parseKeywordOrString(&layoutStr);
+  if (!parseResult.succeeded()) {
+    return Type();
+  }
+  parseResult = parser.parseComma();
+  if (!parseResult.succeeded()) {
+    return Type();
+  }
+  parseResult = parser.parseKeyword("shape");
+  if (!parseResult.succeeded()) {
+    return Type();
+  }
+  parseResult = parser.parseEqual();
+  if (!parseResult.succeeded()) {
+    return Type();
+  }
+  parseResult = parser.parseDimensionList(shape, /*allowDynamic=*/false);
+  if (!parseResult.succeeded()) {
+    return Type();
+  }
+  parseResult = parser.parseType(dtype);
+  if (!parseResult.succeeded()) {
+    return Type();
+  }
+  parseResult = parser.parseGreater();
+  if (!parseResult.succeeded()) {
+    return Type();
+  }
+
+  auto emitError = [&]() -> InFlightDiagnostic {
+    return parser.emitError(parser.getNameLoc());
+  };
+  auto memorySpace = resolveTileBufMemorySpace(locStr);
+  if (!memorySpace.has_value()) {
+    emitError() << "unknown ConvTile loc: " << locStr;
+    return Type();
+  }
+  auto layout = resolveConvLayout(layoutStr);
+  if (!layout.has_value()) {
+    emitError() << "unknown ConvTile layout: " << layoutStr;
+    return Type();
+  }
+  if (bufferSize <= 0) {
+    emitError() << "ConvTile buffer must be positive";
+    return Type();
+  }
+  const bool invalidRank = shape.empty() || shape.size() > 6;
+  if (invalidRank) {
+    emitError() << "ConvTile shape rank must be between 1 and 6";
+    return Type();
+  }
+  for (int64_t dim : shape) {
+    if (dim <= 0) {
+      emitError() << "ConvTile shape dimensions must be positive";
+      return Type();
+    }
+  }
+
+  auto memorySpaceAttr = AddressSpaceAttr::get(parser.getContext(),
+                                                memorySpace.value());
+  auto layoutAttr = ConvLayoutAttr::get(parser.getContext(), layout.value());
+  return ConvTileType::get(parser.getContext(), shape, dtype, memorySpaceAttr,
+                           bufferSize, layoutAttr);
+}
+
+void mlir::pto::ConvTileType::print(mlir::AsmPrinter &printer) const {
+  auto memorySpace =
+      llvm::dyn_cast_or_null<AddressSpaceAttr>(getMemorySpace());
+  auto layout = getLayout();
+  if (!memorySpace || !layout) {
+    printer << "<unknown>";
+    return;
+  }
+
+  auto layoutName = [&]() -> llvm::StringRef {
+    switch (layout.getValue()) {
+    case ConvLayout::NC1HWC0:
+      return "nc1hwc0";
+    case ConvLayout::NDC1HWC0:
+      return "ndc1hwc0";
+    case ConvLayout::FRACTAL_Z:
+      return "fractal_z";
+    case ConvLayout::FRACTAL_Z_3D:
+      return "fractal_z_3d";
+    case ConvLayout::NCHW:
+      return "nchw";
+    case ConvLayout::NHWC:
+      return "nhwc";
+    case ConvLayout::GNCHW:
+      return "gnchw";
+    case ConvLayout::GNC1HWC0:
+      return "gnc1hwc0";
+    }
+    return "unknown";
+  };
+
+  printer << "<" << stringifyLocFromMemorySpace(memorySpace)
+          << ", buffer=" << getBufferSize()
+          << ", layout=" << layoutName()
+          << ", shape=";
+  for (auto [index, dim] : llvm::enumerate(getShape())) {
+    if (index != 0) {
+      printer << "x";
+    }
+    printTileBufDim(printer, dim);
+  }
+  printer << "x";
+  printer.printType(getElementType());
   printer << ">";
 }
 
