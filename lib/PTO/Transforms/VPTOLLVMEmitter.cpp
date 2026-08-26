@@ -1662,6 +1662,8 @@ static std::optional<VcvtContract> lookupVcvtContract(VcvtElemKind src,
       return VcvtContract{"llvm.hivm.vcvtfi.f162s8.x", true, true, true, 16};
     case VcvtElemKind::U8:
       return VcvtContract{"llvm.hivm.vcvtfi.f162u8.x", true, true, true, 16};
+    case VcvtElemKind::BF16:
+      return VcvtContract{"llvm.hivm.vcvtff.f162bf16.x", true, false, false, 16};
     default:
       return std::nullopt;
     }
