@@ -46,7 +46,7 @@ def build():
 
             function_type = func.FunctionType.get([ptr_f32] * 4, [])
             with InsertionPoint(module.body):
-                function = func.FuncOp("tdeinterleave_two_runtime_kernel", function_type)
+                function = func.FuncOp("tinterleave_runtime_kernel", function_type)
                 function.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
                 entry = function.add_entry_block()
 
@@ -61,25 +61,43 @@ def build():
                 addr2 = arith.ConstantOp(i64, IntegerAttr.get(i64, 8192)).result
                 addr3 = arith.ConstantOp(i64, IntegerAttr.get(i64, 12288)).result
                 src0_ptr, src1_ptr, dst0_ptr, dst1_ptr = entry.arguments
-                views = [
-                    pto.MakeTensorViewOp(tensor_view, ptr, [c16, c64], [c64, c1]).result
-                    for ptr in (src0_ptr, src1_ptr, dst0_ptr, dst1_ptr)
-                ]
-                partitions = [
-                    pto.PartitionViewOp(
-                        partition_view, view, offsets=[c0, c0], sizes=[c16, c64]
-                    ).result
-                    for view in views
-                ]
+
+                src0_view = pto.MakeTensorViewOp(
+                    tensor_view, src0_ptr, [c16, c64], [c64, c1]
+                ).result
+                src1_view = pto.MakeTensorViewOp(
+                    tensor_view, src1_ptr, [c16, c64], [c64, c1]
+                ).result
+                dst0_view = pto.MakeTensorViewOp(
+                    tensor_view, dst0_ptr, [c16, c64], [c64, c1]
+                ).result
+                dst1_view = pto.MakeTensorViewOp(
+                    tensor_view, dst1_ptr, [c16, c64], [c64, c1]
+                ).result
+
+                src0_partition = pto.PartitionViewOp(
+                    partition_view, src0_view, offsets=[c0, c0], sizes=[c16, c64]
+                ).result
+                src1_partition = pto.PartitionViewOp(
+                    partition_view, src1_view, offsets=[c0, c0], sizes=[c16, c64]
+                ).result
+                dst0_partition = pto.PartitionViewOp(
+                    partition_view, dst0_view, offsets=[c0, c0], sizes=[c16, c64]
+                ).result
+                dst1_partition = pto.PartitionViewOp(
+                    partition_view, dst1_view, offsets=[c0, c0], sizes=[c16, c64]
+                ).result
+
                 src0_tile = pto.AllocTileOp(tile_type, addr=addr0).result
                 src1_tile = pto.AllocTileOp(tile_type, addr=addr1).result
                 dst0_tile = pto.AllocTileOp(tile_type, addr=addr2).result
                 dst1_tile = pto.AllocTileOp(tile_type, addr=addr3).result
-                pto.TLoadOp(None, partitions[0], src0_tile)
-                pto.TLoadOp(None, partitions[1], src1_tile)
-                pto.TDeInterleaveOp([src0_tile, src1_tile], [dst0_tile, dst1_tile])
-                pto.TStoreOp(None, dst0_tile, partitions[2])
-                pto.TStoreOp(None, dst1_tile, partitions[3])
+
+                pto.TLoadOp(None, src0_partition, src0_tile)
+                pto.TLoadOp(None, src1_partition, src1_tile)
+                pto.TInterleaveOp(src0_tile, src1_tile, dst0_tile, dst1_tile)
+                pto.TStoreOp(None, dst0_tile, dst0_partition)
+                pto.TStoreOp(None, dst1_tile, dst1_partition)
                 func.ReturnOp([])
 
             module.operation.verify()

@@ -22,27 +22,22 @@ from validation_runtime import default_buffers, float_values, load_case_meta, ma
 def main():
     meta = load_case_meta()
     src0_name, src1_name = meta.inputs
-    src0 = matrix32(
-        float_values(rng(), meta.elem_counts[src0_name], style="signed"),
-        rows=16,
-        cols=64,
-    )
-    src1 = matrix32(
-        float_values(rng(), meta.elem_counts[src1_name], style="signed"),
-        rows=16,
-        cols=64,
-    )
-    rows, cols = src0.shape
+    generator = rng()
+    src0 = float_values(generator, meta.elem_counts[src0_name], style="signed")
+    src1 = float_values(generator, meta.elem_counts[src1_name], style="signed")
+    src0_matrix = matrix32(src0, rows=16, cols=64)
+    src1_matrix = matrix32(src1, rows=16, cols=64)
+    rows, cols = src0_matrix.shape
     half = cols // 2
-    dst0 = np.zeros_like(src0)
-    dst1 = np.zeros_like(src1)
-    dst0[:, :half] = src0[:, 0::2]
-    dst1[:, :half] = src0[:, 1::2]
-    dst0[:, half:] = src1[:, 0::2]
-    dst1[:, half:] = src1[:, 1::2]
+    dst0 = np.empty_like(src0_matrix)
+    dst1 = np.empty_like(src1_matrix)
+    dst0[:, 0::2] = src0_matrix[:, :half]
+    dst0[:, 1::2] = src1_matrix[:, :half]
+    dst1[:, 0::2] = src0_matrix[:, half:]
+    dst1[:, 1::2] = src1_matrix[:, half:]
     buffers = default_buffers(meta)
-    buffers[src0_name] = src0.reshape(-1)
-    buffers[src1_name] = src1.reshape(-1)
+    buffers[src0_name] = src0
+    buffers[src1_name] = src1
     write_buffers(meta, buffers)
     write_golden(
         meta,
