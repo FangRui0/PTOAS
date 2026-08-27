@@ -1383,6 +1383,34 @@ def VPTOSoftPostUpdate
                            "mlir::scf::SCFDialect"];
 }
 
+def VPTOGuardedLICM : Pass<"vpto-guarded-licm", "func::FuncOp"> {
+  let summary = "Hoist loop-invariant guarded expressions out of scf.if regions";
+  let description = [{
+    The generic loop-invariant code motion pass only inspects the top-level
+    operations of the scf.for body.  A guarded access pattern that computes a
+    loop-invariant base address chain inside an scf.if whose condition depends
+    on the induction variable is therefore never exposed to LICM, and the
+    surrounding scf.if cannot itself be hoisted because its region contains
+    side-effecting memory operations.
+
+    This pass extracts the pure, speculatable scalar and address
+    subexpressions (integer, index, and pto.ptr results) of such guarded
+    regions and moves them in dependency (topological) order to just before
+    the enclosing scf.for.  IV-dependent arithmetic, side-effecting
+    operations, div/rem with unknown divisors, vector/mask/tile computations,
+    and operations inside nested scf.for regions are left in place.  Loops
+    are processed innermost-first so invariant chains can climb out through
+    arbitrarily deep guards and nested loops.  When a property cannot be
+    proven the pass conservatively keeps the expression in place.  The
+    rewrite is enabled only for the A5 VPTO backend.
+  }];
+  let constructor = "mlir::pto::createVPTOGuardedLICMPass()";
+  let dependentDialects = ["mlir::func::FuncDialect",
+                           "mlir::pto::PTODialect",
+                           "mlir::arith::ArithDialect",
+                           "mlir::scf::SCFDialect"];
+}
+
 def PTOPrintAddressAnalysis
     : Pass<"pto-print-address-analysis", "func::FuncOp"> {
   let summary = "Print cached PTO value-evolution and VPTO address facts";
