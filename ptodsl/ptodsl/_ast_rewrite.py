@@ -601,6 +601,19 @@ def _slot_live_before_block(stmts, live_after, static_env, static_iters=None) ->
 
 
 def _slot_live_before_stmt(stmt, live_after, static_env, static_iters) -> set[_SubscriptSlot]:
+    if isinstance(stmt, (ast.With, ast.AsyncWith)):
+        live = _slot_live_before_block(stmt.body, live_after, static_env, static_iters)
+        # Python evaluates with-items from left to right and binds each
+        # optional_vars immediately.  Reverse the sequence for liveness so a
+        # context expression can use a binding produced by an earlier item
+        # without incorrectly turning that use into a live-in.
+        for item in reversed(stmt.items):
+            if item.optional_vars is not None:
+                live = _kill_slots_for_with_target(
+                    live, item.optional_vars, static_env, static_iters
+                )
+            live |= _slot_info(item.context_expr, static_env, static_iters).loads
+        return live
     if isinstance(stmt, ast.If):
         test_info = _slot_info(stmt.test, static_env, static_iters)
         return (
@@ -646,6 +659,37 @@ def _kill_slots_for_assigned_bases(slots, stmt) -> set[_SubscriptSlot]:
         for slot in slots
         if slot.base not in assigned_bases
     }
+
+
+def _kill_slots_for_with_target(
+    slots, target, static_env, static_iters
+) -> set[_SubscriptSlot]:
+    target_info = _slot_info(target, static_env, static_iters)
+    bound_bases = _simple_name_targets(target)
+    dynamic_subscript_bases = set()
+    for subscript in _target_subscripts(target):
+        if not _resolve_subscript_slots(
+            subscript, static_env, static_iters, require_static=True
+        ) and isinstance(subscript.value, ast.Name):
+            dynamic_subscript_bases.add(subscript.value.id)
+    killed_bases = bound_bases | dynamic_subscript_bases
+    return {
+        slot
+        for slot in slots
+        if slot.base not in killed_bases and slot not in target_info.stores
+    }
+
+
+def _target_subscripts(target):
+    if isinstance(target, ast.Subscript):
+        yield target
+        return
+    if isinstance(target, (ast.Tuple, ast.List)):
+        for element in target.elts:
+            yield from _target_subscripts(element)
+        return
+    if isinstance(target, ast.Starred):
+        yield from _target_subscripts(target.value)
 
 
 def _assigned_name_targets(stmt) -> set[str]:
