@@ -6,7 +6,7 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-module {
+module attributes {pto.target_arch = "a5"} {
   func.func private @tdeinterleave_single_source(
       %src: !pto.tile_buf<vec, 16x128xf32>,
       %dst0: !pto.tile_buf<vec, 16x64xf32>,
