@@ -10,6 +10,8 @@
 //===- VMILayoutSupportQueryHelpers.inc - VMI query helpers -*- C++ -*-===//
 //===----------------------------------------------------------------------===//
 
+namespace {
+
 struct GroupBroadcastLoadQuery {
   VMIVRegType resultType;
   VMILayoutAttr resultLayout;
@@ -134,6 +136,8 @@ static const GroupStoreLayoutPattern *selectPreferredGroupStorePattern(
   }
   return selected;
 }
+
+} // namespace
 
 //===----------------------------------------------------------------------===//
 // Support-query adapters
