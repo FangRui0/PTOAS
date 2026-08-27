@@ -1606,13 +1606,22 @@ wait_for_sample_batch() {
   local summary_file="$1"
   shift
 
-  local pid result_file
-  while [[ $# -ge 2 ]]; do
+  local pid dir_name result_file worker_rc
+  while [[ $# -ge 3 ]]; do
     pid="$1"
-    result_file="$2"
-    shift 2
-    wait "${pid}" || true
+    dir_name="$2"
+    result_file="$3"
+    shift 3
+    if wait "${pid}"; then
+      worker_rc=0
+    else
+      worker_rc=$?
+    fi
     cat "${result_file}" >>"${summary_file}"
+    if [[ ${worker_rc} -ne 0 ]] && ! grep -q $'\tFAIL\t' "${result_file}"; then
+      printf '%s\tFAIL\tprocess_one_dir exited with status %d\n' \
+        "${dir_name}" "${worker_rc}" >>"${summary_file}"
+    fi
   done
 }
 
@@ -1655,14 +1664,16 @@ run_all() {
     fi
     result_file="${result_dir}/${dir_index}.log"
     process_one_dir "${dir_name}" "$out_dir" >"${result_file}" &
-    batch+=("$!" "${result_file}")
+    batch+=("$!" "${dir_name}" "${result_file}")
     dir_index=$((dir_index + 1))
-    if [[ ${#batch[@]} -ge $((PTOAS_SAMPLE_JOBS * 2)) ]]; then
+    if [[ ${#batch[@]} -ge $((PTOAS_SAMPLE_JOBS * 3)) ]]; then
       wait_for_sample_batch "${tmp}" "${batch[@]}"
       batch=()
     fi
   done
-  wait_for_sample_batch "${tmp}" "${batch[@]}"
+  if ((${#batch[@]})); then
+    wait_for_sample_batch "${tmp}" "${batch[@]}"
+  fi
   rm -rf -- "${result_dir}"
 
   echo "========== SUMMARY =========="
