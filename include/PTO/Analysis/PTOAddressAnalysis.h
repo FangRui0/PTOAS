@@ -22,13 +22,13 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Pass/AnalysisManager.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
 #include <optional>
 
 namespace mlir {
-class AnalysisManager;
 
 namespace pto {
 
