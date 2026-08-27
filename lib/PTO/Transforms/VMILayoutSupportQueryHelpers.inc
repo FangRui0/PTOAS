@@ -134,3 +134,151 @@ static const GroupStoreLayoutPattern *selectPreferredGroupStorePattern(
   }
   return selected;
 }
+
+//===----------------------------------------------------------------------===//
+// Support-query adapters
+//===----------------------------------------------------------------------===//
+
+static LogicalResult getGroupReduceAddSupportImpl(VMIVRegType sourceType,
+                                                  VMIMaskType maskType,
+                                                  VMIVRegType resultType,
+                                                  int64_t numGroups,
+                                                  std::string *reason) {
+  FailureOr<VMIGroupReduceLayoutFact> fact =
+      VMILayoutSupport().getGroupReduceLayoutFactForLayouts(
+          sourceType, maskType, resultType, numGroups, reason);
+  if (failed(fact)) {
+    return failure();
+  }
+  return success();
+}
+
+LogicalResult
+VMILayoutSupport::getGroupReduceAddFSupport(VMIGroupReduceAddFOp op,
+                                            std::string *reason) const {
+  return getGroupReduceAddSupportImpl(
+      cast<VMIVRegType>(op.getSource().getType()),
+      cast<VMIMaskType>(op.getMask().getType()),
+      cast<VMIVRegType>(op.getResult().getType()),
+      op.getNumGroupsAttr().getInt(), reason);
+}
+
+LogicalResult
+VMILayoutSupport::getGroupReduceMaxFSupport(VMIGroupReduceMaxFOp op,
+                                            std::string *reason) const {
+  return getGroupReduceAddSupportImpl(
+      cast<VMIVRegType>(op.getSource().getType()),
+      cast<VMIMaskType>(op.getMask().getType()),
+      cast<VMIVRegType>(op.getResult().getType()),
+      op.getNumGroupsAttr().getInt(), reason);
+}
+
+LogicalResult
+VMILayoutSupport::getGroupReduceMinFSupport(VMIGroupReduceMinFOp op,
+                                            std::string *reason) const {
+  return getGroupReduceAddSupportImpl(
+      cast<VMIVRegType>(op.getSource().getType()),
+      cast<VMIMaskType>(op.getMask().getType()),
+      cast<VMIVRegType>(op.getResult().getType()),
+      op.getNumGroupsAttr().getInt(), reason);
+}
+
+LogicalResult
+VMILayoutSupport::getGroupReduceAddISupport(VMIGroupReduceAddIOp op,
+                                            std::string *reason) const {
+  return getGroupReduceAddSupportImpl(
+      cast<VMIVRegType>(op.getSource().getType()),
+      cast<VMIMaskType>(op.getMask().getType()),
+      cast<VMIVRegType>(op.getResult().getType()),
+      op.getNumGroupsAttr().getInt(), reason);
+}
+
+LogicalResult
+VMILayoutSupport::getGroupReduceMaxISupport(VMIGroupReduceMaxIOp op,
+                                            std::string *reason) const {
+  return getGroupReduceAddSupportImpl(
+      cast<VMIVRegType>(op.getSource().getType()),
+      cast<VMIMaskType>(op.getMask().getType()),
+      cast<VMIVRegType>(op.getResult().getType()),
+      op.getNumGroupsAttr().getInt(), reason);
+}
+
+LogicalResult
+VMILayoutSupport::getGroupReduceMinISupport(VMIGroupReduceMinIOp op,
+                                            std::string *reason) const {
+  return getGroupReduceAddSupportImpl(
+      cast<VMIVRegType>(op.getSource().getType()),
+      cast<VMIMaskType>(op.getMask().getType()),
+      cast<VMIVRegType>(op.getResult().getType()),
+      op.getNumGroupsAttr().getInt(), reason);
+}
+
+LogicalResult VMILayoutSupport::getGroupBroadcastSupport(
+    VMIGroupBroadcastOp op, std::string *reason) const {
+  return getGroupBroadcastSupport(cast<VMIVRegType>(op.getSource().getType()),
+                                  cast<VMIVRegType>(op.getResult().getType()),
+                                  op.getNumGroupsAttr().getInt(), reason);
+}
+
+LogicalResult
+VMILayoutSupport::getGroupBroadcastLoadSupport(VMIGroupBroadcastLoadOp op,
+                                               std::string *reason) const {
+  return success(succeeded(getGroupBroadcastLoadLayoutFact(op, reason)));
+}
+
+LogicalResult VMILayoutSupport::getGroupBroadcastSupport(
+    VMIVRegType sourceType, VMIVRegType resultType, int64_t numGroups,
+    std::string *reason) const {
+  return success(succeeded(getGroupBroadcastLayoutFactForLayouts(
+      sourceType, resultType, numGroups, reason)));
+}
+
+static LogicalResult getNarrowCastSupport(VMIVRegType sourceType,
+                                          VMIVRegType resultType,
+                                          std::string *reason) {
+  return success(succeeded(VMILayoutSupport().getCastLayoutFactForLayouts(
+      sourceType, resultType, sourceType.getLayoutAttr(),
+      resultType.getLayoutAttr(), reason)));
+}
+
+LogicalResult VMILayoutSupport::getTruncFSupport(VMITruncFOp op,
+                                                 std::string *reason) const {
+  return getNarrowCastSupport(cast<VMIVRegType>(op.getSource().getType()),
+                              cast<VMIVRegType>(op.getResult().getType()),
+                              reason);
+}
+
+LogicalResult VMILayoutSupport::getExtFSupport(VMIExtFOp op,
+                                               std::string *reason) const {
+  auto sourceType = cast<VMIVRegType>(op.getSource().getType());
+  auto resultType = cast<VMIVRegType>(op.getResult().getType());
+  return success(succeeded(getCastLayoutFactForLayouts(
+      sourceType, resultType, sourceType.getLayoutAttr(),
+      resultType.getLayoutAttr(), reason)));
+}
+
+template <typename OpT>
+static LogicalResult getExtISupportImpl(OpT op, std::string *reason) {
+  auto sourceType = cast<VMIVRegType>(op.getSource().getType());
+  auto resultType = cast<VMIVRegType>(op.getResult().getType());
+  return success(succeeded(VMILayoutSupport().getCastLayoutFactForLayouts(
+      sourceType, resultType, sourceType.getLayoutAttr(),
+      resultType.getLayoutAttr(), reason)));
+}
+
+LogicalResult VMILayoutSupport::getExtSISupport(VMIExtSIOp op,
+                                                std::string *reason) const {
+  return getExtISupportImpl(op, reason);
+}
+
+LogicalResult VMILayoutSupport::getExtUISupport(VMIExtUIOp op,
+                                                std::string *reason) const {
+  return getExtISupportImpl(op, reason);
+}
+
+LogicalResult
+VMILayoutSupport::getTruncISupport(VMITruncIOp op, std::string *reason) const {
+  return getNarrowCastSupport(cast<VMIVRegType>(op.getSource().getType()),
+                              cast<VMIVRegType>(op.getResult().getType()),
+                              reason);
+}
