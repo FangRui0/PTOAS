@@ -577,13 +577,27 @@ static ArrayRef<MadCalleeContract> getMadCalleeContracts() {
 }
 
 static std::string getMadLhsFragment(Type type) {
-  if (type.isF16()) return "f16";
-  if (type.isBF16()) return "bf16";
-  if (type.isF32()) return "f32";
-  if (isSignedOrSignlessInteger(dyn_cast<IntegerType>(type), 8)) return "s8";
-  if (isMadE4M3ElementType(type)) return "e4m3";
-  if (isMadE5M2ElementType(type)) return "e5m2";
-  if (pto::isPTOHiFloat8Type(type)) return "hif8";
+  if (type.isF16()) {
+    return "f16";
+  }
+  if (type.isBF16()) {
+    return "bf16";
+  }
+  if (type.isF32()) {
+    return "f32";
+  }
+  if (isSignedOrSignlessInteger(dyn_cast<IntegerType>(type), 8)) {
+    return "s8";
+  }
+  if (isMadE4M3ElementType(type)) {
+    return "e4m3";
+  }
+  if (isMadE5M2ElementType(type)) {
+    return "e5m2";
+  }
+  if (pto::isPTOHiFloat8Type(type)) {
+    return "hif8";
+  }
   return {};
 }
 
@@ -1740,42 +1754,10 @@ packCopyGmToUbConfig0(Operation *anchor, ValueRange operands) {
     return failure();
   }
 
-  OpBuilder builder(anchor);
-  builder.setInsertionPoint(anchor);
-  Location loc = anchor->getLoc();
-
-  auto getI64Operand = [&](unsigned idx) -> Value {
-    return castIntegerLikeTo(anchor, operands[idx], builder.getI64Type());
-  };
-
-  Value sid = getI64Operand(2);
-  Value nBurst = getI64Operand(3);
-  Value lenBurst = getI64Operand(4);
-  Value leftPadding = getI64Operand(5);
-  Value rightPadding = getI64Operand(6);
-  Value dataSelect = castIntegerLikeTo(anchor, operands[7], builder.getI64Type());
-  Value cacheCtl = getI64Operand(8);
-  if (!sid || !nBurst || !lenBurst || !leftPadding || !rightPadding ||
-      !dataSelect || !cacheCtl) {
-    return failure();
-  }
-
-  auto shl = [&](Value value, uint64_t amount) -> Value {
-    return builder.create<arith::ShLIOp>(loc, value,
-                                         getI64Constant(builder, loc, amount));
-  };
-  auto bitOr = [&](Value lhs, Value rhs) -> Value {
-    return builder.create<arith::OrIOp>(loc, lhs, rhs);
-  };
-
-  Value config = sid;
-  config = bitOr(config, shl(nBurst, 4));
-  config = bitOr(config, shl(lenBurst, 25));
-  config = bitOr(config, shl(leftPadding, 46));
-  config = bitOr(config, shl(rightPadding, 52));
-  config = bitOr(config, shl(dataSelect, 58));
-  config = bitOr(config, shl(cacheCtl, 60));
-  return config;
+  SmallVector<std::pair<Value, uint64_t>, 6> fields = {
+      {operands[3], 4},  {operands[4], 25}, {operands[5], 46},
+      {operands[6], 52}, {operands[7], 58}, {operands[8], 60}};
+  return packShiftedFields(anchor, operands[2], fields);
 }
 
 static FailureOr<Value>
@@ -2088,33 +2070,11 @@ static FailureOr<Value> packCopyCbufToBtConfig(Operation *anchor,
                                                Value dstGap) {
   OpBuilder builder(anchor);
   builder.setInsertionPoint(anchor);
-  Location loc = anchor->getLoc();
-
-  Value convControlI64 =
-      castIntegerLikeTo(anchor, convControl, builder.getI64Type());
-  Value nBurstI64 = castIntegerLikeTo(anchor, nBurst, builder.getI64Type());
-  Value lenBurstI64 = castIntegerLikeTo(anchor, lenBurst, builder.getI64Type());
-  Value sourceGapI64 = castIntegerLikeTo(anchor, sourceGap, builder.getI64Type());
-  Value dstGapI64 = castIntegerLikeTo(anchor, dstGap, builder.getI64Type());
-  if (!convControlI64 || !nBurstI64 || !lenBurstI64 || !sourceGapI64 ||
-      !dstGapI64) {
-    return failure();
-  }
-
-  auto shl = [&](Value value, uint64_t amount) -> Value {
-    return builder.create<arith::ShLIOp>(loc, value,
-                                         getI64Constant(builder, loc, amount));
-  };
-  auto bitOr = [&](Value lhs, Value rhs) -> Value {
-    return builder.create<arith::OrIOp>(loc, lhs, rhs);
-  };
-
-  Value config = shl(convControlI64, 3);
-  config = bitOr(config, shl(nBurstI64, 4));
-  config = bitOr(config, shl(lenBurstI64, 16));
-  config = bitOr(config, shl(sourceGapI64, 32));
-  config = bitOr(config, shl(dstGapI64, 48));
-  return config;
+  Value zero = getI64Constant(builder, anchor->getLoc(), 0);
+  SmallVector<std::pair<Value, uint64_t>, 5> fields = {
+      {convControl, 3}, {nBurst, 4}, {lenBurst, 16},
+      {sourceGap, 32},  {dstGap, 48}};
+  return packShiftedFields(anchor, zero, fields);
 }
 
 static FailureOr<Value> packCopyCbufToFbufConfig(Operation *anchor, Value nBurst,
