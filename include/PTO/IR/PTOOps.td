@@ -35,17 +35,15 @@ include "mlir/Interfaces/ViewLikeInterface.td"
 //===----------------------------------------------------------------------===//
 
 def PTODpsType :
-  AnyTypeOf<[AnyRankedTensor, PartitionTensorViewType, TileBufType,
-             ConvTileType]>;
+  AnyTypeOf<[AnyRankedTensor, PartitionTensorViewType, TileBufType]>;
 
 def PTOPipeEntryType :
-  AnyTypeOf<[AnyRankedTensor, TensorViewType, TileBufType, ConvTileType],
-            "TensorView, TileBuf, ConvTile, or Tensor">;
+  AnyTypeOf<[AnyRankedTensor, TensorViewType, TileBufType],
+            "TensorView, TileBuf, or Tensor">;
 
 def PTOCommType :
   AnyTypeOf<[AnyRankedTensor, TensorViewType, PartitionTensorViewType,
-             TileBufType, ConvTileType],
-            "TensorView, PartitionTensorView, TileBuf, ConvTile, or Tensor">;
+             TileBufType], "TensorView, PartitionTensorView, TileBuf, or Tensor">;
 
 def PtrOrMemRef :
   AnyTypeOf<[PtrType, AnyMemRef], "Ptr or MemRef">;
@@ -333,7 +331,7 @@ def AllocTileOp : PTO_Op<"alloc_tile", [AttrSizedOperandSegments]> {
     Optional<Index>:$valid_col
   );
 
-  let results = (outs AnyTypeOf<[TileBufType, ConvTileType]>:$result);
+  let results = (outs TileBufType:$result);
 
   let assemblyFormat = [{
     (`addr` `=` $addr^)?

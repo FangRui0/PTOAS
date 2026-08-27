@@ -107,14 +107,6 @@ static std::optional<AddressSpace> getBufferAddressSpace(Type type) {
     return std::nullopt;
   }
 
-  if (auto convType = dyn_cast<ConvTileType>(type)) {
-    if (auto attr =
-            dyn_cast_or_null<AddressSpaceAttr>(convType.getMemorySpace())) {
-      return attr.getAddressSpace();
-    }
-    return std::nullopt;
-  }
-
   if (auto multiType = dyn_cast<MultiTileBufType>(type)) {
     return getBufferAddressSpace(multiType.getSlotType());
   }
@@ -255,21 +247,6 @@ static FailureOr<uint64_t> computeStaticBufferBytes(Value value) {
 
   if (auto tileType = dyn_cast<TileBufType>(value.getType())) {
     return computeTileBytes(tileType);
-  }
-  if (auto convType = dyn_cast<ConvTileType>(value.getType())) {
-    uint64_t elemBytes = getPTOStorageElemByteSize(convType.getElementType());
-    const bool invalidCapacity =
-        elemBytes == 0 || convType.getBufferSize() <= 0;
-    if (invalidCapacity) {
-      return failure();
-    }
-    uint64_t bufferSize = static_cast<uint64_t>(convType.getBufferSize());
-    const bool overflows =
-        bufferSize > std::numeric_limits<uint64_t>::max() / elemBytes;
-    if (overflows) {
-      return failure();
-    }
-    return bufferSize * elemBytes;
   }
   if (auto multiType = dyn_cast<MultiTileBufType>(value.getType())) {
     return computeTileBytes(multiType.getSlotType());

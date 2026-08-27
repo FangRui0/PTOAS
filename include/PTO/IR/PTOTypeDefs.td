@@ -228,36 +228,6 @@ def TileBufType : TypeDef<PTO_Dialect, "TileBuf"> {
   }];
 }
 
-def ConvTileType : TypeDef<PTO_Dialect, "ConvTile"> {
-  let mnemonic = "conv_tile";
-  let summary = "A convolution tile buffer with an explicit physical capacity";
-  let description = [{
-    Represents the PTO-ISA ConvTile object. Shape describes the logical
-    convolution dimensions, while bufferSize is the number of storage elements
-    reserved by the hardware tile object.
-  }];
-
-  let parameters = (ins
-    ArrayRefParameter<"int64_t">:$shape,
-    "mlir::Type":$elementType,
-    "mlir::Attribute":$memorySpace,
-    "int64_t":$bufferSize,
-    "mlir::pto::ConvLayoutAttr":$layout
-  );
-
-  let hasCustomAssemblyFormat = 1;
-
-  let extraClassDeclaration = [{
-    int64_t getRank() const { return getShape().size(); }
-    int64_t getDimSize(unsigned idx) const { return getShape()[idx]; }
-    bool hasDynamicShape() const {
-      return llvm::any_of(getShape(), [](int64_t dim) {
-        return dim == mlir::ShapedType::kDynamic;
-      });
-    }
-  }];
-}
-
 // =============================================================================
 // MultiTileBufType
 // =============================================================================

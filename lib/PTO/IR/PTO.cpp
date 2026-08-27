@@ -293,10 +293,6 @@ static int64_t getPTOTypeRank(Type type) {
     return tileBufTy.getRank();
   }
 
-  if (auto convTileTy = dyn_cast<pto::ConvTileType>(type)) {
-    return convTileTy.getRank();
-  }
-
   // 3. 不支持的类型
   return -1;
 }
@@ -3589,50 +3585,14 @@ static LogicalResult verifyConstantLocalAddress(Operation *op, Value addr,
 }
 
 LogicalResult AllocTileOp::verify() {
-  auto ty = getResult().getType();
+  auto ty = getResult().getType(); // TileBufType
 
-  if (auto convTy = dyn_cast<ConvTileType>(ty)) {
-    const bool invalidRank = convTy.getRank() == 0 || convTy.getRank() > 6;
-    if (invalidRank) {
-      return emitOpError("ConvTile result rank must be between 1 and 6");
-    }
-    for (int64_t dim : convTy.getShape()) {
-      if (dim <= 0) {
-        return emitOpError("ConvTile result dimensions must be positive");
-      }
-    }
-    const bool invalidBuffer = convTy.getBufferSize() <= 0;
-    if (invalidBuffer) {
-      return emitOpError("ConvTile buffer size must be positive");
-    }
-    const bool invalidElementSize =
-        getElemByteSize(convTy.getElementType()) == 0;
-    if (invalidElementSize) {
-      return emitOpError("ConvTile element type must have a byte size");
-    }
-    const bool hasValidOperands = getValidRow() || getValidCol();
-    if (hasValidOperands) {
-      return emitOpError(
-          "ConvTile allocation does not accept valid_row or valid_col operands");
-    }
-    if (failed(verifyConstantLocalAddress(getOperation(), getAddr(),
-                                          convTy.getMemorySpace()))) {
-      return failure();
-    }
-    return success();
-  }
-
-  auto tileTy = dyn_cast<TileBufType>(ty);
-  if (!tileTy) {
-    return emitOpError("result must be !pto.tile_buf or !pto.conv_tile");
-  }
-
-  if (failed(verifyTileBufLayoutConstraints(*this, tileTy, "result"))) {
+  if (failed(verifyTileBufLayoutConstraints(*this, ty, "result"))) {
     return failure();
   }
 
   if (failed(verifyConstantLocalAddress(getOperation(), getAddr(),
-                                        tileTy.getMemorySpace()))) {
+                                        ty.getMemorySpace()))) {
     return failure();
   }
 
@@ -3641,7 +3601,7 @@ LogicalResult AllocTileOp::verify() {
   bool hasVC = getValidCol() != nullptr;
 
   // type 上的 validShape
-  auto vs = tileTy.getValidShape();
+  auto vs = ty.getValidShape();
   if (vs.size() != 2) {
     return emitOpError("result tile_buf must have rank-2 validShape");
   }
@@ -3829,21 +3789,9 @@ LogicalResult TAssignOp::verify() {
     return emitOpError("result type must match tile operand type");
   }
 
-  if (auto convTy = dyn_cast<ConvTileType>(getTile().getType())) {
-    const bool invalidConvTile =
-        convTy.getBufferSize() <= 0 || convTy.getRank() == 0 ||
-        convTy.getRank() > 6;
-    if (invalidConvTile) {
-      return emitOpError("expects a valid ConvTile type");
-    }
-    return verifyConstantLocalAddress(getOperation(), getAddr(),
-                                      convTy.getMemorySpace());
-  }
-
   auto tileTy = dyn_cast<TileBufType>(getTile().getType());
   if (!tileTy) {
-    return emitOpError(
-        "expects tile operand and result to be !pto.tile_buf or !pto.conv_tile");
+    return emitOpError("expects tile operand and result to be !pto.tile_buf");
   }
 
   if (failed(verifyConstantLocalAddress(getOperation(), getAddr(),
@@ -3855,42 +3803,6 @@ LogicalResult TAssignOp::verify() {
 }
 
 LogicalResult TLoadOp::verify() {
-  if (auto convDst = dyn_cast<ConvTileType>(getDst().getType())) {
-    auto srcPart = dyn_cast<PartitionTensorViewType>(getSrc().getType());
-    if (!srcPart) {
-      return emitOpError(
-          "ConvTile tload expects src to be !pto.partition_tensor_view");
-    }
-    const bool invalidRank = convDst.getRank() == 0 || convDst.getRank() > 6;
-    if (invalidRank) {
-      return emitOpError("ConvTile tload dst rank must be between 1 and 6");
-    }
-    const bool invalidCapacity =
-        convDst.getBufferSize() <= 0 ||
-        getElemByteSize(convDst.getElementType()) == 0;
-    if (invalidCapacity) {
-      return emitOpError("ConvTile tload dst must have a positive buffer and "
-                         "a byte-sized element type");
-    }
-    auto dstSpace = getPTOMemorySpaceEnum(convDst);
-    if (!dstSpace || *dstSpace != AddressSpace::MAT) {
-      return emitOpError("ConvTile tload dst must use loc=mat");
-    }
-    for (int64_t dim : srcPart.getShape()) {
-      if (dim != ShapedType::kDynamic && dim <= 0) {
-        return emitOpError() << "expects src shape dimension to be positive";
-      }
-    }
-    const bool mismatchedElementSize =
-        getElemByteSize(srcPart.getElementType()) !=
-        getElemByteSize(convDst.getElementType());
-    if (mismatchedElementSize) {
-      return emitOpError(
-          "ConvTile tload src and dst must have the same element size");
-    }
-    return success();
-  }
-
   auto verifyCommon =
       [&](bool allowLowPrecision)
       -> FailureOr<std::pair<pto::PartitionTensorViewType, pto::TileBufType>> {
@@ -4959,21 +4871,6 @@ static LogicalResult verifyCommPingPongSameType(Operation *op, Value ping,
 }
 
 static std::optional<uint64_t> getStaticByteSize(Type ty) {
-  if (auto conv = dyn_cast<pto::ConvTileType>(ty)) {
-    uint64_t elemBytes = getElemByteSize(conv.getElementType());
-    const bool invalidCapacity = elemBytes == 0 || conv.getBufferSize() <= 0;
-    if (invalidCapacity) {
-      return std::nullopt;
-    }
-    uint64_t bufferSize = static_cast<uint64_t>(conv.getBufferSize());
-    const bool overflows =
-        bufferSize > std::numeric_limits<uint64_t>::max() / elemBytes;
-    if (overflows) {
-      return std::nullopt;
-    }
-    return bufferSize * elemBytes;
-  }
-
   SmallVector<int64_t, 4> shape = getShapeVec(ty);
   if (shape.empty()) {
     return std::nullopt;
@@ -5019,13 +4916,6 @@ static std::optional<pto::AddressSpace> getPTOMemorySpaceEnum(Type ty) {
   }
   if (auto tb = dyn_cast<pto::TileBufType>(ty)) {
     if (auto as = dyn_cast_or_null<pto::AddressSpaceAttr>(tb.getMemorySpace())) {
-      return as.getAddressSpace();
-    }
-    return std::nullopt;
-  }
-  if (auto conv = dyn_cast<pto::ConvTileType>(ty)) {
-    if (auto as =
-            dyn_cast_or_null<pto::AddressSpaceAttr>(conv.getMemorySpace())) {
       return as.getAddressSpace();
     }
     return std::nullopt;
