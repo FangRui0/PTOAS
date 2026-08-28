@@ -354,15 +354,6 @@ source_rc() {
   set -o pipefail
 }
 
-# TaskQueue workers may sanitize HOME from the submitted environment. Resolve
-# the current user's home before profile discovery so `set -u` cannot abort.
-if [[ -z "${HOME:-}" ]]; then
-  HOME="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6 || true)"
-  [[ -n "${HOME}" ]] || HOME="/root"
-  export HOME
-  log "HOME was unset; defaulting to ${HOME} for shell profile discovery"
-fi
-
 for f in "$HOME/.bash_profile" "$HOME/.bashrc"; do
   source_rc "$f"
 done
