@@ -1543,7 +1543,9 @@ def treshape(src, *, shape, dtype=None, blayout=None):
 
     result_memory_space = src_memory_space
     result_physical_shape = _authored_tile_physical_shape(result_shape)
-    _validate_authored_tile_row_alignment(result_physical_shape, result_dtype, blayout=result_blayout, slayout="NoneBox")
+    _validate_authored_tile_row_alignment(
+        result_physical_shape, result_dtype, blayout=result_blayout,
+        slayout="NoneBox")
 
     from ._types import tile_buf_type
 

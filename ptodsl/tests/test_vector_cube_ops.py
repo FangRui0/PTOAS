@@ -1441,7 +1441,9 @@ class VectorCubeSurfaceTest(unittest.TestCase):
         dst = object()
 
         with patch_ops("unwrap_surface_value", side_effect=_identity), \
-             patch_ops("_coerce_index", side_effect=lambda value, *, context: f"idx:{context}:{value}") as coerce_index, \
+             patch_ops(
+                 "_coerce_index",
+                 side_effect=lambda value, *, context: f"idx:{context}:{value}") as coerce_index, \
              patch.object(_ops._pto, "TExtractOp") as textract_op:
             pto.tile.extract(src, dst, 7, 11)
 

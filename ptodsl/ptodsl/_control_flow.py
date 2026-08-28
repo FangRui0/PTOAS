@@ -571,7 +571,8 @@ def _validate_matching_branch_names(then_assignment, else_assignment):
     )
 
 
-def _resolved_branch_values(name, then_assignment, else_assignment, *, then_block, else_block):
+def _resolved_branch_values(name, then_assignment, else_assignment, *, then_block,
+                            else_block, short_circuit_merge=False):
     """Reconcile one pair of branch values and require matching result types."""
     then_value, else_value = _reconcile_branch_assignment_values(
         name,
@@ -579,6 +580,7 @@ def _resolved_branch_values(name, then_assignment, else_assignment, *, then_bloc
         else_assignment["raw_values"][name],
         then_block=then_block,
         else_block=else_block,
+        short_circuit_merge=short_circuit_merge,
     )
     if then_value.type != else_value.type:
         raise RuntimeError(

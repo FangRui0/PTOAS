@@ -837,7 +837,9 @@ def _coerce_scalar_like_vector_element(vector_value, scalar_value, *, context: s
 def _negate_runtime_scalar(value):
     raw_value = unwrap_surface_value(value)
     kind = classify_runtime_scalar_type(raw_value.type)
-    zero = materialize_scalar_literal(0.0 if kind == "float" else 0, raw_value.type, context="_negate_runtime_scalar(...)")
+    zero = materialize_scalar_literal(
+        0.0 if kind == "float" else 0, raw_value.type,
+        context="_negate_runtime_scalar(...)")
     return emit_runtime_binary_op("sub", zero, raw_value)
 
 
@@ -1042,7 +1044,9 @@ def _validate_convert_signedness(src_type, dst_type, signedness, *, context: str
         raise TypeError(f"{context} does not support integer-to-integer conversion")
     if src_int or dst_int:
         if signedness is None:
-            raise TypeError(f"{context} requires signedness='signed' or 'unsigned' when converting to or from integer types")
+            raise TypeError(
+                f"{context} requires signedness='signed' or 'unsigned' "
+                "when converting to or from integer types")
         return
     if signedness is not None:
         raise TypeError(f"{context} does not accept signedness for floating-point or packed conversion")

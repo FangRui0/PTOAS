@@ -415,42 +415,58 @@ def _atomic_binary(op_cls, ptr, value, *, l2cache, signedness, context: str):
 
 def atomic_exch(ptr, value, *, l2cache="nmfv", signedness=None):
     """``pto.atomic_exch`` – SIMT scalar atomic exchange."""
-    return _atomic_binary(_pto.AtomicExchOp, ptr, value, l2cache=l2cache, signedness=signedness, context="atomic_exch(ptr, value)")
+    return _atomic_binary(
+        _pto.AtomicExchOp, ptr, value, l2cache=l2cache, signedness=signedness,
+        context="atomic_exch(ptr, value)")
 
 
 def atomic_add(ptr, value, *, l2cache="nmfv", signedness=None):
     """``pto.atomic_add`` – SIMT scalar atomic add."""
-    return _atomic_binary(_pto.AtomicAddOp, ptr, value, l2cache=l2cache, signedness=signedness, context="atomic_add(ptr, value)")
+    return _atomic_binary(
+        _pto.AtomicAddOp, ptr, value, l2cache=l2cache, signedness=signedness,
+        context="atomic_add(ptr, value)")
 
 
 def atomic_sub(ptr, value, *, l2cache="nmfv", signedness=None):
     """``pto.atomic_sub`` – SIMT scalar atomic subtract."""
-    return _atomic_binary(_pto.AtomicSubOp, ptr, value, l2cache=l2cache, signedness=signedness, context="atomic_sub(ptr, value)")
+    return _atomic_binary(
+        _pto.AtomicSubOp, ptr, value, l2cache=l2cache, signedness=signedness,
+        context="atomic_sub(ptr, value)")
 
 
 def atomic_min(ptr, value, *, l2cache="nmfv", signedness=None):
     """``pto.atomic_min`` – SIMT scalar atomic min."""
-    return _atomic_binary(_pto.AtomicMinOp, ptr, value, l2cache=l2cache, signedness=signedness, context="atomic_min(ptr, value)")
+    return _atomic_binary(
+        _pto.AtomicMinOp, ptr, value, l2cache=l2cache, signedness=signedness,
+        context="atomic_min(ptr, value)")
 
 
 def atomic_max(ptr, value, *, l2cache="nmfv", signedness=None):
     """``pto.atomic_max`` – SIMT scalar atomic max."""
-    return _atomic_binary(_pto.AtomicMaxOp, ptr, value, l2cache=l2cache, signedness=signedness, context="atomic_max(ptr, value)")
+    return _atomic_binary(
+        _pto.AtomicMaxOp, ptr, value, l2cache=l2cache, signedness=signedness,
+        context="atomic_max(ptr, value)")
 
 
 def atomic_and(ptr, value, *, l2cache="nmfv", signedness=None):
     """``pto.atomic_and`` – SIMT scalar atomic bitwise and."""
-    return _atomic_binary(_pto.AtomicAndOp, ptr, value, l2cache=l2cache, signedness=signedness, context="atomic_and(ptr, value)")
+    return _atomic_binary(
+        _pto.AtomicAndOp, ptr, value, l2cache=l2cache, signedness=signedness,
+        context="atomic_and(ptr, value)")
 
 
 def atomic_or(ptr, value, *, l2cache="nmfv", signedness=None):
     """``pto.atomic_or`` – SIMT scalar atomic bitwise or."""
-    return _atomic_binary(_pto.AtomicOrOp, ptr, value, l2cache=l2cache, signedness=signedness, context="atomic_or(ptr, value)")
+    return _atomic_binary(
+        _pto.AtomicOrOp, ptr, value, l2cache=l2cache, signedness=signedness,
+        context="atomic_or(ptr, value)")
 
 
 def atomic_xor(ptr, value, *, l2cache="nmfv", signedness=None):
     """``pto.atomic_xor`` – SIMT scalar atomic bitwise xor."""
-    return _atomic_binary(_pto.AtomicXorOp, ptr, value, l2cache=l2cache, signedness=signedness, context="atomic_xor(ptr, value)")
+    return _atomic_binary(
+        _pto.AtomicXorOp, ptr, value, l2cache=l2cache, signedness=signedness,
+        context="atomic_xor(ptr, value)")
 
 
 def atomic_cas(ptr, compare, value, *, l2cache="nmfv", signedness=None):

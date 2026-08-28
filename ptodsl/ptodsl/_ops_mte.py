@@ -244,9 +244,15 @@ def _acc_store_layout(layout):
         mode, operand = layout
         normalized = _normalize_token(mode, context="acc store layout")
         if normalized == "nz2dn":
-            return Attribute.parse("#pto<acc_store_mode nz2dn>"), None, _coerce_i64(operand, context="acc store layout nz2dn")
+            return (
+                Attribute.parse("#pto<acc_store_mode nz2dn>"),
+                None,
+                _coerce_i64(operand, context="acc store layout nz2dn"))
         if normalized == "nz2nz":
-            return Attribute.parse("#pto<acc_store_mode nz2nz>"), _coerce_i64(operand, context="acc store layout nz2nz"), None
+            return (
+                Attribute.parse("#pto<acc_store_mode nz2nz>"),
+                _coerce_i64(operand, context="acc store layout nz2nz"),
+                None)
         raise ValueError("acc store layout tuple only supports nz2dn or nz2nz")
     normalized = _normalize_token(layout, context="acc store layout")
     if normalized != "nz2nd":
@@ -498,8 +504,14 @@ def _infer_dma_2d_copy_signature(partition, tile, *, direction: str):
     row_count, src_row_stride = _infer_dma_partition_row_stride(partition)
     tile_rows, valid_cols, physical_cols = _infer_dma_tile_geometry(tile)
     if direction == "gm_to_ub":
-        return row_count, valid_cols, _mul_bytes(src_row_stride, infer_tile_element_type(tile)), physical_cols * _element_bytewidth(infer_tile_element_type(tile))
-    return row_count, valid_cols, physical_cols * _element_bytewidth(infer_tile_element_type(tile)), _mul_bytes(src_row_stride, infer_tile_element_type(tile))
+        return (
+            row_count, valid_cols,
+            _mul_bytes(src_row_stride, infer_tile_element_type(tile)),
+            physical_cols * _element_bytewidth(infer_tile_element_type(tile)))
+    return (
+        row_count, valid_cols,
+        physical_cols * _element_bytewidth(infer_tile_element_type(tile)),
+        _mul_bytes(src_row_stride, infer_tile_element_type(tile)))
 
 
 def fill_tile(tile, value):
@@ -1372,7 +1384,8 @@ def mad_acc(lhs, rhs, dst, m, n, k, *, unit_flag=None, disable_gemv=False, sat=N
     )
 
 
-def mad_bias(lhs, rhs, dst, bias, m, n, k, *, unit_flag=None, disable_gemv=False, sat=None, tf32_mode=None, n_dir=False):
+def mad_bias(lhs, rhs, dst, bias, m, n, k, *, unit_flag=None, disable_gemv=False,
+             sat=None, tf32_mode=None, n_dir=False):
     """``pto.mad_bias`` – cube matmul initialized from a bias buffer."""
     _pto.MadBiasOp(
         unwrap_surface_value(lhs),

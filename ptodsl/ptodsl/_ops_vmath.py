@@ -273,7 +273,8 @@ def _infer_vdup_scalar_result_type(input_value, mask_value, *, context: str):
         element_type = scalar_type
     else:
         raise TypeError(
-            f"{context} only supports scalar input types i8/i16/i32, si8/si16/si32, ui8/ui16/ui32, f16, bf16, and f32; got {scalar_type}"
+            f"{context} only supports scalar input types i8/i16/i32, si8/si16/si32, "
+            f"ui8/ui16/ui32, f16, bf16, and f32; got {scalar_type}"
         )
     return _resolve(vreg_type(_elements_per_vreg(element_type), element_type))
 
@@ -311,7 +312,9 @@ def vdup(input_value, mask, position=None):
         )
     except Exception:
         if position is not None:
-            raise TypeError("vdup(scalar, mask, position=...) does not support position; position is only valid for vector input")
+            raise TypeError(
+                "vdup(scalar, mask, position=...) does not support position; "
+                "position is only valid for vector input")
         raw_input = _coerce_vdup_scalar_input(input_value, mask, context="vdup(scalar, mask)")
         result_type = _infer_vdup_scalar_result_type(raw_input, mask, context="vdup(scalar, mask)")
         result_element_type = _pto.VRegType(result_type).element_type

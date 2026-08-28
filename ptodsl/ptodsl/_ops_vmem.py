@@ -168,7 +168,9 @@ def vlds(src_ptr, offset=None, result_vreg_type=None, *, dist=None, post_update=
     post_mode = _normalize_post_update_mode(post_update, context="vlds(..., post_update=...)")
     if isinstance(src_ptr, TileSliceValue):
         if offset is not None or result_vreg_type is not None:
-            raise TypeError("vlds(tile[row, col:]) infers its pointer slice and vreg type; do not pass offset/result_vreg_type")
+            raise TypeError(
+                "vlds(tile[row, col:]) infers its pointer slice and vreg type; "
+                "do not pass offset/result_vreg_type")
         return _vlds_tile_slice(src_ptr, dist=dist, post_mode=post_mode)
 
     if offset is None:
