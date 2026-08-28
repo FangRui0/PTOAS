@@ -7834,658 +7834,629 @@ mlir::LogicalResult mlir::pto::TExpandsOp::verify() {
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 
-mlir::LogicalResult mlir::pto::TExtractOp::verify() {
-  auto isA2A3AccCastExtractTypePair = [&](Type srcElem, Type dstElem) -> bool {
-    return srcElem.isF32() && (dstElem.isF16() || dstElem.isBF16());
-  };
-  auto isA2A3AccQuantExtractTypePair = [&](Type srcElem, Type dstElem) -> bool {
-    if (srcElem.isF32()) {
-      return dstElem.isInteger(8);
-    }
-    if (srcElem.isInteger(32)) {
-      return dstElem.isInteger(8) || dstElem.isF16() || dstElem.isInteger(16);
-    }
-    return false;
-  };
-  auto isA5AccCastExtractTypePair = [&](Type srcElem, Type dstElem) -> bool {
-    if (srcElem.isF32()) {
-      return dstElem.isF16() || dstElem.isBF16() || dstElem.isF32();
-    }
-    if (srcElem.isInteger(32)) {
-      return dstElem.isInteger(32);
-    }
-    return false;
-  };
-  auto isA5AccQuantExtractTypePair = [&](Type srcElem, Type dstElem) -> bool {
-    if (srcElem.isF32()) {
-      return dstElem.isInteger(8) || dstElem.isF16() || dstElem.isBF16() ||
-             dstElem.isF32() ||
-             (llvm::isa<FloatType>(dstElem) &&
-              llvm::cast<FloatType>(dstElem).getWidth() == 8);
-    }
-    if (srcElem.isInteger(32)) {
-      return dstElem.isInteger(8) || dstElem.isF16() || dstElem.isBF16();
-    }
-    return false;
-  };
-  auto hasMatExtractSourceLayoutA2A3 = [&](pto::TileBufType srcTy) -> bool {
-    int32_t bl = srcTy.getBLayoutValueI32();
-    int32_t sl = srcTy.getSLayoutValueI32();
-    return bl == static_cast<int32_t>(pto::BLayout::RowMajor) ||
-           (bl != static_cast<int32_t>(pto::BLayout::RowMajor) &&
-            sl == static_cast<int32_t>(pto::SLayout::RowMajor));
-  };
-  auto hasMatExtractSourceLayoutA5 = [&](pto::TileBufType srcTy,
-                                         pto::AddressSpace dstSpace) -> bool {
-    int32_t bl = srcTy.getBLayoutValueI32();
-    int32_t sl = srcTy.getSLayoutValueI32();
-    if (dstSpace == pto::AddressSpace::LEFT) {
-      return (bl == static_cast<int32_t>(pto::BLayout::RowMajor) &&
-              sl == static_cast<int32_t>(pto::SLayout::ColMajor)) ||
-             (bl != static_cast<int32_t>(pto::BLayout::RowMajor) &&
-              sl == static_cast<int32_t>(pto::SLayout::RowMajor)) ||
-             bl == static_cast<int32_t>(pto::BLayout::RowMajor);
-    }
+static bool isA2A3AccCastExtractTypePair(Type srcElem, Type dstElem) {
+  return srcElem.isF32() && (dstElem.isF16() || dstElem.isBF16());
+}
+
+static bool isA2A3AccQuantExtractTypePair(Type srcElem, Type dstElem) {
+  if (srcElem.isF32())
+    return dstElem.isInteger(8);
+  if (srcElem.isInteger(32))
+    return dstElem.isInteger(8) || dstElem.isF16() || dstElem.isInteger(16);
+  return false;
+}
+
+static bool isA5AccCastExtractTypePair(Type srcElem, Type dstElem) {
+  if (srcElem.isF32())
+    return dstElem.isF16() || dstElem.isBF16() || dstElem.isF32();
+  if (srcElem.isInteger(32))
+    return dstElem.isInteger(32);
+  return false;
+}
+
+static bool isA5AccQuantExtractTypePair(Type srcElem, Type dstElem) {
+  if (srcElem.isF32())
+    return dstElem.isInteger(8) || dstElem.isF16() || dstElem.isBF16() ||
+           dstElem.isF32() ||
+           (llvm::isa<FloatType>(dstElem) &&
+            llvm::cast<FloatType>(dstElem).getWidth() == 8);
+  if (srcElem.isInteger(32))
+    return dstElem.isInteger(8) || dstElem.isF16() || dstElem.isBF16();
+  return false;
+}
+
+static bool hasMatExtractSourceLayoutA2A3(pto::TileBufType srcTy) {
+  int32_t bl = srcTy.getBLayoutValueI32();
+  int32_t sl = srcTy.getSLayoutValueI32();
+  return bl == static_cast<int32_t>(pto::BLayout::RowMajor) ||
+         (bl != static_cast<int32_t>(pto::BLayout::RowMajor) &&
+          sl == static_cast<int32_t>(pto::SLayout::RowMajor));
+}
+
+static bool hasMatExtractSourceLayoutA5(pto::TileBufType srcTy,
+                                        pto::AddressSpace dstSpace) {
+  int32_t bl = srcTy.getBLayoutValueI32();
+  int32_t sl = srcTy.getSLayoutValueI32();
+  if (dstSpace == pto::AddressSpace::LEFT) {
     return (bl == static_cast<int32_t>(pto::BLayout::RowMajor) &&
             sl == static_cast<int32_t>(pto::SLayout::ColMajor)) ||
            (bl != static_cast<int32_t>(pto::BLayout::RowMajor) &&
-            sl == static_cast<int32_t>(pto::SLayout::RowMajor));
-  };
-  auto isA2A3ExtractElemType = [&](Type ty) -> bool {
-    return ty.isInteger(8) || ty.isF16() || ty.isBF16() || ty.isF32();
-  };
-  auto isA5ExtractElemType = [&](Type ty) -> bool {
-    if (isPTOFloat8Type(ty) || isPTOHiFloat8Type(ty) ||
-        isPTOFloat4PackedType(ty)) {
-      return true;
-    }
-    if (auto it = dyn_cast<IntegerType>(ty)) {
-      return it.getWidth() == 8;
-    }
-    if (auto ft = dyn_cast<FloatType>(ty)) {
-      return ft.getWidth() == 8 || ft.isF16() || ft.isBF16() || ft.isF32();
-    }
-    return false;
-  };
-  auto isRowMajorNoneBoxND = [&](pto::TileBufType ty) -> bool {
-    return ty.getBLayoutValueI32() == static_cast<int32_t>(pto::BLayout::RowMajor) &&
-           ty.getSLayoutValueI32() == static_cast<int32_t>(pto::SLayout::NoneBox);
-  };
-  Value preQuantScalar = getPreQuantScalar();
-  Value fp = getFp();
-  auto reluMode = getReluPreMode();
-  auto accToVecModeAttr = getAccToVecModeAttr();
-  const bool hasPreQuantScalar = static_cast<bool>(preQuantScalar);
-  const bool hasFp = static_cast<bool>(fp);
-  const bool hasRelu = reluMode != pto::ReluPreMode::NoRelu;
-  const bool hasAccToVecMode = static_cast<bool>(accToVecModeAttr);
-  auto verifyCommon = [&](bool allowLowPrecision)
-      -> FailureOr<std::tuple<Type, Type, pto::TileBufType,
-                                                    pto::TileBufType, Type, Type,
-                                                    std::optional<pto::AddressSpace>,
-                                                    std::optional<pto::AddressSpace>>> {
-    Type srcTy = getSrc().getType();
-    Type dstTy = getDst().getType();
-    auto srcTb = dyn_cast<pto::TileBufType>(srcTy);
-    auto dstTb = dyn_cast<pto::TileBufType>(dstTy);
-    if (!srcTb || !dstTb) {
-      return emitOpError("expects src and dst to be !pto.tile_buf");
-    }
-    if (failed(verifyTileBufCommon(*this, srcTy, "src", allowLowPrecision)) ||
-        failed(verifyTileBufCommon(*this, dstTy, "dst", allowLowPrecision)) ||
-        failed(verifyNonNegativeIndexRowCol(
-            *getOperation(), getIndexRow(), getIndexCol(),
-            /*includeIndexAndIntOpsInConstFold=*/hasFp)) ||
-        failed(verifyExtractStaticBoundsCommon(
-            *getOperation(), getIndexRow(), getIndexCol(), srcTy, dstTy,
-            /*includeIndexAndIntOpsInConstFold=*/hasFp))) {
+            sl == static_cast<int32_t>(pto::SLayout::RowMajor)) ||
+           bl == static_cast<int32_t>(pto::BLayout::RowMajor);
+  }
+  return (bl == static_cast<int32_t>(pto::BLayout::RowMajor) &&
+          sl == static_cast<int32_t>(pto::SLayout::ColMajor)) ||
+         (bl != static_cast<int32_t>(pto::BLayout::RowMajor) &&
+          sl == static_cast<int32_t>(pto::SLayout::RowMajor));
+}
+
+static bool isA2A3ExtractElemType(Type ty) {
+  return ty.isInteger(8) || ty.isF16() || ty.isBF16() || ty.isF32();
+}
+
+static bool isA5ExtractElemType(Type ty) {
+  if (isPTOFloat8Type(ty) || isPTOHiFloat8Type(ty) || isPTOFloat4PackedType(ty))
+    return true;
+  if (auto it = dyn_cast<IntegerType>(ty))
+    return it.getWidth() == 8;
+  if (auto ft = dyn_cast<FloatType>(ty))
+    return ft.getWidth() == 8 || ft.isF16() || ft.isBF16() || ft.isF32();
+  return false;
+}
+
+static bool isRowMajorNoneBoxND(pto::TileBufType ty) {
+  return ty.getBLayoutValueI32() == static_cast<int32_t>(pto::BLayout::RowMajor) &&
+         ty.getSLayoutValueI32() == static_cast<int32_t>(pto::SLayout::NoneBox);
+}
+
+struct TExtractCommon {
+  Type srcTy;
+  Type dstTy;
+  pto::TileBufType srcTb;
+  pto::TileBufType dstTb;
+  Type srcElem;
+  Type dstElem;
+  std::optional<pto::AddressSpace> srcSpace;
+  std::optional<pto::AddressSpace> dstSpace;
+};
+
+static FailureOr<TExtractCommon> verifyTExtractCommon(TExtractOp op,
+                                                      bool allowLowPrecision) {
+  const bool hasFp = static_cast<bool>(op.getFp());
+  Type srcTy = op.getSrc().getType();
+  Type dstTy = op.getDst().getType();
+  auto srcTb = dyn_cast<pto::TileBufType>(srcTy);
+  auto dstTb = dyn_cast<pto::TileBufType>(dstTy);
+  if (!srcTb || !dstTb)
+    return op.emitOpError("expects src and dst to be !pto.tile_buf");
+  if (failed(verifyTileBufCommon(op, srcTy, "src", allowLowPrecision)) ||
+      failed(verifyTileBufCommon(op, dstTy, "dst", allowLowPrecision)) ||
+      failed(verifyNonNegativeIndexRowCol(
+          *op.getOperation(), op.getIndexRow(), op.getIndexCol(),
+          /*includeIndexAndIntOpsInConstFold=*/hasFp)) ||
+      failed(verifyExtractStaticBoundsCommon(
+          *op.getOperation(), op.getIndexRow(), op.getIndexCol(), srcTy, dstTy,
+          /*includeIndexAndIntOpsInConstFold=*/hasFp)))
+    return failure();
+  if (hasFp) {
+    Type fpTy = op.getFp().getType();
+    if (failed(verifyTileBufCommon(op, fpTy, "fp", allowLowPrecision)))
       return failure();
-    }
-    if (hasFp) {
-      Type fpTy = fp.getType();
-      if (failed(verifyTileBufCommon(*this, fpTy, "fp", allowLowPrecision))) {
-        return failure();
-      }
-      auto fpSpace = getPTOMemorySpaceEnum(fpTy);
-      if (!fpSpace || *fpSpace != pto::AddressSpace::SCALING) {
-        return emitOpError("expects fp to use loc=scaling");
-      }
-    }
-    auto srcSpace = getPTOMemorySpaceEnum(srcTy);
-    auto dstSpace = getPTOMemorySpaceEnum(dstTy);
-    Type srcElem = getElemTy(srcTy);
-    Type dstElem = getElemTy(dstTy);
-    if (!srcElem || !dstElem) {
-      return emitOpError("expects src and dst to have element types");
-    }
-    if ((!srcSpace || *srcSpace != pto::AddressSpace::ACC) && srcElem != dstElem) {
-      return emitOpError("expects src and dst to have the same element type");
-    }
-    return std::make_tuple(srcTy, dstTy, srcTb, dstTb, srcElem, dstElem,
-                           srcSpace, dstSpace);
-  };
-  auto verifyA2A3 = [&]() -> LogicalResult {
-    auto common = verifyCommon(/*allowLowPrecision=*/false);
-    if (failed(common)) {
-      return failure();
-    }
-    auto [srcTy, dstTy, srcTb, dstTb, srcElem, dstElem, srcSpace, dstSpace] =
-        *common;
-    if (!isA2A3ExtractElemType(dstElem) &&
-        !(hasFp && dstElem.isInteger(16))) {
-      return emitOpError("expects A2/A3 textract element type to be i8/f16/bf16/f32");
-    }
-    if (hasFp && hasPreQuantScalar) {
-      return emitOpError("expects fp and preQuantScalar to be mutually exclusive");
-    }
-    if (hasFp && (!srcSpace || *srcSpace != pto::AddressSpace::ACC)) {
-      return emitOpError("expects fp form to use loc=acc src");
-    }
-    if (hasPreQuantScalar && (!srcSpace || *srcSpace != pto::AddressSpace::ACC)) {
-      return emitOpError("expects preQuantScalar form to use loc=acc src");
-    }
-    if (hasRelu && (!srcSpace || *srcSpace != pto::AddressSpace::ACC)) {
-      return emitOpError("expects reluPreMode form to use loc=acc src");
-    }
-    if (hasAccToVecMode) {
-      return emitOpError("expects accToVecMode only on A5 acc->vec textract forms");
-    }
-    if (srcSpace && dstSpace && *srcSpace == pto::AddressSpace::VEC &&
-        *dstSpace == pto::AddressSpace::VEC) {
-      if (hasPreQuantScalar || hasRelu) {
-        return emitOpError("expects vec->vec textract to use the base form without preQuantScalar or reluPreMode");
-      }
-      return mlir::success();
-    }
-    if (!srcSpace || !dstSpace) {
-      return emitOpError("expects src and dst to have explicit loc");
-    }
-    if (*srcSpace == pto::AddressSpace::ACC) {
-      if (*dstSpace != pto::AddressSpace::MAT) {
-        return emitOpError("expects A2/A3 acc-source textract dst to use loc=mat");
-      }
-      if (srcTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::ColMajor) ||
-          srcTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::RowMajor)) {
-        return emitOpError("expects A2/A3 acc-source textract src to use blayout=col_major and slayout=row_major");
-      }
-      if (dstTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::ColMajor) ||
-          dstTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::RowMajor)) {
-        return emitOpError("expects A2/A3 acc-source textract dst to use blayout=col_major and slayout=row_major");
-      }
-      if (dstTb.getSFractalSizeI32() != 512) {
-        return emitOpError("expects A2/A3 acc-source textract dst fractal size to be 512");
-      }
-      if (hasFp || hasPreQuantScalar) {
-        if (!isA2A3AccQuantExtractTypePair(srcElem, dstElem)) {
-          return emitOpError(
-              "expects A2/A3 acc preQuantScalar textract element types to be "
-              "(src=f32,dst=i8) or (src=i32,dst=i8/f16/i16)");
-        }
-      } else if (!isA2A3AccCastExtractTypePair(srcElem, dstElem)) {
-        return emitOpError(
-            "expects A2/A3 acc textract element types to be src=f32, dst=f16/bf16");
-      }
-      return mlir::success();
-    }
-    if (*srcSpace != pto::AddressSpace::MAT) {
-      return emitOpError("expects A2/A3 textract src to use loc=mat, loc=acc, or loc=vec");
-    }
-    if (*dstSpace != pto::AddressSpace::LEFT &&
-        *dstSpace != pto::AddressSpace::RIGHT) {
-      return emitOpError("expects A2/A3 textract dst to use loc=left, loc=right, loc=mat, or loc=vec");
-    }
-    if (!hasMatExtractSourceLayoutA2A3(srcTb)) {
-      return emitOpError("expects A2/A3 textract src to use a supported mat blayout/slayout combination");
-    }
-    if (*dstSpace == pto::AddressSpace::LEFT) {
-      if (dstTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor) ||
-          dstTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::RowMajor)) {
-        return emitOpError("expects A2/A3 left dst to use row_major blayout and row_major slayout");
-      }
-    } else {
-      if (dstTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor) ||
-          dstTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::ColMajor)) {
-        return emitOpError("expects A2/A3 right dst to use row_major blayout and col_major slayout");
-      }
-    }
-    return mlir::success();
-  };
-  auto verifyA5 = [&]() -> LogicalResult {
-    auto common = verifyCommon(/*allowLowPrecision=*/true);
-    if (failed(common)) {
-      return failure();
-    }
-    auto [srcTy, dstTy, srcTb, dstTb, srcElem, dstElem, srcSpace, dstSpace] =
-        *common;
-    if (!isA5ExtractElemType(dstElem)) {
-      return emitOpError("expects A5 textract element type to be an fp8/f16/bf16/f32 or int8 family type");
-    }
-    if (hasFp && hasPreQuantScalar) {
-      return emitOpError("expects fp and preQuantScalar to be mutually exclusive");
-    }
-    if (hasFp && (!srcSpace || *srcSpace != pto::AddressSpace::ACC)) {
-      return emitOpError("expects fp form to use loc=acc src");
-    }
-    if (hasPreQuantScalar && (!srcSpace || *srcSpace != pto::AddressSpace::ACC)) {
-      return emitOpError("expects preQuantScalar form to use loc=acc src");
-    }
-    if (hasRelu && (!srcSpace || *srcSpace != pto::AddressSpace::ACC)) {
-      return emitOpError("expects reluPreMode form to use loc=acc src");
-    }
-    if (hasAccToVecMode &&
-        (!srcSpace || !dstSpace || *srcSpace != pto::AddressSpace::ACC ||
-         *dstSpace != pto::AddressSpace::VEC)) {
-      return emitOpError("expects accToVecMode only on A5 acc->vec textract forms");
-    }
-    if (!srcSpace || !dstSpace) {
-      return emitOpError("expects src and dst to have explicit loc");
-    }
-    bool okPair =
-        (*srcSpace == pto::AddressSpace::MAT &&
-         (*dstSpace == pto::AddressSpace::LEFT ||
-          *dstSpace == pto::AddressSpace::RIGHT ||
-          *dstSpace == pto::AddressSpace::SCALING)) ||
-        (*srcSpace == pto::AddressSpace::VEC &&
-         (*dstSpace == pto::AddressSpace::MAT ||
-          *dstSpace == pto::AddressSpace::VEC)) ||
-        (*srcSpace == pto::AddressSpace::ACC &&
-         (*dstSpace == pto::AddressSpace::MAT ||
-          *dstSpace == pto::AddressSpace::VEC));
-    if (!okPair) {
-      return emitOpError("expects A5 textract to use a supported src/dst loc pair");
-    }
-    if (*srcSpace == pto::AddressSpace::MAT) {
-      if (hasPreQuantScalar || hasRelu) {
-        return emitOpError("expects mat-source textract to use the base form without preQuantScalar or reluPreMode");
-      }
-      if (!hasMatExtractSourceLayoutA5(srcTb, *dstSpace)) {
-        return emitOpError("expects A5 textract src to use a supported mat blayout/slayout combination");
-      }
-      if (*dstSpace == pto::AddressSpace::LEFT) {
-        if (dstTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::ColMajor) ||
-            dstTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::RowMajor)) {
-          return emitOpError("expects A5 left dst to use col_major blayout and row_major slayout");
-        }
-      } else if (*dstSpace == pto::AddressSpace::RIGHT) {
-        if (dstTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor) ||
-            dstTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::ColMajor)) {
-          return emitOpError("expects A5 right dst to use row_major blayout and col_major slayout");
-        }
-      }
-    } else if (*srcSpace == pto::AddressSpace::VEC &&
-               *dstSpace == pto::AddressSpace::VEC) {
-      if (hasPreQuantScalar || hasRelu) {
-        return emitOpError("expects vec-source textract to use the base form without preQuantScalar or reluPreMode");
-      }
-      if (!isRowMajorNoneBoxND(srcTb) || !isRowMajorNoneBoxND(dstTb)) {
-        return emitOpError(
-            "expects A5 vec->vec textract src/dst to use ND layout "
-            "(blayout=row_major, slayout=none_box)");
-      }
-    } else if (*srcSpace == pto::AddressSpace::ACC) {
-      if (srcTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::ColMajor) ||
-          srcTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::RowMajor)) {
-        return emitOpError("expects A5 acc-source textract src to use blayout=col_major and slayout=row_major");
-      }
-      if (*dstSpace == pto::AddressSpace::MAT) {
-        if (dstTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::ColMajor) ||
-            dstTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::RowMajor)) {
-          return emitOpError("expects A5 acc-source textract dst to use blayout=col_major and slayout=row_major");
-        }
-      } else {
-        if (!isRowMajorNoneBoxND(dstTb)) {
-          return emitOpError("expects A5 acc->vec textract dst to use ND layout (blayout=row_major, slayout=none_box)");
-        }
-      }
-      if (hasFp || hasPreQuantScalar) {
-        if (!isA5AccQuantExtractTypePair(srcElem, dstElem)) {
-          return emitOpError(
-              "expects A5 acc preQuantScalar textract element types to be "
-              "(src=f32,dst=i8/fp8/f16/bf16/f32) or (src=i32,dst=i8/f16/bf16)");
-        }
-      } else if (!isA5AccCastExtractTypePair(srcElem, dstElem)) {
-        return emitOpError(
-            "expects A5 acc textract element types to be "
-            "(src=f32,dst=f16/bf16/f32) or (src=i32,dst=i32)");
-      }
-    }
+    auto fpSpace = getPTOMemorySpaceEnum(fpTy);
+    if (!fpSpace || *fpSpace != pto::AddressSpace::SCALING)
+      return op.emitOpError("expects fp to use loc=scaling");
+  }
+  auto srcSpace = getPTOMemorySpaceEnum(srcTy);
+  auto dstSpace = getPTOMemorySpaceEnum(dstTy);
+  Type srcElem = getElemTy(srcTy);
+  Type dstElem = getElemTy(dstTy);
+  if (!srcElem || !dstElem)
+    return op.emitOpError("expects src and dst to have element types");
+  if ((!srcSpace || *srcSpace != pto::AddressSpace::ACC) && srcElem != dstElem)
+    return op.emitOpError("expects src and dst to have the same element type");
+  return TExtractCommon{srcTy, dstTy, srcTb, dstTb,
+                        srcElem, dstElem, srcSpace, dstSpace};
+}
+
+static LogicalResult
+verifyTExtractFpFormLoc(TExtractOp op,
+                        std::optional<pto::AddressSpace> srcSpace) {
+  const bool hasFp = static_cast<bool>(op.getFp());
+  const bool hasPreQuantScalar = static_cast<bool>(op.getPreQuantScalar());
+  const bool hasRelu = op.getReluPreMode() != pto::ReluPreMode::NoRelu;
+  const bool srcIsAcc = srcSpace && *srcSpace == pto::AddressSpace::ACC;
+  if (hasFp && hasPreQuantScalar)
+    return op.emitOpError("expects fp and preQuantScalar to be mutually exclusive");
+  if (hasFp && !srcIsAcc)
+    return op.emitOpError("expects fp form to use loc=acc src");
+  if (hasPreQuantScalar && !srcIsAcc)
+    return op.emitOpError("expects preQuantScalar form to use loc=acc src");
+  if (hasRelu && !srcIsAcc)
+    return op.emitOpError("expects reluPreMode form to use loc=acc src");
+  return success();
+}
+
+static LogicalResult verifyTExtractA2A3Acc(TExtractOp op,
+                                           const TExtractCommon &c) {
+  if (*c.dstSpace != pto::AddressSpace::MAT)
+    return op.emitOpError("expects A2/A3 acc-source textract dst to use loc=mat");
+  if (c.srcTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::ColMajor) ||
+      c.srcTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::RowMajor))
+    return op.emitOpError("expects A2/A3 acc-source textract src to use blayout=col_major and slayout=row_major");
+  if (c.dstTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::ColMajor) ||
+      c.dstTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::RowMajor))
+    return op.emitOpError("expects A2/A3 acc-source textract dst to use blayout=col_major and slayout=row_major");
+  if (c.dstTb.getSFractalSizeI32() != 512)
+    return op.emitOpError("expects A2/A3 acc-source textract dst fractal size to be 512");
+  const bool hasFp = static_cast<bool>(op.getFp());
+  const bool hasPreQuantScalar = static_cast<bool>(op.getPreQuantScalar());
+  if (hasFp || hasPreQuantScalar) {
+    if (!isA2A3AccQuantExtractTypePair(c.srcElem, c.dstElem))
+      return op.emitOpError(
+          "expects A2/A3 acc preQuantScalar textract element types to be "
+          "(src=f32,dst=i8) or (src=i32,dst=i8/f16/i16)");
+  } else if (!isA2A3AccCastExtractTypePair(c.srcElem, c.dstElem)) {
+    return op.emitOpError(
+        "expects A2/A3 acc textract element types to be src=f32, dst=f16/bf16");
+  }
+  return success();
+}
+
+static LogicalResult verifyTExtractA2A3Mat(TExtractOp op,
+                                           const TExtractCommon &c) {
+  if (*c.srcSpace != pto::AddressSpace::MAT)
+    return op.emitOpError("expects A2/A3 textract src to use loc=mat, loc=acc, or loc=vec");
+  if (*c.dstSpace != pto::AddressSpace::LEFT &&
+      *c.dstSpace != pto::AddressSpace::RIGHT)
+    return op.emitOpError("expects A2/A3 textract dst to use loc=left, loc=right, loc=mat, or loc=vec");
+  if (!hasMatExtractSourceLayoutA2A3(c.srcTb))
+    return op.emitOpError("expects A2/A3 textract src to use a supported mat blayout/slayout combination");
+  if (*c.dstSpace == pto::AddressSpace::LEFT) {
+    if (c.dstTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor) ||
+        c.dstTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::RowMajor))
+      return op.emitOpError("expects A2/A3 left dst to use row_major blayout and row_major slayout");
+  } else {
+    if (c.dstTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor) ||
+        c.dstTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::ColMajor))
+      return op.emitOpError("expects A2/A3 right dst to use row_major blayout and col_major slayout");
+  }
+  return success();
+}
+
+static LogicalResult verifyTExtractA2A3(TExtractOp op) {
+  auto common = verifyTExtractCommon(op, /*allowLowPrecision=*/false);
+  if (failed(common))
+    return failure();
+  const TExtractCommon &c = *common;
+  const bool hasFp = static_cast<bool>(op.getFp());
+  const bool hasPreQuantScalar = static_cast<bool>(op.getPreQuantScalar());
+  const bool hasRelu = op.getReluPreMode() != pto::ReluPreMode::NoRelu;
+  if (!isA2A3ExtractElemType(c.dstElem) && !(hasFp && c.dstElem.isInteger(16)))
+    return op.emitOpError("expects A2/A3 textract element type to be i8/f16/bf16/f32");
+  if (failed(verifyTExtractFpFormLoc(op, c.srcSpace)))
+    return failure();
+  if (op.getAccToVecModeAttr())
+    return op.emitOpError("expects accToVecMode only on A5 acc->vec textract forms");
+  if (c.srcSpace && c.dstSpace && *c.srcSpace == pto::AddressSpace::VEC &&
+      *c.dstSpace == pto::AddressSpace::VEC) {
+    if (hasPreQuantScalar || hasRelu)
+      return op.emitOpError("expects vec->vec textract to use the base form without preQuantScalar or reluPreMode");
     return success();
-  };
+  }
+  if (!c.srcSpace || !c.dstSpace)
+    return op.emitOpError("expects src and dst to have explicit loc");
+  if (*c.srcSpace == pto::AddressSpace::ACC)
+    return verifyTExtractA2A3Acc(op, c);
+  return verifyTExtractA2A3Mat(op, c);
+}
+
+static bool isTExtractA5SupportedPair(pto::AddressSpace srcSpace,
+                                      pto::AddressSpace dstSpace) {
+  return (srcSpace == pto::AddressSpace::MAT &&
+          (dstSpace == pto::AddressSpace::LEFT ||
+           dstSpace == pto::AddressSpace::RIGHT ||
+           dstSpace == pto::AddressSpace::SCALING)) ||
+         (srcSpace == pto::AddressSpace::VEC &&
+          (dstSpace == pto::AddressSpace::MAT ||
+           dstSpace == pto::AddressSpace::VEC)) ||
+         (srcSpace == pto::AddressSpace::ACC &&
+          (dstSpace == pto::AddressSpace::MAT ||
+           dstSpace == pto::AddressSpace::VEC));
+}
+
+static LogicalResult verifyTExtractA5Mat(TExtractOp op,
+                                         const TExtractCommon &c) {
+  const bool hasPreQuantScalar = static_cast<bool>(op.getPreQuantScalar());
+  const bool hasRelu = op.getReluPreMode() != pto::ReluPreMode::NoRelu;
+  if (hasPreQuantScalar || hasRelu)
+    return op.emitOpError("expects mat-source textract to use the base form without preQuantScalar or reluPreMode");
+  if (!hasMatExtractSourceLayoutA5(c.srcTb, *c.dstSpace))
+    return op.emitOpError("expects A5 textract src to use a supported mat blayout/slayout combination");
+  if (*c.dstSpace == pto::AddressSpace::LEFT) {
+    if (c.dstTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::ColMajor) ||
+        c.dstTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::RowMajor))
+      return op.emitOpError("expects A5 left dst to use col_major blayout and row_major slayout");
+  } else if (*c.dstSpace == pto::AddressSpace::RIGHT) {
+    if (c.dstTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor) ||
+        c.dstTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::ColMajor))
+      return op.emitOpError("expects A5 right dst to use row_major blayout and col_major slayout");
+  }
+  return success();
+}
+
+static LogicalResult verifyTExtractA5Acc(TExtractOp op,
+                                         const TExtractCommon &c) {
+  if (c.srcTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::ColMajor) ||
+      c.srcTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::RowMajor))
+    return op.emitOpError("expects A5 acc-source textract src to use blayout=col_major and slayout=row_major");
+  if (*c.dstSpace == pto::AddressSpace::MAT) {
+    if (c.dstTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::ColMajor) ||
+        c.dstTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::RowMajor))
+      return op.emitOpError("expects A5 acc-source textract dst to use blayout=col_major and slayout=row_major");
+  } else {
+    if (!isRowMajorNoneBoxND(c.dstTb))
+      return op.emitOpError("expects A5 acc->vec textract dst to use ND layout (blayout=row_major, slayout=none_box)");
+  }
+  const bool hasFp = static_cast<bool>(op.getFp());
+  const bool hasPreQuantScalar = static_cast<bool>(op.getPreQuantScalar());
+  if (hasFp || hasPreQuantScalar) {
+    if (!isA5AccQuantExtractTypePair(c.srcElem, c.dstElem))
+      return op.emitOpError(
+          "expects A5 acc preQuantScalar textract element types to be "
+          "(src=f32,dst=i8/fp8/f16/bf16/f32) or (src=i32,dst=i8/f16/bf16)");
+  } else if (!isA5AccCastExtractTypePair(c.srcElem, c.dstElem)) {
+    return op.emitOpError(
+        "expects A5 acc textract element types to be "
+        "(src=f32,dst=f16/bf16/f32) or (src=i32,dst=i32)");
+  }
+  return success();
+}
+
+static LogicalResult verifyTExtractA5(TExtractOp op) {
+  auto common = verifyTExtractCommon(op, /*allowLowPrecision=*/true);
+  if (failed(common))
+    return failure();
+  const TExtractCommon &c = *common;
+  const bool hasPreQuantScalar = static_cast<bool>(op.getPreQuantScalar());
+  const bool hasRelu = op.getReluPreMode() != pto::ReluPreMode::NoRelu;
+  if (!isA5ExtractElemType(c.dstElem))
+    return op.emitOpError("expects A5 textract element type to be an fp8/f16/bf16/f32 or int8 family type");
+  if (failed(verifyTExtractFpFormLoc(op, c.srcSpace)))
+    return failure();
+  if (op.getAccToVecModeAttr() &&
+      (!c.srcSpace || !c.dstSpace || *c.srcSpace != pto::AddressSpace::ACC ||
+       *c.dstSpace != pto::AddressSpace::VEC))
+    return op.emitOpError("expects accToVecMode only on A5 acc->vec textract forms");
+  if (!c.srcSpace || !c.dstSpace)
+    return op.emitOpError("expects src and dst to have explicit loc");
+  if (!isTExtractA5SupportedPair(*c.srcSpace, *c.dstSpace))
+    return op.emitOpError("expects A5 textract to use a supported src/dst loc pair");
+  if (*c.srcSpace == pto::AddressSpace::MAT)
+    return verifyTExtractA5Mat(op, c);
+  if (*c.srcSpace == pto::AddressSpace::VEC &&
+      *c.dstSpace == pto::AddressSpace::VEC) {
+    if (hasPreQuantScalar || hasRelu)
+      return op.emitOpError("expects vec-source textract to use the base form without preQuantScalar or reluPreMode");
+    if (!isRowMajorNoneBoxND(c.srcTb) || !isRowMajorNoneBoxND(c.dstTb))
+      return op.emitOpError(
+          "expects A5 vec->vec textract src/dst to use ND layout "
+          "(blayout=row_major, slayout=none_box)");
+    return success();
+  }
+  if (*c.srcSpace == pto::AddressSpace::ACC)
+    return verifyTExtractA5Acc(op, c);
+  return success();
+}
+
+mlir::LogicalResult mlir::pto::TExtractOp::verify() {
+  auto verifyA2A3 = [&]() -> LogicalResult { return verifyTExtractA2A3(*this); };
+  auto verifyA5 = [&]() -> LogicalResult { return verifyTExtractA5(*this); };
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 static bool isA5VectorPreQuantTypePair(Type srcElem, Type dstElem);
-mlir::LogicalResult mlir::pto::TInsertOp::verify() {
-  auto isA2A3AccCastInsertTypePair = [&](Type srcElem, Type dstElem) -> bool {
-    return srcElem.isF32() && (dstElem.isF16() || dstElem.isBF16());
-  };
-  auto isA2A3AccQuantInsertTypePair = [&](Type srcElem, Type dstElem) -> bool {
-    if (srcElem.isF32()) {
-      return dstElem.isInteger(8);
-    }
-    if (srcElem.isInteger(32)) {
-      return dstElem.isInteger(8) || dstElem.isF16() || dstElem.isInteger(16);
-    }
-    return false;
-  };
-  auto isColMajorRowMajorNZ = [&](pto::TileBufType ty) -> bool {
-    return ty.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor) &&
-           ty.getSLayoutValueI32() == static_cast<int32_t>(pto::SLayout::RowMajor);
-  };
-  auto isRowMajorNoneBoxND = [&](pto::TileBufType ty) -> bool {
-    return ty.getBLayoutValueI32() == static_cast<int32_t>(pto::BLayout::RowMajor) &&
-           ty.getSLayoutValueI32() == static_cast<int32_t>(pto::SLayout::NoneBox);
-  };
-  auto isA5SupportedVecElemType = [&](Type ty) -> bool {
-    if (isPTOFloat8Type(ty) || isPTOHiFloat8Type(ty) ||
-        isPTOFloat4PackedType(ty)) {
-      return true;
-    }
-    if (auto it = dyn_cast<IntegerType>(ty)) {
-      return it.getWidth() == 8 || it.getWidth() == 32;
-    }
-    if (auto ft = dyn_cast<FloatType>(ty)) {
-      return ft.getWidth() == 8 || ft.isF16() || ft.isBF16() || ft.isF32();
-    }
-    return false;
-  };
-  auto isA2A3VecInsertElemType = [&](Type ty) -> bool {
-    return ty.isInteger(8) || ty.isF16() || ty.isBF16() || ty.isF32();
-  };
-  auto getSpace = [](Type ty) -> std::optional<pto::AddressSpace> {
-    return getPTOMemorySpaceEnum(ty);
-  };
-  const bool hasFp = static_cast<bool>(getFp());
-  const bool hasPreQuantScalar = static_cast<bool>(getPreQuantScalar());
-  const bool hasRelu = getReluPreMode() != pto::ReluPreMode::NoRelu;
-  const bool hasAccToVecMode = static_cast<bool>(getAccToVecModeAttr());
-  const bool hasTInsertMode = static_cast<bool>(getTinsertModeAttr());
-  auto verifyCommon = [&](bool allowLowPrecision)
-      -> FailureOr<std::tuple<Type, Type, pto::TileBufType,
-                                                    pto::TileBufType, Type, Type,
-                                                    std::optional<pto::AddressSpace>,
-                                                    std::optional<pto::AddressSpace>>> {
-    Type srcTy = getSrc().getType();
-    Type dstTy = getDst().getType();
-    auto srcTb = dyn_cast<pto::TileBufType>(srcTy);
-    auto dstTb = dyn_cast<pto::TileBufType>(dstTy);
-    if (!srcTb || !dstTb) {
-      return emitOpError("expects src and dst to be !pto.tile_buf");
-    }
-    if (failed(verifyTileBufCommon(*this, srcTy, "src", allowLowPrecision)) ||
-        failed(verifyTileBufCommon(*this, dstTy, "dst", allowLowPrecision)) ||
-        failed(verifyNonNegativeIndexRowCol(
-            *getOperation(), getIndexRow(), getIndexCol(),
-            /*includeIndexAndIntOpsInConstFold=*/true)) ||
-        failed(verifyInsertStaticBoundsCommon(
-            *getOperation(), getIndexRow(), getIndexCol(), srcTy, dstTy,
-            /*includeIndexAndIntOpsInConstFold=*/true))) {
+static bool isA2A3AccCastInsertTypePair(Type srcElem, Type dstElem) {
+  return srcElem.isF32() && (dstElem.isF16() || dstElem.isBF16());
+}
+
+static bool isA2A3AccQuantInsertTypePair(Type srcElem, Type dstElem) {
+  if (srcElem.isF32())
+    return dstElem.isInteger(8);
+  if (srcElem.isInteger(32))
+    return dstElem.isInteger(8) || dstElem.isF16() || dstElem.isInteger(16);
+  return false;
+}
+
+static bool isColMajorRowMajorNZ(pto::TileBufType ty) {
+  return ty.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor) &&
+         ty.getSLayoutValueI32() == static_cast<int32_t>(pto::SLayout::RowMajor);
+}
+
+static bool isA5SupportedVecElemType(Type ty) {
+  if (isPTOFloat8Type(ty) || isPTOHiFloat8Type(ty) || isPTOFloat4PackedType(ty))
+    return true;
+  if (auto it = dyn_cast<IntegerType>(ty))
+    return it.getWidth() == 8 || it.getWidth() == 32;
+  if (auto ft = dyn_cast<FloatType>(ty))
+    return ft.getWidth() == 8 || ft.isF16() || ft.isBF16() || ft.isF32();
+  return false;
+}
+
+static bool isA2A3VecInsertElemType(Type ty) {
+  return ty.isInteger(8) || ty.isF16() || ty.isBF16() || ty.isF32();
+}
+
+struct TInsertCommon {
+  Type srcTy;
+  Type dstTy;
+  pto::TileBufType srcTb;
+  pto::TileBufType dstTb;
+  Type srcElem;
+  Type dstElem;
+  std::optional<pto::AddressSpace> srcSpace;
+  std::optional<pto::AddressSpace> dstSpace;
+};
+
+static FailureOr<TInsertCommon> verifyTInsertCommon(TInsertOp op,
+                                                    bool allowLowPrecision) {
+  Type srcTy = op.getSrc().getType();
+  Type dstTy = op.getDst().getType();
+  auto srcTb = dyn_cast<pto::TileBufType>(srcTy);
+  auto dstTb = dyn_cast<pto::TileBufType>(dstTy);
+  if (!srcTb || !dstTb)
+    return op.emitOpError("expects src and dst to be !pto.tile_buf");
+  if (failed(verifyTileBufCommon(op, srcTy, "src", allowLowPrecision)) ||
+      failed(verifyTileBufCommon(op, dstTy, "dst", allowLowPrecision)) ||
+      failed(verifyNonNegativeIndexRowCol(
+          *op.getOperation(), op.getIndexRow(), op.getIndexCol(),
+          /*includeIndexAndIntOpsInConstFold=*/true)) ||
+      failed(verifyInsertStaticBoundsCommon(
+          *op.getOperation(), op.getIndexRow(), op.getIndexCol(), srcTy, dstTy,
+          /*includeIndexAndIntOpsInConstFold=*/true)))
+    return failure();
+  Type srcElem = getElemTy(srcTy);
+  Type dstElem = getElemTy(dstTy);
+  auto srcSpace = getPTOMemorySpaceEnum(srcTy);
+  auto dstSpace = getPTOMemorySpaceEnum(dstTy);
+  return TInsertCommon{srcTy, dstTy, srcTb, dstTb,
+                       srcElem, dstElem, srcSpace, dstSpace};
+}
+
+static LogicalResult
+verifyTInsertOptionalFp(TInsertOp op, std::optional<pto::AddressSpace> srcSpace,
+                        bool isA5) {
+  const bool hasFp = static_cast<bool>(op.getFp());
+  const bool hasPreQuantScalar = static_cast<bool>(op.getPreQuantScalar());
+  const bool reluNonDefault = op.getReluPreMode() != pto::ReluPreMode::NoRelu;
+  const bool srcIsAcc = srcSpace && *srcSpace == pto::AddressSpace::ACC;
+  if (hasFp && hasPreQuantScalar)
+    return op.emitOpError("fp and preQuantScalar are mutually exclusive");
+  if (hasFp) {
+    if (!srcIsAcc)
+      return op.emitOpError("fp is only valid with src loc=acc");
+    auto fpTy = op.getFp().getType();
+    auto fpTb = dyn_cast<pto::TileBufType>(fpTy);
+    if (!fpTb)
+      return op.emitOpError("expects fp to be !pto.tile_buf");
+    if (failed(verifyTileBufCommon(op, fpTy, "fp", /*allowLowPrecision=*/isA5)))
       return failure();
-    }
-    Type srcElem = getElemTy(srcTy);
-    Type dstElem = getElemTy(dstTy);
-    auto srcSpace = getPTOMemorySpaceEnum(srcTy);
-    auto dstSpace = getPTOMemorySpaceEnum(dstTy);
-    return std::make_tuple(srcTy, dstTy, srcTb, dstTb, srcElem, dstElem,
-                           srcSpace, dstSpace);
-  };
-  // Shared validation for optional operands and attributes.
-  auto verifyOptionalArgs = [&](const std::optional<pto::AddressSpace> &srcSpace,
-                                const std::optional<pto::AddressSpace> &dstSpace,
-                                bool isA5) -> LogicalResult {
-    const bool hasFp = static_cast<bool>(getFp());
-    const bool hasPreQuantScalar = static_cast<bool>(getPreQuantScalar());
-    const bool hasAccToVecMode = static_cast<bool>(getAccToVecModeAttr());
-    const bool hasInsertMode = static_cast<bool>(getTinsertModeAttr());
-    const bool reluNonDefault = getReluPreMode() != pto::ReluPreMode::NoRelu;
+    auto fpSpace = getPTOMemorySpaceEnum(fpTy);
+    if (!fpSpace || *fpSpace != pto::AddressSpace::SCALING)
+      return op.emitOpError("expects fp to be loc=scaling");
+  }
+  if (hasPreQuantScalar && !srcIsAcc)
+    return op.emitOpError("preQuantScalar is only valid with src loc=acc");
+  if (reluNonDefault && !srcIsAcc)
+    return op.emitOpError("reluPreMode is only valid with src loc=acc");
+  return success();
+}
 
-    if (hasFp && hasPreQuantScalar) {
-      return emitOpError("fp and preQuantScalar are mutually exclusive");
-    }
-
-    // fp tile is only valid with Acc source.
-    if (hasFp) {
-      if (!srcSpace || *srcSpace != pto::AddressSpace::ACC) {
-        return emitOpError("fp is only valid with src loc=acc");
-      }
-      auto fpTy = getFp().getType();
-      auto fpTb = dyn_cast<pto::TileBufType>(fpTy);
-      if (!fpTb) {
-        return emitOpError("expects fp to be !pto.tile_buf");
-      }
-      if (failed(verifyTileBufCommon(*this, fpTy, "fp",
-                                     /*allowLowPrecision=*/isA5))) {
-        return failure();
-      }
-      auto fpSpace = getSpace(fpTy);
-      if (!fpSpace || *fpSpace != pto::AddressSpace::SCALING) {
-        return emitOpError("expects fp to be loc=scaling");
-      }
-    }
-
-    // preQuantScalar is only valid with Acc source.
-    if (hasPreQuantScalar) {
-      if (!srcSpace || *srcSpace != pto::AddressSpace::ACC) {
-        return emitOpError("preQuantScalar is only valid with src loc=acc");
-      }
-    }
-
-    // reluPreMode is only valid with Acc source.
-    if (reluNonDefault) {
-      if (!srcSpace || *srcSpace != pto::AddressSpace::ACC) {
-        return emitOpError("reluPreMode is only valid with src loc=acc");
-      }
-    }
-
-    // accToVecMode is only valid with Acc->Vec (A5 only).
-    if (hasAccToVecMode) {
-      if (!isA5) {
-        return emitOpError("accToVecMode is only supported on A5");
-      }
-      if (!srcSpace || !dstSpace ||
-          *srcSpace != pto::AddressSpace::ACC ||
-          *dstSpace != pto::AddressSpace::VEC) {
-        return emitOpError("accToVecMode is only valid with src=acc, dst=vec");
-      }
-    }
-
-    // tinsertMode (SPLIT2/SPLIT4) is only valid with Vec(NZ)->Mat on A5.
-    if (hasInsertMode) {
-      if (!isA5) {
-        return emitOpError("tinsertMode is only supported on A5");
-      }
-      if (!srcSpace || !dstSpace ||
-          *srcSpace != pto::AddressSpace::VEC ||
-          *dstSpace != pto::AddressSpace::MAT) {
-        return emitOpError(
-            "tinsertMode (SPLIT2/SPLIT4) is only valid with src=vec, dst=mat");
-      }
-      auto srcTb = dyn_cast<pto::TileBufType>(getSrc().getType());
-      if (!srcTb || !isColMajorRowMajorNZ(srcTb)) {
-        return emitOpError(
-            "tinsertMode (SPLIT2/SPLIT4) requires src NZ layout "
-            "(blayout=col_major, slayout=row_major)");
-      }
-    }
-
-    return success();
-  };
-  auto verifyA2A3 = [&]() -> LogicalResult {
-    auto common = verifyCommon(/*allowLowPrecision=*/false);
-    if (failed(common)) {
-      return failure();
-    }
-    auto [srcTy, dstTy, srcTb, dstTb, srcElem, dstElem, srcSpace, dstSpace] =
-        *common;
-    if (failed(verifyOptionalArgs(srcSpace, dstSpace, /*isA5=*/false))) {
-      return failure();
-    }
-    if (srcSpace && dstSpace && *srcSpace == pto::AddressSpace::VEC &&
-        *dstSpace == pto::AddressSpace::VEC) {
-      if (hasPreQuantScalar || hasRelu) {
-        return emitOpError(
-            "expects vec->vec tinsert to use the base form without "
-            "preQuantScalar or reluPreMode");
-      }
-      if (srcElem != dstElem || !isA2A3VecInsertElemType(srcElem)) {
-        return emitOpError(
-            "expects A2/A3 vec->vec tinsert src/dst to have same supported dtype "
-            "(i8/f16/bf16/f32)");
-      }
-      return success();
-    }
+static LogicalResult
+verifyTInsertOptionalAttrs(TInsertOp op, std::optional<pto::AddressSpace> srcSpace,
+                           std::optional<pto::AddressSpace> dstSpace, bool isA5) {
+  const bool hasAccToVecMode = static_cast<bool>(op.getAccToVecModeAttr());
+  const bool hasInsertMode = static_cast<bool>(op.getTinsertModeAttr());
+  if (hasAccToVecMode) {
+    if (!isA5)
+      return op.emitOpError("accToVecMode is only supported on A5");
     if (!srcSpace || !dstSpace || *srcSpace != pto::AddressSpace::ACC ||
-        *dstSpace != pto::AddressSpace::MAT) {
-      return emitOpError("expects A2/A3 tinsert to use acc->mat or vec->vec");
-    }
+        *dstSpace != pto::AddressSpace::VEC)
+      return op.emitOpError("accToVecMode is only valid with src=acc, dst=vec");
+  }
+  if (hasInsertMode) {
+    if (!isA5)
+      return op.emitOpError("tinsertMode is only supported on A5");
+    if (!srcSpace || !dstSpace || *srcSpace != pto::AddressSpace::VEC ||
+        *dstSpace != pto::AddressSpace::MAT)
+      return op.emitOpError(
+          "tinsertMode (SPLIT2/SPLIT4) is only valid with src=vec, dst=mat");
+    auto srcTb = dyn_cast<pto::TileBufType>(op.getSrc().getType());
+    if (!srcTb || !isColMajorRowMajorNZ(srcTb))
+      return op.emitOpError(
+          "tinsertMode (SPLIT2/SPLIT4) requires src NZ layout "
+          "(blayout=col_major, slayout=row_major)");
+  }
+  return success();
+}
 
-    if (!isColMajorRowMajorNZ(srcTb)) {
-      return emitOpError("expects A2/A3 tinsert src to use blayout=col_major and slayout=row_major");
-    }
-    if (!isColMajorRowMajorNZ(dstTb)) {
-      return emitOpError("expects A2/A3 tinsert dst to use blayout=col_major and slayout=row_major");
-    }
-    if (dstTb.getSFractalSizeI32() != 512) {
-      return emitOpError("expects A2/A3 tinsert dst fractal size to be 512");
-    }
+static LogicalResult
+verifyTInsertOptionalArgs(TInsertOp op, std::optional<pto::AddressSpace> srcSpace,
+                          std::optional<pto::AddressSpace> dstSpace, bool isA5) {
+  if (failed(verifyTInsertOptionalFp(op, srcSpace, isA5)))
+    return failure();
+  return verifyTInsertOptionalAttrs(op, srcSpace, dstSpace, isA5);
+}
 
-    if (hasFp || hasPreQuantScalar) {
-      if (!isA2A3AccQuantInsertTypePair(srcElem, dstElem)) {
-        return emitOpError(
-            "expects A2/A3 acc fp/preQuantScalar tinsert element types to be "
-            "(src=f32,dst=i8) or (src=i32,dst=i8/f16/i16)");
-      }
-    } else if (!isA2A3AccCastInsertTypePair(srcElem, dstElem)) {
-      return emitOpError(
-          "expects A2/A3 tinsert element types to be src=f32, dst=f16/bf16");
-    }
+static LogicalResult verifyTInsertA2A3AccMat(TInsertOp op,
+                                             const TInsertCommon &c) {
+  if (!isColMajorRowMajorNZ(c.srcTb))
+    return op.emitOpError("expects A2/A3 tinsert src to use blayout=col_major and slayout=row_major");
+  if (!isColMajorRowMajorNZ(c.dstTb))
+    return op.emitOpError("expects A2/A3 tinsert dst to use blayout=col_major and slayout=row_major");
+  if (c.dstTb.getSFractalSizeI32() != 512)
+    return op.emitOpError("expects A2/A3 tinsert dst fractal size to be 512");
+  const bool hasFp = static_cast<bool>(op.getFp());
+  const bool hasPreQuantScalar = static_cast<bool>(op.getPreQuantScalar());
+  if (hasFp || hasPreQuantScalar) {
+    if (!isA2A3AccQuantInsertTypePair(c.srcElem, c.dstElem))
+      return op.emitOpError(
+          "expects A2/A3 acc fp/preQuantScalar tinsert element types to be "
+          "(src=f32,dst=i8) or (src=i32,dst=i8/f16/i16)");
+  } else if (!isA2A3AccCastInsertTypePair(c.srcElem, c.dstElem)) {
+    return op.emitOpError(
+        "expects A2/A3 tinsert element types to be src=f32, dst=f16/bf16");
+  }
+  return success();
+}
+
+static LogicalResult verifyTInsertA2A3(TInsertOp op) {
+  auto common = verifyTInsertCommon(op, /*allowLowPrecision=*/false);
+  if (failed(common))
+    return failure();
+  const TInsertCommon &c = *common;
+  if (failed(verifyTInsertOptionalArgs(op, c.srcSpace, c.dstSpace, /*isA5=*/false)))
+    return failure();
+  const bool hasPreQuantScalar = static_cast<bool>(op.getPreQuantScalar());
+  const bool hasRelu = op.getReluPreMode() != pto::ReluPreMode::NoRelu;
+  if (c.srcSpace && c.dstSpace && *c.srcSpace == pto::AddressSpace::VEC &&
+      *c.dstSpace == pto::AddressSpace::VEC) {
+    if (hasPreQuantScalar || hasRelu)
+      return op.emitOpError(
+          "expects vec->vec tinsert to use the base form without "
+          "preQuantScalar or reluPreMode");
+    if (c.srcElem != c.dstElem || !isA2A3VecInsertElemType(c.srcElem))
+      return op.emitOpError(
+          "expects A2/A3 vec->vec tinsert src/dst to have same supported dtype "
+          "(i8/f16/bf16/f32)");
     return success();
-  };
-  auto verifyA5 = [&]() -> LogicalResult {
-    auto common = verifyCommon(/*allowLowPrecision=*/true);
-    if (failed(common)) {
-      return failure();
-    }
-    auto [srcTy, dstTy, srcTb, dstTb, srcElem, dstElem, srcSpace, dstSpace] =
-        *common;
-    if (hasPreQuantScalar && (!srcSpace || *srcSpace != pto::AddressSpace::ACC)) {
-      return emitOpError("expects preQuantScalar form to use loc=acc src");
-    }
-    if (hasRelu && (!srcSpace || *srcSpace != pto::AddressSpace::ACC)) {
-      return emitOpError("expects reluPreMode form to use loc=acc src");
-    }
-    if (hasAccToVecMode &&
-        (!srcSpace || !dstSpace || *srcSpace != pto::AddressSpace::ACC ||
-         *dstSpace != pto::AddressSpace::VEC)) {
-      return emitOpError("expects accToVecMode only on A5 acc->vec tinsert forms");
-    }
-    if (hasTInsertMode &&
-        (!srcSpace || !dstSpace || *srcSpace != pto::AddressSpace::VEC ||
-         *dstSpace != pto::AddressSpace::MAT)) {
-      return emitOpError("expects tinsertMode only on A5 vec->mat tinsert forms");
-    }
-    if (!srcSpace || !dstSpace) {
-      return emitOpError("expects A5 tinsert src/dst to have explicit loc");
-    }
-    if (failed(verifyOptionalArgs(srcSpace, dstSpace, /*isA5=*/true))) {
-      return failure();
-    }
+  }
+  if (!c.srcSpace || !c.dstSpace || *c.srcSpace != pto::AddressSpace::ACC ||
+      *c.dstSpace != pto::AddressSpace::MAT)
+    return op.emitOpError("expects A2/A3 tinsert to use acc->mat or vec->vec");
+  return verifyTInsertA2A3AccMat(op, c);
+}
 
-    // A5 regular acc->mat/acc->vec path.
-    if (*srcSpace == pto::AddressSpace::ACC &&
-        (*dstSpace == pto::AddressSpace::MAT || *dstSpace == pto::AddressSpace::VEC)) {
-      if (!isColMajorRowMajorNZ(srcTb)) {
-        return emitOpError("expects A5 acc->mat tinsert src to use blayout=col_major and slayout=row_major");
-      }
-      if (*dstSpace == pto::AddressSpace::MAT) {
-        if (!isColMajorRowMajorNZ(dstTb)) {
-          return emitOpError("expects A5 acc->mat tinsert dst to use blayout=col_major and slayout=row_major");
-        }
-      } else {
-        bool dstIsND = isRowMajorNoneBoxND(dstTb);
-        bool dstIsNZ = isColMajorRowMajorNZ(dstTb);
-        if (!dstIsND && !dstIsNZ) {
-          return emitOpError(
-              "expects A5 acc->vec tinsert dst to use ND(row_major/none_box) or NZ(col_major/row_major) layout");
-        }
-      }
-      const bool hasQuant = hasFp || hasPreQuantScalar;
-      bool okTypes;
-      if (hasQuant) {
-        // With fp/scalar quantization, allow wider dst types (i8/fp8/f16/bf16/f32).
-        okTypes = isA5VectorPreQuantTypePair(srcElem, dstElem);
-      } else {
-        okTypes = (srcElem.isF32() &&
-                   (dstElem.isF16() || dstElem.isBF16() || dstElem.isF32())) ||
-                  (srcElem.isInteger(32) && dstElem.isInteger(32));
-      }
-      if (!okTypes) {
-        return emitOpError(
-            "expects A5 acc-source tinsert element types to be "
-            "(src=f32,dst=f16/bf16/f32) or (src=i32,dst=i32)" +
-            (hasQuant ? std::string("; with fp/scalar: (src=f32,dst=i8/fp8/f16/bf16/f32) or (src=i32,dst=i8/f16/bf16)") : std::string()));
-      }
-      return success();
-    }
+static LogicalResult verifyTInsertA5Acc(TInsertOp op, const TInsertCommon &c) {
+  if (!isColMajorRowMajorNZ(c.srcTb))
+    return op.emitOpError("expects A5 acc->mat tinsert src to use blayout=col_major and slayout=row_major");
+  if (*c.dstSpace == pto::AddressSpace::MAT) {
+    if (!isColMajorRowMajorNZ(c.dstTb))
+      return op.emitOpError("expects A5 acc->mat tinsert dst to use blayout=col_major and slayout=row_major");
+  } else {
+    bool dstIsND = isRowMajorNoneBoxND(c.dstTb);
+    bool dstIsNZ = isColMajorRowMajorNZ(c.dstTb);
+    if (!dstIsND && !dstIsNZ)
+      return op.emitOpError(
+          "expects A5 acc->vec tinsert dst to use ND(row_major/none_box) or NZ(col_major/row_major) layout");
+  }
+  const bool hasQuant =
+      static_cast<bool>(op.getFp()) || static_cast<bool>(op.getPreQuantScalar());
+  bool okTypes;
+  if (hasQuant) {
+    okTypes = isA5VectorPreQuantTypePair(c.srcElem, c.dstElem);
+  } else {
+    okTypes = (c.srcElem.isF32() &&
+               (c.dstElem.isF16() || c.dstElem.isBF16() || c.dstElem.isF32())) ||
+              (c.srcElem.isInteger(32) && c.dstElem.isInteger(32));
+  }
+  if (!okTypes)
+    return op.emitOpError(
+        "expects A5 acc-source tinsert element types to be "
+        "(src=f32,dst=f16/bf16/f32) or (src=i32,dst=i32)" +
+        (hasQuant ? std::string("; with fp/scalar: (src=f32,dst=i8/fp8/f16/bf16/f32) or (src=i32,dst=i8/f16/bf16)") : std::string()));
+  return success();
+}
 
-    // A5 vec->mat path (ND/NZ modes in pto-isa).
-    if (*srcSpace == pto::AddressSpace::VEC && *dstSpace == pto::AddressSpace::MAT) {
-      if (hasPreQuantScalar || hasRelu) {
-        return emitOpError(
-            "expects vec->mat tinsert to use the base form without "
-            "preQuantScalar or reluPreMode");
-      }
-      if (!isColMajorRowMajorNZ(dstTb)) {
-        return emitOpError("expects A5 vec->mat tinsert dst to use blayout=col_major and slayout=row_major");
-      }
-      bool srcIsND = isRowMajorNoneBoxND(srcTb);
-      bool srcIsNZ = isColMajorRowMajorNZ(srcTb);
-      if (!srcIsND && !srcIsNZ) {
-        return emitOpError(
-            "expects A5 vec->mat tinsert src to use ND(row_major/none_box) or NZ(col_major/row_major) layout");
-      }
-      if (hasTInsertMode && !srcIsNZ) {
-        return emitOpError("expects tinsertMode vec->mat tinsert src to use NZ(col_major/row_major) layout");
-      }
-      if (srcElem != dstElem || !isA5SupportedVecElemType(srcElem)) {
-        return emitOpError(
-            "expects A5 vec->mat tinsert src/dst to have same supported dtype "
-            "(fp8/f16/bf16/f32/i8/i32)");
-      }
-      return success();
-    }
+static LogicalResult verifyTInsertA5VecMat(TInsertOp op, const TInsertCommon &c) {
+  const bool hasPreQuantScalar = static_cast<bool>(op.getPreQuantScalar());
+  const bool hasRelu = op.getReluPreMode() != pto::ReluPreMode::NoRelu;
+  const bool hasTInsertMode = static_cast<bool>(op.getTinsertModeAttr());
+  if (hasPreQuantScalar || hasRelu)
+    return op.emitOpError(
+        "expects vec->mat tinsert to use the base form without "
+        "preQuantScalar or reluPreMode");
+  if (!isColMajorRowMajorNZ(c.dstTb))
+    return op.emitOpError("expects A5 vec->mat tinsert dst to use blayout=col_major and slayout=row_major");
+  bool srcIsND = isRowMajorNoneBoxND(c.srcTb);
+  bool srcIsNZ = isColMajorRowMajorNZ(c.srcTb);
+  if (!srcIsND && !srcIsNZ)
+    return op.emitOpError(
+        "expects A5 vec->mat tinsert src to use ND(row_major/none_box) or NZ(col_major/row_major) layout");
+  if (hasTInsertMode && !srcIsNZ)
+    return op.emitOpError("expects tinsertMode vec->mat tinsert src to use NZ(col_major/row_major) layout");
+  if (c.srcElem != c.dstElem || !isA5SupportedVecElemType(c.srcElem))
+    return op.emitOpError(
+        "expects A5 vec->mat tinsert src/dst to have same supported dtype "
+        "(fp8/f16/bf16/f32/i8/i32)");
+  return success();
+}
 
-    // A5 vec->vec path: supports ND->ND and NZ->NZ.
-    if (*srcSpace == pto::AddressSpace::VEC && *dstSpace == pto::AddressSpace::VEC) {
-      if (hasPreQuantScalar || hasRelu) {
-        return emitOpError(
-            "expects vec->vec tinsert to use the base form without "
-            "preQuantScalar or reluPreMode");
-      }
-      bool srcIsND = isRowMajorNoneBoxND(srcTb);
-      bool dstIsND = isRowMajorNoneBoxND(dstTb);
-      bool srcIsNZ = isColMajorRowMajorNZ(srcTb);
-      bool dstIsNZ = isColMajorRowMajorNZ(dstTb);
-      if (srcIsND && dstIsND) {
-        // ND->ND path
-      } else if (srcIsNZ && dstIsNZ) {
-        // NZ->NZ path
-      } else {
-        return emitOpError(
-            "expects A5 vec->vec tinsert src/dst layouts to match: "
-            "both ND(row_major/none_box) or both NZ(col_major/row_major)");
-      }
-      if (srcElem != dstElem || !isA5SupportedVecElemType(srcElem)) {
-        return emitOpError(
-            "expects A5 vec->vec tinsert src/dst to have same supported dtype "
-            "(fp8/f16/bf16/f32/i8/i32)");
-      }
-      return success();
-    }
+static LogicalResult verifyTInsertA5VecVec(TInsertOp op, const TInsertCommon &c) {
+  const bool hasPreQuantScalar = static_cast<bool>(op.getPreQuantScalar());
+  const bool hasRelu = op.getReluPreMode() != pto::ReluPreMode::NoRelu;
+  if (hasPreQuantScalar || hasRelu)
+    return op.emitOpError(
+        "expects vec->vec tinsert to use the base form without "
+        "preQuantScalar or reluPreMode");
+  bool srcIsND = isRowMajorNoneBoxND(c.srcTb);
+  bool dstIsND = isRowMajorNoneBoxND(c.dstTb);
+  bool srcIsNZ = isColMajorRowMajorNZ(c.srcTb);
+  bool dstIsNZ = isColMajorRowMajorNZ(c.dstTb);
+  if (srcIsND && dstIsND) {
+    // ND->ND path
+  } else if (srcIsNZ && dstIsNZ) {
+    // NZ->NZ path
+  } else {
+    return op.emitOpError(
+        "expects A5 vec->vec tinsert src/dst layouts to match: "
+        "both ND(row_major/none_box) or both NZ(col_major/row_major)");
+  }
+  if (c.srcElem != c.dstElem || !isA5SupportedVecElemType(c.srcElem))
+    return op.emitOpError(
+        "expects A5 vec->vec tinsert src/dst to have same supported dtype "
+        "(fp8/f16/bf16/f32/i8/i32)");
+  return success();
+}
 
-    return emitOpError(
-        "expects A5 tinsert to use a supported src/dst loc pair: "
-        "acc->mat, acc->vec, vec->mat, or vec->vec");
-  };
+static LogicalResult verifyTInsertA5(TInsertOp op) {
+  auto common = verifyTInsertCommon(op, /*allowLowPrecision=*/true);
+  if (failed(common))
+    return failure();
+  const TInsertCommon &c = *common;
+  const bool hasPreQuantScalar = static_cast<bool>(op.getPreQuantScalar());
+  const bool hasRelu = op.getReluPreMode() != pto::ReluPreMode::NoRelu;
+  const bool hasAccToVecMode = static_cast<bool>(op.getAccToVecModeAttr());
+  const bool hasTInsertMode = static_cast<bool>(op.getTinsertModeAttr());
+  if (hasPreQuantScalar && (!c.srcSpace || *c.srcSpace != pto::AddressSpace::ACC))
+    return op.emitOpError("expects preQuantScalar form to use loc=acc src");
+  if (hasRelu && (!c.srcSpace || *c.srcSpace != pto::AddressSpace::ACC))
+    return op.emitOpError("expects reluPreMode form to use loc=acc src");
+  if (hasAccToVecMode &&
+      (!c.srcSpace || !c.dstSpace || *c.srcSpace != pto::AddressSpace::ACC ||
+       *c.dstSpace != pto::AddressSpace::VEC))
+    return op.emitOpError("expects accToVecMode only on A5 acc->vec tinsert forms");
+  if (hasTInsertMode &&
+      (!c.srcSpace || !c.dstSpace || *c.srcSpace != pto::AddressSpace::VEC ||
+       *c.dstSpace != pto::AddressSpace::MAT))
+    return op.emitOpError("expects tinsertMode only on A5 vec->mat tinsert forms");
+  if (!c.srcSpace || !c.dstSpace)
+    return op.emitOpError("expects A5 tinsert src/dst to have explicit loc");
+  if (failed(verifyTInsertOptionalArgs(op, c.srcSpace, c.dstSpace, /*isA5=*/true)))
+    return failure();
+  if (*c.srcSpace == pto::AddressSpace::ACC &&
+      (*c.dstSpace == pto::AddressSpace::MAT || *c.dstSpace == pto::AddressSpace::VEC))
+    return verifyTInsertA5Acc(op, c);
+  if (*c.srcSpace == pto::AddressSpace::VEC && *c.dstSpace == pto::AddressSpace::MAT)
+    return verifyTInsertA5VecMat(op, c);
+  if (*c.srcSpace == pto::AddressSpace::VEC && *c.dstSpace == pto::AddressSpace::VEC)
+    return verifyTInsertA5VecVec(op, c);
+  return op.emitOpError(
+      "expects A5 tinsert to use a supported src/dst loc pair: "
+      "acc->mat, acc->vec, vec->mat, or vec->vec");
+}
+
+mlir::LogicalResult mlir::pto::TInsertOp::verify() {
+  auto verifyA2A3 = [&]() -> LogicalResult { return verifyTInsertA2A3(*this); };
+  auto verifyA5 = [&]() -> LogicalResult { return verifyTInsertA5(*this); };
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 
@@ -8680,313 +8651,283 @@ mlir::LogicalResult mlir::pto::TFillPadOp::verify() {
 }
 
 
-llvm::LogicalResult mlir::pto::TGatherOp::verify() {
-  auto isSupportedGatherElemTypeA5Index = [&](Type ty) -> bool {
-    if (isPTOFloat8Type(ty)) {
-      return true;
-    }
-    if (ty.isF16() || ty.isF32()) {
-      return true;
-    }
-    if (auto it = dyn_cast<IntegerType>(ty)) {
-      unsigned width = it.getWidth();
-      return width == 8 || width == 16 || width == 32;
-    }
-    return false;
-  };
+static bool isSupportedGatherElemTypeA5Index(Type ty) {
+  if (isPTOFloat8Type(ty))
+    return true;
+  if (ty.isF16() || ty.isF32())
+    return true;
+  if (auto it = dyn_cast<IntegerType>(ty)) {
+    unsigned width = it.getWidth();
+    return width == 8 || width == 16 || width == 32;
+  }
+  return false;
+}
 
-  auto verifyMaskForm = [&](bool allowA5MaskTypes) -> LogicalResult {
-    Type srcTy = getSrc().getType();
-    Type dstTy = getDst().getType();
-    if (failed(verifyTileBufCommon(*this, srcTy, "src", allowA5MaskTypes)) ||
-        failed(verifyTileBufCommon(*this, dstTy, "dst", allowA5MaskTypes))) {
+static unsigned getMaskGatherTimes(mlir::pto::MaskPatternAttr mp) {
+  switch (mp.getValue()) {
+  case mlir::pto::MaskPattern::P1111:
+    return 1;
+  case mlir::pto::MaskPattern::P0101:
+  case mlir::pto::MaskPattern::P1010:
+    return 2;
+  default:
+    return 4;
+  }
+}
+
+static LogicalResult verifyTGatherMaskShapes(TGatherOp op) {
+  Type srcTy = op.getSrc().getType();
+  Type dstTy = op.getDst().getType();
+  auto axisAttr = op.getAxisAttr();
+  if (!axisAttr)
+    return op.emitOpError("expects mask-pattern tgather to provide axis attribute");
+  StringRef axisVal = axisAttr.getValue();
+  auto mp = op.getMaskPatternAttr();
+  if (!mp)
+    return op.emitOpError("expects mask-pattern tgather to provide maskPattern");
+  const unsigned times = getMaskGatherTimes(mp);
+  auto srcValid = getValidShapeVec(srcTy);
+  auto dstValid = getValidShapeVec(dstTy);
+  if (srcValid.size() != 2 || dstValid.size() != 2)
+    return op.emitOpError("expects src and dst to have rank-2 valid_shape");
+  if (axisVal == "row") {
+    if (srcValid[0] != ShapedType::kDynamic && dstValid[0] != ShapedType::kDynamic &&
+        dstValid[0] != srcValid[0])
+      return op.emitOpError("expects dst valid rows to equal src valid rows for row direction");
+    if (srcValid[1] != ShapedType::kDynamic && dstValid[1] != ShapedType::kDynamic &&
+        srcValid[1] != static_cast<int64_t>(dstValid[1] * times))
+      return op.emitOpError("expects src valid cols to equal dst valid cols times the mask expansion factor for row direction");
+  } else if (axisVal == "col") {
+    if (srcValid[1] != ShapedType::kDynamic && dstValid[1] != ShapedType::kDynamic &&
+        dstValid[1] != srcValid[1])
+      return op.emitOpError("expects dst valid cols to equal src valid cols for col direction");
+    if (srcValid[0] != ShapedType::kDynamic && dstValid[0] != ShapedType::kDynamic &&
+        srcValid[0] != static_cast<int64_t>(dstValid[0] * times))
+      return op.emitOpError("expects src valid rows to equal dst valid rows times the mask expansion factor for col direction");
+  } else {
+    return op.emitOpError("Invalid axis value, expected \"row\" or \"col\"");
+  }
+  return success();
+}
+
+static LogicalResult verifyTGatherMaskForm(TGatherOp op, bool allowA5MaskTypes) {
+  Type srcTy = op.getSrc().getType();
+  Type dstTy = op.getDst().getType();
+  if (failed(verifyTileBufCommon(op, srcTy, "src", allowA5MaskTypes)) ||
+      failed(verifyTileBufCommon(op, dstTy, "dst", allowA5MaskTypes)))
+    return failure();
+  Type srcElem = getElemTy(srcTy);
+  Type dstElem = getElemTy(dstTy);
+  if (!srcElem || !dstElem)
+    return op.emitOpError("failed to get element type for src/dst");
+  if (!isRowMajorTileBuf(srcTy) || !isRowMajorTileBuf(dstTy))
+    return op.emitOpError("expects src and dst to use row-major layout");
+  auto srcSpace = getPTOMemorySpaceEnum(srcTy);
+  auto dstSpace = getPTOMemorySpaceEnum(dstTy);
+  if (!srcSpace || !dstSpace || *srcSpace != pto::AddressSpace::VEC ||
+      *dstSpace != pto::AddressSpace::VEC)
+    return op.emitOpError("expects src and dst to be in the vec address space");
+  unsigned srcElemBytes = getPTOStorageElemByteSize(srcElem);
+  unsigned dstElemBytes = getPTOStorageElemByteSize(dstElem);
+  if (srcElemBytes == 0 || dstElemBytes == 0)
+    return op.emitOpError("failed to get element size for src/dst");
+  if (srcElemBytes != dstElemBytes)
+    return op.emitOpError("expects src and dst element sizes to match");
+  auto dstValid = getValidShapeVec(dstTy);
+  auto dstShape = getShapeVec(dstTy);
+  if (dstValid.size() == 2 && dstShape.size() == 2 &&
+      dstValid[1] != ShapedType::kDynamic && dstShape[1] != ShapedType::kDynamic &&
+      dstValid[1] != dstShape[1])
+    return op.emitOpError("expects dst valid_shape[1] to equal dst cols");
+  if (failed(verifyTGatherMaskShapes(op)))
+    return failure();
+  if (allowA5MaskTypes) {
+    if (!(srcElemBytes == 1 || srcElemBytes == 2 || srcElemBytes == 4))
+      return op.emitOpError("expects A5 mask-pattern gather element size to be 1, 2, or 4 bytes");
+    if (!isSupportedGatherElemTypeA5(srcElem) || !isSupportedGatherElemTypeA5(dstElem))
+      return op.emitOpError(
+          "expects A5 mask-pattern gather src/dst element type to be i8/i16/i32/f16/bf16/f32/fp8-like");
+  } else {
+    if (!(srcElemBytes == 2 || srcElemBytes == 4))
+      return op.emitOpError("expects A2/A3 mask-pattern gather element size to be 2 or 4 bytes");
+  }
+  return success();
+}
+
+static LogicalResult verifyTGatherIndexTypes(TGatherOp op, bool allow16BitIndices,
+                                             bool allowA5ElemTypes) {
+  Type srcTy = op.getSrc().getType();
+  Type dstTy = op.getDst().getType();
+  Type idxTy = op.getIndices().getType();
+  if (failed(verifyTileBufCommon(op, srcTy, "src", allowA5ElemTypes)) ||
+      failed(verifyTileBufCommon(op, dstTy, "dst", allowA5ElemTypes)) ||
+      failed(verifyTileBufCommon(op, idxTy, "indices")))
+    return failure();
+  if (op.getTmp()) {
+    Type tmpTy = op.getTmp().getType();
+    if (failed(verifyTileBufCommon(op, tmpTy, "tmp")))
       return failure();
-    }
+  }
+  Type srcElem = getElemTy(srcTy);
+  Type dstElem = getElemTy(dstTy);
+  if (!srcElem || !dstElem)
+    return op.emitOpError("failed to get element type for src/dst");
+  if (srcElem != dstElem)
+    return op.emitOpError("expects src and dst to have the same element type");
+  if (allowA5ElemTypes) {
+    if (!isSupportedGatherElemTypeA5Index(srcElem) ||
+        !isSupportedGatherElemTypeA5Index(dstElem))
+      return op.emitOpError(
+          "expects A5 gather src/dst element type to be i8/i16/i32/f16/f32");
+  } else if (!isSupportedGatherElemTypeA2A3(srcElem) ||
+             !isSupportedGatherElemTypeA2A3(dstElem)) {
+    return op.emitOpError("expects gather src/dst element type to be i16/i32/f16/f32");
+  }
+  auto idxElem = dyn_cast<IntegerType>(getElemTy(idxTy));
+  if (!idxElem)
+    return op.emitOpError("indices element type must be integer");
+  unsigned width = idxElem.getWidth();
+  if (!(width == 32 || (allow16BitIndices && width == 16)))
+    return op.emitOpError() << "expects indices element type to be i32"
+                            << (allow16BitIndices ? " or i16" : "");
+  return success();
+}
 
-    Type srcElem = getElemTy(srcTy);
-    Type dstElem = getElemTy(dstTy);
-    if (!srcElem || !dstElem) {
-      return emitOpError("failed to get element type for src/dst");
-    }
-    if (!isRowMajorTileBuf(srcTy) || !isRowMajorTileBuf(dstTy)) {
-      return emitOpError("expects src and dst to use row-major layout");
-    }
-    auto srcSpace = getPTOMemorySpaceEnum(srcTy);
-    auto dstSpace = getPTOMemorySpaceEnum(dstTy);
-    if (!srcSpace || !dstSpace || *srcSpace != pto::AddressSpace::VEC ||
-        *dstSpace != pto::AddressSpace::VEC) {
-      return emitOpError("expects src and dst to be in the vec address space");
-    }
-    unsigned srcElemBytes = getPTOStorageElemByteSize(srcElem);
-    unsigned dstElemBytes = getPTOStorageElemByteSize(dstElem);
-    if (srcElemBytes == 0 || dstElemBytes == 0) {
-      return emitOpError("failed to get element size for src/dst");
-    }
-    if (srcElemBytes != dstElemBytes) {
-      return emitOpError("expects src and dst element sizes to match");
-    }
-
-    auto dstValid = getValidShapeVec(dstTy);
-    auto dstShape = getShapeVec(dstTy);
-    if (dstValid.size() == 2 && dstShape.size() == 2 &&
-        dstValid[1] != ShapedType::kDynamic && dstShape[1] != ShapedType::kDynamic &&
-        dstValid[1] != dstShape[1]) {
-      return emitOpError("expects dst valid_shape[1] to equal dst cols");
-    }
-
-    auto axisAttr = getAxisAttr();
-    if (!axisAttr) {
-      return emitOpError("expects mask-pattern tgather to provide axis attribute");
-    }
-    StringRef axisVal = axisAttr.getValue();
-    auto mp = getMaskPatternAttr();
-    if (!mp) {
-      return emitOpError("expects mask-pattern tgather to provide maskPattern");
-    }
-    auto getMaskGatherTimes = [](mlir::pto::MaskPatternAttr mp) -> unsigned {
-      switch (mp.getValue()) {
-      case mlir::pto::MaskPattern::P1111:
-        return 1;
-      case mlir::pto::MaskPattern::P0101:
-      case mlir::pto::MaskPattern::P1010:
-        return 2;
-      default:
-        return 4;
-      }
-    };
-    const unsigned times = getMaskGatherTimes(mp);
-    auto srcValid = getValidShapeVec(srcTy);
-    if (srcValid.size() != 2 || dstValid.size() != 2) {
-      return emitOpError("expects src and dst to have rank-2 valid_shape");
-    }
-    if (axisVal == "row") {
-      if (srcValid[0] != ShapedType::kDynamic && dstValid[0] != ShapedType::kDynamic &&
-          dstValid[0] != srcValid[0]) {
-        return emitOpError("expects dst valid rows to equal src valid rows for row direction");
-      }
-      if (srcValid[1] != ShapedType::kDynamic && dstValid[1] != ShapedType::kDynamic &&
-          srcValid[1] != static_cast<int64_t>(dstValid[1] * times)) {
-        return emitOpError("expects src valid cols to equal dst valid cols times the mask expansion factor for row direction");
-      }
-    } else if (axisVal == "col") {
-      if (srcValid[1] != ShapedType::kDynamic && dstValid[1] != ShapedType::kDynamic &&
-          dstValid[1] != srcValid[1]) {
-        return emitOpError("expects dst valid cols to equal src valid cols for col direction");
-      }
-      if (srcValid[0] != ShapedType::kDynamic && dstValid[0] != ShapedType::kDynamic &&
-          srcValid[0] != static_cast<int64_t>(dstValid[0] * times)) {
-        return emitOpError("expects src valid rows to equal dst valid rows times the mask expansion factor for col direction");
-      }
-    } else {
-      return emitOpError("Invalid axis value, expected \"row\" or \"col\"");
-    }
-
-    if (allowA5MaskTypes) {
-      if (!(srcElemBytes == 1 || srcElemBytes == 2 || srcElemBytes == 4)) {
-        return emitOpError("expects A5 mask-pattern gather element size to be 1, 2, or 4 bytes");
-      }
-      if (!isSupportedGatherElemTypeA5(srcElem) || !isSupportedGatherElemTypeA5(dstElem)) {
-        return emitOpError(
-            "expects A5 mask-pattern gather src/dst element type to be i8/i16/i32/f16/bf16/f32/fp8-like");
-      }
-    } else {
-      if (!(srcElemBytes == 2 || srcElemBytes == 4)) {
-        return emitOpError("expects A2/A3 mask-pattern gather element size to be 2 or 4 bytes");
-      }
-    }
-    return success();
-  };
-
-  auto verifyIndexForm = [&](bool allow16BitIndices, bool allowA5ElemTypes) -> LogicalResult {
-    Type srcTy = getSrc().getType();
-    Type dstTy = getDst().getType();
-    Type idxTy = getIndices().getType();
-    if (failed(verifyTileBufCommon(*this, srcTy, "src", allowA5ElemTypes)) ||
-        failed(verifyTileBufCommon(*this, dstTy, "dst", allowA5ElemTypes)) ||
-        failed(verifyTileBufCommon(*this, idxTy, "indices"))) {
+static LogicalResult verifyTGatherIndexShapes(TGatherOp op, bool allowA5ElemTypes) {
+  Type dstTy = op.getDst().getType();
+  Type idxTy = op.getIndices().getType();
+  auto dstValid = getValidShapeVec(dstTy);
+  auto dstShape = getShapeVec(dstTy);
+  if (dstValid.size() == 2 && dstShape.size() == 2 &&
+      dstValid[1] != ShapedType::kDynamic && dstShape[1] != ShapedType::kDynamic &&
+      dstValid[1] != dstShape[1])
+    return op.emitOpError("expects dst valid_shape[1] to equal dst cols");
+  auto idxValid = getValidShapeVec(idxTy);
+  auto idxShape = getShapeVec(idxTy);
+  if (idxValid.size() == 2 && idxShape.size() == 2 &&
+      idxValid[1] != ShapedType::kDynamic && idxShape[1] != ShapedType::kDynamic &&
+      idxValid[1] != idxShape[1])
+    return op.emitOpError("expects indices valid_shape[1] to equal indices cols");
+  if (!allowA5ElemTypes) {
+    if (failed(verifyTileBufSameValidShape(op, dstTy, idxTy, "dst", "indices")))
       return failure();
-    }
-    if (getTmp()) {
-      Type tmpTy = getTmp().getType();
-      if (failed(verifyTileBufCommon(*this, tmpTy, "tmp"))) {
-        return failure();
-      }
-    }
-
-    Type srcElem = getElemTy(srcTy);
-    Type dstElem = getElemTy(dstTy);
-    if (!srcElem || !dstElem) {
-      return emitOpError("failed to get element type for src/dst");
-    }
-    if (srcElem != dstElem) {
-      return emitOpError("expects src and dst to have the same element type");
-    }
-    if (allowA5ElemTypes) {
-      if (!isSupportedGatherElemTypeA5Index(srcElem) ||
-          !isSupportedGatherElemTypeA5Index(dstElem)) {
-        return emitOpError(
-            "expects A5 gather src/dst element type to be i8/i16/i32/f16/f32");
-      }
-    } else if (!isSupportedGatherElemTypeA2A3(srcElem) ||
-               !isSupportedGatherElemTypeA2A3(dstElem)) {
-      return emitOpError("expects gather src/dst element type to be i16/i32/f16/f32");
-    }
-
+    if (!isRowMajorTileBuf(dstTy) || !isRowMajorTileBuf(idxTy) ||
+        !isRowMajorTileBuf(op.getTmp().getType()))
+      return op.emitOpError(
+          "expects A2/A3 index-form dst, indices, and tmp to use row-major layout");
     auto idxElem = dyn_cast<IntegerType>(getElemTy(idxTy));
-    if (!idxElem) {
-      return emitOpError("indices element type must be integer");
-    }
-    unsigned width = idxElem.getWidth();
-    if (!(width == 32 || (allow16BitIndices && width == 16))) {
-      return emitOpError() << "expects indices element type to be i32"
-                           << (allow16BitIndices ? " or i16" : "");
-    }
-
-    auto dstValid = getValidShapeVec(dstTy);
-    auto dstShape = getShapeVec(dstTy);
-    if (dstValid.size() == 2 && dstShape.size() == 2 &&
-        dstValid[1] != ShapedType::kDynamic && dstShape[1] != ShapedType::kDynamic &&
-        dstValid[1] != dstShape[1]) {
-      return emitOpError("expects dst valid_shape[1] to equal dst cols");
-    }
-
-    auto idxValid = getValidShapeVec(idxTy);
-    auto idxShape = getShapeVec(idxTy);
-    if (idxValid.size() == 2 && idxShape.size() == 2 &&
-        idxValid[1] != ShapedType::kDynamic && idxShape[1] != ShapedType::kDynamic &&
-        idxValid[1] != idxShape[1]) {
-      return emitOpError("expects indices valid_shape[1] to equal indices cols");
-    }
-
-    if (!allowA5ElemTypes) {
-      if (failed(verifyTileBufSameValidShape(*this, dstTy, idxTy, "dst",
-                                             "indices"))) {
-        return failure();
-      }
-      if (!isRowMajorTileBuf(dstTy) || !isRowMajorTileBuf(idxTy) ||
-          !isRowMajorTileBuf(getTmp().getType())) {
-        return emitOpError(
-            "expects A2/A3 index-form dst, indices, and tmp to use row-major layout");
-      }
-      Type tmpElem = getElemTy(getTmp().getType());
-      if (tmpElem != idxElem) {
-        return emitOpError("expects tmp and indices to have the same element type");
-      }
-      if (failed(verifyTileBufSameValidShape(*this, idxTy, getTmp().getType(), "indices", "tmp"))) {
-        return failure();
-      }
-    }
-    return success();
-  };
-
-  auto verifyCompareForm = [&](bool allowA5SrcTypes) -> LogicalResult {
-    Type srcTy = getSrc().getType();
-    Type dstTy = getDst().getType();
-    Type cdstTy = getCdst().getType();
-    Type tmpTy = getTmp().getType();
-    if (failed(verifyTileBufCommon(*this, srcTy, "src")) ||
-        failed(verifyTileBufCommon(*this, dstTy, "dst")) ||
-        failed(verifyTileBufCommon(*this, cdstTy, "cdst")) ||
-        failed(verifyTileBufCommon(*this, tmpTy, "tmp"))) {
+    Type tmpElem = getElemTy(op.getTmp().getType());
+    if (tmpElem != idxElem)
+      return op.emitOpError("expects tmp and indices to have the same element type");
+    if (failed(verifyTileBufSameValidShape(op, idxTy, op.getTmp().getType(), "indices", "tmp")))
       return failure();
-    }
+  }
+  return success();
+}
 
-    Type srcElem = getElemTy(srcTy);
-    Type dstElem = getElemTy(dstTy);
-    Type cdstElem = getElemTy(cdstTy);
-    if (!srcElem || !dstElem || !cdstElem) {
-      return emitOpError("failed to get element type for src/dst/cdst");
-    }
-    auto dstInt = dyn_cast<IntegerType>(dstElem);
-    if (!dstInt || dstInt.getWidth() != 32) {
-      return emitOpError("expects dst element type to be i32");
-    }
-    if (cdstElem != dstElem) {
-      return emitOpError("expects cdst to have the same element type as dst");
-    }
-    if (getKValue().getType() != srcElem) {
-      return emitOpError("expects kValue to have the same type as src element type");
-    }
+static LogicalResult verifyTGatherIndexForm(TGatherOp op, bool allow16BitIndices,
+                                            bool allowA5ElemTypes) {
+  if (failed(verifyTGatherIndexTypes(op, allow16BitIndices, allowA5ElemTypes)))
+    return failure();
+  return verifyTGatherIndexShapes(op, allowA5ElemTypes);
+}
 
-    auto cmpAttr = getCmpModeAttr();
-    auto cmpMode = cmpAttr ? cmpAttr.getValue() : pto::CmpMode::EQ;
-    if (cmpMode != pto::CmpMode::EQ && cmpMode != pto::CmpMode::GT) {
-      return emitOpError("expects compare-form tgather cmpMode to be eq or gt");
-    }
+static LogicalResult verifyTGatherCompareSrcType(TGatherOp op, Type srcElem,
+                                                 pto::CmpMode cmpMode,
+                                                 bool allowA5SrcTypes) {
+  if (allowA5SrcTypes) {
+    if (!(srcElem.isF16() || srcElem.isF32() || srcElem.isInteger(16) ||
+          srcElem.isInteger(32)))
+      return op.emitOpError(
+          "expects A5 compare-form tgather src element type to be i16/i32/f16/f32");
+  } else {
+    if (!(srcElem.isF16() || srcElem.isF32() ||
+          (srcElem.isInteger(32) && cmpMode == pto::CmpMode::EQ)))
+      return op.emitOpError(
+          "expects A2/A3 compare-form tgather src element type to be f16/f32, or i32 when cmpMode=eq");
+  }
+  return success();
+}
 
-    if (allowA5SrcTypes) {
-      if (!(srcElem.isF16() || srcElem.isF32() || srcElem.isInteger(16) ||
-            srcElem.isInteger(32))) {
-        return emitOpError(
-            "expects A5 compare-form tgather src element type to be i16/i32/f16/f32");
-      }
-    } else {
-      if (!(srcElem.isF16() || srcElem.isF32() ||
-            (srcElem.isInteger(32) && cmpMode == pto::CmpMode::EQ))) {
-        return emitOpError(
-            "expects A2/A3 compare-form tgather src element type to be f16/f32, or i32 when cmpMode=eq");
-      }
-    }
+static LogicalResult verifyTGatherCompareForm(TGatherOp op, bool allowA5SrcTypes) {
+  Type srcTy = op.getSrc().getType();
+  Type dstTy = op.getDst().getType();
+  Type cdstTy = op.getCdst().getType();
+  Type tmpTy = op.getTmp().getType();
+  if (failed(verifyTileBufCommon(op, srcTy, "src")) ||
+      failed(verifyTileBufCommon(op, dstTy, "dst")) ||
+      failed(verifyTileBufCommon(op, cdstTy, "cdst")) ||
+      failed(verifyTileBufCommon(op, tmpTy, "tmp")))
+    return failure();
+  Type srcElem = getElemTy(srcTy);
+  Type dstElem = getElemTy(dstTy);
+  Type cdstElem = getElemTy(cdstTy);
+  if (!srcElem || !dstElem || !cdstElem)
+    return op.emitOpError("failed to get element type for src/dst/cdst");
+  auto dstInt = dyn_cast<IntegerType>(dstElem);
+  if (!dstInt || dstInt.getWidth() != 32)
+    return op.emitOpError("expects dst element type to be i32");
+  if (cdstElem != dstElem)
+    return op.emitOpError("expects cdst to have the same element type as dst");
+  if (op.getKValue().getType() != srcElem)
+    return op.emitOpError("expects kValue to have the same type as src element type");
+  auto cmpAttr = op.getCmpModeAttr();
+  auto cmpMode = cmpAttr ? cmpAttr.getValue() : pto::CmpMode::EQ;
+  if (cmpMode != pto::CmpMode::EQ && cmpMode != pto::CmpMode::GT)
+    return op.emitOpError("expects compare-form tgather cmpMode to be eq or gt");
+  if (failed(verifyTGatherCompareSrcType(op, srcElem, cmpMode, allowA5SrcTypes)))
+    return failure();
+  if (failed(verifyVecTileCommonA2A3(op, srcTy, "src")) ||
+      failed(verifyVecTileCommonA2A3(op, dstTy, "dst")) ||
+      failed(verifyVecTileCommonA2A3(op, cdstTy, "cdst")) ||
+      failed(verifyVecTileCommonA2A3(op, tmpTy, "tmp")))
+    return failure();
+  return success();
+}
 
-    if (failed(verifyVecTileCommonA2A3(*this, srcTy, "src")) ||
-        failed(verifyVecTileCommonA2A3(*this, dstTy, "dst")) ||
-        failed(verifyVecTileCommonA2A3(*this, cdstTy, "cdst")) ||
-        failed(verifyVecTileCommonA2A3(*this, tmpTy, "tmp"))) {
-      return failure();
-    }
-    return success();
-  };
+static LogicalResult verifyTGatherA2A3(TGatherOp op) {
+  if (op.getMaskPatternAttr()) {
+    if (op.getCdst() || op.getIndices() || op.getTmp() || op.getKValue())
+      return op.emitOpError("mask-pattern tgather only allows src and dst operands");
+    return verifyTGatherMaskForm(op, /*allowA5MaskTypes=*/false);
+  }
+  if (op.getAxisAttr())
+    return op.emitOpError("axis attribute must not be provided without maskPattern");
+  if (op.getCdst() || op.getKValue()) {
+    if (!op.getCdst() || !op.getKValue() || !op.getTmp())
+      return op.emitOpError("compare-form tgather expects dst, cdst, kValue, and tmp");
+    if (op.getIndices())
+      return op.emitOpError("compare-form tgather does not take indices");
+    return verifyTGatherCompareForm(op, /*allowA5SrcTypes=*/false);
+  }
+  if (!op.getIndices() || !op.getTmp())
+    return op.emitOpError("index-form tgather expects both indices and tmp");
+  return verifyTGatherIndexForm(op, /*allow16BitIndices=*/false, /*allowA5ElemTypes=*/false);
+}
 
-  auto verifyA2A3 = [&]() -> LogicalResult {
-    if (getMaskPatternAttr()) {
-      if (getCdst() || getIndices() || getTmp() || getKValue()) {
-        return emitOpError("mask-pattern tgather only allows src and dst operands");
-      }
-      return verifyMaskForm(/*allowA5MaskTypes=*/false);
-    }
-    if (getAxisAttr()) {
-      return emitOpError("axis attribute must not be provided without maskPattern");
-    }
-    if (getCdst() || getKValue()) {
-      if (!getCdst() || !getKValue() || !getTmp()) {
-        return emitOpError("compare-form tgather expects dst, cdst, kValue, and tmp");
-      }
-      if (getIndices()) {
-        return emitOpError("compare-form tgather does not take indices");
-      }
-      return verifyCompareForm(/*allowA5SrcTypes=*/false);
-    }
-    if (!getIndices() || !getTmp()) {
-      return emitOpError("index-form tgather expects both indices and tmp");
-    }
-    return verifyIndexForm(/*allow16BitIndices=*/false, /*allowA5ElemTypes=*/false);
-  };
+static LogicalResult verifyTGatherA5(TGatherOp op) {
+  if (op.getMaskPatternAttr()) {
+    if (op.getCdst() || op.getIndices() || op.getTmp() || op.getKValue())
+      return op.emitOpError("mask-pattern tgather only allows src and dst operands");
+    return verifyTGatherMaskForm(op, /*allowA5MaskTypes=*/true);
+  }
+  if (op.getAxisAttr())
+    return op.emitOpError("axis attribute must not be provided without maskPattern");
+  if (op.getCdst() || op.getKValue()) {
+    if (!op.getCdst() || !op.getKValue() || !op.getTmp())
+      return op.emitOpError("compare-form tgather expects dst, cdst, kValue, and tmp");
+    if (op.getIndices())
+      return op.emitOpError("compare-form tgather does not take indices");
+    return verifyTGatherCompareForm(op, /*allowA5SrcTypes=*/true);
+  }
+  if (!op.getIndices())
+    return op.emitOpError("index-form tgather expects indices");
+  return verifyTGatherIndexForm(op, /*allow16BitIndices=*/true, /*allowA5ElemTypes=*/true);
+}
 
-  auto verifyA5 = [&]() -> LogicalResult {
-    if (getMaskPatternAttr()) {
-      if (getCdst() || getIndices() || getTmp() || getKValue()) {
-        return emitOpError("mask-pattern tgather only allows src and dst operands");
-      }
-      return verifyMaskForm(/*allowA5MaskTypes=*/true);
-    }
-    if (getAxisAttr()) {
-      return emitOpError("axis attribute must not be provided without maskPattern");
-    }
-    if (getCdst() || getKValue()) {
-      if (!getCdst() || !getKValue() || !getTmp()) {
-        return emitOpError("compare-form tgather expects dst, cdst, kValue, and tmp");
-      }
-      if (getIndices()) {
-        return emitOpError("compare-form tgather does not take indices");
-      }
-      return verifyCompareForm(/*allowA5SrcTypes=*/true);
-    }
-    if (!getIndices()) {
-      return emitOpError("index-form tgather expects indices");
-    }
-    return verifyIndexForm(/*allow16BitIndices=*/true, /*allowA5ElemTypes=*/true);
-  };
-
+llvm::LogicalResult mlir::pto::TGatherOp::verify() {
+  auto verifyA2A3 = [&]() -> LogicalResult { return verifyTGatherA2A3(*this); };
+  auto verifyA5 = [&]() -> LogicalResult { return verifyTGatherA5(*this); };
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 mlir::LogicalResult mlir::pto::TGatherBOp::verify() {
@@ -9184,284 +9125,324 @@ mlir::LogicalResult mlir::pto::TMinSOp::verify() {
       /*requireValidRowsEqualOnA5=*/true);
 }
 
-mlir::LogicalResult mlir::pto::TMovOp::verify() {
-  auto verifyImpl = [&](bool isA5) -> LogicalResult {
-    Type srcTy = getSrc().getType();
-    Type dstTy = getDst().getType();
-    Value fp = getFp();
-    Value preQuantScalar = getPreQuantScalar();
-    auto accToVecModeAttr = getAccToVecModeAttr();
-    auto reluMode = getReluPreMode();
-    const bool hasFp = static_cast<bool>(fp);
-    const bool hasPreQuantScalar = static_cast<bool>(preQuantScalar);
+static std::optional<int64_t> tmovCheckedAdd(int64_t lhs, int64_t rhs) {
+  if (lhs < 0 || rhs < 0 || lhs > std::numeric_limits<int64_t>::max() - rhs)
+    return std::nullopt;
+  return lhs + rhs;
+}
 
-    if (hasFp && !getPTOMemorySpaceEnum(fp.getType()))
-      return emitOpError(
-          "expects the third tile to have an explicit address space");
+static std::optional<int64_t> tmovCheckedMul(int64_t lhs, int64_t rhs) {
+  if (lhs < 0 || rhs < 0 ||
+      (rhs != 0 && lhs > std::numeric_limits<int64_t>::max() / rhs))
+    return std::nullopt;
+  return lhs * rhs;
+}
 
-    const TMovForm movForm = classifyTMovForm(fp);
-    if (movForm == TMovForm::XToZz) {
-      if (!isA5)
-        return emitOpError("X-to-ZZ tmov is only supported on A5");
-      if (getNumResults() != 0)
-        return emitOpError("expects X-to-ZZ tmov not to have results");
-      if (hasPreQuantScalar || accToVecModeAttr ||
-          reluMode != pto::ReluPreMode::NoRelu)
-        return emitOpError("expects the X-to-ZZ tmov form not to use preQuantScalar, accToVecMode, or reluPreMode");
+static std::optional<int64_t> tmovAlign16(int64_t value) {
+  auto biased = tmovCheckedAdd(value, 15);
+  return biased ? tmovCheckedMul(*biased / 16, 16) : std::nullopt;
+}
 
-      auto srcTb = dyn_cast<pto::TileBufType>(srcTy);
-      auto dstTb = dyn_cast<pto::TileBufType>(dstTy);
-      auto tmpTb = dyn_cast<pto::TileBufType>(fp.getType());
-      auto srcSpace = getPTOMemorySpaceEnum(srcTy);
-      auto dstSpace = getPTOMemorySpaceEnum(dstTy);
-      auto tmpSpace = getPTOMemorySpaceEnum(fp.getType());
-      if (!srcTb || !dstTb || !tmpTb || !srcSpace || !dstSpace ||
-          *srcSpace != pto::AddressSpace::VEC ||
-          *dstSpace != pto::AddressSpace::VEC ||
-          *tmpSpace != pto::AddressSpace::VEC)
-        return emitOpError("expects X-to-ZZ src/dst/tmp to be vec tiles");
-      if (getSrc() == getDst() || getSrc() == fp || getDst() == fp)
-        return emitOpError("expects X-to-ZZ src, dst, and tmp to be distinct tile values");
-      if (srcTb.getRank() != 2 || dstTb.getRank() != 2 || tmpTb.getRank() != 2)
-        return emitOpError("expects rank-2 valid_shape for src/dst/tmp");
-      auto hasDynamic = [](ArrayRef<int64_t> shape) {
-        return llvm::is_contained(shape, ShapedType::kDynamic);
-      };
-      if (hasDynamic(getValidShapeVec(srcTy)) ||
-          hasDynamic(getShapeVec(srcTy)) ||
-          hasDynamic(getValidShapeVec(dstTy)) ||
-          hasDynamic(getShapeVec(dstTy)) ||
-          hasDynamic(getShapeVec(fp.getType())))
-        return emitOpError("expects static valid and physical shapes for src/dst and a static tmp physical shape for X-to-ZZ");
-      Type srcElem = getElemTy(srcTy);
-      Type dstElem = getElemTy(dstTy);
-      Type tmpElem = getElemTy(fp.getType());
-      if (srcElem != dstElem || srcElem != tmpElem)
-        return emitOpError("expects src, dst, and tmp to share one element type");
-      bool validElem = isPTOHiFloat8Type(srcElem) || isPTOF8E8M0Type(srcElem);
-      if (auto integer = dyn_cast<IntegerType>(srcElem))
-        validElem = integer.getWidth() == 8 &&
-                    integer.getSignedness() == IntegerType::Unsigned;
-      if (!validElem)
-        return emitOpError("expects element type to be one of ui8, !pto.hif8, !pto.f8E8M0 (i8 lowers to int8_t, which PTO-ISA CommonCheckZZ rejects)");
-      if (srcTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor) ||
-          srcTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::NoneBox))
-        return emitOpError("expects src to use blayout=row_major, slayout=none_box");
-      if (dstTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor) ||
-          dstTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::RowMajor))
-        return emitOpError("expects dst to use blayout=row_major, slayout=row_major (ZZ box)");
+static std::optional<int64_t> tmovCheckedElements(ArrayRef<int64_t> shape) {
+  if (shape.size() != 2 || shape[0] < 0 || shape[1] < 0 ||
+      (shape[1] != 0 &&
+       shape[0] > std::numeric_limits<int64_t>::max() / shape[1]))
+    return std::nullopt;
+  return shape[0] * shape[1];
+}
 
-      auto srcValid = getValidShapeVec(srcTy);
-      auto dstValid = getValidShapeVec(dstTy);
-      auto srcPhysical = getShapeVec(srcTy);
-      auto capacity = [&](Type type) { return getStaticByteSize(type); };
-      auto checkedElements = [](ArrayRef<int64_t> shape) -> std::optional<int64_t> {
-        if (shape.size() != 2 || shape[0] < 0 || shape[1] < 0 ||
-            (shape[1] != 0 && shape[0] > std::numeric_limits<int64_t>::max() / shape[1]))
-          return std::nullopt;
-        return shape[0] * shape[1];
-      };
-      auto srcElements = checkedElements(srcValid);
-      auto dstElements = checkedElements(dstValid);
-      if (!srcElements || !dstElements || *srcElements != *dstElements)
-        return emitOpError("expects src and dst to hold the same exponent count");
+static LogicalResult verifyTMovXToZzElemLayout(TMovOp op) {
+  Type srcTy = op.getSrc().getType();
+  Type dstTy = op.getDst().getType();
+  Value fp = op.getFp();
+  auto srcTb = cast<pto::TileBufType>(srcTy);
+  auto dstTb = cast<pto::TileBufType>(dstTy);
+  Type srcElem = getElemTy(srcTy);
+  Type dstElem = getElemTy(dstTy);
+  Type tmpElem = getElemTy(fp.getType());
+  if (srcElem != dstElem || srcElem != tmpElem)
+    return op.emitOpError("expects src, dst, and tmp to share one element type");
+  bool validElem = isPTOHiFloat8Type(srcElem) || isPTOF8E8M0Type(srcElem);
+  if (auto integer = dyn_cast<IntegerType>(srcElem))
+    validElem = integer.getWidth() == 8 &&
+                integer.getSignedness() == IntegerType::Unsigned;
+  if (!validElem)
+    return op.emitOpError("expects element type to be one of ui8, !pto.hif8, !pto.f8E8M0 (i8 lowers to int8_t, which PTO-ISA CommonCheckZZ rejects)");
+  if (srcTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor) ||
+      srcTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::NoneBox))
+    return op.emitOpError("expects src to use blayout=row_major, slayout=none_box");
+  if (dstTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor) ||
+      dstTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::RowMajor))
+    return op.emitOpError("expects dst to use blayout=row_major, slayout=row_major (ZZ box)");
+  return success();
+}
 
-      auto checkedAdd = [](int64_t lhs,
-                           int64_t rhs) -> std::optional<int64_t> {
-        if (lhs < 0 || rhs < 0 ||
-            lhs > std::numeric_limits<int64_t>::max() - rhs)
-          return std::nullopt;
-        return lhs + rhs;
-      };
-      auto checkedMul = [](int64_t lhs,
-                           int64_t rhs) -> std::optional<int64_t> {
-        if (lhs < 0 || rhs < 0 ||
-            (rhs != 0 && lhs > std::numeric_limits<int64_t>::max() / rhs))
-          return std::nullopt;
-        return lhs * rhs;
-      };
-      auto align16 = [&](int64_t value) -> std::optional<int64_t> {
-        auto biased = checkedAdd(value, 15);
-        return biased ? checkedMul(*biased / 16, 16) : std::nullopt;
-      };
+static LogicalResult verifyTMovXToZzForm(TMovOp op, bool isA5) {
+  Type srcTy = op.getSrc().getType();
+  Type dstTy = op.getDst().getType();
+  Value fp = op.getFp();
+  if (!isA5)
+    return op.emitOpError("X-to-ZZ tmov is only supported on A5");
+  if (op.getNumResults() != 0)
+    return op.emitOpError("expects X-to-ZZ tmov not to have results");
+  if (op.getPreQuantScalar() || op.getAccToVecModeAttr() ||
+      op.getReluPreMode() != pto::ReluPreMode::NoRelu)
+    return op.emitOpError("expects the X-to-ZZ tmov form not to use preQuantScalar, accToVecMode, or reluPreMode");
 
-      const MxGroupAxis axis = getGrpAxisAttr()
-                                   ? getGrpAxisAttr().getValue()
-                                   : MxGroupAxis::Axis1;
-      if (axis == MxGroupAxis::Axis1) {
-        if (dstValid[1] % 2 != 0)
-          return emitOpError("expects ND-to-ZZ dst valid_shape[1] (the grouped exponent column count) to be even");
-        if (srcValid[0] != 1 && srcPhysical[1] != srcValid[1])
-          return emitOpError("expects ND-to-ZZ src valid elements to form a compact prefix (single-row legacy flat or physical row stride equal to valid cols)");
-        auto paddedRows = align16(dstValid[0]);
-        auto required = paddedRows ? checkedMul(*paddedRows, dstValid[1])
-                                   : std::nullopt;
-        if (!required)
-          return emitOpError("cannot compute ND-to-ZZ padded capacity without overflow");
-        auto srcBytes = capacity(srcTy);
-        auto dstBytes = capacity(dstTy);
-        if (!srcBytes || *srcBytes < static_cast<uint64_t>(*required))
-          return emitOpError("expects ND-to-ZZ src physical capacity to cover align16(dst rows) * dst cols because source padding is zeroed in place");
-        if (!dstBytes || *dstBytes < static_cast<uint64_t>(*required))
-          return emitOpError("expects ND-to-ZZ dst physical capacity to cover align16(dst rows) * dst cols");
-        auto rowBlocksBias = checkedAdd(dstValid[0], 15);
-        auto offsetBytes = rowBlocksBias
-                               ? checkedMul(*rowBlocksBias / 16, dstValid[1])
-                               : std::nullopt;
-        auto tmpRequired = offsetBytes ? checkedAdd(64, *offsetBytes)
-                                       : std::nullopt;
-        if (!tmpRequired)
-          return emitOpError("cannot compute ND-to-ZZ tmp capacity without overflow");
-        auto tmpBytes = capacity(fp.getType());
-        if (!tmpBytes || *tmpBytes < static_cast<uint64_t>(*tmpRequired))
-          return emitOpError() << "expects tmp to provide at least " << *tmpRequired
-                               << " bytes for ND-to-ZZ (64 + ceil(dst rows / 16) * dst cols)";
-      } else {
-        if (srcValid[0] < 2 || srcValid[0] % 2 != 0)
-          return emitOpError("expects DN-to-ZZ src valid_shape[0] to be an even count >= 2; a single row-group produces no output in PTO-ISA");
-        if (srcValid[1] % 16 != 0)
-          return emitOpError("expects DN-to-ZZ src valid_shape[1] to be a multiple of 16");
-        if (srcPhysical[1] != srcValid[1])
-          return emitOpError("expects DN-to-ZZ src physical row stride to equal src valid_shape[1]");
-        auto srcBytes = capacity(srcTy);
-        auto dstBytes = capacity(dstTy);
-        auto required = checkedMul(srcValid[0], srcValid[1]);
-        if (!required || !srcBytes || !dstBytes ||
-            *srcBytes < static_cast<uint64_t>(*required) ||
-            *dstBytes < static_cast<uint64_t>(*required))
-          return emitOpError("expects DN-to-ZZ src/dst physical capacity to cover src valid rows * src valid cols");
-      }
-      return success();
-    }
-    if (getGrpAxisAttr())
-      return emitOpError("expects grpAxis only on the X-to-ZZ form with a non-scaling third tile");
-
-    if (failed(verifyTileBufCommon(*this, srcTy, "src", /*allowLowPrecision=*/isA5)) ||
-        failed(verifyTileBufCommon(*this, dstTy, "dst", /*allowLowPrecision=*/isA5))) {
-      return failure();
-    }
-    if (hasFp && failed(verifyTileBufCommon(*this, fp.getType(), "fp",
-                                            /*allowLowPrecision=*/isA5))) {
-      return failure();
-    }
-    if (hasFp && hasPreQuantScalar) {
-      return emitOpError() << "expects fp and preQuantScalar forms to be mutually exclusive";
-    }
-
-    auto srcSpace = getPTOMemorySpaceEnum(srcTy);
-    auto dstSpace = getPTOMemorySpaceEnum(dstTy);
-    if (!srcSpace || !dstSpace) {
-      return emitOpError() << "expects src and dst to have explicit address spaces";
-    }
-
-    auto srcShape = getShapeVec(srcTy);
-    auto dstShape = getShapeVec(dstTy);
-    if (*srcSpace == pto::AddressSpace::MAT && srcShape != dstShape) {
-      return emitOpError() << "expects mat-source tmov to use matching src/dst shapes";
-    }
-    if (!isA5 && *srcSpace != pto::AddressSpace::MAT && srcShape != dstShape) {
-      return emitOpError() << "expects A2/A3 non-mat tmov to use matching src/dst shapes";
-    }
-
-    const bool isMatToTile =
-        *srcSpace == pto::AddressSpace::MAT &&
-        (*dstSpace == pto::AddressSpace::LEFT ||
-         *dstSpace == pto::AddressSpace::RIGHT ||
-         *dstSpace == pto::AddressSpace::BIAS ||
-         *dstSpace == pto::AddressSpace::SCALING);
-    const bool isVecToVec =
-        *srcSpace == pto::AddressSpace::VEC &&
-        *dstSpace == pto::AddressSpace::VEC;
-    const bool isVecToMat =
-        *srcSpace == pto::AddressSpace::VEC &&
-        *dstSpace == pto::AddressSpace::MAT;
-    const bool isAccToMat =
-        *srcSpace == pto::AddressSpace::ACC &&
-        *dstSpace == pto::AddressSpace::MAT;
-    const bool isAccToVec =
-        *srcSpace == pto::AddressSpace::ACC &&
-        *dstSpace == pto::AddressSpace::VEC;
-
-    bool okPair = isMatToTile || isVecToVec || isAccToMat || isAccToVec;
-    if (isA5) {
-      okPair = okPair || isVecToMat;
-    }
-    if (!okPair) {
-      return emitOpError()
-             << "expects a supported tmov address-space pair for this target";
-    }
-
-    if (accToVecModeAttr && !isAccToVec) {
-      return emitOpError()
-             << "expects accToVecMode to be used only for acc-to-vec tmov";
-    }
-
-    if (reluMode != pto::ReluPreMode::NoRelu && !(isAccToMat || isAccToVec)) {
-      return emitOpError()
-             << "expects reluPreMode form to use loc=acc src";
-    }
-
-    if (hasPreQuantScalar && !(isAccToMat || isAccToVec)) {
-      return emitOpError()
-             << "expects preQuantScalar form to use loc=acc src";
-    }
-
-    if (hasFp) {
-      auto fpTy = fp.getType();
-      auto fpSpace = getPTOMemorySpaceEnum(fpTy);
-      if (!fpSpace || *fpSpace != pto::AddressSpace::SCALING) {
-        return emitOpError() << "expects fp to be in the scaling address space";
-      }
-      auto srcElemTy = getElemTy(srcTy);
-      auto srcIntTy = dyn_cast<IntegerType>(srcElemTy);
-      if (!(srcElemTy.isF32() || (srcIntTy && srcIntTy.getWidth() == 32))) {
-        return emitOpError()
-               << "expects fp form src to have element type f32, i32";
-      }
-      if (!(isAccToMat || isAccToVec)) {
-        return emitOpError() << "expects fp form to use loc=acc src";
-      }
-    }
-
-    if ((hasFp || hasPreQuantScalar) && accToVecModeAttr) {
-      switch (accToVecModeAttr.getValue()) {
-      case pto::AccToVecMode::SingleModeVec0:
-      case pto::AccToVecMode::SingleModeVec1:
-        break;
-      case pto::AccToVecMode::DualModeSplitM:
-      case pto::AccToVecMode::DualModeSplitN:
-        return emitOpError()
-               << "expects fp/preQuantScalar acc-to-vec forms to use single-mode accToVecMode";
-      }
-    }
-
-    auto srcTb = dyn_cast<pto::TileBufType>(srcTy);
-    auto dstTb = dyn_cast<pto::TileBufType>(dstTy);
-    if (srcTb && *srcSpace == pto::AddressSpace::ACC &&
-        (hasFp || reluMode != pto::ReluPreMode::NoRelu)) {
-      if (srcTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::ColMajor) ||
-          srcTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::RowMajor)) {
-        return emitOpError()
-               << "expects acc-source fp/relu tmov src to use blayout=col_major and slayout=row_major";
-      }
-    }
-    if (hasFp && !isA5 && dstTb && isAccToMat &&
-        (dstTb.getBLayoutValueI32() !=
-             static_cast<int32_t>(pto::BLayout::ColMajor) ||
-         dstTb.getSLayoutValueI32() !=
-             static_cast<int32_t>(pto::SLayout::RowMajor))) {
-      return emitOpError()
-             << "expects fp tmov dst to use blayout=col_major and slayout=row_major";
-    }
-    if (srcTb && dstTb && isAccToMat && !isA5 &&
-        dstTb.getSFractalSizeI32() != 512) {
-      return emitOpError() << "expects A2/A3 acc-to-mat tmov destination fractal to be 512";
-    }
-
-    return success();
+  auto srcTb = dyn_cast<pto::TileBufType>(srcTy);
+  auto dstTb = dyn_cast<pto::TileBufType>(dstTy);
+  auto tmpTb = dyn_cast<pto::TileBufType>(fp.getType());
+  auto srcSpace = getPTOMemorySpaceEnum(srcTy);
+  auto dstSpace = getPTOMemorySpaceEnum(dstTy);
+  auto tmpSpace = getPTOMemorySpaceEnum(fp.getType());
+  if (!srcTb || !dstTb || !tmpTb || !srcSpace || !dstSpace ||
+      *srcSpace != pto::AddressSpace::VEC ||
+      *dstSpace != pto::AddressSpace::VEC ||
+      *tmpSpace != pto::AddressSpace::VEC)
+    return op.emitOpError("expects X-to-ZZ src/dst/tmp to be vec tiles");
+  if (op.getSrc() == op.getDst() || op.getSrc() == fp || op.getDst() == fp)
+    return op.emitOpError("expects X-to-ZZ src, dst, and tmp to be distinct tile values");
+  if (srcTb.getRank() != 2 || dstTb.getRank() != 2 || tmpTb.getRank() != 2)
+    return op.emitOpError("expects rank-2 valid_shape for src/dst/tmp");
+  auto hasDynamic = [](ArrayRef<int64_t> shape) {
+    return llvm::is_contained(shape, ShapedType::kDynamic);
   };
-  auto verifyA2A3 = [&]() -> LogicalResult { return verifyImpl(/*isA5=*/false); };
-  auto verifyA5 = [&]() -> LogicalResult { return verifyImpl(/*isA5=*/true); };
+  if (hasDynamic(getValidShapeVec(srcTy)) || hasDynamic(getShapeVec(srcTy)) ||
+      hasDynamic(getValidShapeVec(dstTy)) || hasDynamic(getShapeVec(dstTy)) ||
+      hasDynamic(getShapeVec(fp.getType())))
+    return op.emitOpError("expects static valid and physical shapes for src/dst and a static tmp physical shape for X-to-ZZ");
+  return verifyTMovXToZzElemLayout(op);
+}
+
+static LogicalResult verifyTMovXToZzAxis1(TMovOp op, ArrayRef<int64_t> srcValid,
+                                          ArrayRef<int64_t> dstValid,
+                                          ArrayRef<int64_t> srcPhysical) {
+  Type srcTy = op.getSrc().getType();
+  Type dstTy = op.getDst().getType();
+  Value fp = op.getFp();
+  if (dstValid[1] % 2 != 0)
+    return op.emitOpError("expects ND-to-ZZ dst valid_shape[1] (the grouped exponent column count) to be even");
+  if (srcValid[0] != 1 && srcPhysical[1] != srcValid[1])
+    return op.emitOpError("expects ND-to-ZZ src valid elements to form a compact prefix (single-row legacy flat or physical row stride equal to valid cols)");
+  auto paddedRows = tmovAlign16(dstValid[0]);
+  auto required =
+      paddedRows ? tmovCheckedMul(*paddedRows, dstValid[1]) : std::nullopt;
+  if (!required)
+    return op.emitOpError("cannot compute ND-to-ZZ padded capacity without overflow");
+  auto srcBytes = getStaticByteSize(srcTy);
+  auto dstBytes = getStaticByteSize(dstTy);
+  if (!srcBytes || *srcBytes < static_cast<uint64_t>(*required))
+    return op.emitOpError("expects ND-to-ZZ src physical capacity to cover align16(dst rows) * dst cols because source padding is zeroed in place");
+  if (!dstBytes || *dstBytes < static_cast<uint64_t>(*required))
+    return op.emitOpError("expects ND-to-ZZ dst physical capacity to cover align16(dst rows) * dst cols");
+  auto rowBlocksBias = tmovCheckedAdd(dstValid[0], 15);
+  auto offsetBytes = rowBlocksBias
+                         ? tmovCheckedMul(*rowBlocksBias / 16, dstValid[1])
+                         : std::nullopt;
+  auto tmpRequired =
+      offsetBytes ? tmovCheckedAdd(64, *offsetBytes) : std::nullopt;
+  if (!tmpRequired)
+    return op.emitOpError("cannot compute ND-to-ZZ tmp capacity without overflow");
+  auto tmpBytes = getStaticByteSize(fp.getType());
+  if (!tmpBytes || *tmpBytes < static_cast<uint64_t>(*tmpRequired))
+    return op.emitOpError() << "expects tmp to provide at least " << *tmpRequired
+                            << " bytes for ND-to-ZZ (64 + ceil(dst rows / 16) * dst cols)";
+  return success();
+}
+
+static LogicalResult verifyTMovXToZzAxis0(TMovOp op, ArrayRef<int64_t> srcValid,
+                                          ArrayRef<int64_t> srcPhysical) {
+  Type srcTy = op.getSrc().getType();
+  Type dstTy = op.getDst().getType();
+  if (srcValid[0] < 2 || srcValid[0] % 2 != 0)
+    return op.emitOpError("expects DN-to-ZZ src valid_shape[0] to be an even count >= 2; a single row-group produces no output in PTO-ISA");
+  if (srcValid[1] % 16 != 0)
+    return op.emitOpError("expects DN-to-ZZ src valid_shape[1] to be a multiple of 16");
+  if (srcPhysical[1] != srcValid[1])
+    return op.emitOpError("expects DN-to-ZZ src physical row stride to equal src valid_shape[1]");
+  auto srcBytes = getStaticByteSize(srcTy);
+  auto dstBytes = getStaticByteSize(dstTy);
+  auto required = tmovCheckedMul(srcValid[0], srcValid[1]);
+  if (!required || !srcBytes || !dstBytes ||
+      *srcBytes < static_cast<uint64_t>(*required) ||
+      *dstBytes < static_cast<uint64_t>(*required))
+    return op.emitOpError("expects DN-to-ZZ src/dst physical capacity to cover src valid rows * src valid cols");
+  return success();
+}
+
+static LogicalResult verifyTMovXToZzCapacity(TMovOp op) {
+  Type srcTy = op.getSrc().getType();
+  Type dstTy = op.getDst().getType();
+  auto srcValid = getValidShapeVec(srcTy);
+  auto dstValid = getValidShapeVec(dstTy);
+  auto srcPhysical = getShapeVec(srcTy);
+  auto srcElements = tmovCheckedElements(srcValid);
+  auto dstElements = tmovCheckedElements(dstValid);
+  if (!srcElements || !dstElements || *srcElements != *dstElements)
+    return op.emitOpError("expects src and dst to hold the same exponent count");
+  const MxGroupAxis axis =
+      op.getGrpAxisAttr() ? op.getGrpAxisAttr().getValue() : MxGroupAxis::Axis1;
+  if (axis == MxGroupAxis::Axis1)
+    return verifyTMovXToZzAxis1(op, srcValid, dstValid, srcPhysical);
+  return verifyTMovXToZzAxis0(op, srcValid, srcPhysical);
+}
+
+static LogicalResult verifyTMovXToZz(TMovOp op, bool isA5) {
+  if (failed(verifyTMovXToZzForm(op, isA5)))
+    return failure();
+  return verifyTMovXToZzCapacity(op);
+}
+
+static LogicalResult verifyTMovGenericPreconditions(TMovOp op, bool isA5) {
+  Type srcTy = op.getSrc().getType();
+  Type dstTy = op.getDst().getType();
+  Value fp = op.getFp();
+  const bool hasFp = static_cast<bool>(fp);
+  if (op.getGrpAxisAttr())
+    return op.emitOpError("expects grpAxis only on the X-to-ZZ form with a non-scaling third tile");
+  if (failed(verifyTileBufCommon(op, srcTy, "src", /*allowLowPrecision=*/isA5)) ||
+      failed(verifyTileBufCommon(op, dstTy, "dst", /*allowLowPrecision=*/isA5)))
+    return failure();
+  if (hasFp && failed(verifyTileBufCommon(op, fp.getType(), "fp",
+                                          /*allowLowPrecision=*/isA5)))
+    return failure();
+  if (hasFp && op.getPreQuantScalar())
+    return op.emitOpError() << "expects fp and preQuantScalar forms to be mutually exclusive";
+  auto srcSpace = getPTOMemorySpaceEnum(srcTy);
+  auto dstSpace = getPTOMemorySpaceEnum(dstTy);
+  if (!srcSpace || !dstSpace)
+    return op.emitOpError() << "expects src and dst to have explicit address spaces";
+  auto srcShape = getShapeVec(srcTy);
+  auto dstShape = getShapeVec(dstTy);
+  if (*srcSpace == pto::AddressSpace::MAT && srcShape != dstShape)
+    return op.emitOpError() << "expects mat-source tmov to use matching src/dst shapes";
+  if (!isA5 && *srcSpace != pto::AddressSpace::MAT && srcShape != dstShape)
+    return op.emitOpError() << "expects A2/A3 non-mat tmov to use matching src/dst shapes";
+  return success();
+}
+
+static LogicalResult verifyTMovGenericPairing(TMovOp op, bool isA5) {
+  Type srcTy = op.getSrc().getType();
+  Type dstTy = op.getDst().getType();
+  auto srcSpace = getPTOMemorySpaceEnum(srcTy);
+  auto dstSpace = getPTOMemorySpaceEnum(dstTy);
+  const bool isMatToTile =
+      *srcSpace == pto::AddressSpace::MAT &&
+      (*dstSpace == pto::AddressSpace::LEFT ||
+       *dstSpace == pto::AddressSpace::RIGHT ||
+       *dstSpace == pto::AddressSpace::BIAS ||
+       *dstSpace == pto::AddressSpace::SCALING);
+  const bool isVecToVec = *srcSpace == pto::AddressSpace::VEC &&
+                          *dstSpace == pto::AddressSpace::VEC;
+  const bool isVecToMat = *srcSpace == pto::AddressSpace::VEC &&
+                          *dstSpace == pto::AddressSpace::MAT;
+  const bool isAccToMat = *srcSpace == pto::AddressSpace::ACC &&
+                          *dstSpace == pto::AddressSpace::MAT;
+  const bool isAccToVec = *srcSpace == pto::AddressSpace::ACC &&
+                          *dstSpace == pto::AddressSpace::VEC;
+  bool okPair = isMatToTile || isVecToVec || isAccToMat || isAccToVec;
+  if (isA5)
+    okPair = okPair || isVecToMat;
+  if (!okPair)
+    return op.emitOpError() << "expects a supported tmov address-space pair for this target";
+  if (op.getAccToVecModeAttr() && !isAccToVec)
+    return op.emitOpError() << "expects accToVecMode to be used only for acc-to-vec tmov";
+  if (op.getReluPreMode() != pto::ReluPreMode::NoRelu &&
+      !(isAccToMat || isAccToVec))
+    return op.emitOpError() << "expects reluPreMode form to use loc=acc src";
+  if (op.getPreQuantScalar() && !(isAccToMat || isAccToVec))
+    return op.emitOpError() << "expects preQuantScalar form to use loc=acc src";
+  return success();
+}
+
+static LogicalResult verifyTMovGenericFpLayout(TMovOp op, bool isA5) {
+  Type srcTy = op.getSrc().getType();
+  Type dstTy = op.getDst().getType();
+  const bool hasFp = static_cast<bool>(op.getFp());
+  auto reluMode = op.getReluPreMode();
+  auto srcSpace = getPTOMemorySpaceEnum(srcTy);
+  auto dstSpace = getPTOMemorySpaceEnum(dstTy);
+  const bool isAccToMat = *srcSpace == pto::AddressSpace::ACC &&
+                          *dstSpace == pto::AddressSpace::MAT;
+  auto srcTb = dyn_cast<pto::TileBufType>(srcTy);
+  auto dstTb = dyn_cast<pto::TileBufType>(dstTy);
+  if (srcTb && *srcSpace == pto::AddressSpace::ACC &&
+      (hasFp || reluMode != pto::ReluPreMode::NoRelu)) {
+    if (srcTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::ColMajor) ||
+        srcTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::RowMajor))
+      return op.emitOpError() << "expects acc-source fp/relu tmov src to use blayout=col_major and slayout=row_major";
+  }
+  if (hasFp && !isA5 && dstTb && isAccToMat &&
+      (dstTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::ColMajor) ||
+       dstTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::RowMajor)))
+    return op.emitOpError() << "expects fp tmov dst to use blayout=col_major and slayout=row_major";
+  if (srcTb && dstTb && isAccToMat && !isA5 &&
+      dstTb.getSFractalSizeI32() != 512)
+    return op.emitOpError() << "expects A2/A3 acc-to-mat tmov destination fractal to be 512";
+  return success();
+}
+
+static LogicalResult verifyTMovGenericFpForm(TMovOp op, bool isA5) {
+  Type srcTy = op.getSrc().getType();
+  Type dstTy = op.getDst().getType();
+  Value fp = op.getFp();
+  const bool hasFp = static_cast<bool>(fp);
+  const bool hasPreQuantScalar = static_cast<bool>(op.getPreQuantScalar());
+  auto accToVecModeAttr = op.getAccToVecModeAttr();
+  auto srcSpace = getPTOMemorySpaceEnum(srcTy);
+  auto dstSpace = getPTOMemorySpaceEnum(dstTy);
+  const bool isAccToMat = *srcSpace == pto::AddressSpace::ACC &&
+                          *dstSpace == pto::AddressSpace::MAT;
+  const bool isAccToVec = *srcSpace == pto::AddressSpace::ACC &&
+                          *dstSpace == pto::AddressSpace::VEC;
+  if (hasFp) {
+    auto fpSpace = getPTOMemorySpaceEnum(fp.getType());
+    if (!fpSpace || *fpSpace != pto::AddressSpace::SCALING)
+      return op.emitOpError() << "expects fp to be in the scaling address space";
+    auto srcElemTy = getElemTy(srcTy);
+    auto srcIntTy = dyn_cast<IntegerType>(srcElemTy);
+    if (!(srcElemTy.isF32() || (srcIntTy && srcIntTy.getWidth() == 32)))
+      return op.emitOpError() << "expects fp form src to have element type f32, i32";
+    if (!(isAccToMat || isAccToVec))
+      return op.emitOpError() << "expects fp form to use loc=acc src";
+  }
+  if ((hasFp || hasPreQuantScalar) && accToVecModeAttr) {
+    switch (accToVecModeAttr.getValue()) {
+    case pto::AccToVecMode::SingleModeVec0:
+    case pto::AccToVecMode::SingleModeVec1:
+      break;
+    case pto::AccToVecMode::DualModeSplitM:
+    case pto::AccToVecMode::DualModeSplitN:
+      return op.emitOpError() << "expects fp/preQuantScalar acc-to-vec forms to use single-mode accToVecMode";
+    }
+  }
+  return verifyTMovGenericFpLayout(op, isA5);
+}
+
+static LogicalResult verifyTMovGeneric(TMovOp op, bool isA5) {
+  if (failed(verifyTMovGenericPreconditions(op, isA5)) ||
+      failed(verifyTMovGenericPairing(op, isA5)) ||
+      failed(verifyTMovGenericFpForm(op, isA5)))
+    return failure();
+  return success();
+}
+
+static LogicalResult verifyTMovImpl(TMovOp op, bool isA5) {
+  Value fp = op.getFp();
+  if (fp && !getPTOMemorySpaceEnum(fp.getType()))
+    return op.emitOpError("expects the third tile to have an explicit address space");
+  if (classifyTMovForm(fp) == TMovForm::XToZz)
+    return verifyTMovXToZz(op, isA5);
+  return verifyTMovGeneric(op, isA5);
+}
+
+mlir::LogicalResult mlir::pto::TMovOp::verify() {
+  auto verifyA2A3 = [&]() -> LogicalResult {
+    return verifyTMovImpl(*this, /*isA5=*/false);
+  };
+  auto verifyA5 = [&]() -> LogicalResult {
+    return verifyTMovImpl(*this, /*isA5=*/true);
+  };
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 
@@ -12454,392 +12435,454 @@ mlir::LogicalResult mlir::pto::TQuantOp::verify() {
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 
+static std::optional<int64_t> mxCheckedMul(int64_t lhs, int64_t rhs) {
+  if (lhs < 0 || rhs < 0 ||
+      (rhs != 0 && lhs > std::numeric_limits<int64_t>::max() / rhs))
+    return std::nullopt;
+  return lhs * rhs;
+}
+
+static std::optional<int64_t> mxCheckedAdd(int64_t lhs, int64_t rhs) {
+  if (lhs < 0 || rhs < 0 || lhs > std::numeric_limits<int64_t>::max() - rhs)
+    return std::nullopt;
+  return lhs + rhs;
+}
+
+static std::optional<int64_t> mxCeilDiv(int64_t value, int64_t divisor) {
+  if (value < 0 || divisor <= 0)
+    return std::nullopt;
+  auto plus = mxCheckedAdd(value, divisor - 1);
+  return plus ? std::optional<int64_t>(*plus / divisor) : std::nullopt;
+}
+
+static std::optional<int64_t> mxAlignTo(int64_t value, int64_t alignment) {
+  auto quotient = mxCeilDiv(value, alignment);
+  if (!quotient || *quotient > std::numeric_limits<int64_t>::max() / alignment)
+    return std::nullopt;
+  return *quotient * alignment;
+}
+
+static std::optional<int64_t> mxCapacityElems(Type type) {
+  auto shape = getShapeVec(type);
+  return mxCheckedMul(shape[0], shape[1]);
+}
+
+static std::optional<int64_t> mxCapacityBytes(Type type) {
+  auto elems = mxCapacityElems(type);
+  unsigned bytes = getElemByteSize(getElemTy(type));
+  if (!elems || bytes == 0 ||
+      *elems >
+          std::numeric_limits<int64_t>::max() / static_cast<int64_t>(bytes))
+    return std::nullopt;
+  return *elems * static_cast<int64_t>(bytes);
+}
+
+static LogicalResult mxRequireCapacity(TQuantMxOp op, StringRef name, Type type,
+                                       int64_t required) {
+  auto actual = mxCapacityElems(type);
+  if (!actual || *actual < required)
+    return op.emitOpError() << "expects " << name
+                            << " physical capacity to cover " << required
+                            << " elements";
+  return success();
+}
+
+static LogicalResult mxRequireCapacityBytes(TQuantMxOp op, StringRef name,
+                                            Type type, int64_t required) {
+  auto actual = mxCapacityBytes(type);
+  if (!actual || *actual < required)
+    return op.emitOpError() << "expects " << name
+                            << " physical capacity to cover " << required
+                            << " bytes";
+  return success();
+}
+
+static LogicalResult mxRequireCompact(TQuantMxOp op, StringRef name, Type type) {
+  auto valid = getValidShapeVec(type);
+  auto physical = getShapeVec(type);
+  if (valid[0] != 1 && physical[1] != valid[1])
+    return op.emitOpError() << "expects " << name
+                            << " valid elements to form a compact physical prefix";
+  return success();
+}
+
+static LogicalResult mxRequireStaticShape(TQuantMxOp op, StringRef name,
+                                          Type type) {
+  for (int64_t dim : getValidShapeVec(type))
+    if (dim == ShapedType::kDynamic)
+      return op.emitOpError() << "expects static valid and physical shapes for "
+                              << name << " in MX quantization";
+  for (int64_t dim : getShapeVec(type))
+    if (dim == ShapedType::kDynamic)
+      return op.emitOpError() << "expects static valid and physical shapes for "
+                              << name << " in MX quantization";
+  return success();
+}
+
+static LogicalResult verifyTQuantMxTilesAndForm(TQuantMxOp op) {
+  Type srcTy = op.getSrc().getType();
+  Type dstTy = op.getDst().getType();
+  Type expTy = op.getExp().getType();
+  Type maxTy = op.getMax().getType();
+  Type scalingTy = op.getScaling().getType();
+  if (failed(verifyNDStyleVecTile(op, srcTy, "src")) ||
+      failed(verifyNDStyleVecTile(op, dstTy, "dst", /*allowLowPrecision=*/true)) ||
+      failed(verifyNDStyleVecTile(op, expTy, "exp")) ||
+      failed(verifyNDStyleVecTile(op, maxTy, "max")) ||
+      failed(verifyNDStyleVecTile(op, scalingTy, "scaling")))
+    return failure();
+  if (op.getExpZz() &&
+      failed(verifyNDStyleVecTile(op, op.getExpZz().getType(), "exp_zz")))
+    return failure();
+  const bool isDn = op.getGrpAxis() == pto::MxGroupAxis::Axis0;
+  if (op.getInterleave() && !isDn)
+    return op.emitOpError("expects interleave to be used only with grpAxis=axis0");
+  if (op.getExpZz() && isDn)
+    return op.emitOpError("expects the deprecated exp_zz form to use grpAxis=axis1; use pto.tmov with a non-scaling tmp for axis0 exponents");
+  auto quantType = op.getQuantType();
+  if (quantType != mlir::pto::QuantType::MXFP8 &&
+      quantType != mlir::pto::QuantType::MXFP4_E2M1)
+    return op.emitOpError("expects quant_type to be MXFP8 or MXFP4_E2M1");
+  if (op.getExpZz() && !op.getStoreMode())
+    return op.emitOpError("expects storeMode when exp_zz is present");
+  if (op.getStoreMode() && !op.getExpZz())
+    return op.emitOpError("expects exp_zz when storeMode is present");
+  if (op.getStoreMode() && op.getQuantScaleAlg() != mlir::pto::QuantScaleAlg::OCP)
+    return op.emitOpError("storeMode form must not override quantScaleAlg");
+  return success();
+}
+
+static LogicalResult verifyTQuantMxElemTypes(TQuantMxOp op) {
+  Type srcTy = op.getSrc().getType();
+  Type srcElem = getElemTy(srcTy);
+  Type dstElem = getElemTy(op.getDst().getType());
+  Type expElem = getElemTy(op.getExp().getType());
+  Type maxElem = getElemTy(op.getMax().getType());
+  Type scalingElem = getElemTy(op.getScaling().getType());
+  if (!(srcElem.isF32() || srcElem.isF16() || srcElem.isBF16()))
+    return op.emitOpError("expects src element type to be f32/f16/bf16");
+  if (!expElem.isInteger(8))
+    return op.emitOpError("expects exp element type to be i8/ui8");
+  if (op.getExpZz() && !getElemTy(op.getExpZz().getType()).isInteger(8))
+    return op.emitOpError("expects exp_zz element type to be i8/ui8");
+  if (maxElem != srcElem)
+    return op.emitOpError("expects max element type to match src element type");
+  if (scalingElem != srcElem)
+    return op.emitOpError("expects scaling element type to match src element type");
+  if (op.getQuantType() == mlir::pto::QuantType::MXFP8) {
+    if (!dstElem.isInteger(8))
+      return op.emitOpError("expects MXFP8 dst element type to be i8/ui8");
+  } else {
+    if (!isa<pto::F4E2M1x2Type>(dstElem))
+      return op.emitOpError("expects MXFP4_E2M1 dst element type to be !pto.f4E2M1x2");
+    if (!(srcElem.isF16() || srcElem.isBF16()))
+      return op.emitOpError("expects MXFP4_E2M1 src element type to be f16/bf16");
+  }
+  return success();
+}
+
+static LogicalResult verifyTQuantMxShapes(TQuantMxOp op) {
+  Type srcTy = op.getSrc().getType();
+  Type dstTy = op.getDst().getType();
+  Type expTy = op.getExp().getType();
+  Type maxTy = op.getMax().getType();
+  Type scalingTy = op.getScaling().getType();
+  auto srcValid = getValidShapeVec(srcTy);
+  auto dstValid = getValidShapeVec(dstTy);
+  auto expValid = getValidShapeVec(expTy);
+  auto maxValid = getValidShapeVec(maxTy);
+  auto scalingValid = getValidShapeVec(scalingTy);
+  if (srcValid.size() != 2 || dstValid.size() != 2 || expValid.size() != 2 ||
+      maxValid.size() != 2 || scalingValid.size() != 2 ||
+      getShapeVec(srcTy).size() != 2 || getShapeVec(dstTy).size() != 2 ||
+      getShapeVec(expTy).size() != 2 || getShapeVec(maxTy).size() != 2 ||
+      getShapeVec(scalingTy).size() != 2)
+    return op.emitOpError("expects rank-2 valid and physical shapes for MX quantization");
+  if (op.getExpZz() && (getValidShapeVec(op.getExpZz().getType()).size() != 2 ||
+                        getShapeVec(op.getExpZz().getType()).size() != 2))
+    return op.emitOpError("expects rank-2 valid and physical shapes for exp_zz");
+  for (auto [name, type] : {std::pair<StringRef, Type>("src", srcTy),
+                            {"dst", dstTy}, {"exp", expTy}, {"max", maxTy},
+                            {"scaling", scalingTy}})
+    if (failed(mxRequireStaticShape(op, name, type)))
+      return failure();
+  if (op.getExpZz()) {
+    Type expZzTy = op.getExpZz().getType();
+    if (llvm::is_contained(getValidShapeVec(expZzTy), ShapedType::kDynamic) ||
+        llvm::is_contained(getShapeVec(expZzTy), ShapedType::kDynamic))
+      return op.emitOpError("expects static valid and physical shapes for exp_zz in the deprecated fused MX quantization form");
+  }
+  if (failed(verifyTileBufSameElemType(op, srcTy, maxTy, "src", "max")) ||
+      failed(verifyTileBufSameElemType(op, srcTy, scalingTy, "src", "scaling")) ||
+      failed(verifyTileBufSameLogicalExtent(op, srcTy, dstTy, "src", "dst",
+                                            /*compareValidShape=*/true)))
+    return failure();
+  return success();
+}
+
+struct TQuantMxA5 {
+  Type srcTy, dstTy, expTy, maxTy, scalingTy;
+  Type srcElem;
+  SmallVector<int64_t, 4> dstValid, expValid, expPhysical;
+  SmallVector<int64_t, 4> dstPhysical, maxPhysical, scalingPhysical;
+  bool isDn, isMxFp4;
+  int64_t srcRows, srcCols, srcPhysicalRows, srcPhysicalCols;
+  int64_t pack, dstValidCols, groups;
+};
+
+static LogicalResult mxRequireGroupedShape(TQuantMxOp op, const TQuantMxA5 &s,
+                                           StringRef name, Type type,
+                                           bool allowLegacy) {
+  auto valid = getValidShapeVec(type);
+  SmallVector<int64_t, 2> canonical = {s.isDn ? s.srcRows / 32 : s.srcRows,
+                                       s.isDn ? s.srcCols : s.srcCols / 32};
+  if (llvm::equal(valid, canonical))
+    return success();
+  if (!s.isDn && allowLegacy && valid[0] == 1 && valid[1] == s.groups)
+    return success();
+  return op.emitOpError()
+         << "expects " << name << " valid_shape to match "
+         << (s.isDn ? "canonical [M/32, N] for grpAxis=axis0"
+                    : "canonical [M, N/32] or legacy flat [1, M*N/32] for grpAxis=axis1");
+}
+
+static FailureOr<TQuantMxA5> buildTQuantMxA5State(TQuantMxOp op) {
+  TQuantMxA5 s;
+  s.srcTy = op.getSrc().getType();
+  s.dstTy = op.getDst().getType();
+  s.expTy = op.getExp().getType();
+  s.maxTy = op.getMax().getType();
+  s.scalingTy = op.getScaling().getType();
+  s.srcElem = getElemTy(s.srcTy);
+  auto srcValid = getValidShapeVec(s.srcTy);
+  s.dstValid = getValidShapeVec(s.dstTy);
+  s.expValid = getValidShapeVec(s.expTy);
+  auto srcPhysical = getShapeVec(s.srcTy);
+  s.dstPhysical = getShapeVec(s.dstTy);
+  s.expPhysical = getShapeVec(s.expTy);
+  s.maxPhysical = getShapeVec(s.maxTy);
+  s.scalingPhysical = getShapeVec(s.scalingTy);
+  s.isDn = op.getGrpAxis() == pto::MxGroupAxis::Axis0;
+  s.srcRows = srcValid[0];
+  s.srcCols = srcValid[1];
+  s.srcPhysicalRows = srcPhysical[0];
+  s.srcPhysicalCols = srcPhysical[1];
+  if (s.srcRows <= 0 || s.srcCols <= 0 || s.srcPhysicalRows < s.srcRows ||
+      s.srcPhysicalCols < s.srcCols)
+    return op.emitOpError("expects positive source valid shape within physical shape");
+  if ((s.isDn ? s.srcRows : s.srcCols) % 32 != 0)
+    return op.emitOpError() << "expects src valid_shape[" << (s.isDn ? 0 : 1)
+                            << "] to be a multiple of 32 when grpAxis is "
+                            << (s.isDn ? "axis0" : "axis1");
+  auto groupsOr = mxCheckedMul(s.srcRows, s.srcCols / 32);
+  if (!groupsOr)
+    return op.emitOpError("cannot compute MX quantization group count without overflow");
+  s.groups = *groupsOr;
+  s.isMxFp4 = op.getQuantType() == mlir::pto::QuantType::MXFP4_E2M1;
+  s.pack = s.isMxFp4 ? 2 : 1;
+  s.dstValidCols = s.isMxFp4 ? s.srcCols / 2 : s.srcCols;
+  return s;
+}
+
+static LogicalResult verifyTQuantMxGrouping(TQuantMxOp op, const TQuantMxA5 &s) {
+  if (op.getExpZz()) {
+    auto expZzElements =
+        mxCheckedMul(getValidShapeVec(op.getExpZz().getType())[0],
+                     getValidShapeVec(op.getExpZz().getType())[1]);
+    if (!expZzElements || *expZzElements != s.groups)
+      return op.emitOpError("expects exp_zz valid element count to equal MX group count");
+  }
+  if (failed(mxRequireGroupedShape(op, s, "max", s.maxTy, /*allowLegacy=*/true)) ||
+      failed(mxRequireGroupedShape(op, s, "scaling", s.scalingTy,
+                                   /*allowLegacy=*/true)))
+    return failure();
+  if (!op.getInterleave())
+    return mxRequireGroupedShape(op, s, "exp", s.expTy, /*allowLegacy=*/true);
+  if (s.srcRows % 64 != 0)
+    return op.emitOpError("expects src valid rows to be a multiple of 64 when interleave is true");
+  if (s.srcPhysicalRows % 64 != 0)
+    return op.emitOpError("expects src physical rows to be a multiple of 64 when interleave is true");
+  auto doubledValidCols = mxCheckedMul(s.srcCols, 2);
+  if (!doubledValidCols)
+    return op.emitOpError("cannot compute interleaved exp valid shape without overflow");
+  if (s.expValid[0] != s.srcRows / 64 || s.expValid[1] != *doubledValidCols)
+    return op.emitOpError("expects exp valid_shape to match [M/64, 2N] for grpAxis=axis0 with interleave=true");
+  return success();
+}
+
+static LogicalResult verifyTQuantMxDstShape(TQuantMxOp op, const TQuantMxA5 &s) {
+  if (s.isMxFp4 && s.srcPhysicalCols % 2 != 0)
+    return op.emitOpError("expects MXFP4 src physical cols to be even for packed destination addressing");
+  if (s.dstValid[0] != s.srcRows || s.dstValid[1] != s.dstValidCols)
+    return op.emitOpError() << "expects dst valid_shape to be [" << s.srcRows
+                            << ", " << s.dstValidCols << "] for MX quantization";
+  if (s.dstPhysical[0] < s.srcRows)
+    return op.emitOpError("expects dst physical rows to cover src valid rows");
+  return success();
+}
+
+static LogicalResult verifyTQuantMxAxis0(TQuantMxOp op, const TQuantMxA5 &s) {
+  if (s.isMxFp4) {
+    if (s.dstPhysical[1] != s.srcPhysicalCols / s.pack)
+      return op.emitOpError("expects MXFP4 axis0 dst physical cols to equal src physical cols / 2");
+    auto dstPrefix = mxCheckedMul(s.srcRows - 1, s.srcPhysicalCols / s.pack);
+    auto required =
+        dstPrefix ? mxCheckedAdd(*dstPrefix, s.dstValidCols) : std::nullopt;
+    if (!required || failed(mxRequireCapacity(op, "dst", s.dstTy, *required)))
+      return failure();
+    if ((s.srcPhysicalCols / s.pack) % 32 != 0 && s.srcElem.isF16())
+      return op.emitOpError("does not support FP16 MXFP4 axis0 when packed source stride is not a multiple of 32 bytes");
+  } else {
+    auto dstPrefix = mxCheckedMul(s.srcRows - 1, s.dstPhysical[1]);
+    auto required =
+        dstPrefix ? mxCheckedAdd(*dstPrefix, s.dstValidCols) : std::nullopt;
+    if (!required || failed(mxRequireCapacity(op, "dst", s.dstTy, *required)))
+      return failure();
+  }
+  if (s.maxPhysical[1] != s.srcPhysicalCols)
+    return op.emitOpError("expects max physical cols to equal src physical cols for grpAxis=axis0");
+  if (s.scalingPhysical[1] != s.srcPhysicalCols)
+    return op.emitOpError("expects scaling physical cols to equal src physical cols for grpAxis=axis0");
+  auto auxRequired = mxCheckedMul(s.srcRows / 32, s.srcPhysicalCols);
+  if (!auxRequired || failed(mxRequireCapacity(op, "max", s.maxTy, *auxRequired)) ||
+      failed(mxRequireCapacity(op, "scaling", s.scalingTy, *auxRequired)))
+    return failure();
+  if (!op.getInterleave()) {
+    if (s.expPhysical[1] != s.srcPhysicalCols)
+      return op.emitOpError("expects exp physical cols to equal src physical cols for grpAxis=axis0");
+    if (failed(mxRequireCapacity(op, "exp", s.expTy, *auxRequired)))
+      return failure();
+  } else {
+    auto doubledPhysicalCols = mxCheckedMul(s.srcPhysicalCols, 2);
+    auto alignedPhysicalCols =
+        doubledPhysicalCols ? mxAlignTo(*doubledPhysicalCols, 32) : std::nullopt;
+    if (!alignedPhysicalCols)
+      return op.emitOpError("cannot compute interleaved exp physical cols without overflow");
+    if (s.expPhysical[0] != s.srcPhysicalRows / 64)
+      return op.emitOpError("expects interleaved exp physical rows to be src physical rows / 64");
+    if (s.expPhysical[1] != *alignedPhysicalCols)
+      return op.emitOpError("expects interleaved exp physical cols to be align32(2 * src physical cols)");
+  }
+  if (s.srcElem.isF32() && op.getInterleave())
+    return op.emitOpError("does not support FP32 interleave with the pinned pto-isa revision");
+  return success();
+}
+
+static LogicalResult verifyTQuantMxAxis1Flat(TQuantMxOp op, const TQuantMxA5 &s) {
+  if (s.srcPhysicalCols != s.srcCols)
+    return op.emitOpError("expects axis1 flat exp to use a tight source with physical cols equal to valid cols");
+  if (s.expValid[0] != 1 || s.expValid[1] != s.groups)
+    return op.emitOpError("expects axis1 flat exp valid_shape to match legacy flat [1, M*N/32]");
+  if (failed(mxRequireCapacity(op, "exp", s.expTy, s.groups)))
+    return failure();
+  auto srcElems = mxCheckedMul(s.srcPhysicalRows, s.srcPhysicalCols);
+  auto validElems = mxCheckedMul(s.srcRows, s.srcPhysicalCols);
+  bool unroll = srcElems && validElems && *srcElems > 1024 &&
+                *srcElems % 256 == 0 && *validElems % 256 == 0;
+  if (s.srcElem.isF32()) {
+    auto scaleGroups =
+        unroll ? mxCheckedMul(s.groups, 2) : std::optional<int64_t>(s.groups);
+    auto aligned = scaleGroups ? mxAlignTo(*scaleGroups, 64) : std::nullopt;
+    auto requiredBytes = aligned ? mxCheckedMul(*aligned, 4) : std::nullopt;
+    StringRef scalingName = unroll ? "axis1 flat unrolled f32 scaling"
+                                   : "axis1 flat f32 scaling";
+    if (!requiredBytes ||
+        failed(mxRequireCapacityBytes(op, scalingName, s.scalingTy,
+                                      *requiredBytes)))
+      return failure();
+  } else if (op.getQuantScaleAlg() == pto::QuantScaleAlg::OCP) {
+    auto aligned = mxAlignTo(s.groups, 128);
+    auto requiredBytes = aligned ? mxCheckedMul(*aligned, 2) : std::nullopt;
+    if (!requiredBytes ||
+        failed(mxRequireCapacityBytes(op, "axis1 flat B16 OCP scaling",
+                                      s.scalingTy, *requiredBytes)))
+      return failure();
+  } else {
+    return op.emitOpError("does not support axis1 flat B16 NV quantization with the pinned pto-isa revisions");
+  }
+  return success();
+}
+
+static LogicalResult verifyTQuantMxAxis1Canonical(TQuantMxOp op,
+                                                  const TQuantMxA5 &s) {
+  if (s.expValid[0] == 1)
+    return op.emitOpError("expects legacy flat exp to use physical rows == 1");
+  if (s.srcElem.isF16() || s.srcElem.isBF16())
+    return op.emitOpError("does not support axis1 canonical 2D B16 quantization with the pinned pto-isa revision");
+  SmallVector<int64_t, 2> canonicalShape = {s.srcRows, s.srcCols / 32};
+  if (!llvm::equal(s.expValid, canonicalShape))
+    return op.emitOpError("expects exp valid_shape to match canonical [M, N/32] for grpAxis=axis1");
+  if (s.expPhysical[0] < s.srcRows || s.expPhysical[1] < s.srcCols / 32)
+    return op.emitOpError("expects axis1 canonical exp physical shape to cover [M, N/32]");
+  auto expPrefix = mxCheckedMul(s.srcRows - 1, s.expPhysical[1]);
+  auto expRequired =
+      expPrefix ? mxCheckedAdd(*expPrefix, s.srcCols / 32) : std::nullopt;
+  if (!expRequired || failed(mxRequireCapacity(op, "exp", s.expTy, *expRequired)) ||
+      failed(mxRequireCapacity(op, "scaling", s.scalingTy, s.groups)))
+    return failure();
+  return success();
+}
+
+static LogicalResult verifyTQuantMxAxis1(TQuantMxOp op, const TQuantMxA5 &s) {
+  if (s.dstPhysical[1] != s.srcPhysicalCols / s.pack) {
+    if (s.isMxFp4)
+      return op.emitOpError("expects MXFP4 axis1 dst physical cols to equal src physical cols / 2");
+    return op.emitOpError("expects MXFP8 axis1 dst physical cols to equal src physical cols");
+  }
+  auto dstPrefix = mxCheckedMul(s.srcRows - 1, s.srcPhysicalCols / s.pack);
+  auto dstRequired =
+      dstPrefix ? mxCheckedAdd(*dstPrefix, s.dstValidCols) : std::nullopt;
+  if (!dstRequired || failed(mxRequireCapacity(op, "dst", s.dstTy, *dstRequired)))
+    return failure();
+  if (failed(mxRequireCompact(op, "max", s.maxTy)) ||
+      failed(mxRequireCompact(op, "scaling", s.scalingTy)) ||
+      failed(mxRequireCapacity(op, "max", s.maxTy, s.groups)))
+    return failure();
+  const bool flat = s.expPhysical[0] == 1;
+  if (flat)
+    return verifyTQuantMxAxis1Flat(op, s);
+  return verifyTQuantMxAxis1Canonical(op, s);
+}
+
+static LogicalResult verifyTQuantMxSrcPadding(TQuantMxOp op,
+                                              const TQuantMxA5 &s) {
+  if ((s.srcElem.isF16() || s.srcElem.isBF16()) &&
+      s.srcCols < s.srcPhysicalCols && 128 % s.srcPhysicalCols == 0) {
+    auto validPhysicalElems = mxCheckedMul(s.srcRows, s.srcPhysicalCols);
+    if (!validPhysicalElems)
+      return op.emitOpError("cannot compute B16 source padding extent without overflow");
+    if (*validPhysicalElems % 128 != 0)
+      return op.emitOpError("does not support padded B16 source whose VL-aligned padding store has an incomplete final VL");
+  }
+  return success();
+}
+
+static LogicalResult verifyTQuantMxA5(TQuantMxOp op) {
+  if (failed(verifyTQuantMxTilesAndForm(op)) ||
+      failed(verifyTQuantMxElemTypes(op)) || failed(verifyTQuantMxShapes(op)))
+    return failure();
+  auto stateOr = buildTQuantMxA5State(op);
+  if (failed(stateOr))
+    return failure();
+  const TQuantMxA5 &s = *stateOr;
+  if (failed(verifyTQuantMxGrouping(op, s)) ||
+      failed(verifyTQuantMxDstShape(op, s)))
+    return failure();
+  if (s.isDn) {
+    if (failed(verifyTQuantMxAxis0(op, s)))
+      return failure();
+  } else {
+    if (failed(verifyTQuantMxAxis1(op, s)))
+      return failure();
+  }
+  return verifyTQuantMxSrcPadding(op, s);
+}
+
 mlir::LogicalResult mlir::pto::TQuantMxOp::verify() {
   auto verifyA2A3 = [&]() -> LogicalResult {
     return emitOpError("tquant.mx is only supported on A5");
   };
-
-  auto verifyA5 = [&]() -> LogicalResult {
-    Type srcTy = getSrc().getType();
-    Type dstTy = getDst().getType();
-    Type expTy = getExp().getType();
-    Type maxTy = getMax().getType();
-    Type scalingTy = getScaling().getType();
-    if (failed(verifyNDStyleVecTile(*this, srcTy, "src")) ||
-        failed(verifyNDStyleVecTile(*this, dstTy, "dst", /*allowLowPrecision=*/true)) ||
-        failed(verifyNDStyleVecTile(*this, expTy, "exp")) ||
-        failed(verifyNDStyleVecTile(*this, maxTy, "max")) ||
-        failed(verifyNDStyleVecTile(*this, scalingTy, "scaling"))) {
-      return failure();
-    }
-    if (getExpZz() &&
-        failed(verifyNDStyleVecTile(*this, getExpZz().getType(), "exp_zz"))) {
-      return failure();
-    }
-
-    const bool isDn = getGrpAxis() == pto::MxGroupAxis::Axis0;
-    if (getInterleave() && !isDn)
-      return emitOpError(
-          "expects interleave to be used only with grpAxis=axis0");
-    if (getExpZz() && isDn)
-      return emitOpError("expects the deprecated exp_zz form to use grpAxis=axis1; use pto.tmov with a non-scaling tmp for axis0 exponents");
-
-    auto quantType = getQuantType();
-    if (quantType != mlir::pto::QuantType::MXFP8 &&
-        quantType != mlir::pto::QuantType::MXFP4_E2M1) {
-      return emitOpError("expects quant_type to be MXFP8 or MXFP4_E2M1");
-    }
-    if (getExpZz() && !getStoreMode()) {
-      return emitOpError("expects storeMode when exp_zz is present");
-    }
-    if (getStoreMode() && !getExpZz()) {
-      return emitOpError("expects exp_zz when storeMode is present");
-    }
-    if (getStoreMode() &&
-        getQuantScaleAlg() != mlir::pto::QuantScaleAlg::OCP) {
-      return emitOpError("storeMode form must not override quantScaleAlg");
-    }
-
-    Type srcElem = getElemTy(srcTy);
-    Type dstElem = getElemTy(dstTy);
-    Type expElem = getElemTy(expTy);
-    Type maxElem = getElemTy(maxTy);
-    Type scalingElem = getElemTy(scalingTy);
-
-    if (!(srcElem.isF32() || srcElem.isF16() || srcElem.isBF16())) {
-      return emitOpError("expects src element type to be f32/f16/bf16");
-    }
-    if (!expElem.isInteger(8)) {
-      return emitOpError("expects exp element type to be i8/ui8");
-    }
-    if (getExpZz() && !getElemTy(getExpZz().getType()).isInteger(8)) {
-      return emitOpError("expects exp_zz element type to be i8/ui8");
-    }
-    if (maxElem != srcElem) {
-      return emitOpError("expects max element type to match src element type");
-    }
-    if (scalingElem != srcElem) {
-      return emitOpError("expects scaling element type to match src element type");
-    }
-
-    if (quantType == mlir::pto::QuantType::MXFP8) {
-      if (!dstElem.isInteger(8)) {
-        return emitOpError("expects MXFP8 dst element type to be i8/ui8");
-      }
-    } else {
-      if (!isa<pto::F4E2M1x2Type>(dstElem)) {
-        return emitOpError("expects MXFP4_E2M1 dst element type to be !pto.f4E2M1x2");
-      }
-      if (!(srcElem.isF16() || srcElem.isBF16())) {
-        return emitOpError("expects MXFP4_E2M1 src element type to be f16/bf16");
-      }
-    }
-
-    auto srcValid = getValidShapeVec(srcTy);
-    auto dstValid = getValidShapeVec(dstTy);
-    auto expValid = getValidShapeVec(expTy);
-    auto maxValid = getValidShapeVec(maxTy);
-    auto scalingValid = getValidShapeVec(scalingTy);
-    auto srcPhysical = getShapeVec(srcTy);
-    auto dstPhysical = getShapeVec(dstTy);
-    auto expPhysical = getShapeVec(expTy);
-    auto maxPhysical = getShapeVec(maxTy);
-    auto scalingPhysical = getShapeVec(scalingTy);
-    if (srcValid.size() != 2 || dstValid.size() != 2 || expValid.size() != 2 ||
-        maxValid.size() != 2 || scalingValid.size() != 2 ||
-        srcPhysical.size() != 2 || dstPhysical.size() != 2 ||
-        expPhysical.size() != 2 || maxPhysical.size() != 2 ||
-        scalingPhysical.size() != 2)
-      return emitOpError("expects rank-2 valid and physical shapes for MX quantization");
-    if (getExpZz() && (getValidShapeVec(getExpZz().getType()).size() != 2 ||
-                       getShapeVec(getExpZz().getType()).size() != 2))
-      return emitOpError("expects rank-2 valid and physical shapes for exp_zz");
-
-    auto requireStaticShape = [&](StringRef name, Type type) -> LogicalResult {
-      for (int64_t dim : getValidShapeVec(type))
-        if (dim == ShapedType::kDynamic)
-          return emitOpError() << "expects static valid and physical shapes for "
-                              << name << " in MX quantization";
-      for (int64_t dim : getShapeVec(type))
-        if (dim == ShapedType::kDynamic)
-          return emitOpError() << "expects static valid and physical shapes for "
-                              << name << " in MX quantization";
-      return success();
-    };
-    for (auto [name, type] : {std::pair<StringRef, Type>("src", srcTy),
-                              {"dst", dstTy}, {"exp", expTy}, {"max", maxTy},
-                              {"scaling", scalingTy}})
-      if (failed(requireStaticShape(name, type)))
-        return failure();
-    if (getExpZz()) {
-      Type expZzTy = getExpZz().getType();
-      if (llvm::is_contained(getValidShapeVec(expZzTy),
-                             ShapedType::kDynamic) ||
-          llvm::is_contained(getShapeVec(expZzTy), ShapedType::kDynamic))
-        return emitOpError("expects static valid and physical shapes for exp_zz in the deprecated fused MX quantization form");
-    }
-
-    if (failed(verifyTileBufSameElemType(*this, srcTy, maxTy, "src", "max")) ||
-        failed(verifyTileBufSameElemType(*this, srcTy, scalingTy, "src", "scaling")) ||
-        failed(verifyTileBufSameLogicalExtent(*this, srcTy, dstTy, "src", "dst",
-                                              /*compareValidShape=*/true)))
-      return failure();
-
-    const int64_t srcRows = srcValid[0];
-    const int64_t srcCols = srcValid[1];
-    const int64_t srcPhysicalRows = srcPhysical[0];
-    const int64_t srcPhysicalCols = srcPhysical[1];
-    if (srcRows <= 0 || srcCols <= 0 || srcPhysicalRows < srcRows ||
-        srcPhysicalCols < srcCols)
-      return emitOpError("expects positive source valid shape within physical shape");
-    if ((isDn ? srcRows : srcCols) % 32 != 0)
-      return emitOpError() << "expects src valid_shape[" << (isDn ? 0 : 1)
-                          << "] to be a multiple of 32 when grpAxis is "
-                          << (isDn ? "axis0" : "axis1");
-
-    auto checkedMul = [](int64_t lhs, int64_t rhs) -> std::optional<int64_t> {
-      if (lhs < 0 || rhs < 0 ||
-          (rhs != 0 && lhs > std::numeric_limits<int64_t>::max() / rhs))
-        return std::nullopt;
-      return lhs * rhs;
-    };
-    auto checkedAdd = [](int64_t lhs, int64_t rhs) -> std::optional<int64_t> {
-      if (lhs < 0 || rhs < 0 || lhs > std::numeric_limits<int64_t>::max() - rhs)
-        return std::nullopt;
-      return lhs + rhs;
-    };
-    auto ceilDiv = [&](int64_t value, int64_t divisor) -> std::optional<int64_t> {
-      if (value < 0 || divisor <= 0)
-        return std::nullopt;
-      auto plus = checkedAdd(value, divisor - 1);
-      return plus ? std::optional<int64_t>(*plus / divisor) : std::nullopt;
-    };
-    auto alignTo = [&](int64_t value, int64_t alignment) -> std::optional<int64_t> {
-      auto quotient = ceilDiv(value, alignment);
-      if (!quotient || *quotient > std::numeric_limits<int64_t>::max() / alignment)
-        return std::nullopt;
-      return *quotient * alignment;
-    };
-    auto capacityElems = [&](Type type) -> std::optional<int64_t> {
-      auto shape = getShapeVec(type);
-      return checkedMul(shape[0], shape[1]);
-    };
-    auto capacityBytes = [&](Type type) -> std::optional<int64_t> {
-      auto elems = capacityElems(type);
-      unsigned bytes = getElemByteSize(getElemTy(type));
-      if (!elems || bytes == 0 ||
-          *elems > std::numeric_limits<int64_t>::max() /
-                         static_cast<int64_t>(bytes))
-        return std::nullopt;
-      return *elems * static_cast<int64_t>(bytes);
-    };
-    auto requireCapacity = [&](StringRef name, Type type,
-                               int64_t required) -> LogicalResult {
-      auto actual = capacityElems(type);
-      if (!actual || *actual < required)
-        return emitOpError() << "expects " << name << " physical capacity to cover "
-                             << required << " elements";
-      return success();
-    };
-    auto requireCapacityBytes = [&](StringRef name, Type type,
-                                    int64_t required) -> LogicalResult {
-      auto actual = capacityBytes(type);
-      if (!actual || *actual < required)
-        return emitOpError() << "expects " << name << " physical capacity to cover "
-                             << required << " bytes";
-      return success();
-    };
-    auto requireCompact = [&](StringRef name, Type type) -> LogicalResult {
-      auto valid = getValidShapeVec(type);
-      auto physical = getShapeVec(type);
-      if (valid[0] != 1 && physical[1] != valid[1])
-        return emitOpError() << "expects " << name
-                             << " valid elements to form a compact physical prefix";
-      return success();
-    };
-    auto groupsOr = checkedMul(srcRows, srcCols / 32);
-    if (!groupsOr)
-      return emitOpError("cannot compute MX quantization group count without overflow");
-    const int64_t groups = *groupsOr;
-    if (getExpZz()) {
-      auto expZzElements = checkedMul(getValidShapeVec(getExpZz().getType())[0],
-                                      getValidShapeVec(getExpZz().getType())[1]);
-      if (!expZzElements || *expZzElements != groups)
-        return emitOpError(
-            "expects exp_zz valid element count to equal MX group count");
-    }
-    auto requireGroupedShape = [&](StringRef name, Type type,
-                                   bool allowLegacy) -> LogicalResult {
-      auto valid = getValidShapeVec(type);
-      SmallVector<int64_t, 2> canonical = {isDn ? srcRows / 32 : srcRows,
-                                           isDn ? srcCols : srcCols / 32};
-      if (llvm::equal(valid, canonical))
-        return success();
-      if (!isDn && allowLegacy && valid[0] == 1 && valid[1] == groups)
-        return success();
-      return emitOpError() << "expects " << name
-                           << " valid_shape to match "
-                           << (isDn ? "canonical [M/32, N] for grpAxis=axis0"
-                                    : "canonical [M, N/32] or legacy flat [1, M*N/32] for grpAxis=axis1");
-    };
-
-    if (failed(requireGroupedShape("max", maxTy, /*allowLegacy=*/true)) ||
-        failed(requireGroupedShape("scaling", scalingTy,
-                                   /*allowLegacy=*/true)))
-      return failure();
-    if (!getInterleave()) {
-      if (failed(requireGroupedShape("exp", expTy, /*allowLegacy=*/true)))
-        return failure();
-    } else {
-      if (srcRows % 64 != 0)
-        return emitOpError(
-            "expects src valid rows to be a multiple of 64 when interleave is true");
-      if (srcPhysicalRows % 64 != 0)
-        return emitOpError(
-            "expects src physical rows to be a multiple of 64 when interleave is true");
-      auto doubledValidCols = checkedMul(srcCols, 2);
-      if (!doubledValidCols)
-        return emitOpError(
-            "cannot compute interleaved exp valid shape without overflow");
-      if (expValid[0] != srcRows / 64 || expValid[1] != *doubledValidCols)
-        return emitOpError("expects exp valid_shape to match [M/64, 2N] for grpAxis=axis0 with interleave=true");
-    }
-
-    const bool isMxFp4 = quantType == mlir::pto::QuantType::MXFP4_E2M1;
-    const int64_t pack = isMxFp4 ? 2 : 1;
-    if (isMxFp4 && srcPhysicalCols % 2 != 0)
-      return emitOpError("expects MXFP4 src physical cols to be even for packed destination addressing");
-    const int64_t dstValidCols = isMxFp4 ? srcCols / 2 : srcCols;
-    if (dstValid[0] != srcRows || dstValid[1] != dstValidCols)
-      return emitOpError() << "expects dst valid_shape to be [" << srcRows << ", "
-                           << dstValidCols << "] for MX quantization";
-    if (dstPhysical[0] < srcRows)
-      return emitOpError("expects dst physical rows to cover src valid rows");
-
-    if (isDn) {
-      if (isMxFp4) {
-        if (dstPhysical[1] != srcPhysicalCols / pack)
-          return emitOpError("expects MXFP4 axis0 dst physical cols to equal src physical cols / 2");
-        auto dstPrefix = checkedMul(srcRows - 1, srcPhysicalCols / pack);
-        auto required = dstPrefix ? checkedAdd(*dstPrefix, dstValidCols)
-                                  : std::nullopt;
-        if (!required || failed(requireCapacity("dst", dstTy, *required)))
-          return failure();
-        if ((srcPhysicalCols / pack) % 32 != 0 && srcElem.isF16())
-          return emitOpError("does not support FP16 MXFP4 axis0 when packed source stride is not a multiple of 32 bytes");
-      } else {
-        auto dstPrefix = checkedMul(srcRows - 1, dstPhysical[1]);
-        auto required = dstPrefix ? checkedAdd(*dstPrefix, dstValidCols)
-                                  : std::nullopt;
-        if (!required || failed(requireCapacity("dst", dstTy, *required)))
-          return failure();
-      }
-      if (maxPhysical[1] != srcPhysicalCols)
-        return emitOpError("expects max physical cols to equal src physical cols for grpAxis=axis0");
-      if (scalingPhysical[1] != srcPhysicalCols)
-        return emitOpError("expects scaling physical cols to equal src physical cols for grpAxis=axis0");
-      auto auxRequired = checkedMul(srcRows / 32, srcPhysicalCols);
-      if (!auxRequired || failed(requireCapacity("max", maxTy, *auxRequired)) ||
-          failed(requireCapacity("scaling", scalingTy, *auxRequired)))
-        return failure();
-      if (!getInterleave()) {
-        if (expPhysical[1] != srcPhysicalCols)
-          return emitOpError("expects exp physical cols to equal src physical cols for grpAxis=axis0");
-        if (failed(requireCapacity("exp", expTy, *auxRequired)))
-          return failure();
-      } else {
-        auto doubledPhysicalCols = checkedMul(srcPhysicalCols, 2);
-        auto alignedPhysicalCols =
-            doubledPhysicalCols ? alignTo(*doubledPhysicalCols, 32)
-                                : std::nullopt;
-        if (!alignedPhysicalCols)
-          return emitOpError(
-              "cannot compute interleaved exp physical cols without overflow");
-        if (expPhysical[0] != srcPhysicalRows / 64)
-          return emitOpError("expects interleaved exp physical rows to be src physical rows / 64");
-        if (expPhysical[1] != *alignedPhysicalCols)
-          return emitOpError("expects interleaved exp physical cols to be align32(2 * src physical cols)");
-      }
-      if (srcElem.isF32() && getInterleave())
-        return emitOpError("does not support FP32 interleave with the pinned pto-isa revision");
-    } else {
-      if (dstPhysical[1] != srcPhysicalCols / pack) {
-        if (isMxFp4)
-          return emitOpError("expects MXFP4 axis1 dst physical cols to equal src physical cols / 2");
-        return emitOpError("expects MXFP8 axis1 dst physical cols to equal src physical cols");
-      }
-      auto dstPrefix = checkedMul(srcRows - 1, srcPhysicalCols / pack);
-      auto dstRequired = dstPrefix ? checkedAdd(*dstPrefix, dstValidCols)
-                                   : std::nullopt;
-      if (!dstRequired || failed(requireCapacity("dst", dstTy, *dstRequired)))
-        return failure();
-      if (failed(requireCompact("max", maxTy)) || failed(requireCompact("scaling", scalingTy)) ||
-          failed(requireCapacity("max", maxTy, groups)))
-        return failure();
-      const bool flat = expPhysical[0] == 1;
-      if (flat) {
-        if (srcPhysicalCols != srcCols)
-          return emitOpError("expects axis1 flat exp to use a tight source with physical cols equal to valid cols");
-        if (expValid[0] != 1 || expValid[1] != groups)
-          return emitOpError("expects axis1 flat exp valid_shape to match legacy flat [1, M*N/32]");
-        if (failed(requireCapacity("exp", expTy, groups)))
-          return failure();
-        auto srcElems = checkedMul(srcPhysicalRows, srcPhysicalCols);
-        auto validElems = checkedMul(srcRows, srcPhysicalCols);
-        bool unroll = srcElems && validElems && *srcElems > 1024 &&
-                      *srcElems % 256 == 0 && *validElems % 256 == 0;
-        if (srcElem.isF32()) {
-          auto scaleGroups = unroll ? checkedMul(groups, 2) : groups;
-          auto aligned = scaleGroups ? alignTo(*scaleGroups, 64) : std::nullopt;
-          auto requiredBytes = aligned ? checkedMul(*aligned, 4) : std::nullopt;
-          StringRef scalingName = unroll ? "axis1 flat unrolled f32 scaling"
-                                         : "axis1 flat f32 scaling";
-          if (!requiredBytes ||
-              failed(requireCapacityBytes(scalingName, scalingTy,
-                                          *requiredBytes)))
-            return failure();
-        } else if (getQuantScaleAlg() == pto::QuantScaleAlg::OCP) {
-          auto aligned = alignTo(groups, 128);
-          auto requiredBytes = aligned ? checkedMul(*aligned, 2) : std::nullopt;
-          if (!requiredBytes ||
-              failed(requireCapacityBytes("axis1 flat B16 OCP scaling",
-                                          scalingTy, *requiredBytes)))
-            return failure();
-        } else {
-          return emitOpError("does not support axis1 flat B16 NV quantization with the pinned pto-isa revisions");
-        }
-      } else {
-        if (expValid[0] == 1)
-          return emitOpError(
-              "expects legacy flat exp to use physical rows == 1");
-        if (srcElem.isF16() || srcElem.isBF16())
-          return emitOpError("does not support axis1 canonical 2D B16 quantization with the pinned pto-isa revision");
-        SmallVector<int64_t, 2> canonicalShape = {srcRows, srcCols / 32};
-        if (!llvm::equal(expValid, canonicalShape))
-          return emitOpError("expects exp valid_shape to match canonical [M, N/32] for grpAxis=axis1");
-        if (expPhysical[0] < srcRows || expPhysical[1] < srcCols / 32)
-          return emitOpError("expects axis1 canonical exp physical shape to cover [M, N/32]");
-        auto expPrefix = checkedMul(srcRows - 1, expPhysical[1]);
-        auto expRequired = expPrefix ? checkedAdd(*expPrefix, srcCols / 32)
-                                     : std::nullopt;
-        if (!expRequired || failed(requireCapacity("exp", expTy, *expRequired)) ||
-            failed(requireCapacity("scaling", scalingTy, groups)))
-          return failure();
-      }
-    }
-
-    if ((srcElem.isF16() || srcElem.isBF16()) &&
-        srcCols < srcPhysicalCols && 128 % srcPhysicalCols == 0) {
-      auto validPhysicalElems = checkedMul(srcRows, srcPhysicalCols);
-      if (!validPhysicalElems)
-        return emitOpError(
-            "cannot compute B16 source padding extent without overflow");
-      if (*validPhysicalElems % 128 != 0)
-        return emitOpError("does not support padded B16 source whose VL-aligned padding store has an incomplete final VL");
-    }
-    return success();
-  };
-
+  auto verifyA5 = [&]() -> LogicalResult { return verifyTQuantMxA5(*this); };
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 
