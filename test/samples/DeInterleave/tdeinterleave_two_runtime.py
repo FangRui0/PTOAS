@@ -12,8 +12,6 @@ from ptoas.mlir.ir import (
     Context,
     InsertionPoint,
     IndexType,
-    IntegerAttr,
-    IntegerType,
     Location,
     Module,
     StringAttr,
@@ -55,11 +53,6 @@ def build():
                 c1 = arith.ConstantOp(IndexType.get(ctx), 1).result
                 c16 = arith.ConstantOp(IndexType.get(ctx), 16).result
                 c64 = arith.ConstantOp(IndexType.get(ctx), 64).result
-                i64 = IntegerType.get_signless(64, ctx)
-                addr0 = arith.ConstantOp(i64, IntegerAttr.get(i64, 0)).result
-                addr1 = arith.ConstantOp(i64, IntegerAttr.get(i64, 4096)).result
-                addr2 = arith.ConstantOp(i64, IntegerAttr.get(i64, 8192)).result
-                addr3 = arith.ConstantOp(i64, IntegerAttr.get(i64, 12288)).result
                 src0_ptr, src1_ptr, dst0_ptr, dst1_ptr = entry.arguments
                 views = [
                     pto.MakeTensorViewOp(tensor_view, ptr, [c16, c64], [c64, c1]).result
@@ -71,10 +64,10 @@ def build():
                     ).result
                     for view in views
                 ]
-                src0_tile = pto.AllocTileOp(tile_type, addr=addr0).result
-                src1_tile = pto.AllocTileOp(tile_type, addr=addr1).result
-                dst0_tile = pto.AllocTileOp(tile_type, addr=addr2).result
-                dst1_tile = pto.AllocTileOp(tile_type, addr=addr3).result
+                src0_tile = pto.AllocTileOp(tile_type).result
+                src1_tile = pto.AllocTileOp(tile_type).result
+                dst0_tile = pto.AllocTileOp(tile_type).result
+                dst1_tile = pto.AllocTileOp(tile_type).result
                 pto.TLoadOp(None, partitions[0], src0_tile)
                 pto.TLoadOp(None, partitions[1], src1_tile)
                 pto.TDeInterleaveOp([src0_tile, src1_tile], [dst0_tile, dst1_tile])

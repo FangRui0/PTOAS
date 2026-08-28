@@ -11,8 +11,6 @@ import os
 from ptoas.mlir.ir import (
     Context,
     InsertionPoint,
-    IntegerAttr,
-    IntegerType,
     Location,
     Module,
     StringAttr,
@@ -33,7 +31,6 @@ def build():
 
             f32 = F32Type.get(ctx)
             ptr_f32 = pto.PtrType.get(f32, ctx)
-            i64 = IntegerType.get_signless(64, ctx)
 
             tv2_f32 = pto.TensorViewType.get(2, f32, ctx)
             tile_view_32x64 = pto.PartitionTensorViewType.get([32, 64], f32, ctx)
@@ -56,9 +53,6 @@ def build():
                 c1 = arith.ConstantOp(IndexType.get(ctx), 1).result
                 c32 = arith.ConstantOp(IndexType.get(ctx), 32).result
                 c64 = arith.ConstantOp(IndexType.get(ctx), 64).result
-                src_addr = arith.ConstantOp(i64, IntegerAttr.get(i64, 0)).result
-                dst_addr = arith.ConstantOp(i64, IntegerAttr.get(i64, 8192)).result
-
                 src_ptr, dst_ptr = entry.arguments
 
                 tv_src = pto.MakeTensorViewOp(tv2_f32, src_ptr, [c32, c64], [c64, c1]).result
@@ -67,8 +61,8 @@ def build():
                 sv_src = pto.PartitionViewOp(tile_view_32x64, tv_src, offsets=[c0, c0], sizes=[c32, c64]).result
                 sv_dst = pto.PartitionViewOp(tile_view_32x64, tv_dst, offsets=[c0, c0], sizes=[c32, c64]).result
 
-                src_tile = pto.AllocTileOp(tile_buf_32x64, addr=src_addr).result
-                dst_tile = pto.AllocTileOp(tile_buf_32x64, addr=dst_addr).result
+                src_tile = pto.AllocTileOp(tile_buf_32x64).result
+                dst_tile = pto.AllocTileOp(tile_buf_32x64).result
 
                 pto.TLoadOp(None, sv_src, src_tile)
                 pto.TPairReduceSumOp(src_tile, dst_tile)
