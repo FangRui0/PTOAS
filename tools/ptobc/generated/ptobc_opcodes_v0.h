@@ -296,6 +296,15 @@ inline constexpr VariantName kVariantNameTable[] = {
 // For non-family ops, variant is 0. For family ops, variant is the assigned u8.
 // NOTE: `pto.section` is not a real op name; use `pto.section.cube`/`pto.section.vector`.
 inline std::optional<OpcodeAndVariant> lookupOpcodeAndVariantByFullName(llvm::StringRef fullName) {
+  // Neither name was resolvable in the original per-name switch and both must
+  // stay unresolvable: `pto.section` is not a registered op (only its
+  // .cube/.vector variants are), and `pto.tscatter.maskpattern` is a
+  // decode-only wire alias. Without these guards the kOpTable scan below
+  // would compact-encode an unregistered op with either name instead of
+  // falling through to the generic record.
+  if (fullName == "pto.section" || fullName == "pto.tscatter.maskpattern") {
+    return std::nullopt;
+  }
   for (const OpInfo &entry : kOpTable) {
     if (fullName == entry.name) {
       return OpcodeAndVariant{entry.opcode, entry.has_variant_u8, 0};
