@@ -6164,39 +6164,6 @@ def TRowSumOp: PTO_TOp<"trowsum", [
   }];
 }
 
-def TPairReduceSumOp: PTO_TOp<"tpairreducesum", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "TPAIRREDUCESUM: Reduce adjacent pairs in each row.";
-  let description = [{
-    For each row, adds adjacent source elements and writes the results to the
-    lower half of the destination row. The remaining destination elements are
-    filled with zero by the PTO-ISA operation.
-  }];
-
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst
-  );
-
-  let results = (outs);
-
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `ins` `(` $src `:` qualified(type($src)) `)`
-    `outs` `(` $dst `:` qualified(type($dst)) `)`
-    attr-dict
-  }];
-
-  let extraClassDeclaration = [{
-    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
-    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
-  }];
-}
-
 def TInterleaveOp: PTO_TOp<"tinterleave", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,

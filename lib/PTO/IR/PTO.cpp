@@ -15069,29 +15069,6 @@ mlir::LogicalResult mlir::pto::TRowSumOp::verify() {
   return dispatchVerifierByArch(getOperation(), verifyByArch, verifyByArch);
 }
 
-mlir::LogicalResult mlir::pto::TPairReduceSumOp::verify() {
-  Type srcTy = getSrc().getType();
-  Type dstTy = getDst().getType();
-
-  if (failed(verifyVecTileCommon(*this, srcTy, "src")) ||
-      failed(verifyVecTileCommon(*this, dstTy, "dst"))) {
-    return failure();
-  }
-  if (failed(verifyTileBufSameElemType(*this, srcTy, dstTy, "src", "dst")) ||
-      failed(verifyTileBufSameValidShape(*this, srcTy, dstTy, "src", "dst"))) {
-    return failure();
-  }
-  if (!isRowMajorTileBuf(srcTy) || !isRowMajorTileBuf(dstTy)) {
-    return emitOpError("expects src and dst to use row-major layout");
-  }
-
-  Type elemTy = getElemTy(srcTy);
-  if (!elemTy || (!elemTy.isF16() && !elemTy.isF32())) {
-    return emitOpError("expects element type to be f16 or f32");
-  }
-  return success();
-}
-
 mlir::LogicalResult mlir::pto::TInterleaveOp::verify() {
   auto verifyA2A3 = [&]() -> LogicalResult {
     return emitOpError("tinterleave is only supported on A5 targets");
@@ -17906,7 +17883,6 @@ PTO_DEFINE_UNARY_EFFECTS(TOrSOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TPartAddOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TPartMaxOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TPartMinOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
-PTO_DEFINE_UNARY_EFFECTS(TPairReduceSumOp, getSrcMutable(), getDstMutable())
 void TInterleaveOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   PTO_ADD_READ(getSrc0Mutable());
