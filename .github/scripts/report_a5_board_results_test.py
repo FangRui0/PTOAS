@@ -95,6 +95,17 @@ class BoardResultReportTest(unittest.TestCase):
             self.assertIn("**Concrete errors**", content)
             self.assertIn("Segmentation fault", content)
 
+            detail_payloads = REPORT.build_feishu_detail_payloads(
+                summary, run_url="https://github.example/actions/runs/3"
+            )
+            self.assertGreaterEqual(len(detail_payloads), 1)
+            detail_content = "\n".join(
+                card["card"]["elements"][0]["text"]["content"]
+                for card in detail_payloads
+            )
+            for testcase in summary.failed_cases:
+                self.assertIn(f"`{testcase}`", detail_content)
+
     def test_missing_results_are_reported_as_failure(self) -> None:
         summary = REPORT.load_results(pathlib.Path("/path/that/does/not/exist"))
         self.assertFalse(summary.results_found)

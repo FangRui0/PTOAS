@@ -135,6 +135,7 @@ def load_results(path: Path, log_path: Path | None = None) -> BoardSummary:
 
     counts: Counter[str] = Counter()
     failed_cases: list[str] = []
+    failed_info: dict[str, str] = {}
     with path.open(encoding="utf-8", errors="replace", newline="") as stream:
         reader = csv.DictReader(stream, delimiter="\t")
         for row in reader:
@@ -143,11 +144,16 @@ def load_results(path: Path, log_path: Path | None = None) -> BoardSummary:
             counts[status] += 1
             if status == "FAIL":
                 failed_cases.append(testcase)
+                failed_info[testcase] = (row.get("info") or "exit status unavailable").strip()
     log_details = load_log_failure_details(log_path)
     failure_details = tuple(
         (
             testcase,
-            log_details.get(testcase, "No detailed error line found in board-validation.log; see the run log."),
+            log_details.get(
+                testcase,
+                "No recognized error line found in board-validation.log; "
+                f"result info: {failed_info.get(testcase, 'exit status unavailable')}",
+            ),
         )
         for testcase in failed_cases
     )
@@ -270,6 +276,71 @@ def build_feishu_payload(
     }
 
 
+def build_feishu_detail_payloads(
+    summary: BoardSummary,
+    *,
+    run_url: str,
+) -> list[dict[str, object]]:
+    """Build bounded cards so every failed case gets its own concrete excerpt."""
+    if not summary.failure_details:
+        return []
+    # Keep each card comfortably below Feishu's interactive-card text limit.
+    groups: list[list[tuple[str, str]]] = []
+    current: list[tuple[str, str]] = []
+    current_chars = 0
+    for testcase, detail in summary.failure_details:
+        block_chars = len(testcase) + len(detail) + 40
+        if current and current_chars + block_chars > 7000:
+            groups.append(current)
+            current = []
+            current_chars = 0
+        current.append((testcase, detail))
+        current_chars += block_chars
+    if current:
+        groups.append(current)
+
+    cards: list[dict[str, object]] = []
+    total = len(groups)
+    for index, group in enumerate(groups, start=1):
+        blocks = "\n\n".join(
+            f"### `{testcase}`\n```text\n{detail}\n```" for testcase, detail in group
+        )
+        elements: list[dict[str, object]] = [
+            {"tag": "div", "text": {"tag": "lark_md", "content": blocks}}
+        ]
+        if run_url:
+            elements.append(
+                {
+                    "tag": "action",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "打开 GitHub 运行"},
+                            "url": run_url,
+                            "type": "primary",
+                        }
+                    ],
+                }
+            )
+        cards.append(
+            {
+                "msg_type": "interactive",
+                "card": {
+                    "config": {"wide_screen_mode": True},
+                    "header": {
+                        "template": "red",
+                        "title": {
+                            "tag": "plain_text",
+                            "content": f"PTOAS A5 夜间看护失败详情 {index}/{total}",
+                        },
+                    },
+                    "elements": elements,
+                },
+            }
+        )
+    return cards
+
+
 def append_file(path_text: str, content: str) -> None:
     if not path_text:
         return
@@ -338,14 +409,16 @@ def main() -> int:
             run_url=args.run_url,
             sha=args.sha,
         )
-        try:
-            send_feishu(webhook_url, payload)
-        except (OSError, ValueError, urllib.error.URLError) as exc:
-            print(
-                "WARNING: failed to send Feishu notification "
-                f"({type(exc).__name__})",
-                file=sys.stderr,
-            )
+        payloads = [payload] + build_feishu_detail_payloads(summary, run_url=args.run_url)
+        for index, card_payload in enumerate(payloads, start=1):
+            try:
+                send_feishu(webhook_url, card_payload)
+            except (OSError, ValueError, urllib.error.URLError) as exc:
+                print(
+                    "WARNING: failed to send Feishu notification "
+                    f"part {index}/{len(payloads)} ({type(exc).__name__})",
+                    file=sys.stderr,
+                )
     return 0 if args.conclusion == "success" and summary.passed else 1
 
 
