@@ -3140,8 +3140,8 @@ def MGatherOp : PTO_TOp<"mgather", [
       // MTE2 pipe on every arch, mirroring pto.tload. The GM -> UB (VEC) path
       // below keeps its A5 SIMT (PIPE_V) / A2A3 MTE2 selection.
       //
-      // Resolve the destination address space for InsertSync and
-      // GraphSyncSolver through the OpPipeInterface.
+      // Resolve the destination address space for InsertSync through the
+      // OpPipeInterface.
       auto getAddressSpace =
           [](::mlir::Type ty) -> std::optional<::mlir::pto::AddressSpace> {
         if (auto tb = ::mlir::dyn_cast<::mlir::pto::TileBufType>(ty)) {
