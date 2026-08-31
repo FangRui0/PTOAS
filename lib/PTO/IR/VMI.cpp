@@ -813,7 +813,7 @@ lookupVMIFpToFpContract(Type srcElem, Type dstElem) {
     return VMIFpToFpContract{/*requiresRnd=*/false, /*requiresSat=*/false,
                             /*requiresPart=*/true,
                             /*allowedRndModes=*/StringRef()};
-}
+  }
   if (srcBits != dstBits) {
     return std::nullopt;
   }
@@ -822,7 +822,15 @@ lookupVMIFpToFpContract(Type srcElem, Type dstElem) {
     return VMIFpToFpContract{/*requiresRnd=*/true, /*requiresSat=*/true,
                             /*requiresPart=*/false,
                             /*allowedRndModes=*/StringRef()};
-}
+  }
+  // f16 -> bf16: same-width, rnd, NO sat, no part.
+  bool srcIsF16 = srcElem.isF16();
+  bool dstIsBF16 = dstElem.isBF16();
+  if (srcIsF16 && dstIsBF16) {
+    return VMIFpToFpContract{/*requiresRnd=*/true, /*requiresSat=*/false,
+                            /*requiresPart=*/false,
+                            /*allowedRndModes=*/StringRef()};
+  }
   return std::nullopt;
 }
 
@@ -2304,11 +2312,19 @@ LogicalResult VMISIToFPOp::verify() {
   if (!isVMIFloatLikeType(resultType.getElementType())) {
     return emitOpError("requires floating-point-like result element type");
   }
-  if (getVMIElementBitWidth(sourceType.getElementType()) != mlir::pto::kValue32) {
-    return emitOpError("requires 32-bit integer source element type");
-  }
-  if (!resultType.getElementType().isF32()) {
-    return emitOpError("requires f32 result element type");
+  unsigned srcBits = getVMIElementBitWidth(sourceType.getElementType());
+  if (srcBits == mlir::pto::kValue32) {
+    if (!resultType.getElementType().isF32()) {
+      return emitOpError("requires f32 result element type for 32-bit "
+                         "integer source");
+    }
+  } else if (srcBits == mlir::pto::kValue8) {
+    if (!resultType.getElementType().isF16()) {
+      return emitOpError("requires f16 result element type for 8-bit "
+                         "integer source");
+    }
+  } else {
+    return emitOpError("supports only si32 -> f32 or si8 -> f16");
   }
   return success();
 }

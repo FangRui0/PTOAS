@@ -10869,7 +10869,8 @@ struct OneToNVMITruncFOpPattern : OneToNOpConversionPattern<VMITruncFOp> {
 
     unsigned resultBits = pto::getPTOStorageElemBitWidth(
         resultVRegTypes.front().getElementType());
-    // Same-width fp->fp (bf16 -> f16): dense contiguous 1:1, no part, rnd+sat.
+    // Same-width fp->fp (bf16 -> f16, f16 -> bf16): dense contiguous 1:1,
+    // no part; rnd always, sat follows the fp-to-fp contract.
     if (sourceBits == resultBits && sourceLayout && resultLayout &&
         sourceLayout.isContiguous() && sourceLayout.getLaneStride() == 1 &&
         resultLayout.isContiguous() && resultLayout.getLaneStride() == 1 &&
@@ -12053,40 +12054,96 @@ struct OneToNVMISIToFPOpPattern : OneToNOpConversionPattern<VMISIToFPOp> {
     ValueRange sourceParts = adaptor.getSource();
     FailureOr<SmallVector<Type>> maybe_resultTypes =
         getConvertedResultTypes(op, 0, *this->getTypeConverter());
-    if (failed(maybe_resultTypes))
+    if (failed(maybe_resultTypes)) {
       return failure();
+    }
     SmallVector<Type> resultTypes = std::move(*maybe_resultTypes);
-    if (sourceParts.size() != resultTypes.size())
+
+    auto sourceType = dyn_cast<VRegType>(sourceParts.front().getType());
+    if (!sourceType || !isa<IntegerType>(sourceType.getElementType())) {
       return rewriter.notifyMatchFailure(
-          op, "sitofp physical source/result arity mismatch");
+          op, "sitofp requires integer source chunks");
+    }
+    unsigned sourceBits =
+        pto::getPTOStorageElemBitWidth(sourceType.getElementType());
+
+    SmallVector<VRegType> resultVRegTypes;
+    resultVRegTypes.reserve(resultTypes.size());
+    for (Type resultType : resultTypes) {
+      auto resultVRegType = dyn_cast<VRegType>(resultType);
+      if (!resultVRegType ||
+          (!resultVRegTypes.empty() &&
+           resultVRegType != resultVRegTypes.front())) {
+        return rewriter.notifyMatchFailure(
+            op, "unsupported physical sitofp result type");
+      }
+      resultVRegTypes.push_back(resultVRegType);
+    }
+    unsigned resultBits = pto::getPTOStorageElemBitWidth(
+        resultVRegTypes.front().getElementType());
+
+    FailureOr<Value> mask =
+        createAllTrueMaskForVReg(op.getLoc(), sourceType, rewriter);
+    if (failed(mask)) {
+      return rewriter.notifyMatchFailure(op, "failed to build sitofp mask");
+    }
 
     SmallVector<Value> results;
     results.reserve(resultTypes.size());
-    StringAttr rnd = rewriter.getStringAttr("R");
-    for (auto [sourcePart, resultType] :
-         llvm::zip_equal(sourceParts, resultTypes)) {
-      auto sourceType = dyn_cast<VRegType>(sourcePart.getType());
-      auto resultVRegType = dyn_cast<VRegType>(resultType);
-      if (!sourceType || !isa<IntegerType>(sourceType.getElementType()) ||
-          pto::getPTOStorageElemBitWidth(sourceType.getElementType()) != 32 ||
-          !resultVRegType || !resultVRegType.getElementType().isF32())
-        return rewriter.notifyMatchFailure(
-            op, "sitofp requires physical 32-bit integer source and f32 "
-                "result chunks");
 
-      FailureOr<Value> mask =
-          createAllTrueMaskForVReg(op.getLoc(), sourceType, rewriter);
-      if (failed(mask))
-        return rewriter.notifyMatchFailure(op, "failed to build sitofp mask");
-      results.push_back(rewriter
-                            .create<VcvtOp>(op.getLoc(), resultVRegType,
-                                            sourcePart, *mask, rnd,
-                                            /*sat=*/nullptr, /*part=*/nullptr)
-                            .getResult());
+    // si32 -> f32: same-width 1:1, no part, rnd=R.
+    if (sourceBits == 32 && resultBits == 32) {
+      size_t srcArity = sourceParts.size();
+      size_t dstArity = resultTypes.size();
+      if (srcArity != dstArity) {
+        return rewriter.notifyMatchFailure(
+            op, "si32->f32 requires matching physical arity");
+      }
+      StringAttr rnd = rewriter.getStringAttr("R");
+      for (auto [sourcePart, resultVRegType] :
+           llvm::zip_equal(sourceParts, resultVRegTypes)) {
+        results.push_back(rewriter
+                              .create<VcvtOp>(op.getLoc(), resultVRegType,
+                                              sourcePart, *mask, rnd,
+                                              /*sat=*/nullptr,
+                                              /*part=*/nullptr)
+                              .getResult());
+      }
+      replaceOpWithFlatConvertedValues(rewriter, op, results,
+                                       *this->getTypeConverter());
+      return success();
     }
 
-    replaceOpWithFlatConvertedValues(rewriter, op, results, *this->getTypeConverter());
-    return success();
+    // si8 -> f16: 8->16 widening, EvenOdd parts, no rnd/sat.
+    if (sourceBits == 8 && resultBits == 16) {
+      size_t expectedResults = 2 * sourceParts.size();
+      size_t actualResults = resultTypes.size();
+      if (actualResults != expectedResults) {
+        return rewriter.notifyMatchFailure(
+            op, "si8->f16 requires result arity = 2 x source arity");
+      }
+      static constexpr StringRef kEvenOddParts[] = {"EVEN", "ODD"};
+      for (int64_t partIndex = 0; partIndex < 2; ++partIndex) {
+        for (auto [chunkIndex, sourcePart] :
+             llvm::enumerate(sourceParts)) {
+          VRegType resultType =
+              resultVRegTypes[partIndex * sourceParts.size() + chunkIndex];
+          results.push_back(
+              rewriter
+                  .create<VcvtOp>(op.getLoc(), resultType, sourcePart, *mask,
+                                  /*rnd=*/nullptr, /*sat=*/nullptr,
+                                  rewriter.getStringAttr(
+                                      kEvenOddParts[partIndex]))
+                  .getResult());
+        }
+      }
+      replaceOpWithFlatConvertedValues(rewriter, op, results,
+                                       *this->getTypeConverter());
+      return success();
+    }
+
+    return rewriter.notifyMatchFailure(
+        op, "unsupported sitofp source/result width relation");
   }
 };
 
@@ -12808,8 +12865,9 @@ LogicalResult checkSupportedFPToUIShape(VMIFPToUIOp op,
 LogicalResult checkSupportedSIToFPShape(VMISIToFPOp op,
                                         std::string *reason = nullptr) {
   auto fail = [&](const Twine &message) {
-    if (reason)
+    if (reason) {
       *reason = message.str();
+    }
     return failure();
   };
 
@@ -12817,29 +12875,49 @@ LogicalResult checkSupportedSIToFPShape(VMISIToFPOp op,
   auto resultType = cast<VMIVRegType>(op.getResult().getType());
   VMILayoutAttr sourceLayout = sourceType.getLayoutAttr();
   VMILayoutAttr resultLayout = resultType.getLayoutAttr();
-  if (!sourceLayout || !resultLayout)
+  if (!sourceLayout || !resultLayout) {
     return fail("requires assigned source/result layouts");
-  if (sourceLayout != resultLayout)
-    return fail("requires source/result layouts to match");
-  if (!isa<IntegerType>(sourceType.getElementType()) ||
-      pto::getPTOStorageElemBitWidth(sourceType.getElementType()) != 32)
-    return fail("requires 32-bit integer source element type");
-  if (!resultType.getElementType().isF32())
-    return fail("requires f32 result element type");
-  FailureOr<int64_t> sourceArity = getVMIPhysicalArity(sourceType);
-  FailureOr<int64_t> resultArity = getVMIPhysicalArity(resultType);
-  if (failed(sourceArity) || failed(resultArity) ||
-      *sourceArity != *resultArity)
-    return fail("requires matching computable physical arity");
+  }
+  unsigned srcBits = pto::getPTOStorageElemBitWidth(sourceType.getElementType());
+  unsigned dstBits = pto::getPTOStorageElemBitWidth(resultType.getElementType());
+  if (srcBits == 32 && dstBits == 32) {
+    if (sourceLayout != resultLayout) {
+      return fail("si32->f32 requires matching layouts");
+    }
+    if (!resultType.getElementType().isF32()) {
+      return fail("requires f32 result element type");
+    }
+    FailureOr<int64_t> sourceArity = getVMIPhysicalArity(sourceType);
+    FailureOr<int64_t> resultArity = getVMIPhysicalArity(resultType);
+    bool aritiesOk = succeeded(sourceArity) && succeeded(resultArity) &&
+        *sourceArity == *resultArity;
+    if (!aritiesOk) {
+      return fail("requires matching computable physical arity");
+    }
+  } else if (srcBits == 8 && dstBits == 16) {
+    if (!resultType.getElementType().isF16()) {
+      return fail("requires f16 result element type");
+    }
+    VMILayoutSupport layoutSupport;
+    if (failed(layoutSupport.getCastLayoutFactForLayouts(
+            sourceType, resultType, sourceLayout, resultLayout, reason))) {
+      return failure();
+    }
+  } else {
+    return fail("supports only si32 -> f32 or si8 -> f16");
+  }
   return success();
 }
 
 LogicalResult checkSupportedBitcastShape(VMIBitcastOp op, std::string *reason) {
   VMILayoutSupport supports;
-  if (failed(supports.getBitcastSupport(op, reason)))
+  if (failed(supports.getBitcastSupport(op, reason))) {
     return failure();
+  }
   return success();
 }
+
+
 
 LogicalResult
 checkSupportedChannelSplitShape(VMIChannelSplitOp op,
@@ -14221,13 +14299,13 @@ verifySupportedVMIToVPTOOps(ModuleOp module,
 
     if (auto sitofp = dyn_cast<VMISIToFPOp>(op)) {
       std::string reason;
-      if (succeeded(checkSupportedSIToFPShape(sitofp, &reason)))
+      if (succeeded(checkSupportedSIToFPShape(sitofp, &reason))) {
         return WalkResult::advance();
+      }
 
       sitofp.emitError()
           << kVMIDiagUnsupportedPrefix
-          << "pto.vmi.sitofp supports 32-bit integer source chunks to "
-             "matching f32 result chunks with identical assigned layouts ("
+          << "pto.vmi.sitofp supports si32->f32 or si8->f16 conversion shapes ("
           << reason << ")";
       return WalkResult::interrupt();
     }
@@ -14286,8 +14364,9 @@ verifySupportedVMIToVPTOOps(ModuleOp module,
 
     if (auto bitcast = dyn_cast<VMIBitcastOp>(op)) {
       std::string reason;
-      if (succeeded(checkSupportedBitcastShape(bitcast, &reason)))
+      if (succeeded(checkSupportedBitcastShape(bitcast, &reason))) {
         return WalkResult::advance();
+      }
 
       bitcast.emitError()
           << kVMIDiagUnsupportedPrefix
