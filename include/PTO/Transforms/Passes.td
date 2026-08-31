@@ -84,37 +84,6 @@ def PTOBufidSync : Pass<"pto-bufid-sync", "func::FuncOp"> {
   ];
 }
 
-// Define PTOGraphSyncSolver Pass (graph-based intra-core sync solver).
-// Coexists with PTOInsertSync; selectable via the driver flag
-// `--enable-graph-sync-solver`. Ported from bishengir's GraphSyncSolver core:
-// hierarchical SyncSolver IR, conflict graph pruning, event-id coloring and
-// barrier fallback, with PTO-specific IR translation and sync op codegen.
-def PTOGraphSyncSolver : Pass<"pto-graph-sync-solver", "func::FuncOp"> {
-  let summary = "Graph-based intra-core synchronization solver for PTO";
-  let description = [{
-    Alternative to PTOInsertSync. Builds a hierarchical SyncSolver IR and
-    decides which set/wait/barrier ops to emit by combining a reachability
-    analysis (so transitively-covered candidates are skipped) with graph
-    coloring over the pool of EVENT_IDs.
-  }];
-
-  let constructor = "mlir::pto::createPTOGraphSyncSolverPass()";
-
-  let options = [
-    Option<"eventIdNumMax", "event-id-num-max", "int64_t",
-           /*default=*/"8",
-           "Maximum EVENT_ID slots usable by coloring; this caps the hardware "
-           "available event-id budget used by the graph solver.">,
-  ];
-
-  let dependentDialects = [
-    "mlir::pto::PTODialect",
-    "mlir::memref::MemRefDialect",
-    "mlir::arith::ArithDialect",
-    "mlir::scf::SCFDialect"
-  ];
-}
-
 def ConvertToPTOOp : Pass<"convert-to-pto-op"> {
   let summary = "Convert Ops from other dialects to PTO Ops";
   let constructor = "mlir::pto::createConvertToPTOOpPass()";

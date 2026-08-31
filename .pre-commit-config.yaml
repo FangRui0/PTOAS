@@ -57,7 +57,7 @@ repos:
       - id: codespell
         args: [
             "-L",
-            "CANN,cann,NNAL,nnal,ASCEND,ascend,EnQue,CopyIn,ArchType,AND,ND,nd,tbe,copyin,alog,excuted,CEHCK,compatiable,NORAML,toi,subtile,ADN,vor,VOR,Vor,confg,olt,predicable,ges,declare,re-declare,ony,intrisics,implemtation,faciliate,compileable,NAM,SER,disjointness",
+            "CANN,cann,NNAL,nnal,ASCEND,ascend,EnQue,CopyIn,ArchType,AND,ND,nd,tbe,copyin,alog,excuted,CEHCK,compatiable,NORAML,toi,subtile,ADN,vor,VOR,Vor,confg,olt,predicable,ges,declare,re-declare,ony,intrisics,implemtation,faciliate,compileable,NAM,SER",
             "--skip",
             "*.py,*.cpp,*.hpp,*.c,*.h,*.pto,*.toml",
           ]

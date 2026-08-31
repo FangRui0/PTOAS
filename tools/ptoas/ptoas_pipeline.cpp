@@ -671,11 +671,10 @@ struct SerialAutoSyncPass
     : public PassWrapper<SerialAutoSyncPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(SerialAutoSyncPass)
 
-  enum class Mode { InsertSync, Bufid, BarrierAll, GraphSolver };
+  enum class Mode { InsertSync, Bufid, BarrierAll };
 
-  SerialAutoSyncPass(Mode mode, bool enableBufidDebug, int graphEventIdMax = 0)
-      : mode(mode), enableBufidDebug(enableBufidDebug),
-        graphEventIdMax(graphEventIdMax) {}
+  SerialAutoSyncPass(Mode mode, bool enableBufidDebug)
+      : mode(mode), enableBufidDebug(enableBufidDebug) {}
 
   void runOnOperation() override {
     OpPassManager functionPM(func::FuncOp::getOperationName());
@@ -692,12 +691,6 @@ struct SerialAutoSyncPass
     case Mode::BarrierAll:
       functionPM.addPass(pto::createPTOInjectBarrierAllSyncPass());
       break;
-    case Mode::GraphSolver: {
-      PTOGraphSyncSolverOptions options;
-      options.eventIdNumMax = graphEventIdMax;
-      functionPM.addPass(pto::createPTOGraphSyncSolverPass(options));
-      break;
-    }
     }
 
     for (func::FuncOp funcOp :
@@ -712,7 +705,6 @@ struct SerialAutoSyncPass
 private:
   Mode mode;
   bool enableBufidDebug;
-  int graphEventIdMax;
 };
 } // namespace
 
@@ -1199,12 +1191,11 @@ static LogicalResult validateTAssignConfiguration(ModuleOp module,
   }
   const int enabledAutoSyncModes =
       (enableInsertSync ? 1 : 0) + (enableBufidSync ? 1 : 0) +
-      (enableInjectBarrierAllSync ? 1 : 0) +
-      (enableGraphSyncSolver ? 1 : 0);
+      (enableInjectBarrierAllSync ? 1 : 0);
   if (enabledAutoSyncModes > 1) {
     llvm::errs() << "Error: --enable-insert-sync, --enable-bufid_sync, "
-                    "--enable-inject-barrier-all-sync, and "
-                    "--enable-graph-sync-solver are mutually exclusive.\n";
+                    "and --enable-inject-barrier-all-sync are mutually "
+                    "exclusive.\n";
     return failure();
   }
   if (hasTAssign && enableInjectBarrierAllSync) {
@@ -1215,11 +1206,6 @@ static LogicalResult validateTAssignConfiguration(ModuleOp module,
   if (hasTAssign && enableBufidSync) {
     llvm::errs() << "Error: pto.tassign requires --enable-bufid_sync to be "
                     "disabled.\n";
-    return failure();
-  }
-  if (hasTAssign && enableGraphSyncSolver) {
-    llvm::errs() << "Error: pto.tassign requires --enable-graph-sync-solver "
-                    "to be disabled.\n";
     return failure();
   }
   return success();
@@ -1397,17 +1383,6 @@ static void appendAutoSyncPasses(PassManager &pm) {
     } else {
       pm.addNestedPass<func::FuncOp>(
           pto::createPTOInjectBarrierAllSyncPass());
-    }
-  } else if (enableGraphSyncSolver) {
-    if (emitMlirIR) {
-      pm.addPass(std::make_unique<SerialAutoSyncPass>(
-          SerialAutoSyncPass::Mode::GraphSolver, false,
-          graphSyncSolverEventIdMax));
-    } else {
-      PTOGraphSyncSolverOptions options;
-      options.eventIdNumMax = graphSyncSolverEventIdMax;
-      pm.addNestedPass<func::FuncOp>(
-          pto::createPTOGraphSyncSolverPass(options));
     }
   }
 }

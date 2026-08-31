@@ -149,15 +149,6 @@ add_mlir_dialect_library(PTOTransforms
   BufidSync/BufidSyncAnalysis.cpp
   BufidSync/BufidSyncIdAlloc.cpp
   BufidSync/BufidSyncCodegen.cpp
-  GraphSyncSolver/PTOGraphSyncSolver.cpp
-  GraphSyncSolver/SyncSolverIR.cpp
-  GraphSyncSolver/SyncSolverIRTranslator.cpp
-  GraphSyncSolver/Utility.cpp
-  GraphSyncSolver/MemInfo.cpp
-  GraphSyncSolver/GraphSolver.cpp
-  GraphSyncSolver/EventIdSolver.cpp
-  GraphSyncSolver/SyncSolver.cpp
-  GraphSyncSolver/SyncSolverCodeGen.cpp
   LoweringSyncToPipe.cpp
   PTOVerifyTFreePass.cpp
 

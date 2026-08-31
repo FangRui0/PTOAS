@@ -53,9 +53,6 @@ std::unique_ptr<Pass> createPTOInjectBarrierAllSyncPass();
 std::unique_ptr<Pass>
 createPTOBufidSyncPass(const PTOBufidSyncOptions &options = {});
 
-std::unique_ptr<Pass>
-createPTOGraphSyncSolverPass(const PTOGraphSyncSolverOptions &options = {});
-
 // Default arch is A3 unless overridden by callers.
 std::unique_ptr<Pass> createEmitPTOManualPass();
 // Explicitly select target arch for codegen.

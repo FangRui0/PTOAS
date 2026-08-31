@@ -62,8 +62,6 @@ extern llvm::cl::opt<bool> enableInsertSync;
 extern llvm::cl::opt<bool> enableBufidSync;
 extern llvm::cl::opt<bool> enableBufidSyncDebug;
 extern llvm::cl::opt<bool> enableInjectBarrierAllSync;
-extern llvm::cl::opt<bool> enableGraphSyncSolver;
-extern llvm::cl::opt<int> graphSyncSolverEventIdMax;
 extern llvm::cl::opt<llvm::cl::boolOrDefault> enableOpFusion;
 extern llvm::cl::opt<bool> enableUnrollAfterLoopFusion;
 extern llvm::cl::opt<bool> enableVexpdifFusion;
