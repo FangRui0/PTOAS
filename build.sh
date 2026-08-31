@@ -694,6 +694,7 @@ stage_ptoas_wheel() {
     "${python_bin}" -m pip wheel "${BASE_PATH}" \
       "${wheel_feature_args[@]}" \
       --config-settings=wheel.py-api=cp37 \
+      --config-settings=cmake.define.PTOAS_ENABLE_ONLINE_CORE_COMPILE=ON \
       --no-build-isolation \
       --no-deps \
       --wheel-dir "${wheel_dist}"

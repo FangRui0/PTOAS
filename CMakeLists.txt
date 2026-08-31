@@ -264,6 +264,15 @@ if(BUILD_TESTING)
       LABELS "PTO"
       ENVIRONMENT "${_pto_python_test_env}"
     )
+    add_test(
+      NAME pto_online_core_build
+      COMMAND "${Python3_EXECUTABLE}" -S
+              "${CMAKE_CURRENT_SOURCE_DIR}/test/python/test_online_core_build.py"
+    )
+    set_tests_properties(pto_online_core_build PROPERTIES
+      LABELS "PTO"
+      ENVIRONMENT "${_pto_python_test_env}"
+    )
   endif()
   add_subdirectory(tools/ptobc/tests)
 endif()
