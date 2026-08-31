@@ -31,12 +31,6 @@ export PACKAGE_STAGE_PATH="${BUILD_PATH}/package_runtime"
 export PTOAS_PRESMOKE_SKIP_RUNOP_MARKER="${BUILD_PATH}/.skip-presmoke-runop"
 export LLVM_SOURCE_VERSION="19.1.7"
 export PTOAS_GLIBCXX_ABI="${PTOAS_GLIBCXX_ABI:-0}"
-# This branch is used to validate the native LLVM/PTOAS build and CANN package
-# lifecycle while the CI image cannot install the Python wheel build backend.
-# Keep the normal CMake/CPack package flow, but deliberately omit the wheel from
-# the generated .run artifact.  The installer handles the empty wheel directory
-# as a successful placeholder package.
-export PTOAS_PLACEHOLDER_RUN_PACKAGE="${PTOAS_PLACEHOLDER_RUN_PACKAGE:-TRUE}"
 # The PTOAS tree is built against the vpto-dev LLVM/MLIR 19 "feature-vpto"
 # branch (source of custom calling conventions such as SimtEntry). Source it
 # from GitHub by default; override with LLVM_GIT_URL / LLVM_GIT_REF when a
@@ -774,18 +768,11 @@ package() {
   # default to the packaging version and allow an explicit override.
   PTOAS_PACKAGE_VERSION="${PTOAS_PACKAGE_VERSION:-9.2.0}"
 
-  # The placeholder package intentionally does not invoke pip/auditwheel.  The
-  # native build above is still performed, and CMake/CPack owns generation of
-  # the same .run/RPM/DEB package formats.  Keep the old wheel path available
-  # behind an explicit opt-in for local release builds.
+  # Build and repair the wheel first, then reconfigure with its absolute path
+  # so CMake/CPack owns run, RPM, and DEB payload generation uniformly.
   rm -rf "${BUILD_OUT_PATH}"
   mkdir -p "${BUILD_OUT_PATH}"
-  unset PTOAS_WHEEL_FILE
-  if [ "${PTOAS_PLACEHOLDER_RUN_PACKAGE}" != "TRUE" ]; then
-    stage_ptoas_wheel
-  else
-    echo "Building placeholder PTOAS package without a Python wheel"
-  fi
+  stage_ptoas_wheel
   ENABLE_PACKAGE=TRUE
   configure_ptoas
   # configure_ptoas resets the build tree; rebuild all targets before the
