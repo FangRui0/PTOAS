@@ -6,12 +6,17 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// RUN: not ptoas --pto-level=level3 --plan-memory-impl=typo %s 2>&1 | FileCheck %s
+// RUN: ptoas --pto-level=level2 --pto-arch=a3 \
+// RUN:   --emit-pto-ir %s 2>&1 | FileCheck %s
 
 module {
-  func.func @empty() attributes {pto.entry} {
+  func.func @multiblock_cfg() {
+    cf.br ^next
+  ^next:
     return
   }
 }
 
-// CHECK: Error: invalid --plan-memory-impl='typo', expected 'legacy' or 'modern'.
+// CHECK-LABEL: func.func @multiblock_cfg
+// CHECK: cf.br ^bb1
+// CHECK: ^bb1:

@@ -8,7 +8,10 @@
 
 // TREDUCE ping-pong mode uses recvPong as an internal receive staging tile.
 // InsertSync must model that hidden write so later tile users cannot race with
-// the MTE2 receive inside the library call.
+// the MTE2 receive inside the library call. PlanMemory also coalesces the TMOV
+// destination onto a freed slot, so an extra reuse guard may sit between the
+// MTE2->V set and wait flags; the essential guarantee is that the MTE2->V wait
+// still immediately precedes the TMOV.
 //
 // RUN: ptoas --pto-arch=a3 --enable-insert-sync %s -o - 2>&1 | FileCheck %s
 
@@ -57,5 +60,5 @@ module {
 // CHECK-LABEL: AICORE void treduce_reuses_recv_pong_after_call(
 // CHECK:      pto::comm::TREDUCE(
 // CHECK:      set_flag(PIPE_MTE2, PIPE_V, EVENT_ID[[PONG:[0-9]+]]);
-// CHECK-NEXT: wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID[[PONG]]);
+// CHECK:      wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID[[PONG]]);
 // CHECK-NEXT: TMOV(

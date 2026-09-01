@@ -2,12 +2,9 @@
 
 ## 总体方案
 
-PTOAS 当前保留两套 local memory planner：
+PTOAS 的 local memory planner 采用 Largest-First-Fit 与四道冲突闸门设计，是唯一且默认的规划器。（历史上曾存在一套 legacy planner，保留旧版 SPEC_LEVEL_0/1/2 三级投机复用、内存不够时回滚的策略，并通过 `--plan-memory-impl` 标志二选一；该 legacy 实现与标志现已删除。）
 
-- legacy memplan：默认启用，保留旧版 SPEC_LEVEL_0/1/2 三级投机复用，内存不够时回滚的策略。
-- modern memplan：通过 `--plan-memory-impl=modern` 显式启用，当前实现Largest-First-Fit 与四道冲突闸门内存规划设计
-
-PTOAS 当前已经具备 largest-first 风格的规划开关：`--plan-memory-order-by-size`。该选项会让 planner 在同一 AddressSpace 内优先处理更大的 buffer。当用户显式选择 `--plan-memory-impl=modern` 且未显式指定 `--plan-memory-order-by-size` 时，modern memplan 默认开启该排序；legacy memplan 仍保持默认关闭。
+PTOAS 通过 `--plan-memory-order-by-size` 控制 largest-first 排序：该选项会让 planner 在同一 AddressSpace 内优先处理更大的 buffer，默认开启。
 
 当前 `pto.alloc_tile` 的 lowering 路径保持 tile-native：
 
@@ -15,7 +12,7 @@ PTOAS 当前已经具备 largest-first 风格的规划开关：`--plan-memory-or
 pto.alloc_tile(no addr)
   -> PTOViewToMemref 透传，不转换成 memref.alloc
   -> pto-plan-memory 收集为 local allocation root
-  -> modern/legacy memplan 按 level 校验并规划 local addr
+  -> memplan 按 level 校验并规划 local addr
   -> 直接给 pto.alloc_tile 补常量 addr
   -> 后续 pto.t* tile op 继续使用 !pto.tile_buf 形态
 ```
@@ -33,21 +30,17 @@ pto.alloc_tile(no addr)
 - 保持按 AddressSpace 独立规划。
 - 保持不回滚、不降级的 deterministic 策略。
 - 保持 `pto.alloc_tile(no addr)` tile-native 路径：memplan 直接补 `addr`。
-- 保持 legacy memplan 默认行为不变。
 
 ## 非目标
 
 本设计不包含以下内容：
 
-- 不修改 legacy memplan 的 StorageEntry / SPEC_LEVEL_1 / SPEC_LEVEL_2 逻辑。
-- 不在 legacy memplan 中实现四道闸门。
 - 不恢复旧版回滚式投机规划。
-- 不把 modern memplan 作为默认实现。
 - 不在本阶段实现跨函数、跨 module 的全局内存规划。
 
 ## 核心思想
 
-将每个 plannable local allocation root 抽象成一个待装箱 item。这里的 item 对应当前 modern memplan 中的 `RootInfo`，不是所有 local SSA value：
+将每个 plannable local allocation root 抽象成一个待装箱 item。这里的 item 对应当前 memplan 中的 `RootInfo`，不是所有 local SSA value：
 
 `pto.bind_tile`、`pto.slot_marker`、`memref.subview`、`memref.cast` 等 alias/view value 不会成为新的 item，而是通过 `valueToRoots` 归属到已有 root。四道闸门需要的额外约束数据不放进 `RootInfo`，而是由 `ConflictFacts` 这类 side table 提供。
 
@@ -56,7 +49,7 @@ pto.alloc_tile(no addr)
 
 ### 1. Root 收集
 
-modern memplan 继续收集以下 local root：
+memplan 继续收集以下 local root：
 
 - `pto.alloc_tile(no addr)`。
 - plannable local `memref.alloc`。
@@ -284,7 +277,7 @@ consume(%r)
 如果存在该 hazard，则禁止 load-derived buffer 与 consumes-split-tpop 的 writer 在 touching 点复用。
 ```
 
-当前 PTOAS modern memplan 的启用条件：
+当前 PTOAS memplan 的启用条件：
 A5 上该闸门恒通过。A3 上也只有识别到 split tpop 派生值时才可能触发。
 
 #### 设计原理
@@ -321,7 +314,7 @@ tpopConsumerWriteIndices:
 
 这种拆分可以避免过度保守：不是所有 load buffer 都禁止复用，也不是所有 tpop 相关 buffer 都禁止复用，只有“load-derived input 的最后使用点”碰到“consumes split-tpop writer 的写入点”时才失败。
 
-当前 PTOAS modern memplan 对 DPS output root 使用 writer-def liveness：如果某个 DPS output 是 pure overwrite，即该 output 没有被 memory effects 标记为 Read，则它的 `allocIndex` 会从 `pto.alloc_tile` / `memref.alloc` 收缩到第一次有效 writer op。这样 load-derived input 的 `freeIndex` 与 writer output 的 `allocIndex` 可以形成 touching，是否允许复用继续由 target-specific load/tpop hazard 和 op semantic no-alias 闸门判断。若 output 需要旧值，例如 read-modify-write / accumulate 语义，则保持 allocation-start 的保守生命周期。
+当前 PTOAS memplan 对 DPS output root 使用 writer-def liveness：如果某个 DPS output 是 pure overwrite，即该 output 没有被 memory effects 标记为 Read，则它的 `allocIndex` 会从 `pto.alloc_tile` / `memref.alloc` 收缩到第一次有效 writer op。这样 load-derived input 的 `freeIndex` 与 writer output 的 `allocIndex` 可以形成 touching，是否允许复用继续由 target-specific load/tpop hazard 和 op semantic no-alias 闸门判断。若 output 需要旧值，例如 read-modify-write / accumulate 语义，则保持 allocation-start 的保守生命周期。
 
 需要收集：
 
@@ -387,9 +380,9 @@ tpopConsumerRoots:
 
 ### 闸门 4：op semantic no-alias
 
-**目的：** 表达“从生命周期看可以复用，但从 op 语义看不能 alias”的约束。闸门 4 对应 PyPTO 的 inplace 机制：`not_inplace_safe()` 与 `forbid_output_alias(i)`，并覆盖 PTOAS legacy memplan 中已有的 scratch-output conflict。
+**目的：** 表达“从生命周期看可以复用，但从 op 语义看不能 alias”的约束。闸门 4 对应 PyPTO 的 inplace 机制：`not_inplace_safe()` 与 `forbid_output_alias(i)`，并覆盖已有的 scratch-output conflict。
 
-在 modern memplan 中，闸门 4 不应再只叫笼统的 `semantic conflict`，而应建模为一张明确的 forbid-alias side table：
+在 memplan 中，闸门 4 不应再只叫笼统的 `semantic conflict`，而应建模为一张明确的 forbid-alias side table：
 
 ```text
 forbidAlias[root] = forbiddenRootSet
@@ -399,7 +392,7 @@ forbidAlias[root] = forbiddenRootSet
 
 #### 4.1 scratch-output conflict
 
-PTOAS legacy memplan 的 semantic conflict 主要就是 scratch-output conflict。modern memplan 应继续覆盖这类场景：
+scratch-output conflict 是最常见的 semantic conflict 场景。memplan 应继续覆盖这类场景：
 
 ```text
 op implements PTO_DpsInitOpInterface
@@ -549,9 +542,9 @@ for value in op operands / dpsInits:
 
 ## PIPE_V 物理共址性能代价模型
 
-四道闸门只回答“两个 root 复用是否语义安全”。但对 A2/A3 这类 PIPE_V、MTE2、MTE3 可以重叠执行的后端，语义安全不等价于性能最优。若 modern memplan 为了最小化 local footprint，把本来分开的 scratch live range 压到同一小段物理 UB 地址，后续 InsertSync 会基于物理地址重叠补出更强的流水依赖；即使显式同步数量没有增加，MTE3 store 与下一段 MTE2 load、连续 PIPE_V producer/consumer 的可重叠窗口也会变窄。
+四道闸门只回答“两个 root 复用是否语义安全”。但对 A2/A3 这类 PIPE_V、MTE2、MTE3 可以重叠执行的后端，语义安全不等价于性能最优。若 memplan 为了最小化 local footprint，把本来分开的 scratch live range 压到同一小段物理 UB 地址，后续 InsertSync 会基于物理地址重叠补出更强的流水依赖；即使显式同步数量没有增加，MTE3 store 与下一段 MTE2 load、连续 PIPE_V producer/consumer 的可重叠窗口也会变窄。
 
-因此，modern memplan 在通过四道安全闸门之后，还需要引入一个非硬约束的性能代价模型：
+因此，memplan 在通过四道安全闸门之后，还需要引入一个非硬约束的性能代价模型：
 
 ```text
 canShare(a, b) == true
@@ -594,7 +587,7 @@ endByte   = plannedOffset + slotBytes
 
 alias/view value 需要先归约到 root，再把 subview/treshape/bitcast/multi_tile_get 等局部 offset 合入区间。对无法精确计算 byte range 的 alias，性能模型应保守地使用 root 的完整 slot range，不能为了少报冲突而截断未知范围。
 
-当前 modern memplan 的首版实现运行在 materialize 之前，因此用“prospective `ReuseGroup` 共址”作为物理区间代理：如果一个 root 加入已有 group，就认为它和 group 内成员共享同一 local 区间；如果选择 fresh group，就认为它不和已有 group 产生共址代价。后续若 planner 支持更细粒度 subview byte range，可把该代理替换为精确 `PhysicalInterval`。
+当前 memplan 的首版实现运行在 materialize 之前，因此用“prospective `ReuseGroup` 共址”作为物理区间代理：如果一个 root 加入已有 group，就认为它和 group 内成员共享同一 local 区间；如果选择 fresh group，就认为它不和已有 group 产生共址代价。后续若 planner 支持更细粒度 subview byte range，可把该代理替换为精确 `PhysicalInterval`。
 
 区间重叠判定：
 
@@ -779,7 +772,7 @@ struct RootInfo {
 };
 ```
 
-本设计保持当前 modern memplan 的 `RootInfo` 字段不变。`RootInfo` 只表达 local allocation root 的基础事实：
+本设计保持当前 memplan 的 `RootInfo` 字段不变。`RootInfo` 只表达 local allocation root 的基础事实：
 
 ```text
 root identity
@@ -815,7 +808,7 @@ struct ConflictFacts {
   DenseMap<Value, SmallVector<unsigned>> phiFamilyIds;
 
   // Performance-only facts. These do not decide whether reuse is legal; they
-  // only rank legal candidate offsets when modern memplan has spare capacity.
+  // only rank legal candidate offsets when memplan has spare capacity.
   SmallVector<OpAccess> opAccesses;
   DenseMap<Value, SmallVector<PhysicalInterval>> plannedIntervals;
 
@@ -845,7 +838,7 @@ struct ConflictFacts {
 - `plan_memory_five_gates_phi_family.pto`
 - `plan_memory_five_gates_semantic_no_alias.pto`
 - `plan_memory_five_gates_target_hazard.pto`
-- `plan_memory_pipev_reuse_cost_state_update.pto`：构造多个连续 PIPE_V scratch，验证容量充足时 modern memplan 不把所有 touching live range 压到同一小段 Vec 地址。
+- `plan_memory_pipev_reuse_cost_state_update.pto`：构造多个连续 PIPE_V scratch，验证容量充足时 memplan 不把所有 touching live range 压到同一小段 Vec 地址。
 - `plan_memory_pipev_reuse_cost_capacity_pressure.pto`：构造 Vec 容量接近上限的场景，验证性能 cost 只影响 candidate 排序，不会因为偏好 fresh address 而错误拒绝合法复用。
 - `plan_memory_mte3_mte2_reuse_cost.pto`：构造 `tstore` 源 tile 后接 `tload` 目的 tile 的近邻复用场景，验证 planner 优先选择不会制造 `MTE3 -> MTE2` 共址依赖的地址。
 - 暂不新增 `plan_memory_five_gates_pipeline_load.pto`；闸门 4 当前为预留设计。
@@ -868,12 +861,11 @@ ctest --test-dir build --output-on-failure -L PTODSL
 
 ## 风险与注意事项
 
-- `--plan-memory-order-by-size` 本身会改变 modern memplan 的 offset 分配顺序，测试应避免把 order-sensitive 预期错误地复用于默认路径。
+- `--plan-memory-order-by-size` 本身会改变 memplan 的 offset 分配顺序，测试应避免把 order-sensitive 预期错误地复用于默认路径。
 - 四道闸门是硬约束，不应为了容量不足而放松。
 - target hazard 需要先确认 PTOAS IR 中稳定的标记来源。
 - pipeline metadata 闸门当前不实现；如果未来启用，需要先定义稳定的 pipeline membership 来源。
 - phi family 豁免必须保守，不能让外部 live alias 借互斥分支错误复用。
 - PIPE_V 物理共址模型只是性能排序，不是安全闸门；容量不足时不能因为 cost 高而报错，除非四道安全闸门本身失败。
-- cost 权重会改变 modern memplan 的 offset 选择，测试应只检查关键“不应过度压缩”的相对关系，避免过度绑定完整地址布局。
+- cost 权重会改变 memplan 的 offset 选择，测试应只检查关键“不应过度压缩”的相对关系，避免过度绑定完整地址布局。
 - 物理区间必须和 InsertSync 使用的 root/alias/MemoryEffects 视角保持一致；否则 planner 认为低 cost 的地址，后续同步分析仍可能补出强依赖。
-- legacy memplan 不应受该设计影响，默认行为保持不变。

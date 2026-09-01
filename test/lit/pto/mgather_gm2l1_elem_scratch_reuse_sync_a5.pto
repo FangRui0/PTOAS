@@ -10,6 +10,11 @@
 // MTE2 phase reads it. Reusing the same scratch in a following mgather must
 // preserve both sides of that dependency.
 //
+// PlanMemory coalesces %m0 and %m1 onto the same address, so the second mgather
+// overwrites the first tile in place. The MTE2->S / S->MTE2 flags order the
+// scalar and load phases of the two mgathers, and an extra pipe_barrier(PIPE_MTE2)
+// guards the in-place reuse of the shared slot.
+//
 // RUN: ptoas --pto-arch=a5 --enable-insert-sync %s -o - 2>&1 | FileCheck %s
 
 module {
@@ -49,5 +54,6 @@ module {
 // CHECK-NEXT: set_flag(PIPE_S, PIPE_MTE2
 // CHECK-NEXT: set_flag(PIPE_MTE2, PIPE_S
 // CHECK-NEXT: wait_flag(PIPE_MTE2, PIPE_S
+// CHECK-NEXT: pipe_barrier(PIPE_MTE2);
 // CHECK-NEXT: wait_flag(PIPE_S, PIPE_MTE2
-// CHECK:      MGATHER<pto::Coalesce::Elem>
+// CHECK-NEXT: MGATHER<pto::Coalesce::Elem>

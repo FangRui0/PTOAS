@@ -85,11 +85,11 @@ bool requireExplicitAtLevel3;
 ```text
 pto.alloc_tile(no addr)
   -> local allocation root
-  -> legacy/modern memplan 分配 offset
+  -> memplan 分配 offset
   -> pto.alloc_tile addr = ...
 ```
 
-legacy memplan 和 modern memplan 都应把自动生成的 tmp 当成普通 local allocation root。memplan 不应该知道“这是某个 op 的隐式 tmp”，也不应该在内部临时创建 tmp。
+memplan 应把自动生成的 tmp 当成普通 local allocation root。memplan 不应该知道“这是某个 op 的隐式 tmp”，也不应该在内部临时创建 tmp。
 
 memplan 侧需要依赖 op 的 MemoryEffects / semantic no-alias 信息保证正确复用：
 
@@ -272,7 +272,7 @@ Write(dst)
 - liveness 需要看到 tmp 在 `pto.tci` 被使用。
 - sync pass 需要知道 `pto.tci` 会读 tmp 地址。
 - memplan 需要把 tmp 识别为 scratch buffer，避免 tmp 和同 op 的 dst 错误复用。
-- modern memplan 的 op semantic no-alias 和 root use 传播需要真实 use 信息。
+- memplan 的 op semantic no-alias 和 root use 传播需要真实 use 信息。
 
 如果 tmp 不被建模为 Read/Write，tmp 可能被认为没有 use 或不是 scratch，导致生命周期、复用或同步分析不准确。
 
@@ -349,11 +349,10 @@ CHECK: pto.alloc_tile addr =
 CHECK: pto.tci ins(%{{.*}}, %{{.*}}
 ```
 
-legacy 和 modern 都应覆盖：
+memplan 应覆盖：
 
 ```text
-// RUN: ptoas --pto-level=level2 --plan-memory-impl=legacy ...
-// RUN: ptoas --pto-level=level2 --plan-memory-impl=modern ...
+// RUN: ptoas --pto-level=level2 ...
 ```
 
 #### lit：EmitC 走带 tmp overload

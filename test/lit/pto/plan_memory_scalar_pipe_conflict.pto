@@ -7,7 +7,10 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 // RUN: ptoas --pto-level=level2 --pto-arch=a3 --emit-pto-ir \
-// RUN:   --mlir-print-ir-after=pto-plan-memory %s 2>&1 1>/dev/null | FileCheck %s
+// RUN:   --mlir-print-ir-after=pto-plan-memory %s 2>&1 1>/dev/null \
+// RUN:   | FileCheck %s --check-prefix=PLAN
+// RUN: ptoas --pto-level=level2 --pto-arch=a3 --enable-insert-sync %s -o - 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=SYNC
 
 module {
   func.func @scalar_pipe_conflict() -> f32 {
@@ -22,9 +25,15 @@ module {
   }
 }
 
-// A PIPE_S-touched tile must not share an address with a non-scalar tile even
-// when their linear liveness intervals do not overlap.
-// CHECK-DAG: %[[ZERO:.*]] = arith.constant 0 : i64
-// CHECK-DAG: %[[NEXT:.*]] = arith.constant 1024 : i64
-// CHECK: pto.alloc_tile addr = %[[ZERO]] : !pto.tile_buf<vec, 16x16xf32>
-// CHECK: pto.alloc_tile addr = %[[NEXT]] : !pto.tile_buf<vec, 16x16xf32>
+// The scalar-touched tile and the vector tile have non-overlapping liveness, so
+// PlanMemory coalesces both onto address 0. Safety comes from InsertSync, which
+// guards the scalar read against the later vector use with a PIPE_S->PIPE_V flag
+// rather than from keeping the tiles at separate addresses.
+// PLAN: %[[ZERO:.*]] = arith.constant 0 : i64
+// PLAN: pto.alloc_tile addr = %[[ZERO]] : !pto.tile_buf<vec, 16x16xf32>
+// PLAN: pto.alloc_tile addr = %[[ZERO]] : !pto.tile_buf<vec, 16x16xf32>
+
+// SYNC:      GetValue(
+// SYNC:      set_flag(PIPE_S, PIPE_V, EVENT_ID[[SV:[0-9]+]]);
+// SYNC:      wait_flag(PIPE_S, PIPE_V, EVENT_ID[[SV]]);
+// SYNC-NEXT: TPRINT(

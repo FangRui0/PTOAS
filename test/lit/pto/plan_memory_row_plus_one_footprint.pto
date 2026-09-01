@@ -8,10 +8,7 @@
 
 // RUN: ptoas --pto-level=level2 --pto-arch=a3 --emit-pto-ir \
 // RUN:   --mlir-print-ir-after=pto-plan-memory %s 2>&1 1>/dev/null \
-// RUN:   | FileCheck %s --check-prefix=LEGACY
-// RUN: ptoas --pto-level=level2 --pto-arch=a3 --plan-memory-impl=modern \
-// RUN:   --emit-pto-ir --mlir-print-ir-after=pto-plan-memory %s 2>&1 \
-// RUN:   1>/dev/null | FileCheck %s --check-prefix=MODERN
+// RUN:   | FileCheck %s --check-prefix=PLAN
 
 module attributes {pto.target_arch = "a3"} {
   func.func @row_plus_one_footprint(
@@ -40,14 +37,8 @@ module attributes {pto.target_arch = "a3"} {
 // With 256-byte local alignment, the next overlapping-live tile must start at
 // 1280 bytes rather than product(shape) * sizeof(f32) = 1024 bytes.
 
-// LEGACY-LABEL: func.func @row_plus_one_footprint
-// LEGACY-DAG: %[[ADDR0:.*]] = arith.constant 0 : i64
-// LEGACY-DAG: %[[ADDR1:.*]] = arith.constant 1280 : i64
-// LEGACY: pto.alloc_tile addr = %[[ADDR0]]
-// LEGACY: pto.alloc_tile addr = %[[ADDR1]]
-
-// MODERN-LABEL: func.func @row_plus_one_footprint
-// MODERN-DAG: %[[ADDR0:.*]] = arith.constant 0 : i64
-// MODERN-DAG: %[[ADDR1:.*]] = arith.constant 1280 : i64
-// MODERN: pto.alloc_tile addr = %[[ADDR0]]
-// MODERN: pto.alloc_tile addr = %[[ADDR1]]
+// PLAN-LABEL: func.func @row_plus_one_footprint
+// PLAN-DAG: %[[ADDR0:.*]] = arith.constant 0 : i64
+// PLAN-DAG: %[[ADDR1:.*]] = arith.constant 1280 : i64
+// PLAN: pto.alloc_tile addr = %[[ADDR0]]
+// PLAN: pto.alloc_tile addr = %[[ADDR1]]

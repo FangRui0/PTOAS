@@ -68,8 +68,6 @@ std::unique_ptr<Pass> createInferPTOMemScopePass();
 
 std::unique_ptr<Pass>
 createPlanMemoryPass(const PlanMemoryOptions &options = {});
-std::unique_ptr<Pass>
-createPlanMemoryModernPass(const PlanMemoryOptions &options);
 std::unique_ptr<Pass> createPTORemoveRedundantBarrierPass();
 std::unique_ptr<Pass> createPTOValidateIntToPtrUsesPass();
 std::unique_ptr<Pass> createPTORematerializeFixpipeVectorQuantPass();

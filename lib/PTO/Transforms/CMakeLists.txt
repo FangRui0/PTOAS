@@ -114,10 +114,8 @@ add_mlir_dialect_library(PTOTransforms
   PTOToEmitC.cpp
   CppPostprocess.cpp
   Utils.cpp
-  OptMemPlanForPipeline.cpp
   InferPTOMemScope.cpp
   PTOPlanMemory.cpp
-  PTOPlanMemoryModern.cpp
   PTORemoveRedundantBarrier.cpp
   InferPTOLayout.cpp
   PTOA5NormalizeTMovPass.cpp
