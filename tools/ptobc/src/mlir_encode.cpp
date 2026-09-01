@@ -702,14 +702,17 @@ void Encoder::encodeAllocTileImmediate(mlir::Operation &op, Buffer &out,
         "imm_kind=alloc_tile but op is not pto.alloc_tile");
   }
   uint8_t mask = 0;
+  constexpr uint8_t kAllocTileValidRowBit = 0x1;
+  constexpr uint8_t kAllocTileValidColBit = 0x2;
+  constexpr uint8_t kAllocTileAddrBit = 0x4;
   if (at.getValidRow()) {
-    mask |= 0x1;
+    mask |= kAllocTileValidRowBit;
   }
   if (at.getValidCol()) {
-    mask |= 0x2;
+    mask |= kAllocTileValidColBit;
   }
   if (at.getAddr()) {
-    mask |= 0x4;
+    mask |= kAllocTileAddrBit;
   }
   out.appendU8(mask);
   imms.push_back(mask);
@@ -781,7 +784,7 @@ bool Encoder::tryEncodeLegacyIndexedTscatterOperands(
 bool Encoder::tryEncodeLegacyFpOperands(
     mlir::Operation &op, Buffer &out,
     const ptobc::v0::OpcodeAndVariant &variantInfo) {
-  auto emit = [&](llvm::ArrayRef<mlir::Value> operands) {
+  auto emit = [this, &out](llvm::ArrayRef<mlir::Value> operands) {
     for (mlir::Value value : operands) {
       writeULEB128(getValueId(value), out.bytes);
     }
@@ -851,15 +854,21 @@ void Encoder::encodeKnownOperandMode(
     emitOperandIds(
         op, out, size_t(info.num_operands) + size_t(imms[1]) + size_t(imms[2]));
     return;
-  case 0x04:
+  case 0x04: {
     if (imms.empty()) {
       throw std::runtime_error("optmask operands missing immediate");
     }
-    emitOperandIds(op, out,
-                   ((imms.front() & 0x1) ? 1 : 0) +
-                       ((imms.front() & 0x2) ? 1 : 0) +
-                       ((imms.front() & 0x4) ? 1 : 0));
+    constexpr uint64_t kOptMaskValidRowBit = 0x1;
+    constexpr uint64_t kOptMaskValidColBit = 0x2;
+    constexpr uint64_t kOptMaskAddrBit = 0x4;
+    const uint64_t optMask = imms.front();
+    const size_t operandCount =
+        ((optMask & kOptMaskValidRowBit) != 0 ? 1U : 0U) +
+        ((optMask & kOptMaskValidColBit) != 0 ? 1U : 0U) +
+        ((optMask & kOptMaskAddrBit) != 0 ? 1U : 0U);
+    emitOperandIds(op, out, operandCount);
     return;
+  }
   default:
     throw std::runtime_error("unknown operand_mode in v0 schema");
   }
