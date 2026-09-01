@@ -7,61 +7,140 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 # -----------------------------------------------------------------------------------------------------------
-"""Acquire the ``ptoas._core`` native module.
+"""Acquire the version-sensitive native pybind11 extensions.
 
-Fast path: import the prebuilt abi3 ``_core`` shipped in the wheel. Fallback: on
-ImportError (interpreter/ABI mismatch), compile a matching ``_core`` online from
-the shipped sources under ``ptoas/_online/`` and load it from the build cache.
+Four extensions are shipped prebuilt in the wheel but cannot be abi3 (pybind11 is
+interpreter-specific): ``ptoas._core`` and the ``ptoas.mlir`` family (``_mlir``,
+``_mlirDialectsLLVM``, ``_site_initialize_0``). On a matching interpreter the
+prebuilt binaries load directly (fast path). On a mismatching interpreter a
+``sys.meta_path`` finder redirects those imports to an online CMake build of the
+whole family (see ``_build_online``) and serves the freshly built binaries from
+the build cache.
 
-For the cache case the online ``_core`` lives outside the package dir, so its
-``$ORIGIN`` rpath does NOT point at the shipped ``libPTOASCompiler`` DSO. We
-therefore preload the DSO with ``RTLD_GLOBAL`` first so ``_core`` resolves the
-compiler symbols regardless of where it was cached.
+The online binaries live outside the package dir, so their ``$ORIGIN`` rpath does
+NOT point at the shipped ``libPTOASCompiler`` / ``libLLVMSupport`` DSOs. We
+therefore preload those with ``RTLD_GLOBAL`` first so the extensions resolve the
+compiler and LLVM support symbols regardless of where they were cached.
 """
 
 import ctypes
+import importlib.machinery
+import importlib.util
 import logging
 from pathlib import Path
+import sys
 import threading
-from typing import Optional
+from typing import List, Optional
 
 _log = logging.getLogger(__name__)
 
 _QUALIFIED_MODULE = "ptoas._core"
-_DSO_STEMS = ("libPTOASCompiler",)
+
+# Shared, Python-independent DSOs to preload with RTLD_GLOBAL. libLLVMSupport is
+# only present in wheels built with the online family option (shared LLVM); it is
+# absent on a plain prebuilt build, where the extensions find it via their own
+# rpath. Preload is therefore best-effort per stem.
+_DSO_STEMS = ("libPTOASCompiler", "libLLVMSupport")
+
+# The native modules intercepted by the meta path finder, mapped to their
+# in-package location relative to the ``ptoas`` package dir.
+_MEMBER_PKG_SUBDIR = {
+    "ptoas._core": ".",
+    "ptoas.mlir._mlir_libs._mlir": "mlir/_mlir_libs",
+    "ptoas.mlir._mlir_libs._mlirDialectsLLVM": "mlir/_mlir_libs",
+    "ptoas.mlir._mlir_libs._site_initialize_0": "mlir/_mlir_libs",
+}
 
 _ensure_lock = threading.Lock()
 _ensured_module = None
+
+_preload_lock = threading.Lock()
+_preloaded = False
+
+_finder_lock = threading.Lock()
+_finder_installed = False
 
 
 def _package_dir() -> Path:
     return Path(__file__).parent.resolve()
 
 
-def _find_dso(pkg_dir: Path) -> Optional[Path]:
+def _find_dsos(pkg_dir: Path) -> List[Path]:
+    """Locate the shipped shared DSOs (one per stem, first hit wins)."""
     candidates = [pkg_dir, pkg_dir / "mlir" / "_mlir_libs"]
     exts = (".so", ".dylib")
-    for cand in candidates:
-        if not cand.is_dir():
-            continue
-        for stem in _DSO_STEMS:
-            for ext in exts:
-                f = cand / f"{stem}{ext}"
-                if f.exists():
-                    return f
+    found: List[Path] = []
+    for stem in _DSO_STEMS:
+        for cand in candidates:
+            if not cand.is_dir():
+                continue
+            hit = next((cand / f"{stem}{ext}" for ext in exts if (cand / f"{stem}{ext}").exists()), None)
+            if hit is not None:
+                found.append(hit)
+                break
+    return found
+
+
+def preload_shared_libs():
+    """Preload the shipped, Python-independent DSOs with RTLD_GLOBAL (once)."""
+    global _preloaded
+    if _preloaded:
+        return
+    with _preload_lock:
+        if _preloaded:
+            return
+        for dso in _find_dsos(_package_dir()):
+            try:
+                ctypes.CDLL(str(dso), mode=ctypes.RTLD_GLOBAL)
+            except OSError as e:
+                _log.warning("Failed to preload %s: %s", dso, e)
+        _preloaded = True
+
+
+def _find_prebuilt(fullname: str) -> Optional[Path]:
+    """Return the in-package prebuilt extension for ``fullname`` if its ABI
+    suffix matches this interpreter, else ``None``."""
+    base = _package_dir() / _MEMBER_PKG_SUBDIR[fullname]
+    stem = fullname.rsplit(".", 1)[1]
+    for suffix in importlib.machinery.EXTENSION_SUFFIXES:
+        cand = base / f"{stem}{suffix}"
+        if cand.exists():
+            return cand
     return None
 
 
-def _load_shared_libs():
-    """Preload the shipped, Python-independent DSO with RTLD_GLOBAL."""
-    dso = _find_dso(_package_dir())
-    if dso is None:
-        _log.debug("libPTOASCompiler DSO not found for preload; relying on rpath")
+class _OnlineExtensionFinder:
+    """meta_path finder serving the version-sensitive native extensions.
+
+    For each of the four EMBED_CAPI pybind11 extensions it returns the prebuilt
+    in-package binary when the ABI suffix matches this interpreter, otherwise it
+    triggers a one-shot online CMake build of the whole family and serves the
+    freshly built binary from the build cache.
+    """
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname not in _MEMBER_PKG_SUBDIR:
+            return None
+        so = _find_prebuilt(fullname)
+        if so is None:
+            preload_shared_libs()
+            from ._build_online import get_or_build_member
+
+            so = get_or_build_member(fullname)
+        loader = importlib.machinery.ExtensionFileLoader(fullname, str(so))
+        return importlib.util.spec_from_file_location(fullname, str(so), loader=loader)
+
+
+def install_online_finder():
+    """Install the online-extension finder at the front of ``sys.meta_path``."""
+    global _finder_installed
+    if _finder_installed:
         return
-    try:
-        ctypes.CDLL(str(dso), mode=ctypes.RTLD_GLOBAL)
-    except OSError as e:
-        _log.warning("Failed to preload %s: %s", dso, e)
+    with _finder_lock:
+        if _finder_installed:
+            return
+        sys.meta_path.insert(0, _OnlineExtensionFinder())
+        _finder_installed = True
 
 
 def ensure_core():
@@ -78,20 +157,11 @@ def ensure_core():
         if _ensured_module is not None:
             return _ensured_module
 
-        _load_shared_libs()
-        try:
-            import ptoas._core as core  # prebuilt abi3 fast path
+        preload_shared_libs()
+        install_online_finder()
+        # The finder serves the prebuilt binary on a matching interpreter, or an
+        # online-compiled one otherwise; a genuinely broken install raises here.
+        import ptoas._core as core
 
-            _ensured_module = core
-            return core
-        except ImportError as fast_path_error:
-            _log.info(
-                "Prebuilt ptoas._core unavailable for this interpreter (%s); "
-                "falling back to online compilation.",
-                fast_path_error,
-            )
-
-        from ._build_online import get_or_build_core
-
-        _ensured_module = get_or_build_core()
-        return _ensured_module
+        _ensured_module = core
+        return core

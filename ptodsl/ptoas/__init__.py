@@ -8,9 +8,16 @@
 
 """Python package for the PTOAS command-line interface."""
 
-from ._loader import ensure_core
+from ._loader import ensure_core, install_online_finder, preload_shared_libs
 
-# Acquire the native ``_core`` extension: the prebuilt abi3 module on a matching
-# interpreter, or an online-compiled build otherwise. This registers
+# Preload the shipped, Python-independent DSOs and install the meta path finder
+# that serves the four version-sensitive native extensions (``_core`` plus the
+# ``ptoas.mlir`` pybind11 family). This must run before any ``import
+# ptoas.mlir.*`` so a mismatching interpreter transparently online-compiles them.
+preload_shared_libs()
+install_online_finder()
+
+# Acquire the native ``_core`` extension eagerly: the prebuilt binary on a
+# matching interpreter, or an online-compiled build otherwise. This registers
 # ``sys.modules['ptoas._core']`` so ``from ptoas import _core`` works uniformly.
 ensure_core()

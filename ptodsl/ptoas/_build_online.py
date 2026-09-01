@@ -8,24 +8,32 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 # -----------------------------------------------------------------------------------------------------------
-"""Online-compilation infrastructure for the ``ptoas._core`` pybind11 extension.
+"""Online-compilation infrastructure for the version-sensitive pybind11 extensions.
 
-This module must NOT import ``ptoas._core`` (or anything that depends on it) so
-that it stays importable when no matching ``_core`` binary exists yet: its whole
-job is to produce one. The Python-version-independent ``libPTOASCompiler`` DSO is
-shipped prebuilt inside the wheel; only the version-sensitive ``_core`` extension
-is (re)compiled here against the shipped C-API-only source + header closure under
-``ptoas/_online/``.
+The Python-version-independent ``libPTOASCompiler`` DSO is shipped prebuilt in the
+wheel. The version-sensitive pybind11 extensions cannot be abi3 (pybind11 is
+interpreter-specific), so on an interpreter that does not match the prebuilt ABI
+they are (re)compiled here from the shipped sources + header closure under
+``ptoas/_online/`` and cached.
+
+A single online CMake invocation builds every version-sensitive extension at once:
+
+  * ``ptoas._core``                                 -> package root
+  * ``ptoas.mlir._mlir_libs._mlir``                 -> ``mlir/_mlir_libs``
+  * ``ptoas.mlir._mlir_libs._mlirDialectsLLVM``     -> ``mlir/_mlir_libs``
+  * ``ptoas.mlir._mlir_libs._site_initialize_0``    -> ``mlir/_mlir_libs``
+
+This module must NOT import any of those native modules (its whole job is to
+produce them). Loading the freshly built binaries is the meta path finder's job
+(see ``_loader``); here we only compile and locate the ``.so`` files.
 """
 
 import dataclasses
 import fcntl
 import importlib.machinery
-import importlib.util
 import logging
 import os
 from pathlib import Path
-import re
 import shlex
 import shutil
 import subprocess
@@ -34,13 +42,39 @@ import sysconfig
 import tempfile
 import threading
 import time
-from typing import Callable, List, Optional, Tuple
+from typing import Optional, Tuple
 
 _log = logging.getLogger(__name__)
 
-_MODULE_NAME = "_core"
 _QUALIFIED_MODULE = "ptoas._core"
 _DSO_STEMS = ("libPTOASCompiler",)
+
+
+@dataclasses.dataclass(frozen=True)
+class _MemberSpec:
+    """A version-sensitive native extension produced by the online build.
+
+    ``stem`` is the module base name (e.g. ``_mlir``); ``subdir`` is the install
+    location relative to both the package dir and the online build's install
+    prefix (``.`` for the package root, ``mlir/_mlir_libs`` for the family).
+    """
+
+    stem: str
+    subdir: str
+
+
+# All native modules served by online compilation. A single CMake invocation
+# (ptoas/_online/CMakeLists.txt) produces every one of them.
+_MEMBERS = {
+    "ptoas._core": _MemberSpec("_core", "."),
+    "ptoas.mlir._mlir_libs._mlir": _MemberSpec("_mlir", "mlir/_mlir_libs"),
+    "ptoas.mlir._mlir_libs._mlirDialectsLLVM": _MemberSpec(
+        "_mlirDialectsLLVM", "mlir/_mlir_libs"
+    ),
+    "ptoas.mlir._mlir_libs._site_initialize_0": _MemberSpec(
+        "_site_initialize_0", "mlir/_mlir_libs"
+    ),
+}
 
 
 def _package_dir() -> Path:
@@ -51,8 +85,8 @@ def _package_dir() -> Path:
 def _find_shipped_lib_dir(pkg_dir: Path) -> Optional[Path]:
     """Locate the directory holding libPTOASCompiler.{so,dylib}.
 
-    The DSO is installed alongside the prebuilt ``_core`` (package dir) with the
-    MLIR shared libs; probe the package dir and the standard MLIR libs subdir.
+    The DSO is installed alongside the prebuilt extensions with the MLIR shared
+    libs; probe the package dir and the standard MLIR libs subdir.
     """
     candidates = [pkg_dir, pkg_dir / "mlir" / "_mlir_libs"]
     exts = (".so", ".dylib")
@@ -160,6 +194,8 @@ class _PythonContext:
             raise RuntimeError(
                 "pybind11 pip package not found.\nHint: install it with `pip install pybind11>=2.13.6`."
             ) from e
+        import re
+
         ver_match = re.match(r"(\d+)\.(\d+)\.(\d+)", pybind11.__version__)
         if not ver_match:
             raise RuntimeError(
@@ -179,11 +215,13 @@ class _PythonContext:
 
 
 class BuildOnlineCoreManager:
-    """Process-wide singleton that (re)builds and loads ``ptoas._core``.
+    """Process-wide singleton that (re)builds the online pybind11 extensions.
 
-    Fast path callers should try ``import ptoas._core`` first; this manager is
-    the fallback taken on ImportError (interpreter/ABI mismatch against the
-    prebuilt abi3 module).
+    Fast-path callers should let the meta path finder in ``_loader`` serve the
+    prebuilt in-package binary; this manager is the fallback taken on an ABI
+    mismatch. ``get_member_so`` compiles the whole family once (guarded by a
+    cross-thread lock and a cross-process flock) and returns the requested
+    member's ``.so`` from the build cache.
     """
 
     _instances: dict = {}
@@ -209,36 +247,40 @@ class BuildOnlineCoreManager:
         except Exception:
             self.version = ""
         self._online_dir: Path = self.pkg_dir / "_online"
-        self._loaded_module = None
         self._cache_dir_value: Optional[Path] = None
         ver_info = sys.version_info
-        self._lock_name: str = f".ptoas_core_build.cp{ver_info.major}{ver_info.minor}.lock"
+        self._lock_name: str = f".ptoas_online_build.cp{ver_info.major}{ver_info.minor}.lock"
         self._initialized = True
 
     # -- public entry ------------------------------------------------------
 
-    def get_or_build(self):
-        """Return the loaded ``_core`` module, compiling it if necessary."""
-        if self._loaded_module is not None:
-            return self._loaded_module
+    def get_member_so(self, fullname: str) -> Path:
+        """Return a loadable ``.so`` for ``fullname``, compiling if necessary."""
+        spec = _MEMBERS[fullname]
+        so = self._find_member_so(spec, self._cache_dir())
+        if so is not None:
+            return so
         with self._compile_lock:
-            if self._loaded_module is not None:
-                return self._loaded_module
-            self._ensure_core_locked()
-        return self._loaded_module
+            so = self._find_member_so(spec, self._cache_dir())
+            if so is not None:
+                return so
+            self._ensure_compiled_locked()
+            so = self._find_member_so(spec, self._cache_dir())
+            if so is None:
+                raise RuntimeError(
+                    f"Online compilation finished but {spec.stem} not found.\n"
+                    f"Cache directory: {self._cache_dir()} (subdir {spec.subdir!r})\n"
+                    f"Searched suffixes: {importlib.machinery.EXTENSION_SUFFIXES}"
+                )
+            return so
 
-    # -- core state machine ------------------------------------------------
+    # -- compile state machine (called holding self._compile_lock) ---------
 
-    def _ensure_core_locked(self):
-        found, so_path = self._find_core_so(cache_dir=self._cache_dir())
-        if found:
-            self._load_from_cache(so_path=so_path)
-            return
-
+    def _ensure_compiled_locked(self):
         if not self._online_dir.exists():
             raise RuntimeError(
-                "ptoas._core is unavailable for this interpreter and no online "
-                f"sources were shipped (expected {self._online_dir}).\n"
+                "The version-sensitive extensions are unavailable for this "
+                f"interpreter and no online sources were shipped (expected {self._online_dir}).\n"
                 "Hint: install a wheel built with PTOAS_ENABLE_ONLINE_CORE_COMPILE=ON, "
                 "or use the matching prebuilt interpreter."
             )
@@ -253,17 +295,9 @@ class BuildOnlineCoreManager:
         try:
             lock_fd = open(lock_path, "w")
             if self._try_acquire_lock(lock_fd):
-                so_path = self._do_compile(target_dir=target_dir)
+                self._compile_into(target_dir)
             else:
-                so_path = self._wait_and_compile(lock_fd, target_dir, lock_path)
-
-            if so_path is None:
-                raise RuntimeError(
-                    "Online compilation succeeded but _core not found in install output.\n"
-                    f"Target directory: {target_dir}\n"
-                    f"Searched suffixes: {importlib.machinery.EXTENSION_SUFFIXES}"
-                )
-            self._load_from_cache(so_path=so_path)
+                self._wait_and_compile(lock_fd, target_dir, lock_path)
         finally:
             # Unlink while still holding the lock to avoid an inode-reuse race
             # (see the pypto original for the detailed reasoning).
@@ -278,9 +312,7 @@ class BuildOnlineCoreManager:
                     pass
                 lock_fd.close()
 
-    def _poll_until(
-        self, predicate: Callable[[], bool], timeout: Optional[float] = None, interval: float = 1.0
-    ) -> bool:
+    def _poll_until(self, predicate, timeout: Optional[float] = None, interval: float = 1.0) -> bool:
         if timeout is None:
             timeout = self._FLOCK_TIMEOUT
         deadline = time.monotonic() + timeout
@@ -301,11 +333,7 @@ class BuildOnlineCoreManager:
         if not self._poll_until(lambda: not lock_path.exists()):
             _log.warning("Timeout waiting for pkg_dir compilation")
             return False
-        found, so_path = self._find_core_so()
-        if found:
-            self._load_from_cache(so_path=so_path)
-            return True
-        return False
+        return self._all_members_present(self.pkg_dir)
 
     def _try_acquire_lock(self, lock_fd) -> bool:
         try:
@@ -314,18 +342,18 @@ class BuildOnlineCoreManager:
         except BlockingIOError:
             return False
 
-    def _wait_and_compile(self, lock_fd, target_dir: Path, lock_path: Path) -> Optional[Path]:
+    def _wait_and_compile(self, lock_fd, target_dir: Path, lock_path: Path):
         _log.info("Waiting for compilation by another process (lock: %s)...", lock_path)
         if self._poll_until(lambda: self._try_acquire_lock(lock_fd)):
             _log.info("Acquired compilation lock after waiting")
-            found, so_path = self._find_core_so(cache_dir=target_dir)
-            if found:
-                return so_path
-            return self._do_compile(target_dir=target_dir)
+            if self._all_members_present(target_dir):
+                return
+            self._compile_into(target_dir)
+            return
         _log.warning("Timeout waiting for compilation lock, will compile independently")
-        return self._do_compile(target_dir=target_dir)
+        self._compile_into(target_dir)
 
-    def _do_compile(self, target_dir: Path) -> Optional[Path]:
+    def _compile_into(self, target_dir: Path):
         pyenv_ctx = _PythonContext()
         cmake_ctx = _CMakeContext()
 
@@ -336,7 +364,7 @@ class BuildOnlineCoreManager:
                 f"{self.pkg_dir}; the wheel appears to be incomplete."
             )
 
-        with tempfile.TemporaryDirectory(prefix=f".ptoas_core_build.{os.getpid()}.") as tmp_dir:
+        with tempfile.TemporaryDirectory(prefix=f".ptoas_online_build.{os.getpid()}.") as tmp_dir:
             ext = f"-DPython3_EXECUTABLE={sys.executable}"
             ext += f" -DPython3_EXECUTABLE_VERSION=3.{pyenv_ctx.minor}"
             ext += f" -DPython3_MOD_PYBIND11_CMAKE_DIR={pyenv_ctx.pybind11_cmake_dir}"
@@ -349,9 +377,7 @@ class BuildOnlineCoreManager:
             )
             cmake_ctx.compile(ctx=compile_ctx)
 
-        _log.info("Compiled and installed _core to %s", target_dir)
-        found, so_path = self._find_core_so(cache_dir=target_dir)
-        return so_path if found else None
+        _log.info("Compiled and installed online extensions to %s", target_dir)
 
     # -- cache dir + discovery --------------------------------------------
 
@@ -389,38 +415,33 @@ class BuildOnlineCoreManager:
         cache_dir.mkdir(parents=True, exist_ok=True)
         return cache_dir
 
-    def _find_core_so(self, cache_dir: Optional[Path] = None) -> Tuple[bool, Optional[Path]]:
-        search_dirs: List[Path] = [self.pkg_dir]
+    def _member_in_dir(self, spec: _MemberSpec, base_dir: Path) -> Optional[Path]:
+        d = base_dir / spec.subdir
+        for suffix in importlib.machinery.EXTENSION_SUFFIXES:
+            cand = d / f"{spec.stem}{suffix}"
+            if cand.exists():
+                return cand
+        return None
+
+    def _find_member_so(self, spec: _MemberSpec, cache_dir: Optional[Path] = None) -> Optional[Path]:
+        found = self._member_in_dir(spec, self.pkg_dir)
+        if found is not None:
+            return found
         if cache_dir is not None and cache_dir != self.pkg_dir:
-            search_dirs.append(cache_dir)
-        for d in search_dirs:
-            for suffix in importlib.machinery.EXTENSION_SUFFIXES:
-                so_path = d / f"{_MODULE_NAME}{suffix}"
-                if so_path.exists():
-                    _log.info("Found _core: %s", so_path)
-                    return True, so_path
+            return self._member_in_dir(spec, cache_dir)
+        return None
+
+    def _all_members_present(self, base_dir: Path) -> bool:
+        return all(self._member_in_dir(spec, base_dir) is not None for spec in _MEMBERS.values())
+
+    def _find_core_so(self, cache_dir: Optional[Path] = None) -> Tuple[bool, Optional[Path]]:
+        so = self._find_member_so(_MEMBERS[_QUALIFIED_MODULE], cache_dir)
+        if so is not None:
+            _log.info("Found _core: %s", so)
+            return True, so
         return False, None
 
-    def _load_from_cache(self, so_path: Path):
-        if _QUALIFIED_MODULE in sys.modules:
-            self._loaded_module = sys.modules[_QUALIFIED_MODULE]
-            return
 
-        spec = importlib.util.spec_from_file_location(_QUALIFIED_MODULE, so_path)
-        if spec is None or spec.loader is None:
-            raise RuntimeError(f"Failed to create import spec for {so_path}")
-
-        module = importlib.util.module_from_spec(spec)
-        # Register BEFORE exec_module: pybind11 module init may re-enter import.
-        sys.modules[_QUALIFIED_MODULE] = module
-        import ptoas
-
-        setattr(ptoas, _MODULE_NAME, module)
-
-        spec.loader.exec_module(module)
-        _log.info("Loaded _core from %s", so_path)
-        self._loaded_module = module
-
-
-def get_or_build_core():
-    return BuildOnlineCoreManager().get_or_build()
+def get_or_build_member(fullname: str) -> Path:
+    """Return a loadable ``.so`` path for ``fullname`` (compiling if needed)."""
+    return BuildOnlineCoreManager().get_member_so(fullname)
