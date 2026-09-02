@@ -66,6 +66,31 @@ def _package_dir() -> Path:
     return Path(__file__).parent.resolve()
 
 
+def _probe_in_pkg(stem: str, dirs: List[Path], exts) -> Optional[Path]:
+    """First unmangled ``{stem}{ext}`` under any in-package dir, else ``None``."""
+    for cand in dirs:
+        if not cand.is_dir():
+            continue
+        hit = next((cand / f"{stem}{ext}" for ext in exts if (cand / f"{stem}{ext}").exists()), None)
+        if hit is not None:
+            return hit
+    return None
+
+
+def _probe_relocated(stem: str, dirs: List[Path]) -> Optional[Path]:
+    """First hash-mangled ``{stem}*`` under a wheel-repair relocation dir."""
+    for cand in dirs:
+        if not cand.is_dir():
+            continue
+        globbed = next(
+            (p for pattern in (f"{stem}*.so*", f"{stem}*.dylib") for p in sorted(cand.glob(pattern))),
+            None,
+        )
+        if globbed is not None:
+            return globbed
+    return None
+
+
 def _find_dsos(pkg_dir: Path) -> List[Path]:
     """Locate the shipped shared DSOs (one per stem, first hit wins).
 
@@ -80,24 +105,7 @@ def _find_dsos(pkg_dir: Path) -> List[Path]:
     exts = (".so", ".dylib")
     found: List[Path] = []
     for stem in _DSO_STEMS:
-        hit: Optional[Path] = None
-        for cand in in_pkg:
-            if not cand.is_dir():
-                continue
-            hit = next((cand / f"{stem}{ext}" for ext in exts if (cand / f"{stem}{ext}").exists()), None)
-            if hit is not None:
-                break
-        if hit is None:
-            for cand in relocated:
-                if not cand.is_dir():
-                    continue
-                globbed = next(
-                    (p for pattern in (f"{stem}*.so*", f"{stem}*.dylib") for p in sorted(cand.glob(pattern))),
-                    None,
-                )
-                if globbed is not None:
-                    hit = globbed
-                    break
+        hit = _probe_in_pkg(stem, in_pkg, exts) or _probe_relocated(stem, relocated)
         if hit is not None:
             found.append(hit)
     return found

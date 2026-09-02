@@ -93,10 +93,8 @@ def _find_shipped_lib_dir(pkg_dir: Path) -> Optional[Path]:
     for cand in candidates:
         if not cand.is_dir():
             continue
-        for stem in _DSO_STEMS:
-            for ext in exts:
-                if (cand / f"{stem}{ext}").exists():
-                    return cand
+        if any((cand / f"{stem}{ext}").exists() for stem in _DSO_STEMS for ext in exts):
+            return cand
     return None
 
 
@@ -368,7 +366,8 @@ class BuildOnlineCoreManager:
             return False
         return self._all_members_present(self.pkg_dir)
 
-    def _try_acquire_lock(self, lock_fd) -> bool:
+    @staticmethod
+    def _try_acquire_lock(lock_fd) -> bool:
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return True
