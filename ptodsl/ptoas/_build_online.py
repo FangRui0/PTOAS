@@ -283,6 +283,25 @@ class BuildOnlineCoreManager:
         self._lock_name: str = f".ptoas_online_build.cp{ver_info.major}{ver_info.minor}.lock"
         self._initialized = True
 
+    # -- stateless helpers -------------------------------------------------
+
+    @staticmethod
+    def _try_acquire_lock(lock_fd) -> bool:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            return False
+
+    @staticmethod
+    def _member_in_dir(spec: _MemberSpec, base_dir: Path) -> Optional[Path]:
+        d = base_dir / spec.subdir
+        for suffix in importlib.machinery.EXTENSION_SUFFIXES:
+            cand = d / f"{spec.stem}{suffix}"
+            if cand.exists():
+                return cand
+        return None
+
     # -- public entry ------------------------------------------------------
 
     def get_member_so(self, fullname: str) -> Path:
@@ -366,14 +385,6 @@ class BuildOnlineCoreManager:
             return False
         return self._all_members_present(self.pkg_dir)
 
-    @staticmethod
-    def _try_acquire_lock(lock_fd) -> bool:
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return True
-        except BlockingIOError:
-            return False
-
     def _wait_and_compile(self, lock_fd, target_dir: Path, lock_path: Path):
         _log.info("Waiting for compilation by another process (lock: %s)...", lock_path)
         if self._poll_until(lambda: self._try_acquire_lock(lock_fd)):
@@ -451,14 +462,6 @@ class BuildOnlineCoreManager:
             cache_dir = cache_dir / self.version
         cache_dir.mkdir(parents=True, exist_ok=True)
         return cache_dir
-
-    def _member_in_dir(self, spec: _MemberSpec, base_dir: Path) -> Optional[Path]:
-        d = base_dir / spec.subdir
-        for suffix in importlib.machinery.EXTENSION_SUFFIXES:
-            cand = d / f"{spec.stem}{suffix}"
-            if cand.exists():
-                return cand
-        return None
 
     def _find_member_so(self, spec: _MemberSpec, cache_dir: Optional[Path] = None) -> Optional[Path]:
         found = self._member_in_dir(spec, self.pkg_dir)

@@ -148,7 +148,8 @@ class _OnlineExtensionFinder:
     freshly built binary from the build cache.
     """
 
-    def find_spec(self, fullname, path=None, target=None):
+    @staticmethod
+    def find_spec(fullname, path=None, target=None):
         if fullname not in _MEMBER_PKG_SUBDIR:
             return None
         so = _find_prebuilt(fullname)
