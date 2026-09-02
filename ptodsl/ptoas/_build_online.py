@@ -100,6 +100,39 @@ def _find_shipped_lib_dir(pkg_dir: Path) -> Optional[Path]:
     return None
 
 
+def _find_shipped_llvmsupport(pkg_dir: Path) -> Optional[Path]:
+    """Return the full path to the shipped shared libLLVMSupport, or ``None``.
+
+    The family extensions link LLVMSupport, but a name-based ``-lLLVMSupport``
+    breaks once ``auditwheel``/``delocate`` relocates and hash-mangles the
+    external DSO out of the package into a sibling ``ptoas.libs`` / ``.dylibs``
+    dir (e.g. ``libLLVMSupport-<hash>.so.19.1``). Discover the real file so the
+    online build can link it by full path. Probe, in order: the in-package MLIR
+    libs dir and package root (unmangled, e.g. an editable build), then the
+    relocation dirs with a glob (mangled).
+    """
+    exact = [
+        pkg_dir / "mlir" / "_mlir_libs" / "libLLVMSupport.so",
+        pkg_dir / "mlir" / "_mlir_libs" / "libLLVMSupport.dylib",
+        pkg_dir / "libLLVMSupport.so",
+        pkg_dir / "libLLVMSupport.dylib",
+    ]
+    for cand in exact:
+        if cand.exists():
+            return cand
+    # auditwheel (Linux) -> <dist>.libs next to the package; delocate (macOS) ->
+    # <pkg>/.dylibs. Names are hash-mangled, so glob.
+    glob_dirs = [pkg_dir.parent / "ptoas.libs", pkg_dir / ".dylibs"]
+    for d in glob_dirs:
+        if not d.is_dir():
+            continue
+        for pattern in ("libLLVMSupport*.so*", "libLLVMSupport*.dylib"):
+            hits = sorted(d.glob(pattern))
+            if hits:
+                return hits[0]
+    return None
+
+
 class _CMakeContext:
     """Locate cmake and drive its configure/build/install phases."""
 
@@ -369,6 +402,11 @@ class BuildOnlineCoreManager:
             ext += f" -DPython3_EXECUTABLE_VERSION=3.{pyenv_ctx.minor}"
             ext += f" -DPython3_MOD_PYBIND11_CMAKE_DIR={pyenv_ctx.pybind11_cmake_dir}"
             ext += f" -DPTOAS_SHIPPED_LIB_DIR={shipped_lib_dir}"
+            # The family extensions link libLLVMSupport by full path because
+            # auditwheel/delocate hash-mangle the relocated DSO's name.
+            llvmsupport = _find_shipped_llvmsupport(self.pkg_dir)
+            if llvmsupport is not None:
+                ext += f" -DPTOAS_LLVMSUPPORT_LIB={llvmsupport}"
             compile_ctx = _CMakeContext.CompileContext(
                 src_dir=self._online_dir,
                 tmp_dir=Path(tmp_dir),

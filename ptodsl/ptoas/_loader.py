@@ -36,11 +36,12 @@ _log = logging.getLogger(__name__)
 
 _QUALIFIED_MODULE = "ptoas._core"
 
-# Shared, Python-independent DSOs to preload with RTLD_GLOBAL. libLLVMSupport is
-# only present in wheels built with the online family option (shared LLVM); it is
-# absent on a plain prebuilt build, where the extensions find it via their own
+# Shared, Python-independent DSOs to preload with RTLD_GLOBAL, low-level first
+# so their symbols land in the global scope before dependents load. libLLVMSupport
+# is only present in wheels built with the online family option (shared LLVM); it
+# is absent on a plain prebuilt build, where the extensions find it via their own
 # rpath. Preload is therefore best-effort per stem.
-_DSO_STEMS = ("libPTOASCompiler", "libLLVMSupport")
+_DSO_STEMS = ("libLLVMSupport", "libPTOASCompiler")
 
 # The native modules intercepted by the meta path finder, mapped to their
 # in-package location relative to the ``ptoas`` package dir.
@@ -66,18 +67,39 @@ def _package_dir() -> Path:
 
 
 def _find_dsos(pkg_dir: Path) -> List[Path]:
-    """Locate the shipped shared DSOs (one per stem, first hit wins)."""
-    candidates = [pkg_dir, pkg_dir / "mlir" / "_mlir_libs"]
+    """Locate the shipped shared DSOs (one per stem, first hit wins).
+
+    Probe the in-package dirs first (unmangled names, e.g. an editable build),
+    then the relocation dirs a wheel repair tool moves external DSOs into
+    (``auditwheel`` -> ``<dist>.libs``; ``delocate`` -> ``<pkg>/.dylibs``), where
+    the file is hash-mangled (e.g. ``libLLVMSupport-<hash>.so.19.1``) and must be
+    matched by glob.
+    """
+    in_pkg = [pkg_dir, pkg_dir / "mlir" / "_mlir_libs"]
+    relocated = [pkg_dir.parent / "ptoas.libs", pkg_dir / ".dylibs"]
     exts = (".so", ".dylib")
     found: List[Path] = []
     for stem in _DSO_STEMS:
-        for cand in candidates:
+        hit: Optional[Path] = None
+        for cand in in_pkg:
             if not cand.is_dir():
                 continue
             hit = next((cand / f"{stem}{ext}" for ext in exts if (cand / f"{stem}{ext}").exists()), None)
             if hit is not None:
-                found.append(hit)
                 break
+        if hit is None:
+            for cand in relocated:
+                if not cand.is_dir():
+                    continue
+                globbed = next(
+                    (p for pattern in (f"{stem}*.so*", f"{stem}*.dylib") for p in sorted(cand.glob(pattern))),
+                    None,
+                )
+                if globbed is not None:
+                    hit = globbed
+                    break
+        if hit is not None:
+            found.append(hit)
     return found
 
 

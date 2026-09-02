@@ -38,6 +38,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
 
+# The shipped LLVM/MLIR stack is built with the old libstdc++ ABI
+# (_GLIBCXX_USE_CXX11_ABI=0; enforced by build.sh's llvm_build_is_abi_compatible).
+# Online-compiled extensions MUST match it: with the default cxx11 ABI they
+# demand cxx11-tagged symbols (e.g. llvm::Twine::str[abi:cxx11]) that the
+# shipped libLLVMSupport does not export, failing to load with an undefined
+# symbol. Harmless where libc++ is used (macOS ignores the macro).
+set(PTOAS_ONLINE_GLIBCXX_ABI "0" CACHE STRING
+  "libstdc++ dual-ABI selector for online-compiled extensions")
+add_compile_definitions(_GLIBCXX_USE_CXX11_ABI=${PTOAS_ONLINE_GLIBCXX_ABI})
+
 find_package(Python3 ${Python3_EXECUTABLE_VERSION} EXACT REQUIRED
   COMPONENTS Interpreter Development.Module)
 find_package(pybind11 CONFIG REQUIRED
@@ -117,10 +127,18 @@ foreach(_ptoas_family_tgt _mlir _mlirDialectsLLVM _site_initialize_0)
     ${CMAKE_CURRENT_SOURCE_DIR}/mlir_include)
 
   # Link the shipped Python-independent DSO (project C-API) plus the shared
-  # LLVMSupport that ships next to it; both live in PTOAS_SHIPPED_LIB_DIR's
-  # mlir/_mlir_libs, which is also where these extensions install.
+  # LLVMSupport that ships next to it. auditwheel relocates + hash-mangles the
+  # external libLLVMSupport into the sibling `.libs` dir (e.g.
+  # libLLVMSupport-<hash>.so.19.1), so a name-based `-lLLVMSupport` cannot find
+  # it. The Python driver discovers the real file and passes its full path via
+  # PTOAS_LLVMSUPPORT_LIB; fall back to the plain name for an unmangled,
+  # in-place libLLVMSupport (e.g. a non-auditwheel editable build).
   target_link_directories(${_ptoas_family_tgt} PRIVATE ${PTOAS_SHIPPED_LIB_DIR})
-  target_link_libraries(${_ptoas_family_tgt} PRIVATE PTOASCompiler LLVMSupport)
+  if(PTOAS_LLVMSUPPORT_LIB)
+    target_link_libraries(${_ptoas_family_tgt} PRIVATE PTOASCompiler ${PTOAS_LLVMSUPPORT_LIB})
+  else()
+    target_link_libraries(${_ptoas_family_tgt} PRIVATE PTOASCompiler LLVMSupport)
+  endif()
 
   if(APPLE)
     set_target_properties(${_ptoas_family_tgt} PROPERTIES INSTALL_RPATH
