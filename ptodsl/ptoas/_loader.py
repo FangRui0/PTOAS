@@ -143,9 +143,11 @@ class _OnlineExtensionFinder:
     """meta_path finder serving the version-sensitive native extensions.
 
     For each of the four EMBED_CAPI pybind11 extensions it returns the prebuilt
-    in-package binary when the ABI suffix matches this interpreter, otherwise it
-    triggers a one-shot online CMake build of the whole family and serves the
-    freshly built binary from the build cache.
+    in-package binary when the ABI suffix matches this interpreter. On a
+    mismatch it triggers a one-shot online CMake build of the requested group
+    only when online sources were shipped (``_online`` present); otherwise it
+    returns ``None`` and defers to the rest of ``sys.meta_path`` (e.g. an
+    editable scikit-build-core install's own finder).
     """
 
     @staticmethod
@@ -154,6 +156,15 @@ class _OnlineExtensionFinder:
             return None
         so = _find_prebuilt(fullname)
         if so is None:
+            # No in-package prebuilt matches this interpreter's ABI. Only take
+            # over the import when online sources were actually shipped (a
+            # prebuilt wheel built with PTOAS_ENABLE_ONLINE_CORE_COMPILE=ON);
+            # otherwise stay transparent and defer to the rest of
+            # sys.meta_path. That lets an editable scikit-build-core install
+            # resolve the extension from its own build/redirect finder instead
+            # of hitting a spurious "no online sources shipped" error.
+            if not (_package_dir() / "_online").is_dir():
+                return None
             preload_shared_libs()
             from ._build_online import get_or_build_member
 
