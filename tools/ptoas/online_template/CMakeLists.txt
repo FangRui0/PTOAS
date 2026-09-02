@@ -100,7 +100,10 @@ else()
     "$ORIGIN;$ORIGIN/mlir/_mlir_libs")
 endif()
 
-install(TARGETS _core LIBRARY DESTINATION ".")
+# COMPONENT core so the Python driver can build+install ONLY _core for a
+# CLI-only request, decoupled from the ptoas.mlir family (which may fail to
+# compile against an incompatible pybind11 while _core compiles fine).
+install(TARGETS _core LIBRARY DESTINATION "." COMPONENT core)
 
 # ---------------------------------------------------------------------------
 # The `ptoas.mlir` pybind11 family. These are the genuine upstream MLIR
@@ -169,5 +172,7 @@ foreach(_ptoas_family_tgt _mlir _mlirDialectsLLVM _site_initialize_0)
   endif()
 
   # The family extensions live in ptoas/mlir/_mlir_libs/ inside the package.
-  install(TARGETS ${_ptoas_family_tgt} LIBRARY DESTINATION "mlir/_mlir_libs")
+  # COMPONENT family so the driver builds+installs the whole family in one
+  # selective step, independent of the _core (CLI) component.
+  install(TARGETS ${_ptoas_family_tgt} LIBRARY DESTINATION "mlir/_mlir_libs" COMPONENT family)
 endforeach()

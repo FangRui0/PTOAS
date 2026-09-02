@@ -77,6 +77,56 @@ _MEMBERS = {
 }
 
 
+@dataclasses.dataclass(frozen=True)
+class _BuildGroup:
+    """A set of native extensions compiled and installed together.
+
+    The online CMake project configures every target, but each build request
+    only builds+installs the group it needs (``cmake --build --target`` +
+    ``cmake --install --component``). This decouples the CLI's ``_core`` build
+    from the ``ptoas.mlir`` family build: ``_core`` compiles cleanly against any
+    supported pybind11, whereas the family fails against pybind11 >= 3.0.2 (its
+    upstream bindings use ``def_property`` + ``keep_alive``). Building them
+    separately keeps a ``_core``-only request from being aborted by a family
+    compile error, and lets the family failure surface as the actionable
+    pybind11 gate (see ``_PythonContext``) instead of a raw C++ static_assert.
+    Note the CLI still imports ``ptoas.mlir.ir`` at ``_core`` load time, so it
+    remains a runtime dependency of the family regardless of this build split.
+
+    ``members`` are the intercepted fullnames; ``targets`` the CMake target
+    names; ``component`` the install COMPONENT; ``requires_family_pybind11``
+    gates the family's stricter pybind11 upper bound.
+    """
+
+    members: Tuple[str, ...]
+    targets: Tuple[str, ...]
+    component: str
+    requires_family_pybind11: bool
+
+
+_CORE_GROUP = _BuildGroup(
+    members=("ptoas._core",),
+    targets=("_core",),
+    component="core",
+    requires_family_pybind11=False,
+)
+_FAMILY_GROUP = _BuildGroup(
+    members=(
+        "ptoas.mlir._mlir_libs._mlir",
+        "ptoas.mlir._mlir_libs._mlirDialectsLLVM",
+        "ptoas.mlir._mlir_libs._site_initialize_0",
+    ),
+    targets=("_mlir", "_mlirDialectsLLVM", "_site_initialize_0"),
+    component="family",
+    requires_family_pybind11=True,
+)
+
+
+def _group_for(fullname: str) -> _BuildGroup:
+    """Return the build group that produces ``fullname``."""
+    return _CORE_GROUP if fullname == _QUALIFIED_MODULE else _FAMILY_GROUP
+
+
 def _package_dir() -> Path:
     """Directory of the installed (or editable) ``ptoas`` package."""
     return Path(__file__).parent.resolve()
@@ -143,6 +193,8 @@ class _CMakeContext:
         build_type: str = "Release"
         build_job_num: int = 32
         capture_output: bool = True
+        build_targets: Tuple[str, ...] = ()
+        install_component: str = ""
 
         def run_cmd(self, cmd: str):
             ret = subprocess.run(
@@ -181,9 +233,15 @@ class _CMakeContext:
         cmd = f"{self.cmake} -S {ctx.src_dir} -B {build_dir} -DCMAKE_BUILD_TYPE={ctx.build_type}"
         cmd += f" -DCMAKE_INSTALL_PREFIX={ctx.install_prefix} {ctx.cfg_cmd_ext}"
         ctx.run_cmd(cmd=cmd)
-        cmd = f"{self.cmake} --build {build_dir}" + (f" -j {ctx.build_job_num}" if ctx.build_job_num else "")
+        cmd = f"{self.cmake} --build {build_dir}"
+        if ctx.build_targets:
+            cmd += " --target " + " ".join(ctx.build_targets)
+        if ctx.build_job_num:
+            cmd += f" -j {ctx.build_job_num}"
         ctx.run_cmd(cmd=cmd)
         cmd = f"{self.cmake} --install {build_dir} --prefix {ctx.install_prefix}"
+        if ctx.install_component:
+            cmd += f" --component {ctx.install_component}"
         ctx.run_cmd(cmd=cmd)
         return ctx.install_prefix
 
@@ -192,8 +250,15 @@ class _PythonContext:
     """Validate the target interpreter and locate its pybind11 cmake package."""
 
     _PYBIND11_MIN_VERSION = (2, 13, 6)
+    # pybind11 3.0.2 added a static_assert forbidding keep_alive on the
+    # def_property family. The upstream MLIR bindings (IRCore.cpp et al., staged
+    # into the family sources) rely on that pattern, so the family fails to
+    # compile against pybind11 >= 3.0.2. _core is unaffected. See
+    # gen_mlir_family_headers.sh / online_template for how the family is built.
+    _PYBIND11_KEEP_ALIVE_BROKEN = (3, 0, 2)
 
-    def __init__(self):
+    def __init__(self, require_family_pybind11: bool = False):
+        self.require_family_pybind11 = require_family_pybind11
         self.minor: int = 0
         self.pybind11_cmake_dir: Optional[Path] = None
         self._init_minor_version()
@@ -239,6 +304,18 @@ class _PythonContext:
                 f"pybind11 version {pybind11.__version__} is too old, require >= 2.13.6.\n"
                 "Hint: upgrade it with `pip install pybind11>=2.13.6`."
             )
+        if self.require_family_pybind11 and current_ver >= self._PYBIND11_KEEP_ALIVE_BROKEN:
+            raise RuntimeError(
+                f"pybind11 version {pybind11.__version__} is incompatible with the "
+                "ptoas.mlir Python bindings.\n"
+                "The upstream MLIR bindings use def_property + keep_alive, which "
+                "pybind11 >= 3.0.2 rejects at compile time (\"def_property family does "
+                "not currently support keep_alive\").\n"
+                "Hint: install a compatible pybind11 with `pip install 'pybind11>=2.13.6,<3'` "
+                "(or the last working 3.x, `pip install pybind11==3.0.1`).\n"
+                "Note: the ptoas CLI itself does NOT need these bindings and works on any "
+                "supported pybind11; this only affects the ptodsl / ptoas.mlir Python API."
+            )
         pybind11_dir = Path(pybind11.get_cmake_dir()).resolve()
         if not pybind11_dir or not pybind11_dir.exists():
             raise RuntimeError("pybind11 cmake dir empty.\nHint: install it with `pip install pybind11>=2.13.6`.")
@@ -280,7 +357,7 @@ class BuildOnlineCoreManager:
         self._online_dir: Path = self.pkg_dir / "_online"
         self._cache_dir_value: Optional[Path] = None
         ver_info = sys.version_info
-        self._lock_name: str = f".ptoas_online_build.cp{ver_info.major}{ver_info.minor}.lock"
+        self._lock_prefix: str = f".ptoas_online_build.cp{ver_info.major}{ver_info.minor}"
         self._initialized = True
 
     # -- stateless helpers -------------------------------------------------
@@ -302,19 +379,30 @@ class BuildOnlineCoreManager:
                 return cand
         return None
 
+    def _lock_name_for(self, group: _BuildGroup) -> str:
+        """Per-group flock filename so core and family builds don't block each other."""
+        return f"{self._lock_prefix}.{group.component}.lock"
+
     # -- public entry ------------------------------------------------------
 
     def get_member_so(self, fullname: str) -> Path:
-        """Return a loadable ``.so`` for ``fullname``, compiling if necessary."""
+        """Return a loadable ``.so`` for ``fullname``, compiling if necessary.
+
+        Only the build group that produces ``fullname`` is compiled: a CLI
+        (``ptoas._core``) request never triggers the ``ptoas.mlir`` family build,
+        so the CLI works even on an interpreter whose pybind11 cannot compile the
+        family.
+        """
         spec = _MEMBERS[fullname]
         so = self._find_member_so(spec, self._cache_dir())
         if so is not None:
             return so
+        group = _group_for(fullname)
         with self._compile_lock:
             so = self._find_member_so(spec, self._cache_dir())
             if so is not None:
                 return so
-            self._ensure_compiled_locked()
+            self._ensure_compiled_locked(group)
             so = self._find_member_so(spec, self._cache_dir())
             if so is None:
                 raise RuntimeError(
@@ -326,7 +414,7 @@ class BuildOnlineCoreManager:
 
     # -- compile state machine (called holding self._compile_lock) ---------
 
-    def _ensure_compiled_locked(self):
+    def _ensure_compiled_locked(self, group: _BuildGroup):
         if not self._online_dir.exists():
             raise RuntimeError(
                 "The version-sensitive extensions are unavailable for this "
@@ -336,18 +424,18 @@ class BuildOnlineCoreManager:
             )
 
         # Cross-user cooperation: if someone is compiling into pkg_dir, wait.
-        if self._wait_for_pkg_dir_compilation():
+        if self._wait_for_pkg_dir_compilation(group):
             return
 
         target_dir = self._cache_dir()
-        lock_path = target_dir / self._lock_name
+        lock_path = target_dir / self._lock_name_for(group)
         lock_fd = None
         try:
             lock_fd = open(lock_path, "w")
             if self._try_acquire_lock(lock_fd):
-                self._compile_into(target_dir)
+                self._compile_into(target_dir, group)
             else:
-                self._wait_and_compile(lock_fd, target_dir, lock_path)
+                self._wait_and_compile(lock_fd, target_dir, lock_path, group)
         finally:
             # Unlink while still holding the lock to avoid an inode-reuse race
             # (see the pypto original for the detailed reasoning).
@@ -373,8 +461,8 @@ class BuildOnlineCoreManager:
                 return False
             time.sleep(interval)
 
-    def _wait_for_pkg_dir_compilation(self) -> bool:
-        lock_path = self.pkg_dir / self._lock_name
+    def _wait_for_pkg_dir_compilation(self, group: _BuildGroup) -> bool:
+        lock_path = self.pkg_dir / self._lock_name_for(group)
         if not os.access(self.pkg_dir, os.R_OK):
             return False
         if not lock_path.exists():
@@ -383,21 +471,21 @@ class BuildOnlineCoreManager:
         if not self._poll_until(lambda: not lock_path.exists()):
             _log.warning("Timeout waiting for pkg_dir compilation")
             return False
-        return self._all_members_present(self.pkg_dir)
+        return self._all_members_present(self.pkg_dir, group)
 
-    def _wait_and_compile(self, lock_fd, target_dir: Path, lock_path: Path):
+    def _wait_and_compile(self, lock_fd, target_dir: Path, lock_path: Path, group: _BuildGroup):
         _log.info("Waiting for compilation by another process (lock: %s)...", lock_path)
         if self._poll_until(lambda: self._try_acquire_lock(lock_fd)):
             _log.info("Acquired compilation lock after waiting")
-            if self._all_members_present(target_dir):
+            if self._all_members_present(target_dir, group):
                 return
-            self._compile_into(target_dir)
+            self._compile_into(target_dir, group)
             return
         _log.warning("Timeout waiting for compilation lock, will compile independently")
-        self._compile_into(target_dir)
+        self._compile_into(target_dir, group)
 
-    def _compile_into(self, target_dir: Path):
-        pyenv_ctx = _PythonContext()
+    def _compile_into(self, target_dir: Path, group: _BuildGroup):
+        pyenv_ctx = _PythonContext(require_family_pybind11=group.requires_family_pybind11)
         cmake_ctx = _CMakeContext()
 
         shipped_lib_dir = _find_shipped_lib_dir(self.pkg_dir)
@@ -422,10 +510,12 @@ class BuildOnlineCoreManager:
                 tmp_dir=Path(tmp_dir),
                 install_prefix=target_dir,
                 cfg_cmd_ext=ext,
+                build_targets=group.targets,
+                install_component=group.component,
             )
             cmake_ctx.compile(ctx=compile_ctx)
 
-        _log.info("Compiled and installed online extensions to %s", target_dir)
+        _log.info("Compiled and installed online %s extensions to %s", group.component, target_dir)
 
     # -- cache dir + discovery --------------------------------------------
 
@@ -471,8 +561,11 @@ class BuildOnlineCoreManager:
             return self._member_in_dir(spec, cache_dir)
         return None
 
-    def _all_members_present(self, base_dir: Path) -> bool:
-        return all(self._member_in_dir(spec, base_dir) is not None for spec in _MEMBERS.values())
+    def _all_members_present(self, base_dir: Path, group: _BuildGroup) -> bool:
+        return all(
+            self._member_in_dir(_MEMBERS[member], base_dir) is not None
+            for member in group.members
+        )
 
     def _find_core_so(self, cache_dir: Optional[Path] = None) -> Tuple[bool, Optional[Path]]:
         so = self._find_member_so(_MEMBERS[_QUALIFIED_MODULE], cache_dir)
