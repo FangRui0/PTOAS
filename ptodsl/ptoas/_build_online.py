@@ -379,10 +379,6 @@ class BuildOnlineCoreManager:
                 return cand
         return None
 
-    def _lock_name_for(self, group: _BuildGroup) -> str:
-        """Per-group flock filename so core and family builds don't block each other."""
-        return f"{self._lock_prefix}.{group.component}.lock"
-
     # -- public entry ------------------------------------------------------
 
     def get_member_so(self, fullname: str) -> Path:
@@ -411,6 +407,10 @@ class BuildOnlineCoreManager:
                     f"Searched suffixes: {importlib.machinery.EXTENSION_SUFFIXES}"
                 )
             return so
+
+    def _lock_name_for(self, group: _BuildGroup) -> str:
+        """Per-group flock filename so core and family builds don't block each other."""
+        return f"{self._lock_prefix}.{group.component}.lock"
 
     # -- compile state machine (called holding self._compile_lock) ---------
 
