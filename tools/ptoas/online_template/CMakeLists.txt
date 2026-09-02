@@ -14,9 +14,14 @@
 # `ptoas/` package, to produce extensions matching the running interpreter's ABI.
 #
 # Two extension groups are built here:
-#   * `_core` (installed next to the package root) -- the PTO dialect binding,
-#     which uses only the project C-API + a Twine-free patched PybindAdaptors.h
-#     staged under `include/`.
+#   * `_core` (installed next to the package root) -- the full-featured PTOAS
+#     module: the PTO dialect binding plus the `main` CLI entry and the
+#     TileLib/SoftLib Python bridges. NativeModule.cpp is compiled with
+#     PTOAS_ONLINE_BUILD so it forward-declares runPTOAS (resolved from the
+#     shipped DSO) instead of pulling the heavy ptoas.h driver closure. It shares
+#     the real PybindAdaptors.h + LLVM/MLIR C++ header closure under
+#     `mlir_include/` with the family, plus repo-owned headers under
+#     `repo_include/`, and dynamically links the shipped shared LLVMSupport.
 #   * the `ptoas.mlir` pybind11 family (`_mlir`, `_mlirDialectsLLVM`,
 #     `_site_initialize_0`, installed into `mlir/_mlir_libs/`) -- the genuine
 #     upstream MLIR bindings, which need the real PybindAdaptors.h and the full
@@ -55,18 +60,33 @@ find_package(pybind11 CONFIG REQUIRED
 
 pybind11_add_module(_core
   ${CMAKE_CURRENT_SOURCE_DIR}/src/PTOModule.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/NativeModuleOnline.cpp)
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/NativeModule.cpp)
 
 target_compile_definitions(_core PRIVATE
   PTOAS_ONLINE_BUILD=1
   MLIR_PYTHON_PACKAGE_PREFIX=ptoas.mlir.)
 
+# _core is full-featured (main / TileLib / SoftLib). NativeModule.cpp under
+# PTOAS_ONLINE_BUILD forward-declares runPTOAS and links it from the shipped DSO,
+# so it needs the real LLVM/MLIR C++ header closure (mlir_include, shared with
+# the family) + the repo-owned project headers (repo_include). Private headers
+# (PTOModule.h) live next to the sources under src/.
 target_include_directories(_core PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${CMAKE_CURRENT_SOURCE_DIR}/repo_include
+  ${CMAKE_CURRENT_SOURCE_DIR}/mlir_include)
 
-# Link against the shipped, Python-independent DSO living in the package dir.
+# Link the shipped Python-independent DSO (runPTOAS / TileLibRuntime /
+# SoftLibRuntime) plus the shared LLVMSupport it needs for llvm::errs(). As with
+# the family, auditwheel/delocate hash-mangle the relocated libLLVMSupport, so
+# the Python driver passes its full path via PTOAS_LLVMSUPPORT_LIB; fall back to
+# the plain name for an unmangled in-place lib.
 target_link_directories(_core PRIVATE ${PTOAS_SHIPPED_LIB_DIR})
-target_link_libraries(_core PRIVATE PTOASCompiler)
+if(PTOAS_LLVMSUPPORT_LIB)
+  target_link_libraries(_core PRIVATE PTOASCompiler ${PTOAS_LLVMSUPPORT_LIB})
+else()
+  target_link_libraries(_core PRIVATE PTOASCompiler LLVMSupport)
+endif()
 
 # The cached `_core` is loaded from a directory that is NOT necessarily the
 # package dir (see _build_online._compute_cache_dir). ctypes preloads the DSO

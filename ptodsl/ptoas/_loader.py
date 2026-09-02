@@ -166,7 +166,12 @@ def install_online_finder():
 
 
 def ensure_core():
-    """Return the ``ptoas._core`` module, using the abi3 fast path when possible.
+    """Return the ``ptoas._core`` module, using the prebuilt binary when possible.
+
+    On an ABI-matching interpreter the finder serves the prebuilt in-package
+    ``_core`` (the fast path); otherwise it serves an online-compiled build. The
+    online ``_core`` is full-featured (``main`` / TileLib / SoftLib), not
+    dialect-only, so the ``ptoas`` CLI works on mismatching interpreters too.
 
     The result is also registered as ``sys.modules['ptoas._core']`` so that
     ``from ptoas import _core`` works uniformly for both the prebuilt and the

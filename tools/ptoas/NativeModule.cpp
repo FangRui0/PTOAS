@@ -7,7 +7,23 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 #include "PTO/Support/CodeConstants.h"
+
+#ifdef PTOAS_ONLINE_BUILD
+// Online fallback build. `ptoas.h` transitively pulls the whole compiler-driver
+// closure (CompilerApi.h / VPTOLLVMEmitter.h / ObjectEmission.h -> the entire
+// PTO dialect + llvm/IR C++ header tree), which the shipped online header
+// closure deliberately does not carry. The only `ptoas.h` symbol this TU uses
+// is runPTOAS; declare it here and let the link resolve it from the shipped
+// libPTOASCompiler DSO (it exports runPTOAS / TileLibRuntime / SoftLibRuntime).
+namespace mlir {
+class MLIRContext;
+namespace pto {
+int runPTOAS(int argc, char **argv, MLIRContext &borrowedContext);
+} // namespace pto
+} // namespace mlir
+#else
 #include "ptoas.h"
+#endif
 
 #include "PTO/Transforms/SoftLibService.h"
 #include "PTO/Transforms/TileLibService.h"

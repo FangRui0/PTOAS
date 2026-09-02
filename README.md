@@ -190,9 +190,12 @@ from ptoas.mlir.dialects import pto as mlir_pto
 >   匹配的解释器上，首次 `import ptodsl`/`import ptoas.mlir.*` 会由 `sys.meta_path`
 >   finder 触发一次在线 CMake 重编（针对随包发的版本无关 `libPTOASCompiler` +
 >   共享 `libLLVMSupport`），耗时数十秒并缓存到包目录或 `~/.cache/cann/ptoas/<ver>`，
->   之后二次导入直接命中缓存。此路径要求 wheel 以 `PTOAS_ENABLE_ONLINE_CORE_COMPILE=ON`
->   构建（`build.sh` 默认开启，并以 shared 方式产出 `libLLVMSupport`），且目标机上
->   有系统级 `cmake`、`python3-dev` 头与 `pybind11>=2.13.6`。
+>   之后二次导入直接命中缓存。在线编出的 `ptoas._core` 是**全功能**（含 `main`
+>   与 TileLib/SoftLib 桥），并非仅 dialect，因此 `ptoas` CLI（如
+>   `ptoas --version`、编译）在 ABI 不匹配的解释器上同样可用。此路径要求 wheel 以
+>   `PTOAS_ENABLE_ONLINE_CORE_COMPILE=ON` 构建（`build.sh` 默认开启，并以 shared
+>   方式产出 `libLLVMSupport`），且目标机上有系统级 `cmake`、`python3-dev` 头与
+>   `pybind11>=2.13.6`。
 > - release tag 约定：`ptoas-vX.Y` 发布主工具链，`vmi-vA.B.C` 发布
 >   `ptoas-vmi` distribution。创建 VMI release tag 前，应通过发布 PR 将
 >   `packaging/ptoas-vmi/pyproject.toml.patch` 中的版本更新为相同的 `A.B.C`。
